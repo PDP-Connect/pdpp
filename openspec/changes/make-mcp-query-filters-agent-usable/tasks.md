@@ -29,6 +29,8 @@
       bracket syntax before any RS call.
 - [x] 3.3 Make `RsClient` reject object-valued query parameters so future
       nested REST query shapes must be encoded explicitly by tool handlers.
+- [x] 3.4 Make the hosted package RS client reject object-valued query
+      parameters for the same fail-closed reason.
 
 ## 4. Tests
 
@@ -55,6 +57,12 @@
       enforce grant `resources` and `time_range` visibility.
 - [x] 4.12 `RsClient` rejects object-valued query params before fetch, preventing
       accidental JSON-in-query forwarding.
+- [x] 4.13 Hosted package search fan-out merges child search responses shaped as
+      canonical list-envelope `data[]`, nested `data.data[]`, or legacy
+      `data.results[]` hits.
+- [x] 4.14 Postgres lexical backfill reads and writes the active Postgres
+      backend, detects partial historical indexes by exact indexable-text row
+      counts, and restores searchable rows without re-ingest.
 
 ## 5. Docs + discovery guidance
 
@@ -71,3 +79,6 @@
       now filter end-to-end, aggregate with the same filter, and return search
       hits. Typed-object translation is covered by MCP adapter tests; hosted
       clients should reconnect to reload the current tool schema.
+- [x] 6.4 Owner/live follow-up: confirm unscoped hosted package search returns
+      merged child hits and that Postgres lexical backfill restores historical
+      search hits for existing records.

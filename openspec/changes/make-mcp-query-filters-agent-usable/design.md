@@ -69,6 +69,20 @@ them. Query handlers must encode any nested REST query vocabulary into explicit
 bracket keys before calling the client. This turns future same-class mistakes
 into local test failures rather than hosted no-ops.
 
+The hosted package RS client follows the same fail-closed transport rule. A
+package token fans out through child grant clients, but it must not become a
+second serializer that accepts object-valued query params or silently reshapes
+canonical REST envelopes.
+
+### Hosted package search preserves canonical list envelopes
+
+Hosted MCP package search fans out across child grant members, then merges their
+search hits. The merge step must understand the canonical resource-server list
+envelope (`data[]`) as well as compatibility shapes (`data.results[]` and
+`data.data[]`). A scoped `connection_id` call bypasses fan-out and already
+returned the child response directly; the unscoped path now preserves the same
+hit semantics instead of interpreting canonical `data[]` as an empty result set.
+
 ### Aggregate gets a dedicated result formatter
 
 `aggregate` switches from the generic `toToolResult` (which emits
@@ -93,6 +107,13 @@ apply grant `resources` and `time_range` constraints before returning data, so
 the hosted MCP smoke is not proving filter usability on top of a divergent
 authorization path.
 
+The lexical retrieval backfill path also runs against the active storage
+backend. In Postgres mode it reads records, index rows, and meta fingerprints
+from Postgres, and writes rebuilt lexical rows back to Postgres. The drift check
+uses exact indexable-text counts rather than a loose non-zero/max-row band, so a
+partially populated historical index is rebuilt instead of being treated as
+"good enough."
+
 ## Risks / Trade-offs
 
 - A client that previously sent a bare non-bracket string filter and (silently)
@@ -103,6 +124,10 @@ authorization path.
   `between`) is rejected at the MCP input boundary as a validation error rather
   than a handler `invalid_filter` error. Both are typed, actionable rejections;
   the test pins this behavior.
+- Exact lexical index count checks can trigger larger startup rebuilds after a
+  deployment that previously accepted partial indexes. This is intentional: a
+  stale search index is worse than rebuild work because it tells agents that
+  existing records do not exist.
 
 ## Acceptance Checks
 
@@ -123,3 +148,7 @@ authorization path.
   same exact filter semantics as the record-list path.
 - Postgres-backed record list, detail, and `changes_since` reads enforce grant
   `resources` and `time_range` visibility.
+- Hosted package search fan-out merges canonical child search hits when
+  `connection_id` is omitted.
+- Postgres lexical backfill detects and rebuilds partial historical indexes
+  using exact indexable-text counts.

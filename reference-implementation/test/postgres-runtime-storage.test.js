@@ -35,7 +35,8 @@ import {
   postgresSemanticSearch,
 } from '../server/postgres-search.js';
 import { listPendingApprovals } from '../server/ref-control.ts';
-import { runLexicalSearch } from '../server/search.js';
+import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../server/owner-auth.ts';
+import { lexicalIndexBackfillForManifest, runLexicalSearch } from '../server/search.js';
 import {
   configureSemanticBackend,
   makeStubBackend,
@@ -254,6 +255,110 @@ if (!POSTGRES_URL) {
       await postgresQuery('DELETE FROM semantic_search_backfill_progress WHERE connector_id = $1', [connectorId]);
       await postgresQuery('DELETE FROM records WHERE connector_id = $1', [connectorId]);
       configureSemanticBackend(null);
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+
+  test('postgres lexical backfill rebuilds partial historical indexes', async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `pg_lexical_backfill_${suffix}`;
+    const connectorInstanceId = `cin_pg_lexical_backfill_${suffix}`;
+    const stream = 'messages';
+    const manifest = {
+      connector_id: connectorId,
+      storage_binding: {
+        connector_id: connectorId,
+        connector_instance_id: connectorInstanceId,
+      },
+      streams: [
+        {
+          name: stream,
+          query: {
+            search: {
+              lexical_fields: ['text'],
+            },
+          },
+        },
+      ],
+    };
+    const grant = {
+      source: { kind: 'connector', id: connectorId },
+      streams: [{ name: stream, fields: ['id', 'text'] }],
+    };
+    const tokenInfo = {
+      pdpp_token_kind: 'client',
+      subject_id: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+      client_id: 'cl_pg_lexical_backfill',
+      grant_id: 'grt_pg_lexical_backfill',
+      grant,
+    };
+
+    initDb(':memory:');
+    await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+
+    try {
+      await postgresQuery(
+        `INSERT INTO records(connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version, deleted, primary_key_text)
+         VALUES
+           ($1, $2, $3, 'msg-1', $4::jsonb, $6, 1, FALSE, 'msg-1'),
+           ($1, $2, $3, 'msg-2', $5::jsonb, $6, 2, FALSE, 'msg-2')`,
+        [
+          connectorId,
+          connectorInstanceId,
+          stream,
+          JSON.stringify({ id: 'msg-1', text: 'Redactable alpha historical row' }),
+          JSON.stringify({ id: 'msg-2', text: 'Redactable beta historical row' }),
+          '2026-06-01T00:00:00.000Z',
+        ],
+      );
+      await postgresLexicalIndexUpsert({
+        connectorId,
+        connectorInstanceId,
+        stream,
+        recordKey: 'msg-1',
+        fields: { text: 'Redactable alpha historical row' },
+      });
+      await postgresQuery(
+        `INSERT INTO lexical_search_meta(connector_id, connector_instance_id, stream, fields_fingerprint, updated_at)
+         VALUES($1, $2, $3, $4, $5)
+         ON CONFLICT(connector_instance_id, stream) DO UPDATE SET
+           connector_id = EXCLUDED.connector_id,
+           fields_fingerprint = EXCLUDED.fields_fingerprint,
+           updated_at = EXCLUDED.updated_at`,
+        [connectorId, connectorInstanceId, stream, '["text"]', new Date().toISOString()],
+      );
+
+      const before = await postgresQuery(
+        'SELECT COUNT(*)::int AS count FROM lexical_search_index WHERE connector_instance_id = $1 AND stream = $2',
+        [connectorInstanceId, stream],
+      );
+      assert.equal(Number(before.rows[0].count), 1);
+
+      await lexicalIndexBackfillForManifest({ manifest });
+
+      const after = await postgresQuery(
+        'SELECT COUNT(*)::int AS count FROM lexical_search_index WHERE connector_instance_id = $1 AND stream = $2',
+        [connectorInstanceId, stream],
+      );
+      assert.equal(Number(after.rows[0].count), 2);
+
+      const page = await runLexicalSearch({
+        req: { query: { q: 'Redactable' } },
+        opts: {},
+        tokenInfo,
+        resolveOwnerVisibleConnectorIds: () => [connectorId],
+        resolveOwnerScopeForConnector: () => ({ connectorId }),
+        resolveOwnerManifestFromScope: async () => ({ manifest }),
+        buildOwnerReadGrantForManifest: () => grant,
+        resolveGrantManifest: async () => ({ manifest, storageBinding: manifest.storage_binding }),
+      });
+      assert.deepEqual(page.envelope.data.map((hit) => hit.record_key).sort(), ['msg-1', 'msg-2']);
+    } finally {
+      await postgresQuery('DELETE FROM lexical_search_index WHERE connector_id = $1', [connectorId]);
+      await postgresQuery('DELETE FROM lexical_search_meta WHERE connector_id = $1', [connectorId]);
+      await postgresQuery('DELETE FROM lexical_search_snapshots WHERE query = $1', ['Redactable']);
+      await postgresQuery('DELETE FROM records WHERE connector_id = $1', [connectorId]);
       await closePostgresStorage();
       closeDb();
     }

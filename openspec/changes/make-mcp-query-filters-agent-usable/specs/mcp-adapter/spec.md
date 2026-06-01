@@ -124,3 +124,27 @@ envelope and SHALL continue to validate against the tool output schema.
 - **THEN** the tool result `content[]` text SHALL preview the grouping dimension
   and a bounded set of bucket keys with their counts
 - **AND** the full bucket list SHALL remain in `structuredContent.data`
+
+### Requirement: Hosted MCP Package Search Merges Canonical Child Hits
+
+The hosted MCP adapter SHALL fan out unscoped package-token search calls across
+authorized child grants and merge search hits from each successful child
+response. The package merge SHALL accept the resource server's canonical
+list-envelope `data[]` search result shape and compatibility `data.results[]` or
+`data.data[]` shapes. The merge SHALL NOT treat a successful child search
+response as empty merely because it uses the canonical `data[]` envelope.
+
+#### Scenario: Unscoped package search merges canonical child list envelopes
+
+- **WHEN** a hosted MCP package search omits `connection_id`
+- **AND** child grant searches return successful canonical list envelopes with
+  hits in `data[]`
+- **THEN** the package adapter SHALL return the merged hit list
+- **AND** each merged hit SHALL retain source attribution for the child grant
+
+#### Scenario: Scoped package search still selects one child
+
+- **WHEN** a hosted MCP package search includes a valid `connection_id`
+- **THEN** the package adapter SHALL route the request to the selected child
+  grant
+- **AND** it SHALL NOT fan out to unrelated child grants

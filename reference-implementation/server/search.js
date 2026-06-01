@@ -47,9 +47,17 @@ import {
   resolveFanInBindings,
 } from './connection-identity.js';
 import {
+  postgresLexicalCountIndexableTextValues,
+  postgresLexicalIndexCountByStream,
   postgresLexicalIndexDelete,
   postgresLexicalIndexDeleteByConnectorStream,
+  postgresLexicalIndexInsertMany,
   postgresLexicalIndexUpsert,
+  postgresLexicalMetaGetFingerprint,
+  postgresLexicalMetaListStreamsForConnector,
+  postgresLexicalMetaUpsertFingerprint,
+  postgresLexicalRecordsCountNonDeleted,
+  postgresLexicalRecordsPageNonDeleted,
   postgresLexicalSearch,
 } from './postgres-search.js';
 import { isPostgresStorageBackend, postgresQuery } from './postgres-storage.js';
@@ -201,7 +209,16 @@ export async function lexicalIndexDeleteByConnectorStream({ connectorId, connect
  */
 async function rebuildLexicalIndexForStream({ connectorId, connectorInstanceId, stream, declaredFields, recordsToScan = null, progressJob = null, signal = null }) {
   const resolvedConnectorInstanceId = resolveLexicalConnectorInstanceId(connectorId, connectorInstanceId);
-  exec(referenceQueries.searchIndexDeleteByStream, [resolvedConnectorInstanceId, stream]);
+  const usePostgres = isPostgresStorageBackend();
+  if (usePostgres) {
+    await postgresLexicalIndexDeleteByConnectorStream({
+      connectorId,
+      connectorInstanceId: resolvedConnectorInstanceId,
+      stream,
+    });
+  } else {
+    exec(referenceQueries.searchIndexDeleteByStream, [resolvedConnectorInstanceId, stream]);
+  }
 
   // Stream the records page-by-page so we don't pull the whole table into
   // memory on big stores.
@@ -219,12 +236,18 @@ async function rebuildLexicalIndexForStream({ connectorId, connectorInstanceId, 
     if (signal?.aborted) {
       throw signal.reason instanceof Error ? signal.reason : new Error('lexical backfill aborted');
     }
-    const page = getMany(
-      referenceQueries.searchRecordsPageNonDeleted,
-      [resolvedConnectorInstanceId, stream, lastId],
-      { limit: PAGE },
-    );
-    const rows = page.rows;
+    const rows = usePostgres
+      ? await postgresLexicalRecordsPageNonDeleted({
+        connectorInstanceId: resolvedConnectorInstanceId,
+        stream,
+        afterId: lastId,
+        limit: PAGE,
+      })
+      : getMany(
+        referenceQueries.searchRecordsPageNonDeleted,
+        [resolvedConnectorInstanceId, stream, lastId],
+        { limit: PAGE },
+      ).rows;
     if (rows.length === 0) break;
     const entries = [];
     for (const row of rows) {
@@ -245,11 +268,20 @@ async function rebuildLexicalIndexForStream({ connectorId, connectorInstanceId, 
       }
     }
     if (entries.length > 0) {
-      transaction(() => {
-        for (const entry of entries) {
-          exec(referenceQueries.searchIndexInsertRow, [connectorId, resolvedConnectorInstanceId, stream, entry.recordKey, entry.field, entry.text]);
-        }
-      });
+      if (usePostgres) {
+        await postgresLexicalIndexInsertMany({
+          connectorId,
+          connectorInstanceId: resolvedConnectorInstanceId,
+          stream,
+          entries,
+        });
+      } else {
+        transaction(() => {
+          for (const entry of entries) {
+            exec(referenceQueries.searchIndexInsertRow, [connectorId, resolvedConnectorInstanceId, stream, entry.recordKey, entry.field, entry.text]);
+          }
+        });
+      }
       indexed += entries.length;
     }
     if (progressJob) {
@@ -260,7 +292,7 @@ async function rebuildLexicalIndexForStream({ connectorId, connectorInstanceId, 
       });
     }
     await yieldImmediate();
-    if (!page.truncated) break;
+    if (rows.length < PAGE) break;
   }
   return indexed;
 }
@@ -286,7 +318,14 @@ function jsonPathForTopLevelField(field) {
   return `$."${String(field).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
-function countIndexableTextValues({ connectorInstanceId, stream, declaredFields }) {
+async function countIndexableTextValues({ connectorInstanceId, stream, declaredFields }) {
+  if (isPostgresStorageBackend()) {
+    return await postgresLexicalCountIndexableTextValues({
+      connectorInstanceId,
+      stream,
+      declaredFields,
+    });
+  }
   let total = 0;
   for (const field of declaredFields) {
     const path = jsonPathForTopLevelField(field);
@@ -294,6 +333,69 @@ function countIndexableTextValues({ connectorInstanceId, stream, declaredFields 
     total += Number(row?.n || 0);
   }
   return total;
+}
+
+async function lexicalMetaGetFingerprint({ connectorInstanceId, stream }) {
+  if (isPostgresStorageBackend()) {
+    return await postgresLexicalMetaGetFingerprint({ connectorInstanceId, stream });
+  }
+  return getOne(referenceQueries.searchMetaGetFingerprintByStream, [connectorInstanceId, stream]);
+}
+
+async function lexicalMetaExists({ connectorInstanceId, stream }) {
+  if (isPostgresStorageBackend()) {
+    return !!(await lexicalMetaGetFingerprint({ connectorInstanceId, stream }));
+  }
+  return !!getOne(referenceQueries.searchMetaExistsByStream, [connectorInstanceId, stream]);
+}
+
+async function lexicalMetaUpsertFingerprint({ connectorId, connectorInstanceId, stream, fieldsFingerprint, updatedAt }) {
+  if (isPostgresStorageBackend()) {
+    await postgresLexicalMetaUpsertFingerprint({
+      connectorId,
+      connectorInstanceId,
+      stream,
+      fieldsFingerprint,
+      updatedAt,
+    });
+    return;
+  }
+  exec(referenceQueries.searchMetaUpsertFingerprint, [connectorId, connectorInstanceId, stream, fieldsFingerprint, updatedAt]);
+}
+
+async function lexicalIndexAndMetaDeleteByStream({ connectorId, connectorInstanceId, stream }) {
+  if (isPostgresStorageBackend()) {
+    await postgresLexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
+    return;
+  }
+  exec(referenceQueries.searchIndexDeleteByStream, [connectorInstanceId, stream]);
+  exec(referenceQueries.searchMetaDeleteByStream, [connectorInstanceId, stream]);
+}
+
+async function lexicalMetaListStreamsForConnector({ connectorInstanceId }) {
+  if (isPostgresStorageBackend()) {
+    return await postgresLexicalMetaListStreamsForConnector({ connectorInstanceId });
+  }
+  return allowUnboundedReadAcknowledged(
+    referenceQueries.searchMetaListStreamsForConnector,
+    [connectorInstanceId],
+  );
+}
+
+async function lexicalIndexCountByStream({ connectorInstanceId, stream }) {
+  if (isPostgresStorageBackend()) {
+    return await postgresLexicalIndexCountByStream({ connectorInstanceId, stream });
+  }
+  const row = getOne(referenceQueries.searchIndexCountByStream, [connectorInstanceId, stream]);
+  return Number(row?.n || 0);
+}
+
+async function lexicalRecordsCountNonDeleted({ connectorInstanceId, stream }) {
+  if (isPostgresStorageBackend()) {
+    return await postgresLexicalRecordsCountNonDeleted({ connectorInstanceId, stream });
+  }
+  const row = getOne(referenceQueries.searchRecordsCountNonDeleted, [connectorInstanceId, stream]);
+  return Number(row?.n || 0);
 }
 
 /**
@@ -383,12 +485,11 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
       // version declared lexical_fields for it, drop the stale index +
       // meta so historical data doesn't keep matching against a field set
       // that's no longer declared.
-      const metaExists = getOne(referenceQueries.searchMetaExistsByStream, [connectorInstanceId, stream]);
+      const metaExists = await lexicalMetaExists({ connectorInstanceId, stream });
       if (metaExists) {
         log(`[PDPP] Lexical index: stream='${stream}' connector='${connectorId}' ` +
             `no longer declares lexical_fields — dropping stale index + meta`);
-        exec(referenceQueries.searchIndexDeleteByStream, [connectorInstanceId, stream]);
-        exec(referenceQueries.searchMetaDeleteByStream, [connectorInstanceId, stream]);
+        await lexicalIndexAndMetaDeleteByStream({ connectorId, connectorInstanceId, stream });
       }
       continue;
     }
@@ -403,7 +504,7 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
 
     const newFingerprint = fingerprintLexicalFields(declaredFields);
 
-    const fingerprintRow = getOne(referenceQueries.searchMetaGetFingerprintByStream, [connectorInstanceId, stream]);
+    const fingerprintRow = await lexicalMetaGetFingerprint({ connectorInstanceId, stream });
     const persistedFingerprint = fingerprintRow?.fields_fingerprint ?? null;
     const fingerprintChanged = persistedFingerprint !== newFingerprint;
 
@@ -412,33 +513,23 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
     let indexCount = 0;
     let expectedIndexRows = 0;
 
-    const countRecords = () => {
-      const row = getOne(referenceQueries.searchRecordsCountNonDeleted, [connectorInstanceId, stream]);
-      return Number(row?.n || 0);
-    };
-
     if (!needsRebuild) {
       // Fingerprint matches — use exact non-empty text counts only to
-      // distinguish a legitimately empty index from an unbuilt one. Some
-      // streams have records but no lexical text for the declared fields.
-      recordCount = countRecords();
-
-      const indexCountRow = getOne(referenceQueries.searchIndexCountByStream, [connectorInstanceId, stream]);
-      indexCount = Number(indexCountRow?.n || 0);
+      // distinguish a complete index from an unbuilt or partially-built one.
+      // A loose non-zero heuristic lets historical records remain invisible
+      // after a manifest/schema change or interrupted startup backfill.
+      recordCount = await lexicalRecordsCountNonDeleted({ connectorInstanceId, stream });
+      indexCount = await lexicalIndexCountByStream({ connectorInstanceId, stream });
+      expectedIndexRows = await countIndexableTextValues({ connectorInstanceId, stream, declaredFields });
 
       const maxIndexRows = recordCount * declaredFields.length;
-      expectedIndexRows = indexCount === 0 || indexCount > maxIndexRows
-        ? countIndexableTextValues({ connectorInstanceId, stream, declaredFields })
-        : null;
-      const inSync = indexCount > 0
-        ? indexCount <= maxIndexRows
-        : expectedIndexRows === 0;
+      const inSync = indexCount === expectedIndexRows && indexCount <= maxIndexRows;
       needsRebuild = !inSync;
     }
 
     if (!needsRebuild) continue;
     if (recordCount === 0) {
-      recordCount = countRecords();
+      recordCount = await lexicalRecordsCountNonDeleted({ connectorInstanceId, stream });
     }
     progressJob = updateLexicalBackfillJob(progressJob, {
       stream,
@@ -469,7 +560,13 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
         `(records=${recordCount}, indexed_rows=${indexedRows})`);
 
     // Persist the new fingerprint so subsequent backfill calls can skip.
-    exec(referenceQueries.searchMetaUpsertFingerprint, [connectorId, connectorInstanceId, stream, newFingerprint, new Date().toISOString()]);
+    await lexicalMetaUpsertFingerprint({
+      connectorId,
+      connectorInstanceId,
+      stream,
+      fieldsFingerprint: newFingerprint,
+      updatedAt: new Date().toISOString(),
+    });
   }
   progressJob = updateLexicalBackfillJob(progressJob, {
     stream: null,
@@ -485,16 +582,12 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
   // REVIEWED-BOUNDED: lexical_search_meta is keyed by (connector_instance_id, stream)
   // and the stream count per connector is a small enumeration bounded by the
   // manifest, well below the @max_rows=1024 declared in the artifact.
-  const orphanRows = allowUnboundedReadAcknowledged(
-    referenceQueries.searchMetaListStreamsForConnector,
-    [connectorInstanceId],
-  );
+  const orphanRows = await lexicalMetaListStreamsForConnector({ connectorInstanceId });
   for (const row of orphanRows) {
     if (visitedStreams.has(row.stream)) continue;
     log(`[PDPP] Lexical index: stream='${row.stream}' connector='${connectorId}' ` +
         `no longer in manifest — dropping stale index + meta`);
-    exec(referenceQueries.searchIndexDeleteByStream, [connectorInstanceId, row.stream]);
-    exec(referenceQueries.searchMetaDeleteByStream, [connectorInstanceId, row.stream]);
+    await lexicalIndexAndMetaDeleteByStream({ connectorId, connectorInstanceId, stream: row.stream });
   }
   } finally {
     activeLexicalBackfillCount = Math.max(0, activeLexicalBackfillCount - 1);

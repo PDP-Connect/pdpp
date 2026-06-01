@@ -280,6 +280,45 @@ test('search fan-out merges hits across children', async () => {
   for (const hit of out.body.data.results) assert.ok(hit.source);
 });
 
+test('search fan-out merges canonical list-envelope data arrays across children', async () => {
+  const fetch = makeRouter(async (req) => {
+    if (req.token === 'tok_A') {
+      return jsonResponse(200, {
+        object: 'list',
+        data: [{ object: 'search_result', record_key: 'a', connection_id: 'gh_main' }],
+      });
+    }
+    if (req.token === 'tok_B') {
+      return jsonResponse(200, {
+        object: 'list',
+        data: [{ object: 'search_result', record_key: 'b', connection_id: 'slack_main' }],
+      });
+    }
+    return jsonResponse(500, {});
+  });
+  const rs = createPackageRsClient({ providerUrl: PROVIDER, members: [memberA(), memberB()], fetch });
+  const out = await rs.getJson('/v1/search', { query: { q: 'one' } });
+  assert.equal(out.ok, true);
+  assert.deepEqual(out.body.data.map((hit) => hit.record_key).sort(), ['a', 'b']);
+  for (const hit of out.body.data) assert.ok(hit.source);
+});
+
+test('search fan-out merges nested data.data envelopes across children', async () => {
+  const fetch = makeRouter(async (req) => {
+    if (req.token === 'tok_A') {
+      return jsonResponse(200, { data: { data: [{ object: 'search_result', record_key: 'a' }] } });
+    }
+    if (req.token === 'tok_B') {
+      return jsonResponse(200, { data: { data: [{ object: 'search_result', record_key: 'b' }] } });
+    }
+    return jsonResponse(500, {});
+  });
+  const rs = createPackageRsClient({ providerUrl: PROVIDER, members: [memberA(), memberB()], fetch });
+  const out = await rs.getJson('/v1/search', { query: { q: 'one' } });
+  assert.equal(out.ok, true);
+  assert.deepEqual(out.body.data.data.map((hit) => hit.record_key).sort(), ['a', 'b']);
+});
+
 test('search with unknown connection_id returns not_found without fanout', async () => {
   let called = 0;
   const fetch = makeRouter(async () => {

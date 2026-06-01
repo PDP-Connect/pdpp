@@ -144,7 +144,11 @@ class PackageRsClient {
       for (const [key, value] of Object.entries(query)) {
         if (value === undefined || value === null) continue;
         if (Array.isArray(value)) for (const e of value) url.searchParams.append(key, String(e));
-        else if (typeof value === 'object') url.searchParams.append(key, JSON.stringify(value));
+        else if (typeof value === 'object') {
+          throw new TypeError(
+            `query parameter '${key}' must be a scalar or array; encode nested query shapes explicitly before calling PackageRsClient`,
+          );
+        }
         else url.searchParams.append(key, String(value));
       }
     }
@@ -529,7 +533,11 @@ function mergeSearchEnvelopes(children, results, _path) {
   });
 
   const baseBody = ok.body && typeof ok.body === 'object' ? { ...ok.body } : {};
-  if (baseBody.data && typeof baseBody.data === 'object' && Array.isArray(baseBody.data.results)) {
+  if (Array.isArray(baseBody.data)) {
+    baseBody.data = mergedHits;
+  } else if (baseBody.data && typeof baseBody.data === 'object' && Array.isArray(baseBody.data.data)) {
+    baseBody.data = { ...baseBody.data, data: mergedHits };
+  } else if (baseBody.data && typeof baseBody.data === 'object' && Array.isArray(baseBody.data.results)) {
     baseBody.data = { ...baseBody.data, results: mergedHits };
     if (totalScanned > 0) baseBody.data.scanned = totalScanned;
   } else if (Array.isArray(baseBody.results)) {
@@ -551,6 +559,8 @@ function mergeSearchEnvelopes(children, results, _path) {
 function extractSearchHits(body) {
   if (!body || typeof body !== 'object') return [];
   if (Array.isArray(body.results)) return body.results;
+  if (Array.isArray(body.data)) return body.data;
+  if (body.data && typeof body.data === 'object' && Array.isArray(body.data.data)) return body.data.data;
   if (body.data && typeof body.data === 'object' && Array.isArray(body.data.results)) return body.data.results;
   return [];
 }

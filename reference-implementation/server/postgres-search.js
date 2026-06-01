@@ -58,6 +58,119 @@ export async function postgresLexicalIndexDeleteByConnectorStream({ connectorId,
   );
 }
 
+export async function postgresLexicalIndexInsertMany({
+  connectorId,
+  connectorInstanceId = defaultConnectorInstanceId(connectorId),
+  stream,
+  entries,
+}) {
+  if (!Array.isArray(entries) || entries.length === 0) return 0;
+  await postgresQuery(
+    `INSERT INTO lexical_search_index (connector_id, connector_instance_id, stream, record_key, field, value)
+     SELECT $1, $2, $3, rows.record_key, rows.field, rows.value
+     FROM unnest($4::text[], $5::text[], $6::text[]) AS rows(record_key, field, value)
+     ON CONFLICT (connector_instance_id, stream, record_key, field) DO UPDATE
+       SET connector_id = EXCLUDED.connector_id,
+           value = EXCLUDED.value`,
+    [
+      connectorId,
+      connectorInstanceId,
+      stream,
+      entries.map((entry) => entry.recordKey),
+      entries.map((entry) => entry.field),
+      entries.map((entry) => entry.text),
+    ],
+  );
+  return entries.length;
+}
+
+export async function postgresLexicalMetaGetFingerprint({ connectorInstanceId, stream }) {
+  const result = await postgresQuery(
+    'SELECT fields_fingerprint FROM lexical_search_meta WHERE connector_instance_id = $1 AND stream = $2',
+    [connectorInstanceId, stream],
+  );
+  return result.rows[0] || null;
+}
+
+export async function postgresLexicalMetaUpsertFingerprint({
+  connectorId,
+  connectorInstanceId = defaultConnectorInstanceId(connectorId),
+  stream,
+  fieldsFingerprint,
+  updatedAt,
+}) {
+  await postgresQuery(
+    `INSERT INTO lexical_search_meta(connector_id, connector_instance_id, stream, fields_fingerprint, updated_at)
+     VALUES($1, $2, $3, $4, $5)
+     ON CONFLICT(connector_instance_id, stream) DO UPDATE SET
+       connector_id = EXCLUDED.connector_id,
+       fields_fingerprint = EXCLUDED.fields_fingerprint,
+       updated_at = EXCLUDED.updated_at`,
+    [connectorId, connectorInstanceId, stream, fieldsFingerprint, updatedAt],
+  );
+}
+
+export async function postgresLexicalMetaListStreamsForConnector({ connectorInstanceId }) {
+  const result = await postgresQuery(
+    'SELECT stream FROM lexical_search_meta WHERE connector_instance_id = $1 ORDER BY stream',
+    [connectorInstanceId],
+  );
+  return result.rows;
+}
+
+export async function postgresLexicalIndexCountByStream({ connectorInstanceId, stream }) {
+  const result = await postgresQuery(
+    'SELECT COUNT(*) AS n FROM lexical_search_index WHERE connector_instance_id = $1 AND stream = $2',
+    [connectorInstanceId, stream],
+  );
+  return Number(result.rows[0]?.n || 0);
+}
+
+export async function postgresLexicalRecordsCountNonDeleted({ connectorInstanceId, stream }) {
+  const result = await postgresQuery(
+    'SELECT COUNT(*) AS n FROM records WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE',
+    [connectorInstanceId, stream],
+  );
+  return Number(result.rows[0]?.n || 0);
+}
+
+export async function postgresLexicalCountIndexableTextValues({ connectorInstanceId, stream, declaredFields }) {
+  let total = 0;
+  for (const field of declaredFields || []) {
+    const result = await postgresQuery(
+      `SELECT COUNT(*) AS n
+       FROM records
+       WHERE connector_instance_id = $1
+         AND stream = $2
+         AND deleted = FALSE
+         AND COALESCE(record_json ->> $3, '') <> ''`,
+      [connectorInstanceId, stream, field],
+    );
+    total += Number(result.rows[0]?.n || 0);
+  }
+  return total;
+}
+
+export async function postgresLexicalRecordsPageNonDeleted({
+  connectorInstanceId,
+  stream,
+  afterId,
+  limit,
+}) {
+  const result = await postgresQuery(
+    `SELECT id, record_key, record_json::text AS record_json
+     FROM records
+     WHERE connector_instance_id = $1
+       AND stream = $2
+       AND deleted = FALSE
+       AND id > $3
+     ORDER BY id ASC
+     LIMIT $4`,
+    [connectorInstanceId, stream, afterId, limit],
+  );
+  return result.rows;
+}
+
 export async function postgresLexicalSearch({ connectorId, connectorInstanceId = defaultConnectorInstanceId(connectorId), stream, searchableFields, q, limit = 25 }) {
   const fields = Array.isArray(searchableFields) && searchableFields.length > 0
     ? searchableFields
