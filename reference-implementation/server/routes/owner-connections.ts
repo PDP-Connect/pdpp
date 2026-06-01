@@ -24,6 +24,7 @@
 //       (#"Owner control surfaces SHALL expose connection identity before
 //         instance operations")
 
+import type { OwnerAgentControlAction } from "../metadata.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
@@ -92,6 +93,11 @@ interface TraceContext {
 }
 
 export interface MountOwnerConnectionsContext {
+  // Projects the instance-scoped subset of the owner-agent control catalog for
+  // one connection, from the same single source of truth `GET /v1/owner/control`
+  // reads, so a row's `supported_actions` can never disagree with the control
+  // document. Supported instance actions carry the connection's concrete URL.
+  buildOwnerConnectionSupportedActions(input: { connectionId: string; resource: string }): OwnerAgentControlAction[];
   canonicalConnectorKey(value: string | null | undefined): string | null;
   createTraceContext(input?: { scenarioId?: string }): TraceContext;
   createRequestConnectorInstanceStore(): ConnectorInstanceStore;
@@ -115,6 +121,10 @@ export interface MountOwnerConnectionsContext {
   ): string | null;
   requireOwner: MiddlewareHandler;
   requireToken: MiddlewareHandler;
+  // Resolves the caller-visible trusted RS public base for this request (same
+  // forwarded-origin handling as the control entrypoint), so a row's
+  // `supported_actions` URLs name the advertised resource exactly.
+  resolveResource(req: unknown): string;
   resolveSingleConnectorIdQueryValue(raw: unknown): string | null;
   setReferenceTraceId(res: RouteResponse, traceId: string): void;
 }
@@ -130,7 +140,8 @@ export interface MountOwnerConnectionsContext {
 function projectOwnerConnection(
   ctx: MountOwnerConnectionsContext,
   instance: ConnectorInstanceRow,
-  schedulesByInstanceId: ReadonlyMap<string, unknown>
+  schedulesByInstanceId: ReadonlyMap<string, unknown>,
+  resource: string
 ): Record<string, unknown> {
   const connectorKey = ctx.canonicalConnectorKey(instance.connectorId) ?? instance.connectorId;
   const ownerMeaningfulName = ctx.projectStorageDisplayName(instance.displayName, {
@@ -157,6 +168,17 @@ function projectOwnerConnection(
     updated_at: instance.updatedAt,
     revoked_at: instance.revokedAt,
     schedule: schedulesByInstanceId.get(instance.connectorInstanceId) || null,
+    // Capability-advertised, instance-scoped control actions for this exact
+    // connection (design.md #5). Projected from the same control catalog
+    // `GET /v1/owner/control` reads. Supported actions (`rename_connection`)
+    // carry this connection's concrete URL; unavailable actions are marked
+    // `owner_mediated`/`unsupported` with a typed reason rather than omitted, so
+    // an agent never probes a 404 and the fallback/label-needed row always names
+    // its supported rename action.
+    supported_actions: ctx.buildOwnerConnectionSupportedActions({
+      connectionId: instance.connectorInstanceId,
+      resource,
+    }),
   };
 }
 
@@ -269,9 +291,7 @@ async function emitOwnerConnectionRenameAudit(
   });
 }
 
-function buildOwnerConnectionRenameRequireOwner(
-  ctx: MountOwnerConnectionsContext
-): MiddlewareHandler {
+function buildOwnerConnectionRenameRequireOwner(ctx: MountOwnerConnectionsContext): MiddlewareHandler {
   return async (...args: unknown[]) => {
     const [req, res, next] = args as [RouteRequest, RouteResponse, NextFn];
     if (req.tokenInfo?.pdpp_token_kind === "owner") {
@@ -305,6 +325,7 @@ export function mountOwnerConnectionsList(app: AppLike, ctx: MountOwnerConnectio
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         const ownerSubjectId = ctx.getOwnerTokenSubjectId(req);
+        const resource = ctx.resolveResource(req);
         const rawConnectorId = ctx.resolveSingleConnectorIdQueryValue(req.query.connector_id);
         // Canonicalize the owner-supplied connector_id filter so a URL-shaped
         // value (e.g. https://registry.pdpp.org/connectors/amazon) matches the
@@ -325,7 +346,7 @@ export function mountOwnerConnectionsList(app: AppLike, ctx: MountOwnerConnectio
         const data = instances
           .filter((instance) => connectorIdMatchesFilter(ctx, instance, connectorId))
           .filter((instance) => !status || instance.status === status)
-          .map((instance) => projectOwnerConnection(ctx, instance, schedulesByInstanceId));
+          .map((instance) => projectOwnerConnection(ctx, instance, schedulesByInstanceId, resource));
         res.json({ object: "list", data });
       } catch (err) {
         ctx.handleError(res, err);
@@ -399,7 +420,8 @@ export function mountOwnerConnectionRename(app: AppLike, ctx: MountOwnerConnecti
             .filter((schedule) => schedule?.connector_instance_id)
             .map((schedule) => [schedule.connector_instance_id as string, schedule])
         );
-        const projected = projectOwnerConnection(ctx, updated, schedulesByInstanceId);
+        const resource = ctx.resolveResource(req);
+        const projected = projectOwnerConnection(ctx, updated, schedulesByInstanceId, resource);
         await emitOwnerConnectionRenameAudit(ctx, req, res, {
           connectionId,
           connectorKey: typeof projected.connector_key === "string" ? projected.connector_key : null,

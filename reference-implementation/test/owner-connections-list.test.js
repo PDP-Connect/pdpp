@@ -184,8 +184,77 @@ test('owner-agent bearer lists a configured connection with full identity + owne
     assert.equal(row.status, 'active');
     assert.equal(row.source_kind, 'account');
     assert.equal(row.schedule, null);
+
+    // Capability-advertised, instance-scoped control actions (task 2.2 /
+    // design.md #5). Projected from the same catalog GET /v1/owner/control
+    // reads, so the row can never claim a supported action the control
+    // document calls unsupported.
+    assert.ok(Array.isArray(row.supported_actions), 'row must carry supported_actions');
+    const byFamily = new Map(row.supported_actions.map((a) => [a.family, a]));
+    // Surface-level families (discover/list/initiate) are NOT instance-scoped
+    // and must be absent from a per-connection action list.
+    assert.equal(byFamily.has('discover_control_capabilities'), false);
+    assert.equal(byFamily.has('list_connections'), false);
+    assert.equal(byFamily.has('initiate_connection'), false);
+    // rename is supported over the owner-agent bearer and carries THIS
+    // connection's concrete URL (placeholder resolved, no `{connection_id}`).
+    const rename = byFamily.get('rename_connection');
+    assert.ok(rename, 'rename_connection action must be advertised');
+    assert.equal(rename.status, 'supported');
+    assert.equal(rename.method, 'PATCH');
+    assert.ok(rename.url.endsWith('/v1/owner/connections/cin_amazon_personal'), rename.url);
+    assert.ok(!rename.url.includes('{connection_id}'), 'placeholder must be resolved');
+    // Not-yet-exposed instance families are named with a typed status, not omitted.
+    assert.equal(byFamily.get('run_connection')?.status, 'owner_mediated');
+    assert.equal(byFamily.get('run_connection')?.url, null);
+    assert.equal(byFamily.get('manage_schedule')?.status, 'owner_mediated');
+    assert.equal(byFamily.get('delete_connection')?.status, 'unsupported');
+    assert.equal(byFamily.get('revoke_connection')?.status, 'unsupported');
+    assert.equal(byFamily.get('inspect_diagnostics')?.status, 'unsupported');
   });
 });
+
+test('per-connection supported_actions agree with GET /v1/owner/control', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const manifest = await registerConnector(asUrl, loadManifest('amazon'));
+    const connectorKey = canonicalConnectorKey(manifest.connector_id);
+    await seedInstance({
+      connectorInstanceId: 'cin_amazon_personal',
+      connectorId: connectorKey,
+      displayName: 'the owner personal',
+      sourceBindingKey: 'the owner@example.com',
+    });
+    const ownerToken = await issueOwnerToken(asUrl);
+
+    const control = (await fetchJson(`${rsUrl}/v1/owner/control`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    })).body;
+    const connections = (await fetchJson(`${rsUrl}/v1/owner/connections`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    })).body;
+
+    const controlByFamily = new Map(control.actions.map((a) => [a.family, a]));
+    const row = connections.data.find((r) => r.connection_id === 'cin_amazon_personal');
+    // Every instance-scoped action on the row must carry the same status the
+    // control document reports for that family — single source of truth.
+    for (const action of row.supported_actions) {
+      const fromControl = controlByFamily.get(action.family);
+      assert.ok(fromControl, `control document must also list ${action.family}`);
+      assert.equal(action.status, fromControl.status, `status mismatch for ${action.family}`);
+      assert.equal(action.method, fromControl.method, `method mismatch for ${action.family}`);
+      assert.equal(action.reason, fromControl.reason, `reason mismatch for ${action.family}`);
+    }
+    // The control document's rename URL is templated; the row's is concrete.
+    assert.ok(controlByFamily.get('rename_connection').url.includes('{connection_id}'));
+    assert.ok(
+      byFamilyUrl(row, 'rename_connection').endsWith('/v1/owner/connections/cin_amazon_personal'),
+    );
+  });
+});
+
+function byFamilyUrl(row, family) {
+  return row.supported_actions.find((a) => a.family === family).url;
+}
 
 test('owner-agent bearer sees fallback label_status for a never-labeled connection', async () => {
   await withServer(async ({ asUrl, rsUrl }) => {

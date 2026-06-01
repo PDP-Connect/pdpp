@@ -451,90 +451,143 @@ export interface OwnerAgentControlSurfaceInput {
   resource: string;
 }
 
+// Single source of truth for the owner-agent control action catalog. Each
+// descriptor declares the family's stable status/method/reason and how its URL
+// is derived from the trusted RS base. `scope` says whether the family is a
+// surface-level action (`surface`, e.g. discovery and listing) or operates on a
+// single configured connection (`instance`). Both the control capability
+// document (`buildOwnerAgentControlSurface`) and the per-connection
+// `supported_actions` projection (`buildOwnerConnectionSupportedActions`) are
+// projected from this one table, so the two surfaces can never disagree about
+// what this build supports for a connection.
+//
+// `urlTemplate` receives the trusted RS base and is only invoked for `supported`
+// families; non-supported families always project `method: null, url: null` so
+// an agent never probes a 404. For an instance-scoped supported family the
+// template carries a literal `{connection_id}` placeholder in the surface
+// catalog; the per-connection projection substitutes the concrete id.
+interface OwnerAgentControlActionDescriptor {
+  family: string;
+  reason: string;
+  // "surface" — a control-plane entrypoint not bound to one connection.
+  // "instance" — operates on a single configured connection (`connection_id`).
+  scope: "surface" | "instance";
+  status: OwnerAgentControlActionStatus;
+  method: string | null;
+  urlTemplate: ((rs: string) => string) | null;
+}
+
+const OWNER_AGENT_CONTROL_ACTION_CATALOG: readonly OwnerAgentControlActionDescriptor[] = [
+  {
+    family: "discover_control_capabilities",
+    scope: "surface",
+    status: "supported",
+    method: "GET",
+    urlTemplate: (rs) => `${rs}/v1/owner/control`,
+    reason: "Read this owner-agent control capability document.",
+  },
+  {
+    family: "list_connections",
+    scope: "surface",
+    status: "supported",
+    method: "GET",
+    urlTemplate: (rs) => `${rs}/v1/owner/connections`,
+    reason:
+      "List configured connection instances with connection_id, connector identity, display_name, and label status.",
+  },
+  // Supported in this build: a trusted owner agent POSTs a typed connection
+  // intent. The route returns a real owner-mediated next step
+  // (`enroll_local_collector`) for proven local-collector connectors and a
+  // typed `unsupported` with a named-gap reason for browser-bound,
+  // API/network-only, and unknown connectors. It never marks a connection
+  // active and never bypasses a provider step.
+  {
+    family: "initiate_connection",
+    scope: "surface",
+    status: "supported",
+    method: "POST",
+    urlTemplate: (rs) => `${rs}/v1/owner/connections/intents`,
+    reason:
+      "Initiate a new connection as a typed, auditable, owner-mediated intent. Body: { connector_id, display_name? }. Returns next_step.kind = enroll_local_collector for proven local-collector connectors, or unsupported (with a reason naming the missing primitive) for browser-bound and API/network-only connectors. No connection is marked active by the intent.",
+  },
+  {
+    family: "rename_connection",
+    scope: "instance",
+    status: "supported",
+    method: "PATCH",
+    // Templated path: the surface catalog carries the literal `{connection_id}`
+    // placeholder; the per-connection projection substitutes the concrete id.
+    urlTemplate: (rs) => `${rs}/v1/owner/connections/{connection_id}`,
+    reason:
+      "Set a connection's owner-meaningful display_name by connection_id. Body: { display_name }. Use a connection_id from list_connections.",
+  },
+  {
+    family: "run_connection",
+    scope: "instance",
+    status: "owner_mediated",
+    method: null,
+    urlTemplate: null,
+    reason:
+      "Run-now is available on the browser owner-session surface; it is not yet exposed to owner-agent bearers in this build.",
+  },
+  {
+    family: "manage_schedule",
+    scope: "instance",
+    status: "owner_mediated",
+    method: null,
+    urlTemplate: null,
+    reason:
+      "Schedule create/pause/resume/delete is available on the browser owner-session surface; it is not yet exposed to owner-agent bearers in this build.",
+  },
+  {
+    family: "inspect_diagnostics",
+    scope: "instance",
+    status: "unsupported",
+    method: null,
+    urlTemplate: null,
+    reason:
+      "Per-connection diagnostics is not implemented as an owner-agent control route in this build. Device-exporter diagnostics remain on the browser owner-session surface.",
+  },
+  {
+    family: "delete_connection",
+    scope: "instance",
+    status: "unsupported",
+    method: null,
+    urlTemplate: null,
+    reason: "Connection delete is not implemented as an owner-agent control route in this build.",
+  },
+  {
+    family: "revoke_connection",
+    scope: "instance",
+    status: "unsupported",
+    method: null,
+    urlTemplate: null,
+    reason:
+      "Connection credential revoke is not implemented as an owner-agent control route in this build. Device-exporter revoke remains on the browser owner-session surface.",
+  },
+];
+
+// Projects one catalog descriptor to a concrete `OwnerAgentControlAction`.
+// `supported` families resolve their URL from the trusted RS base; every other
+// family projects `method: null, url: null` regardless of any template so the
+// catalog never advertises a route this build does not serve.
+function projectControlAction(descriptor: OwnerAgentControlActionDescriptor, rs: string): OwnerAgentControlAction {
+  const isSupported = descriptor.status === "supported";
+  return {
+    family: descriptor.family,
+    status: descriptor.status,
+    method: isSupported ? descriptor.method : null,
+    url: isSupported && descriptor.urlTemplate ? descriptor.urlTemplate(rs) : null,
+    reason: descriptor.reason,
+  };
+}
+
 export function buildOwnerAgentControlSurface({ resource }: OwnerAgentControlSurfaceInput): OwnerAgentControlSurface {
   const rs = stripTrailingSlash(resource);
   const entrypoint = `${rs}/v1/owner/control`;
-  // Supported in this build: discovery + connection listing.
-  const actions: OwnerAgentControlAction[] = [
-    {
-      family: "discover_control_capabilities",
-      status: "supported",
-      method: "GET",
-      url: entrypoint,
-      reason: "Read this owner-agent control capability document.",
-    },
-    {
-      family: "list_connections",
-      status: "supported",
-      method: "GET",
-      url: `${rs}/v1/owner/connections`,
-      reason:
-        "List configured connection instances with connection_id, connector identity, display_name, and label status.",
-    },
-    // Supported in this build: a trusted owner agent POSTs a typed connection
-    // intent. The route returns a real owner-mediated next step
-    // (`enroll_local_collector`) for proven local-collector connectors and a
-    // typed `unsupported` with a named-gap reason for browser-bound,
-    // API/network-only, and unknown connectors. It never marks a connection
-    // active and never bypasses a provider step.
-    {
-      family: "initiate_connection",
-      status: "supported",
-      method: "POST",
-      url: `${rs}/v1/owner/connections/intents`,
-      reason:
-        "Initiate a new connection as a typed, auditable, owner-mediated intent. Body: { connector_id, display_name? }. Returns next_step.kind = enroll_local_collector for proven local-collector connectors, or unsupported (with a reason naming the missing primitive) for browser-bound and API/network-only connectors. No connection is marked active by the intent.",
-    },
-    {
-      family: "rename_connection",
-      status: "supported",
-      method: "PATCH",
-      // Templated path: the agent substitutes a concrete `connection_id` from
-      // the listing. `{connection_id}` is a literal placeholder, not a live URL.
-      url: `${rs}/v1/owner/connections/{connection_id}`,
-      reason:
-        "Set a connection's owner-meaningful display_name by connection_id. Body: { display_name }. Use a connection_id from list_connections.",
-    },
-    {
-      family: "run_connection",
-      status: "owner_mediated",
-      method: null,
-      url: null,
-      reason:
-        "Run-now is available on the browser owner-session surface; it is not yet exposed to owner-agent bearers in this build.",
-    },
-    {
-      family: "manage_schedule",
-      status: "owner_mediated",
-      method: null,
-      url: null,
-      reason:
-        "Schedule create/pause/resume/delete is available on the browser owner-session surface; it is not yet exposed to owner-agent bearers in this build.",
-    },
-    {
-      family: "inspect_diagnostics",
-      status: "unsupported",
-      method: null,
-      url: null,
-      reason:
-        "Per-connection diagnostics is not implemented as an owner-agent control route in this build. Device-exporter diagnostics remain on the browser owner-session surface.",
-    },
-    {
-      family: "delete_connection",
-      status: "unsupported",
-      method: null,
-      url: null,
-      reason: "Connection delete is not implemented as an owner-agent control route in this build.",
-    },
-    {
-      family: "revoke_connection",
-      status: "unsupported",
-      method: null,
-      url: null,
-      reason:
-        "Connection credential revoke is not implemented as an owner-agent control route in this build. Device-exporter revoke remains on the browser owner-session surface.",
-    },
-  ];
+  const actions: OwnerAgentControlAction[] = OWNER_AGENT_CONTROL_ACTION_CATALOG.map((descriptor) =>
+    projectControlAction(descriptor, rs)
+  );
   return {
     object: "owner_agent_control_surface",
     entrypoint,
@@ -542,6 +595,44 @@ export function buildOwnerAgentControlSurface({ resource }: OwnerAgentControlSur
     mcp_owner_bearer_rejected: true,
     actions,
   };
+}
+
+export interface OwnerConnectionSupportedActionsInput {
+  // Concrete `connection_id` (== `connector_instance_id`) the actions target.
+  connectionId: string;
+  // Already-trusted, forwarded-origin-safe RS public base. Same trust contract
+  // as `buildOwnerAgentControlSurface`.
+  resource: string;
+}
+
+// Projects the instance-scoped subset of the control catalog for one configured
+// connection. Surface-level families (discovery, list, initiate) are excluded
+// because they are not bound to a single connection. For a `supported`
+// instance-scoped family the literal `{connection_id}` placeholder is replaced
+// with the concrete id so an agent gets a directly-callable URL; non-supported
+// families keep `method: null, url: null`.
+//
+// This is the per-connection `supported_actions` array attached to every
+// `owner_connection` row. It is projected from the SAME catalog the control
+// document reads, so a connection can never advertise a supported action the
+// control document calls unsupported (or vice versa).
+export function buildOwnerConnectionSupportedActions({
+  connectionId,
+  resource,
+}: OwnerConnectionSupportedActionsInput): OwnerAgentControlAction[] {
+  const rs = stripTrailingSlash(resource);
+  const encodedId = encodeURIComponent(connectionId);
+  return OWNER_AGENT_CONTROL_ACTION_CATALOG.filter((descriptor) => descriptor.scope === "instance").map(
+    (descriptor) => {
+      const action = projectControlAction(descriptor, rs);
+      // Resolve the `{connection_id}` placeholder to the concrete (URL-encoded)
+      // id for supported instance actions so the agent can call it directly.
+      if (action.url) {
+        action.url = action.url.replace("{connection_id}", encodedId);
+      }
+      return action;
+    }
+  );
 }
 
 export interface ProtectedResourceMetadataInput {

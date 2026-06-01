@@ -157,6 +157,26 @@ const ConnectionListResponseSchema = {
   required: ["object", "data"],
 };
 
+// One owner-agent control action descriptor. Shared by the control entrypoint
+// document (`GET /v1/owner/control`) and the per-connection `supported_actions`
+// array, so the two surfaces describe an action the same way. `status` is the
+// stable selector: `supported` carries a `method` + absolute `url`; everything
+// else carries `null` for both so an agent does not probe a route this build
+// does not serve. Defined before `OwnerConnectionSchema` because that schema
+// references it for its `supported_actions` items.
+const OwnerControlActionSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    family: { type: "string" },
+    status: { type: "string", enum: ["supported", "owner_mediated", "unsupported"] },
+    method: { type: ["string", "null"] },
+    url: { type: ["string", "null"] },
+    reason: { type: "string" },
+  },
+  required: ["family", "status", "method", "url", "reason"],
+};
+
 // Owner-agent control-surface projection of a configured connection. The
 // bearer-authed `/v1/owner/connections` sibling of `/_ref/connections`
 // standardizes on `connection_id` as the stable selector (keeping
@@ -182,6 +202,15 @@ const OwnerConnectionSchema = {
     updated_at: { type: ["string", "null"] },
     revoked_at: { type: ["string", "null"] },
     schedule: { type: ["object", "null"], additionalProperties: true },
+    // Capability-advertised, instance-scoped control actions for this exact
+    // connection (`rename_connection`, `run_connection`, `manage_schedule`,
+    // `inspect_diagnostics`, `delete_connection`, `revoke_connection`).
+    // Projected from the same control catalog `GET /v1/owner/control` reads, so
+    // a row can never claim a supported action the control document calls
+    // unsupported. Supported actions carry this connection's concrete URL;
+    // unavailable actions are marked `owner_mediated`/`unsupported` with a typed
+    // reason rather than omitted, so an agent never probes a 404.
+    supported_actions: { type: "array", items: OwnerControlActionSchema },
   },
   required: [
     "object",
@@ -198,6 +227,7 @@ const OwnerConnectionSchema = {
     "updated_at",
     "revoked_at",
     "schedule",
+    "supported_actions",
   ],
 };
 
@@ -216,21 +246,9 @@ const OwnerConnectionListResponseSchema = {
 // owner-agent control action families exist, which are supported in this build
 // (with method + absolute URL), and which remain owner-mediated or unsupported.
 // The catalog is honest by construction: unsupported/owner-mediated families
-// are named with a typed `status` and reason rather than silently omitted. See
-// openspec/changes/add-owner-agent-control-surface.
-const OwnerControlActionSchema = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    family: { type: "string" },
-    status: { type: "string", enum: ["supported", "owner_mediated", "unsupported"] },
-    method: { type: ["string", "null"] },
-    url: { type: ["string", "null"] },
-    reason: { type: "string" },
-  },
-  required: ["family", "status", "method", "url", "reason"],
-};
-
+// are named with a typed `status` and reason rather than silently omitted. Its
+// action items use `OwnerControlActionSchema` (defined above, before
+// `OwnerConnectionSchema`). See openspec/changes/add-owner-agent-control-surface.
 const OwnerControlSurfaceResponseSchema = {
   type: "object",
   additionalProperties: false,

@@ -106,6 +106,27 @@ export const FreshnessSchema: JsonSchema = {
   required: ["status"],
 };
 
+// Disambiguation summary carried in an ambiguity error's `available_connections`
+// list. When an owner-agent control action is requested with `connector_id`
+// only and more than one configured connection matches, the typed error names
+// every candidate by stable `connection_id` plus owner-meaningful identity
+// (`connector_id`/`connector_key`, `display_name`, `label_status`) so the agent
+// can re-issue the request against one concrete connection rather than guessing.
+// Mirrors the owner-connection listing's identity fields; secret-free.
+export const ErrorAvailableConnectionSchema: JsonSchema = {
+  $id: "pdpp/common/ErrorAvailableConnection",
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    connection_id: { type: "string" },
+    connector_id: { type: "string" },
+    connector_key: { type: "string" },
+    display_name: { type: ["string", "null"] },
+    label_status: { type: "string", enum: ["owner_set", "fallback"] },
+  },
+  required: ["connection_id"],
+};
+
 export const ErrorObjectSchema: JsonSchema = {
   $id: "pdpp/common/PdppError",
   type: "object",
@@ -120,6 +141,17 @@ export const ErrorObjectSchema: JsonSchema = {
         message: { type: "string" },
         param: { type: "string" },
         request_id: { type: "string" },
+        // Optional 401-only hints already emitted by `pdppError`: where to read
+        // protected-resource metadata and what to do next.
+        resource_metadata: { type: "string" },
+        next_step: { type: "string" },
+        // Optional ambiguity-resolution hints. Emitted when an owner-agent
+        // control action is rejected because a connector-only target matches
+        // more than one configured connection: `available_connections` lists
+        // every candidate's stable identity and `retry_with` names the field to
+        // resubmit (e.g. `connection_id`). Absent on unambiguous errors.
+        available_connections: { type: "array", items: ErrorAvailableConnectionSchema },
+        retry_with: { type: "string" },
       },
       required: ["type", "code", "message", "request_id"],
     },

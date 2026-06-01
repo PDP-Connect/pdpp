@@ -21,6 +21,7 @@ import {
   buildHybridRetrievalCapability,
   buildLexicalRetrievalCapability,
   buildOwnerAgentControlSurface,
+  buildOwnerConnectionSupportedActions,
   buildProtectedResourceMetadata,
   buildSemanticRetrievalCapability,
   isLocalOrPrivateRequestOrigin,
@@ -3641,6 +3642,7 @@ function buildRsApp(opts = {}) {
     requireOwner,
     pdppError,
     handleError,
+    buildOwnerConnectionSupportedActions,
     canonicalConnectorKey,
     createTraceContext,
     createRequestConnectorInstanceStore,
@@ -3649,6 +3651,10 @@ function buildRsApp(opts = {}) {
     getOwnerTokenSubjectId,
     listSchedules: async () => (opts.controller ? await opts.controller.listSchedules() : []),
     projectStorageDisplayName,
+    // Same trusted, forwarded-origin-safe RS base resolution the control
+    // entrypoint uses, so a row's supported_actions URLs match the advertised
+    // resource and the per-connection catalog agrees with GET /v1/owner/control.
+    resolveResource: (req) => resolvePublicUrl(req, explicitResource),
     resolveSingleConnectorIdQueryValue,
     setReferenceTraceId,
   };

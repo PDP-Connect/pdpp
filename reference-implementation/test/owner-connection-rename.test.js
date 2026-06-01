@@ -215,6 +215,12 @@ test('owner-agent bearer renames a connection and the listing reflects the new l
     assert.equal(body.connector_id, connectorKey);
     assert.equal(body.display_name, 'the owner personal');
     assert.equal(body.label_status, 'owner_set');
+    // The renamed row carries instance-scoped supported_actions, with the
+    // rename action resolved to this connection's concrete URL.
+    const renameAction = body.supported_actions?.find((a) => a.family === 'rename_connection');
+    assert.ok(renameAction, 'renamed row must advertise rename_connection');
+    assert.equal(renameAction.status, 'supported');
+    assert.ok(renameAction.url.endsWith('/v1/owner/connections/cin_amazon_personal'));
 
     const audit = findRenameAuditEvent(resp);
     assert.equal(audit.actor_type, 'owner_agent');
