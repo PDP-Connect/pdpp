@@ -560,6 +560,36 @@ test('fetch text channel is self-sufficient for canonical wrapped records', asyn
   await server.close();
 });
 
+test('search to fetch journey is executable from model-visible text alone', async () => {
+  const { fetch } = makeFakeRs();
+  const { client, server } = await connectClient(fetch);
+
+  const searchResult = await client.callTool({
+    name: 'search',
+    arguments: { q: 'pasta' },
+  });
+  const searchText = searchResult.content[0].text;
+  const id = /id=([^\s]+)/.exec(searchText)?.[1];
+  const connectionId = /connection_id=([^\s]+)/.exec(searchText)?.[1];
+
+  assert.equal(id, 'orders:o2');
+  assert.equal(connectionId, 'conn_orders');
+
+  const fetchResult = await client.callTool({
+    name: 'fetch',
+    arguments: { id, connection_id: connectionId },
+  });
+  const fetchText = fetchResult.content[0].text;
+
+  assert.match(fetchText, /fetched id=orders:o2/);
+  assert.match(fetchText, /title="Order o2"/);
+  assert.match(fetchText, /connection_id=conn_orders/);
+  assert.match(fetchText, /text_preview="Pasta order for \$99\."/);
+
+  await client.close();
+  await server.close();
+});
+
 test('fetch encodes typed expand_limit as bracket query params', async () => {
   const { fetch, calls } = makeFakeRs();
   const { client, server } = await connectClient(fetch);
