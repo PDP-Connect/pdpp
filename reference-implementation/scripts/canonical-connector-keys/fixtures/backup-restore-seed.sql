@@ -28,8 +28,33 @@
 BEGIN;
 
 -- ----------------------------------------------------------------------
+-- oauth_clients — the public device-flow client an owner agent uses to
+-- mint an owner token. A real operator backup carries the owner's
+-- registered clients; the synthetic seed carries the one client the
+-- HTTP read-surface verifier (verify-http-surfaces.mjs) drives so the
+-- restored DB is actually bootable for an owner read. The canonical-key
+-- migration does not touch oauth_clients (no connector_id), so this row
+-- is identity-shape-neutral and only enables the live-read smoke.
+-- ----------------------------------------------------------------------
+INSERT INTO public.oauth_clients
+  (client_id, registration_mode, token_endpoint_auth_method, client_secret,
+   metadata_json, created_at, updated_at) VALUES
+  ('cli_longview', 'pre_registered_public', 'none', NULL,
+   '{"client_name":"Longview CLI","token_endpoint_auth_method":"none"}'::jsonb,
+   '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+ON CONFLICT (client_id) DO NOTHING;
+
+-- ----------------------------------------------------------------------
 -- connectors (parent catalog rows; connector_id is the PK + FK target)
 -- ----------------------------------------------------------------------
+-- These manifest bodies are intentionally THIN — enough to exercise the
+-- storage-layer migration (verify-backup-restore.mjs). The HTTP read path
+-- (verify-http-surfaces.mjs) additionally needs a *valid* operational
+-- manifest body to resolve streams, so the harness overwrites these rows'
+-- `manifest` JSONB with the real first-party manifests from
+-- packages/polyfill-connectors/manifests/ (seed-real-manifests.mjs) BEFORE
+-- the backup is dumped. Keeping the SQL thin avoids duplicating ~38KB of
+-- manifest JSON in the fixture and keeps the manifests single-sourced.
 -- gmail seeded under its URL-shaped id (the pre-migration drift state).
 INSERT INTO public.connectors (connector_id, manifest, created_at) VALUES
   ('https://registry.pdpp.org/connectors/gmail',
@@ -71,32 +96,36 @@ INSERT INTO public.connector_instances
 INSERT INTO public.records
   (id, connector_id, stream, record_key, record_json, emitted_at, version, deleted,
    primary_key_text, connector_instance_id) VALUES
+  -- record_json carries the stream's real `id` (primary key) and cursor
+  -- field (gmail.messages=received_at, codex.sessions=last_event_at,
+  -- spotify.recently_played=played_at) so the LIVE HTTP read path hydrates
+  -- and paginates them after migration, not just the storage-layer SQL join.
   (1, 'https://registry.pdpp.org/connectors/gmail', 'messages', 'msg_1',
-   '{"subject":"Welcome","from":"team@example.com"}'::jsonb, '2026-02-01T00:00:00Z', 1, false,
+   '{"id":"msg_1","subject":"Welcome","from":"team@example.com","received_at":"2026-02-01T00:00:00Z"}'::jsonb, '2026-02-01T00:00:00Z', 1, false,
    'msg_1', 'cin_gmail_01'),
   (2, 'https://registry.pdpp.org/connectors/gmail', 'messages', 'msg_2',
-   '{"subject":"Receipt","from":"shop@example.com"}'::jsonb, '2026-02-01T00:01:00Z', 2, false,
+   '{"id":"msg_2","subject":"Receipt","from":"shop@example.com","received_at":"2026-02-01T00:01:00Z"}'::jsonb, '2026-02-01T00:01:00Z', 2, false,
    'msg_2', 'cin_gmail_01'),
   (3, 'local-device:codex:cin_dev_codex_01', 'sessions', 'sess_1',
-   '{"title":"Refactor","tokens":1200}'::jsonb, '2026-02-02T00:00:00Z', 1, false,
+   '{"id":"sess_1","title":"Refactor","tokens":1200,"last_event_at":"2026-02-02T00:00:00Z"}'::jsonb, '2026-02-02T00:00:00Z', 1, false,
    'sess_1', 'cin_codex_01'),
-  (4, 'spotify', 'plays', 'play_1',
-   '{"track":"Song A","ms":210000}'::jsonb, '2026-02-03T00:00:00Z', 1, false,
+  (4, 'spotify', 'recently_played', 'play_1',
+   '{"id":"play_1","track":"Song A","ms":210000,"played_at":"2026-02-03T00:00:00Z"}'::jsonb, '2026-02-03T00:00:00Z', 1, false,
    'play_1', 'cin_spotify_01');
 
 INSERT INTO public.record_changes
   (connector_id, stream, record_key, version, record_json, emitted_at, deleted, connector_instance_id) VALUES
   ('https://registry.pdpp.org/connectors/gmail', 'messages', 'msg_1', 1,
-   '{"subject":"Welcome","from":"team@example.com"}'::jsonb, '2026-02-01T00:00:00Z', false, 'cin_gmail_01'),
+   '{"id":"msg_1","subject":"Welcome","from":"team@example.com","received_at":"2026-02-01T00:00:00Z"}'::jsonb, '2026-02-01T00:00:00Z', false, 'cin_gmail_01'),
   ('https://registry.pdpp.org/connectors/gmail', 'messages', 'msg_2', 2,
-   '{"subject":"Receipt","from":"shop@example.com"}'::jsonb, '2026-02-01T00:01:00Z', false, 'cin_gmail_01'),
+   '{"id":"msg_2","subject":"Receipt","from":"shop@example.com","received_at":"2026-02-01T00:01:00Z"}'::jsonb, '2026-02-01T00:01:00Z', false, 'cin_gmail_01'),
   ('local-device:codex:cin_dev_codex_01', 'sessions', 'sess_1', 1,
-   '{"title":"Refactor","tokens":1200}'::jsonb, '2026-02-02T00:00:00Z', false, 'cin_codex_01');
+   '{"id":"sess_1","title":"Refactor","tokens":1200,"last_event_at":"2026-02-02T00:00:00Z"}'::jsonb, '2026-02-02T00:00:00Z', false, 'cin_codex_01');
 
 INSERT INTO public.version_counter (connector_id, stream, max_version, connector_instance_id) VALUES
   ('https://registry.pdpp.org/connectors/gmail', 'messages', 2, 'cin_gmail_01'),
   ('local-device:codex:cin_dev_codex_01', 'sessions', 1, 'cin_codex_01'),
-  ('spotify', 'plays', 1, 'cin_spotify_01');
+  ('spotify', 'recently_played', 1, 'cin_spotify_01');
 
 INSERT INTO public.connector_state (connector_id, stream, state_json, updated_at, connector_instance_id) VALUES
   ('https://registry.pdpp.org/connectors/gmail', 'messages',
@@ -141,7 +170,7 @@ INSERT INTO public.grants
    'read', 'active', '2026-02-01T00:00:01Z'),
   ('grant_spotify_1', 'owner_sub_1', 'client_app_1',
    '{"connector_id":"spotify"}'::jsonb,
-   '{"source":{"kind":"connector","id":"spotify"},"streams":["plays"]}'::jsonb,
+   '{"source":{"kind":"connector","id":"spotify"},"streams":["recently_played"]}'::jsonb,
    'read', 'active', '2026-02-01T00:00:02Z');
 
 -- ----------------------------------------------------------------------

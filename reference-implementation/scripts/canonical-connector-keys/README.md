@@ -13,9 +13,12 @@ canonical `connector_key`.
 | `writer.mjs` | Write migration (§3.3). Builds a plan from the inspection report and applies it inside a single transaction (column rewrites + JSONB rewrites + `connectors` parent collapse), with before/after row-count assertions and rollback on any mismatch. |
 | `cli.mjs` | `inspect` and `write [--apply]` commands. |
 | `inspect.test.mjs`, `writer.test.mjs` | Fixture-backed unit tests (synthetic driver) for the classification and rewrite logic, transactional rollback, row-count parity, and idempotency. |
-| `verify-backup-restore.mjs` | §3.4 post-migration assertions against a live DB. |
-| `run-backup-restore-validation.sh` | §3.4 restore→migrate→verify harness (below). |
-| `fixtures/backup-restore-seed.sql` | Pre-migration seed for the §3.4 harness. |
+| `verify-backup-restore.mjs` | §3.4 post-migration STORAGE-layer assertions (SQL joins, JSONB ids, row counts) against a live DB. |
+| `verify-http-surfaces.mjs` | §3.4 post-migration LIVE HTTP READ-PATH assertions. Boots the reference app in-process against the migrated restore and checks owner record hydration (canonical key + stale-URL alias / Decision 8), single reads, `/v1/search`, owner dashboard connection hydration (`/v1/owner/connections`), and grant-package membership (`/_ref/grant-packages`). |
+| `seed-real-manifests.mjs` | Overwrites the seed's thin connector manifests with the real first-party manifests before the dump, so the HTTP read path can resolve streams. |
+| `run-backup-restore-validation.sh` | §3.4 restore→migrate→verify(SQL)→verify(HTTP) harness (below). |
+| `fixtures/backup-restore-seed.sql` | Pre-migration seed for the §3.4 harness (incl. the device-flow `oauth_clients` row the HTTP verifier needs to mint an owner token). |
+| `verify-http-surfaces.test.mjs` | Deterministic unit coverage for the HTTP verifier's pure helpers + seed-coverage contract (no DB; run via `node --test`). |
 
 ## §3.4 backup/restore validation harness
 
@@ -47,10 +50,20 @@ fixture mutation.
 6. `pg_restore` into a fresh `pdpp_cck_restored` DB → **restore the backup**.
 7. `cli.mjs inspect` the restored DB (reports rewrites, 0 unmapped active).
 8. `cli.mjs write --apply` against the restored DB.
-9. `verify-backup-restore.mjs` asserts the §3.4 invariants.
+9. `verify-backup-restore.mjs` asserts the §3.4 STORAGE-layer invariants (SQL).
+9b. `verify-http-surfaces.mjs` boots the reference app in-process against the
+   migrated restore and asserts the §3.4 LIVE HTTP READ-PATH invariants — owner
+   record hydration under the canonical key AND via the stale URL-shaped id
+   (Decision 8), single-record reads, `/v1/search`, owner dashboard connection
+   hydration, and grant-package membership, all with no registry URL in
+   owner-visible payloads, no human in a browser.
 10. `cli.mjs write --apply` a second time — proves idempotency (no rewrites).
 11. `cli.mjs write --apply --include-backup-tables` — proves backup-tier rows are rewritten only under explicit opt-in.
 12. Drops both disposable databases.
+
+Step 3 additionally patches the real first-party manifests into the seed
+(`seed-real-manifests.mjs`) before the dump, so the restored connector catalog
+carries valid operational manifests the HTTP read path can resolve.
 
 Database admin + dump/restore run **inside the container** so the DB
 password never reaches host logs. The migration CLI and verifier run on
@@ -67,7 +80,7 @@ reference-implementation node deps installed (`pnpm install --filter
 reference-implementation/scripts/canonical-connector-keys/run-backup-restore-validation.sh
 ```
 
-Last full run: **38/38 verification checks + idempotency passed**.
+Last full run: **38/38 storage checks + 15/15 HTTP checks + idempotency + backup-tier opt-in passed**.
 
 ### What this harness proves vs. what it does not
 
@@ -81,18 +94,25 @@ Last full run: **38/38 verification checks + idempotency passed**.
   payloads, version counters, blob bindings intact;
 - backup-tier tables left untouched by default;
 - backup-tier tables rewritten only when `--include-backup-tables` is explicitly passed;
-- the migration is idempotent.
+- the migration is idempotent;
+- **the LIVE HTTP read path** (booted app, not SQL): owner record reads hydrate
+  the migrated rows under the canonical key AND when the owner sends the stale
+  URL-shaped `connector_id` (Decision 8); single-record reads, `/v1/search`,
+  owner dashboard connection hydration (`/v1/owner/connections`), and
+  grant-package membership (`/_ref/grant-packages`) all resolve with NO registry
+  URL in owner-visible payloads — no human in a browser.
 
-**Does NOT prove** (residual for a real operator-backup run):
+**Does NOT prove** (the one residual that is inherently live/owner-gated):
 - The seed is a representative *synthetic* fixture, not a dump of a real
   operator deployment's row volume or every connector permutation in
   production. It uses the real **schema** but author-controlled **data**.
-- It does not exercise the live owner dashboard / MCP read path against
-  the migrated DB; it asserts storage-layer hydration via SQL joins, not
-  HTTP read surfaces.
 
-A real operator sign-off still requires running
-`cli.mjs write --apply` against a restore of the operator's own backup and
-spot-checking the owner dashboard, grant-package membership, and record
-reads in the running app — exactly the §7.3 surface smoke, but against
-migrated production-shaped data.
+A real operator sign-off therefore still requires running this same cycle
+against a restore of the operator's **own production backup** (point
+`LIVE_DB` at the operator DB, or restore the operator dump into `RESTORED_DB`
+and run `verify-http-surfaces.mjs` against it). The HTTP read surfaces that
+previously required manual dashboard/MCP clicking are now asserted by code;
+the remaining owner step is supplying real production-shaped data and, where
+the operator wants belt-and-suspenders, a hosted-`/mcp` package read spot
+check against the live deployment (the bearer-rejecting `/mcp` and package
+token paths are exercised separately by tasks 5.x / 7.4).

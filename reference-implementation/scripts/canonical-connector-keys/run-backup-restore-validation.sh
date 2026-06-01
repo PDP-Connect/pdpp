@@ -108,6 +108,16 @@ log "3. seed pre-migration rows (URL ids, legacy aliases, wrapped local-device, 
 cpsql "$SEED_DB" < "$SEED_SQL"
 echo "seed applied"
 
+log "3b. patch real first-party manifests into the seed (for the HTTP read step)"
+# The SQL fixture seeds THIN manifest bodies (enough for the storage-layer
+# migration). The live HTTP read path needs VALID operational manifests to
+# resolve streams, so overwrite the seeded connectors.manifest bodies with the
+# real first-party manifests BEFORE the dump, so they travel through the
+# backup→restore→migrate cycle exactly like a real connector catalog.
+SEED_URL="postgres://${PG_USER}:${PGPW}@127.0.0.1:${PG_HOST_PORT}/${SEED_DB}"
+( cd "$RI_DIR" && PDPP_DATABASE_URL="$SEED_URL" \
+  node scripts/canonical-connector-keys/seed-real-manifests.mjs ) | sed -E 's#//[^:]+:[^@]+@#//<redacted>@#g'
+
 log "4. capture before row counts -> $BEFORE_COUNTS"
 docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -tAc "
   SELECT json_object_agg(t, n) FROM (
@@ -149,9 +159,19 @@ log "8. write --apply against the RESTORED db"
 ( cd "$RI_DIR" && PDPP_STORAGE_BACKEND=postgres PDPP_DATABASE_URL="$HOST_URL" \
   node scripts/canonical-connector-keys/cli.mjs write --apply ) | sed -E 's#//[^:]+:[^@]+@#//<redacted>@#g'
 
-log "9. verify post-migration invariants"
+log "9. verify post-migration invariants (storage layer — SQL)"
 ( cd "$RI_DIR" && PDPP_DATABASE_URL="$HOST_URL" \
   node scripts/canonical-connector-keys/verify-backup-restore.mjs --before "$BEFORE_COUNTS" )
+
+log "9b. verify LIVE HTTP read surfaces against the migrated restore"
+# Boots the reference app IN-PROCESS against the restored, migrated DB and
+# asserts owner record hydration (canonical key + stale-URL alias), single
+# reads, /v1/search, owner dashboard connection hydration, and grant-package
+# membership — the path an owner dashboard / assistant / MCP client actually
+# traverses, with no human in a browser. Owner subject matches the seed's
+# owner_subject_id (owner_sub_1).
+( cd "$RI_DIR" && PDPP_DATABASE_URL="$HOST_URL" \
+  node scripts/canonical-connector-keys/verify-http-surfaces.mjs --owner-subject owner_sub_1 )
 
 log "10. idempotency: write --apply a SECOND time (plan must be empty)"
 ( cd "$RI_DIR" && PDPP_STORAGE_BACKEND=postgres PDPP_DATABASE_URL="$HOST_URL" \
