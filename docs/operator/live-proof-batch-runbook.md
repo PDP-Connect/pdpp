@@ -284,6 +284,15 @@ device token is write-capable on its ingest lane.
 
 **One deployed `/mcp`, two MCP clients. Closes two gates.**
 
+> **Mechanical execution packet:**
+> [`sitting-b-hosted-mcp-bench-packet.md`](sitting-b-hosted-mcp-bench-packet.md)
+> sequences both gates end-to-end with exact preconditions, the owner-agent REST
+> control smoke commands for Gate 7 / 8.5 (label `PATCH` + Amazon-intent `POST`
+> with response-field assertions, bearer-safe and secret-free), the Gate 2 / 5.2
+> ChatGPT lifecycle hand-off, the no-secrets evidence templates, and the exact
+> OpenSpec checkboxes Codex may close. Follow that packet during the sitting; the
+> per-gate detail below stays as the reference.
+
 Both gates here drive a **trusted-client/agent flow against a live deployment**:
 Gate 2 from a ChatGPT MCP client, Gate 7 from the owner-agent control plane. They
 share the precondition of a reachable deployment with ≥2 connections configured,
