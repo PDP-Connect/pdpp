@@ -37,6 +37,7 @@ import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card.
 import { Input } from "@/components/ui/input.tsx";
 import { Select } from "@/components/ui/select.tsx";
 import { Textarea } from "@/components/ui/textarea.tsx";
+import { buildConsentCardConnections } from "@/lib/consent-connection-label.ts";
 import { LONGVIEW_CLIENT_URI, LONGVIEW_POLICY_URI, LONGVIEW_TOS_URI } from "@/lib/longview-world.ts";
 
 // Showcase-only no-op — this page is a static design surface; real revoke is
@@ -3811,6 +3812,36 @@ const CONSENT_SPECIMENS: { label: string; axes: string; data: ConsentCardProps }
       ],
       accessMode: "single_use",
       technical: { clientId: "sleep_insights_v1", purposeCode: "analytics", grantExpires: "7 days" },
+    },
+  },
+  {
+    // Axis 17 (multiple connections): a grant covering two Gmail accounts of
+    // the same connector type. The per-connection sub-rows are built through
+    // `buildConsentCardConnections`, so the never-renamed connection renders
+    // an owner-meaningful `Gmail · account 2` default rather than its raw
+    // storage placeholder. Proves the no-placeholder consent invariant
+    // (openspec/changes/expose-connection-identity-on-public-read).
+    label: "Multi-connection (same connector)",
+    axes: "continuous, agent_context, two connections of one connector, owner-meaningful default label",
+    data: {
+      requester: { name: "Inbox Assistant", monogram: "IA", verified: true },
+      purpose: "Inbox Assistant wants to triage messages across both of your connected Gmail accounts.",
+      commitments: ["Drafts stay local until you send them"],
+      streams: [
+        {
+          key: "messages",
+          label: "Your messages",
+          detail: "Subject, sender, and snippet across the granted accounts. No attachments.",
+          connections: buildConsentCardConnections("gmail", [
+            { connectionId: "cin_gmail_personal", displayName: "Personal Gmail" },
+            // No owner label yet — mapper derives `Gmail · account 2`, never
+            // the registry URL it carries in storage.
+            { connectionId: "cin_gmail_work", displayName: "https://registry.pdpp.org/connectors/gmail" },
+          ]),
+        },
+      ],
+      accessMode: "continuous",
+      technical: { clientId: "inbox_assistant_v1", purposeCode: "agent_context", grantExpires: "No expiry" },
     },
   },
 ];

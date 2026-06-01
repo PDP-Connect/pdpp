@@ -236,26 +236,35 @@ the `apps/web` → `apps/site` + `apps/console` split
    pointer at `apps/web/.../ref-connectors-view.tsx` is superseded — that
    file no longer exists.) See tasks.md Section 6.
 
-4. **Owner-meaningful default labels on consent.** **OPEN (partial
-   props-boundary support).** The connection-aware card documents that callers
-   must not pass storage placeholders and should derive `<Connector> · account N`
-   when no owner label exists, but the card renders `displayName` verbatim and no
-   active grant-request mapper derives that fallback today. This stays open until
-   consent-card props are built from connection identity with a stable
-   owner-meaningful fallback before render. Tracked under tasks.md Section 5.
+4. **Owner-meaningful default labels on consent.** **DONE** — landed in
+   lane `ri-connection-identity-consent-labels-v1`. The pure mapper
+   `apps/site/src/lib/consent-connection-label.ts`
+   (`buildConsentCardConnections` / `deriveConnectionDisplayName`) builds
+   `ConsentCardConnection[]` props before render: owner-set names pass
+   through verbatim; an absent/blank/placeholder/registry-URL/`local-device:`/
+   bare-connector-type label falls back to `<Connector> · account N` (the
+   disambiguator is suppressed for a lone connection). The mapper is
+   load-bearing on a live surface via the `apps/site/src/app/design/page.tsx`
+   "Multi-connection (same connector)" specimen. The placeholder rule mirrors
+   the operator console's `isFallbackConnectionLabel`. Tracked under tasks.md
+   Section 5.
 
-5. **Multi-connection consent-card render test.** **OPEN (blocker
-   corrected).** The connection-aware card moved to
-   `apps/site/src/components/pdpp/consent-card.tsx`. A render test needs
-   React DOM infra (Vitest + `@testing-library/react`) that neither
-   `apps/site` nor `apps/console` has — and, more to the point, the
-   standard CI suites don't execute either app's co-located `node:test`
-   files (`reference-implementation/scripts/run-tests.js` discovers only
-   `reference-implementation/test/**` + `server/streaming`), so a new
-   consent-card test would not gate without first wiring a runner. The
-   no-placeholder contract is gated server-side by
-   `reference-implementation/test/rs-streams-list-operation.test.js:132`.
-   Tracked under tasks.md Sections 5 + 8.
+5. **Multi-connection consent-card render test.** **DONE** — landed in
+   lane `ri-connection-identity-consent-labels-v1` as
+   `reference-implementation/test/consent-connection-label.test.js` (8 tests,
+   green). Rather than stand up React DOM infra (Vitest +
+   `@testing-library/react`) in `apps/site`, the test lives in the only tree
+   the standard suites discover (`reference-implementation/test/**`, gated by
+   the reference-implementation CI workflow's `apps/site/**` trigger) and
+   **executes** the public-site label mapper by importing
+   `apps/site/src/lib/consent-connection-label.ts` directly (Node v25 strips
+   the TS types). It asserts the no-placeholder/owner-meaningful-default
+   invariant at the prop-derivation layer — the only place the consent
+   label is decided, since the card renders `displayName` verbatim. This
+   complements the server-side guard at
+   `reference-implementation/test/rs-streams-list-operation.test.js:132`. A
+   true DOM render assertion remains a possible future upgrade but is not
+   required to gate the invariant. Tracked under tasks.md Sections 5 + 8.
 
 6. **Hosted MCP gateway tool descriptions.** External, out-of-repo. The
    in-repo MCP server (`packages/mcp-server`) is fully aligned and can
@@ -267,10 +276,13 @@ the `apps/web` → `apps/site` + `apps/console` split
 None of the open items invalidate the canonical noun, the field
 shapes, the error envelope, or the consent surface — those are
 contract-frozen and now runtime-honest end-to-end on the reference
-implementation. The remaining work is one product/UX decision
-(per-connection grant-request UI), one consent-props mapping gap
-(owner-meaningful default labels), and one render-test infra gap against a
-stable contract.
+implementation. After lane `ri-connection-identity-consent-labels-v1`
+closed the consent-props mapping gap (owner-meaningful default labels) and
+the consent-card test gap, the only remaining work is one product/UX
+decision: the per-connection grant-request *selection* UI (which
+connections to enumerate per stream, fan-in vs. pin default, multi-select
+semantics). The runtime already enforces `grant.streams[].connection_id`,
+so that UI is purely additive.
 
 ## MCP schema token-efficiency (2026-05-31)
 

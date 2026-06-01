@@ -39,25 +39,34 @@
 >   (`src/components/pdpp/consent-card.tsx`: `ConsentCardConnection`,
 >   per-connection sub-rows, and a no-placeholder caller contract documented on
 >   the props boundary). That proves the card can render connection labels, but
->   it does **not** itself mint `<Connector> · account N` fallback labels; Section
->   5's "owner-meaningful default label" item therefore remains open until a
->   caller/mapper derives that label before rendering the card.
+>   it did **not** itself mint `<Connector> · account N` fallback labels — that
+>   gap (Section 5) was closed in lane `ri-connection-identity-consent-labels-v1`
+>   (see below).
 > - Cross-binding search fan-in landed in `df137aad` (Section 8), closing what
 >   `design.md` listed as deferred item 1.
 >
-> Three genuinely-open items remain, each narrowed to a precise blocker rather
-> than "broad UI work":
+> **Consent-labels reconcile (lane `ri-connection-identity-consent-labels-v1`):**
+> two of the three previously-open items closed:
+> - **Owner-meaningful default labels on consent** (Section 5): **DONE.** The
+>   pure mapper `apps/site/src/lib/consent-connection-label.ts`
+>   (`buildConsentCardConnections` / `deriveConnectionDisplayName`) derives each
+>   consent-card label before render — owner names verbatim, otherwise
+>   `<Connector> · account N`, never a placeholder/URL/bare-type/`connection_id`.
+>   Load-bearing on the `apps/site/src/app/design/page.tsx` multi-connection
+>   specimen; placeholder rule mirrors the console's `isFallbackConnectionLabel`.
+> - **Consent-card label test** (Sections 5 + 8): **DONE.**
+>   `reference-implementation/test/consent-connection-label.test.js` (8 tests,
+>   green) executes the public-site mapper directly (Node v25 TS type-strip) and
+>   gates the no-placeholder/owner-meaningful-default invariant at the
+>   prop-derivation layer — the only place the label is decided. Lives in the
+>   discovered `reference-implementation/test/**` tree under the CI `apps/site/**`
+>   trigger; complements `rs-streams-list-operation.test.js:132`.
+>
+> One genuinely-open item remains:
 > - **Per-connection grant-request scope selection** (Section 4): grant
 >   evaluation enforces `grant.streams[].connection_id` at runtime; the
 >   operator UI to *issue* such a grant is a product/UX decision, intentionally
 >   left open (no consent-UI overhaul this tranche).
-> - **Owner-meaningful default labels on consent** (Section 5): the card's props
->   boundary documents the no-placeholder rule, but no active grant-request
->   mapper derives `<Connector> · account N` from connection identity yet.
-> - **Render-level consent-card test** (Sections 5 + 8): no React DOM test
->   infra in `apps/site`/`apps/console`, and the standard CI suites do not run
->   app-level `node:test` files; the no-placeholder contract is gated
->   server-side by `rs-streams-list-operation.test.js:132`.
 >
 > The hosted MCP coordination
 > residual is closed by the in-repo MCP server and the owner's 2026-05-31 external
@@ -104,9 +113,9 @@
 
 - [x] Extend the consent-card props with a connection dimension and render per-connection sub-rows when more than one connection falls under the grant. (Originally scoped to `apps/web/src/components/pdpp/consent-card.tsx`; the connection-aware card now lives at `apps/site/src/components/pdpp/consent-card.tsx` after `split-public-site-and-operator-console` — `ConsentCardStream.connections?: ConsentCardConnection[]` + the `ConnectionScopeList` sub-row, rendered when `hasMultipleConnections`.)
 - [x] Group scope rows by connector type and use `display_name` as the per-connection label. (Stream rows already group by connector type via `streams[]`; per-connection labels render under each stream when `connections.length > 1`. In `apps/site/src/components/pdpp/consent-card.tsx` post-split.)
-- [ ] **OPEN (retargeted; partial props-boundary support)** — Implement the owner-meaningful default label for never-renamed connections (connector type + stable disambiguator, e.g. `Gmail · account 2`). The connection-aware consent card now lives in the public-site app at `apps/site/src/components/pdpp/consent-card.tsx` (moved there by `split-public-site-and-operator-console`; the consent surface is a public protocol-facing demo, not an operator-console concern). `ConsentCardConnection.displayName` is the rendered label, and its JSDoc forbids `"legacy"`/`"legacy (pre-header)"`/`"default_account"`/raw storage placeholders and directs callers to fall back to `<Connector> · account N` when the owner has not renamed the connection. That is useful partial support, but it is **not** an implementation of the fallback itself: the card renders the label verbatim, and the post-split operator grant-request flow still does not pass a connection dimension. Close this only when the caller/mapper that builds consent-card props derives an owner-meaningful fallback from connector type plus stable connection ordering/identity before render. `connection_id` (`ConsentCardConnection.id`) is carried for telemetry/dedupe and intentionally not rendered.
+- [x] Implement the owner-meaningful default label for never-renamed connections (connector type + stable disambiguator, e.g. `Gmail · account 2`). Landed as a pure mapper `apps/site/src/lib/consent-connection-label.ts`: `buildConsentCardConnections(connector, connections[])` produces `ConsentCardConnection[]` props, deriving each label BEFORE render via `deriveConnectionDisplayName` — owner-set names are preserved verbatim, and any connection whose stored label is absent/blank or a placeholder (`legacy`, `default_account`, `legacy (pre-header)`), a registry URL, a `local-device:` binding, or the bare connector type falls back to `<Connector> · account N` (disambiguator suppressed for a lone connection). The placeholder rule mirrors the operator console's `isFallbackConnectionLabel` (`apps/console/src/app/dashboard/lib/connector-display.ts`); parity is asserted on both sides. The mapper is load-bearing on a live surface: the `apps/site/src/app/design/page.tsx` "Multi-connection (same connector)" consent specimen builds its `connections[]` through `buildConsentCardConnections`, rendering `Gmail · account 2` for a connection that carries only a registry-URL placeholder in storage. `connection_id` (`ConsentCardConnection.id`) is carried for telemetry/dedupe and intentionally not rendered. The per-connection grant-request *selection* UI (which connections to enumerate, default fan-in vs. pin) remains the separate product decision tracked in Section 4.
 - [x] Remove user-visible `legacy`/`legacy (pre-header)`/`default_account` strings, including `apps/web/src/app/dashboard/components/views/deployment-diagnostics-view.tsx:94`. (Replaced with `"unknown (pre-header)"`, which is truthful for the `legacy_unknown` enum value.)
-- [ ] **OPEN (retargeted; blocker corrected)** — Add a render-level test covering multi-connection consent-card render with owner-meaningful display names and no `legacy`/`default_account` text. Path retargets to `apps/site/src/components/pdpp/consent-card.test.tsx` (the connection-aware card moved to the public-site app under `split-public-site-and-operator-console`). Blocker, stated honestly: (1) neither `apps/site` nor `apps/console` has React DOM test infra (no Vitest/Jest, no `@testing-library/react` — `verify` is typecheck + ultracite + `next build`); and (2) more importantly, the standard suites do not execute either app's co-located `node:test` files — `reference-implementation/scripts/run-tests.js` discovers only `reference-implementation/test/**` plus `server/streaming`, so a consent-card test added today would not gate in CI without first wiring a runner for `apps/site/**/*.test.ts`. What IS gated today: the server-side placeholder-rejection guard `reference-implementation/test/rs-streams-list-operation.test.js:132` (`placeholderPattern` rejects `legacy` / `default_account` / `legacy (pre-header)` on emitted `display_name`), which locks the no-placeholder contract at the source of the label rather than at the render layer. (Earlier note cited a non-existent `connection-identity.test.js`; the real connection-identity coverage is `search-connection-identity.test.js`, and the placeholder guard lives only in `rs-streams-list-operation.test.js`.) Minimal next slice: either wire `apps/site` co-located `node:test` discovery into CI and add a source-invariant guard for `ConnectionScopeList`/`hasMultipleConnections`, or stand up Vitest + Testing Library in `apps/site` for a true render assertion.
+- [x] Add a test covering multi-connection consent-card labels with owner-meaningful display names and no `legacy`/`default_account`/URL text. Landed as `reference-implementation/test/consent-connection-label.test.js` (8 tests, green). It is hosted under `reference-implementation/test/**` — the only tree the standard suites discover (`reference-implementation/scripts/run-tests.js`) and a path the reference-implementation CI workflow already triggers on for `apps/site/**` — and it **executes** the public-site mapper by importing `apps/site/src/lib/consent-connection-label.ts` directly (Node v25 strips the TS types), so it is a behavioral test of the props the consent card renders, not a string match. It asserts: placeholders/URLs/`local-device:` bindings/bare-type labels are rejected; owner-set names are preserved verbatim; never-renamed connections in a group derive `<Connector> · account N`; the lone-connection disambiguator is suppressed; and the load-bearing invariant — across a mixed batch of storage placeholders, a registry URL, a device binding, an absent label, and one owner label, **no** rendered `displayName` is a placeholder/URL and **none** equals the raw `connection_id`. This gates the no-placeholder consent invariant at the prop-derivation layer (the label's source), complementing the server-side guard at `rs-streams-list-operation.test.js:132`. A true DOM render assertion (Vitest + Testing Library in `apps/site`) remains a possible future upgrade but is not required to gate the invariant, since the card renders `displayName` verbatim and the mapper is the only place the label is decided.
 
 ## 6. Owner Mutation Endpoint
 
@@ -136,7 +145,7 @@
 - [x] Alias compat coverage — `validateConnectionAlias accepts canonical, accepts alias, rejects conflicts` in `storage-fan-in-read-contract.test.js` plus the pre-existing `public-read-connection-alias.test.js` regressions.
 - [x] Grant-scope unit test proving cross-connection grants preserve fan-in semantics — `resolveFanInBindings honors grant-scope connection_id constraint` and `resolveFanInBindings returns both active bindings when no narrowing is requested` in `storage-fan-in-read-contract.test.js`.
 - [x] Regression test confirming the scheduler-side `ambiguous_connector_instance` at `runtime/controller.ts:1994` is unchanged. (Verified by running the full `pnpm --dir reference-implementation run verify` baseline before and after this branch — no behavioral diff in `connector-instance-store.test.js` / scheduler tests.) Note: `resolveGrantManifest` now tolerates the same error code instead of propagating it to the read path — the scheduler code path is untouched and continues to throw exactly as before.
-- [ ] **OPEN** — Render-level consent-card coverage. Same item as Section 5's open consent-card test, tracked here for the test matrix; see that entry for the corrected blocker (card now at `apps/site/src/components/pdpp/consent-card.tsx`; no React DOM infra and no CI runner wired for app-level `node:test` files; the no-placeholder contract is gated server-side by `rs-streams-list-operation.test.js:132`).
+- [x] Consent-card label coverage. Same item as Section 5's consent-card test, tracked here for the test matrix. Landed as `reference-implementation/test/consent-connection-label.test.js` (8 tests, green), which executes the public-site label mapper (`apps/site/src/lib/consent-connection-label.ts`) and asserts the multi-connection no-placeholder/owner-meaningful-default invariant at the prop-derivation layer. Discovered by `run-tests.js` and gated by the reference-implementation CI workflow's `apps/site/**` trigger; complements the server-side guard at `rs-streams-list-operation.test.js:132`.
 
 ## 8a. Owner-review revision (P1/P2/P3 fixes)
 
@@ -164,7 +173,7 @@ This section pins the owner-review revision that followed
 - [x] Multi-connection list/search reads return the union across granted connections without raising `ambiguous_connection` from multiplicity alone. Records-list / aggregate / streams-list fan-in covered by `storage-fan-in-read-contract.test.js`. Search fan-in (lexical/semantic/hybrid) landed in `df137aad` and is covered by `rs-search-{lexical,semantic,hybrid}-fan-in.test.js` + `search-fan-in-host-shell.test.js` (see Section 8).
 - [x] Record/blob reads with an identifier resolving to multiple connections raise the typed `ambiguous_connection` error with `available_connections` and retry guidance. Implemented in `getRecordAcrossBindings` and the `/v1/blobs/:blob_id` route adapter; covered by the new regression suite.
 - [x] Grant with exactly one matching connection auto-selects without raising. Implemented in `resolveFanInBindings`; covered by `queryRecordsAcrossBindings auto-selects exactly-one binding without raising` and `getRecordAcrossBindings auto-selects the only binding holding a unique identifier`.
-- [x] Consent card renders distinct per-connection scope rows for a grant covering multiple connections of the same connector type. (Implemented in `consent-card.tsx`; visual verification owed to follow-up UI tranche when test infra lands.)
+- [x] Consent card renders distinct per-connection scope rows for a grant covering multiple connections of the same connector type. (Implemented in `consent-card.tsx`; the `apps/site/src/app/design/page.tsx` "Multi-connection (same connector)" specimen exercises the sub-row path on a live surface, and `consent-connection-label.test.js` gates the per-connection label derivation.)
 - [x] Owner can rename a `connection.display_name` from the dashboard and see the new label propagate. Mutation route + store setter ship in this tranche; `renamed display_name surfaces on the next records-list fan-in response` in `storage-fan-in-read-contract.test.js` proves end-to-end propagation. Dashboard UI follow-up explicitly deferred under Section 6.
 - [x] No user-visible `legacy`/`default_account` strings remain on consent, dashboard, or MCP-rendered surfaces. (`legacy (pre-header)` removed; consent card props documented to forbid the placeholders; MCP server forwards opaque `connection_id` only.)
 - [x] `connector_instance_id` request alias works at runtime; conflicting values rejected. Already enforced by `validateConnectionAlias` / `resolveRequestConnectionId`; new tranche adds explicit alias-narrowing through the fan-in resolver and a dedicated regression in `storage-fan-in-read-contract.test.js`.
