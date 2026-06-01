@@ -1,16 +1,53 @@
 ## 1. Spec deltas and design lineage
 
-- [ ] 1.1 Land this proposal, design, and the two spec deltas (`reference-surface-topology`, `reference-implementation-architecture`) as a reviewable artifact set.
-- [ ] 1.2 Update `design-notes/public-site-vs-reference-server-split-2026-05-21.md` to status `decided` once the change is merged, linking back to this OpenSpec change.
+- [x] 1.1 Land this proposal, design, and the two spec deltas (`reference-surface-topology`, `reference-implementation-architecture`) as a reviewable artifact set. (DONE — archive-readiness pass `ri-split-site-archive-readiness-v1`. The reviewable artifact set is committed and tracked: `proposal.md`, `design.md`, `tasks.md`, and FOUR spec deltas — the originally-named `reference-surface-topology` and `reference-implementation-architecture`, plus `reference-implementation-governance` (task 6.5) and the new `reference-web-bridge-contract` (task 6.4). The set exceeds the two deltas this task originally scoped and passes `openspec validate split-public-site-and-operator-console --strict` and `openspec validate --all --strict`.)
+- [ ] 1.2 Update `design-notes/public-site-vs-reference-server-split-2026-05-21.md` to status `decided` once the change is merged, linking back to this OpenSpec change. (OPEN — owner action at archive. The note is still present at status `sprint-needed`; the task's own trigger ("once the change is merged") has not fired because this change is not yet merged/archived to `main`. This is the correct owner-owned closeout step: when Codex archives `split-public-site-and-operator-console`, flip the note to `decided`/`superseded` and link the archived change. A worker flipping it now would assert a merge that has not happened. Note also already records the split decision in its Decision Log; only the status line and a back-link remain.)
 - [x] 1.3 Run `openspec validate split-public-site-and-operator-console --strict` and `openspec validate --all --strict`.
 
 ## 2. Extract `packages/operator-ui` (no app split yet)
 
-- [ ] 2.1 Inventory components reused between `apps/web/src/app/sandbox/**` and `apps/web/src/app/dashboard/**`. Confirm coverage of records, search, grants, runs, traces, deployment, timelines.
-- [ ] 2.2 Create `packages/operator-ui/` as a private pnpm workspace package. Add to `pnpm-workspace.yaml`.
-- [ ] 2.3 Move the shared feature components and the `DashboardDataSource` interface into `packages/operator-ui/`. Update both `/sandbox` and `/dashboard` imports to consume the package.
-- [ ] 2.4 Decide whether to absorb or remove the existing `packages/operator/` placeholder. Record the decision in the workstream report.
-- [ ] 2.5 Verify both `/sandbox/**` and `/dashboard/**` still render and behave identically in `apps/web`. Run `pnpm --dir apps/web run types:check`, `pnpm --dir apps/web run check`, and `pnpm --dir apps/web run build`.
+> **SUPERSESSION NOTE (archive-readiness pass `ri-split-site-archive-readiness-v1`).**
+> Section 2's *mechanism* — "extract `packages/operator-ui` from a still-intact
+> `apps/web`, point both `/sandbox` and `/dashboard` at the package, THEN split"
+> (design.md §6 step 1) — did **not** happen and is superseded. The split was
+> executed by **copy-then-trim** instead: `apps/web` was copied to `apps/console`
+> (task 3.1) and to `apps/site` (task 4.1), each app was trimmed to its surface,
+> and `apps/web` was deleted (task 6.4). As a result the shared dashboard feature
+> components and `dashboard/lib/*` helpers (e.g. `record-preview.ts`,
+> `timeline-summaries.ts`, `record-kind.ts`) now exist as **byte-identical copies
+> in both `apps/site/src/app/dashboard/**` and `apps/console/src/app/dashboard/**`**;
+> `packages/operator-ui` was never created and the `packages/operator/`
+> placeholder is gone.
+>
+> This is recorded honestly here rather than back-filled: the extraction the
+> original section describes was never performed. The supersession of the
+> *ordering* is in `design.md` §6 (also updated in this pass).
+>
+> **ARCHIVE-BLOCKING CAVEAT — owner (Codex) decision required.** The
+> `reference-implementation-architecture` spec delta in this change is still
+> normative that this duplication is **not** allowed:
+> "Shared UI … SHALL live in a workspace package consumed by both rather than
+> being duplicated" and "neither deployable SHALL duplicate those feature
+> components in its own source tree" (Requirement: *The reference deployable
+> shape SHALL be three independent artifacts*, Scenario: *Sandbox and dashboard
+> share UI*). `reference-surface-topology`'s *Sandbox UI reuses dashboard
+> components* scenario says the same. Archiving folds those `SHALL`s into the
+> canonical specs while the code violates them. A worker may not unilaterally
+> relax a normative requirement (per the playbook this is an owner/OpenSpec
+> decision and a stop-and-report trigger), so this section is left **open** and
+> the disposition is escalated to the owner. The owner must pick one before
+> archive: (a) extract `packages/operator-ui` (satisfy the spec) and then check
+> 2.1–2.3/2.5; (b) relax the architecture + topology deltas to permit
+> copy-then-trim duplication (then this section is fully superseded and closeable);
+> or (c) defer de-dup as a tracked follow-up change and convert the requirement
+> to an explicit Residual Risk before archive. See the
+> `ri-split-site-archive-readiness-v1` report for the full evidence.
+
+- [ ] 2.1 Inventory components reused between `apps/web/src/app/sandbox/**` and `apps/web/src/app/dashboard/**`. Confirm coverage of records, search, grants, runs, traces, deployment, timelines. (SUPERSEDED/NOT-DONE as written — `apps/web` no longer exists, so the named inventory target is gone. The coverage it sought is observable today as the duplicated `dashboard/{components,explore,lib}` trees that BOTH `apps/site` and `apps/console` carry. No `packages/operator-ui` inventory/extraction was performed. Blocked behind the section-2 owner decision above.)
+- [ ] 2.2 Create `packages/operator-ui/` as a private pnpm workspace package. Add to `pnpm-workspace.yaml`. (NOT DONE — `packages/operator-ui/` does not exist and `pnpm-workspace.yaml` contains no such entry. Verified in `ri-split-site-archive-readiness-v1`. Blocked behind the section-2 owner decision above.)
+- [ ] 2.3 Move the shared feature components and the `DashboardDataSource` interface into `packages/operator-ui/`. Update both `/sandbox` and `/dashboard` imports to consume the package. (NOT DONE — no shared package exists to import from; the components remain duplicated per-app. The `DashboardDataSource` interface still exists but lives inside each app's `dashboard/lib/data-source.ts` (types-only in `apps/site` per task 4.2, runtime in `apps/console`), not in a shared package. Blocked behind the section-2 owner decision above.)
+- [x] 2.4 Decide whether to absorb or remove the existing `packages/operator/` placeholder. Record the decision in the workstream report. (DONE — DECISION: removed. The `packages/operator/` placeholder no longer exists in the tree (verified `ri-split-site-archive-readiness-v1`); it was neither absorbed into a new `packages/operator-ui` nor retained. This is the one section-2 item the current reality unambiguously settles: there is no placeholder left to decide about. Note that "removed without a successor package" means the shared-component substrate the placeholder anticipated also does not yet exist — that gap is the section-2 owner decision above, not this task.)
+- [ ] 2.5 Verify both `/sandbox/**` and `/dashboard/**` still render and behave identically in `apps/web`. Run `pnpm --dir apps/web run types:check`, `pnpm --dir apps/web run check`, and `pnpm --dir apps/web run build`. (SUPERSEDED — `apps/web` no longer exists, so "render identically in `apps/web`" is unverifiable by construction. The equivalent split-era proof is split across apps: `/sandbox/**` renders mock-backed with no AS/RS in `apps/site` (tasks 4.3/7.3/7.9; re-proven live in this pass — `/`, `/docs`, `/reference`, `/sandbox`, `/planning` all 200 text/html on a fresh `next start` with AS/RS env unset and zero contact to the running reference), and `/dashboard/**` renders owner-gated in `apps/console` (tasks 3.4/7.8). The single-app "identical in `apps/web`" check this task specifies cannot be performed and is superseded by the per-app proofs; it is left unchecked because the literal verification it names did not and cannot run.)
 
 ## 3. Create `apps/console` (operator surface + BFF)
 
