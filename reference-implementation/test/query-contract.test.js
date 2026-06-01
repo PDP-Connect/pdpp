@@ -1184,6 +1184,149 @@ test('filter on unknown field is rejected with 400', async () => {
   });
 });
 
+// ─── fields-projection conformance (agent-vantage read surface) ───────────
+//
+// The MCP `query_records` / `fetch` `fields` doc promises (verbatim):
+//   "Field paths must be declared by the stream; advertised by `GET /v1/schema`
+//    (`field_capabilities`). Unknown paths are rejected by the RS rather than
+//    silently widened."
+// These guards pin that promise on the canonical HTTP read for BOTH grant
+// shapes — a full-stream grant (no field allowlist) and a restricted grant —
+// so a manifest-nonexistent `fields=` entry is a loud `unknown_field` error,
+// never a silent 200 with the field dropped. The restricted-grant unknown
+// (`field_not_granted`) sibling is pinned in event-spine.test.js; here we pin
+// the manifest-unknown path, which is independent of grant field scope.
+test('fields projection on an unknown field is rejected under a full-stream grant', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    // An owner token reads with an owner read-grant that carries no field
+    // allowlist — the full-stream case the static audit flagged as the one
+    // where the grant-only `field_not_granted` guard would be skipped.
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorId = spotifyManifest.connector_id;
+    await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, [
+      { id: 'a1', name: 'A', source_updated_at: '2026-01-01T00:00:00Z' },
+    ]);
+    const url = `${rsUrl}/v1/streams/top_artists/records`
+      + `?connector_id=${encodeURIComponent(connectorId)}`
+      + `&fields=id,not_a_real_field`;
+    const { status, body } = await fetchJson(url, {
+      headers: { 'Authorization': `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 400, 'unknown projection field must fail loudly, not silently narrow');
+    assert.equal(body.error.code, 'unknown_field');
+    assert.match(body.error.message || '', /Unknown field: not_a_real_field/);
+  });
+});
+
+test('fields projection on a manifest-unknown field is rejected under a restricted grant', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const connectorId = spotifyManifest.connector_id;
+    const ownerToken = await issueOwnerToken(asUrl, 'restricted_fields_owner');
+    await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, [
+      { id: 'a1', name: 'A', source_updated_at: '2026-01-01T00:00:00Z' },
+    ]);
+    // Restricted grant: only id/name/source_updated_at granted.
+    const approved = await approveGrant(asUrl, 'restricted_fields_owner', {
+      client_id: 'longview',
+      source: { kind: 'connector', id: connectorId },
+      purpose_code: 'https://pdpp.org/purpose/analytics',
+      purpose_description: 'projection conformance under a narrowed field grant',
+      access_mode: 'continuous',
+      streams: [{ name: 'top_artists', fields: ['id', 'name', 'source_updated_at'] }],
+    });
+    assert.ok(approved.token, `expected grant token, got ${JSON.stringify(approved)}`);
+
+    // `not_a_real_field` is not declared by the manifest at all — this must be
+    // `unknown_field` (manifest validation), distinct from the grant-scope
+    // `field_not_granted` signal for a real-but-ungranted field.
+    const url = `${rsUrl}/v1/streams/top_artists/records?fields=id,not_a_real_field`;
+    const { status, body } = await fetchJson(url, {
+      headers: { 'Authorization': `Bearer ${approved.token}` },
+    });
+    assert.equal(status, 400);
+    assert.equal(body.error.code, 'unknown_field');
+    assert.match(body.error.message || '', /Unknown field: not_a_real_field/);
+  });
+});
+
+test('query-time view applies a real projection (not a silent no-op)', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    // top_artists declares view `basic` -> fields [id, name, genres]. Reading
+    // with `?view=basic` must project the page to exactly those fields; a
+    // record's ungranted-by-view `popularity`/`followers` must be absent. This
+    // pins that query-time `view` is honest — advertised, forwarded, AND
+    // applied — disproving the static audit's "inert at read time" claim.
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorId = spotifyManifest.connector_id;
+    await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, [
+      {
+        id: 'v1',
+        name: 'View Artist',
+        genres: ['rock'],
+        popularity: 77,
+        followers: 1234,
+        source_updated_at: '2026-01-01T00:00:00Z',
+      },
+    ]);
+    const url = `${rsUrl}/v1/streams/top_artists/records`
+      + `?connector_id=${encodeURIComponent(connectorId)}`
+      + `&view=basic`;
+    const { status, body } = await fetchJson(url, {
+      headers: { 'Authorization': `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 200);
+    assert.equal(body.data.length, 1);
+    // Record payload fields live under `record.data`; the view projects that
+    // object down to exactly the declared field set.
+    const data = body.data[0].data;
+    assert.equal(data.id, 'v1');
+    assert.equal(data.name, 'View Artist');
+    assert.deepEqual(data.genres, ['rock']);
+    // Fields outside the `basic` view projection must not leak through.
+    assert.equal('popularity' in data, false, 'view=basic must project popularity out');
+    assert.equal('followers' in data, false, 'view=basic must project followers out');
+    assert.equal('source_updated_at' in data, false, 'view=basic must project source_updated_at out');
+  });
+});
+
+test('query-time view and fields together are rejected as mutually exclusive', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorId = spotifyManifest.connector_id;
+    await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, [
+      { id: 'a1', name: 'A', source_updated_at: '2026-01-01T00:00:00Z' },
+    ]);
+    const url = `${rsUrl}/v1/streams/top_artists/records`
+      + `?connector_id=${encodeURIComponent(connectorId)}`
+      + `&view=basic&fields=id`;
+    const { status, body } = await fetchJson(url, {
+      headers: { 'Authorization': `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 400);
+    assert.equal(body.error.code, 'invalid_request');
+    assert.match(body.error.message || '', /view and fields are mutually exclusive/);
+  });
+});
+
+test('query-time view with an unknown view id is rejected', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorId = spotifyManifest.connector_id;
+    await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, [
+      { id: 'a1', name: 'A', source_updated_at: '2026-01-01T00:00:00Z' },
+    ]);
+    const url = `${rsUrl}/v1/streams/top_artists/records`
+      + `?connector_id=${encodeURIComponent(connectorId)}`
+      + `&view=not_a_real_view`;
+    const { status, body } = await fetchJson(url, {
+      headers: { 'Authorization': `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 400);
+    assert.equal(body.error.code, 'invalid_request');
+    assert.match(body.error.message || '', /Unknown view/);
+  });
+});
+
 test('bare since query parameter is rejected loudly', async () => {
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
     const ownerToken = await issueOwnerToken(asUrl);

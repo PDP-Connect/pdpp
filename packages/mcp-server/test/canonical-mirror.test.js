@@ -322,6 +322,29 @@ test('5.4 MCP forwards `count` verbatim and surfaces typed RS rejection', async 
   await server.close();
 });
 
+test('5.4 MCP forwards `view` verbatim — a query-time projection the RS applies, not an inert no-op', async () => {
+  const { fetch, calls } = recordingFetch();
+  const { client, server } = await connectClient(fetch);
+
+  // `view` is a real query-time projection on `/v1/streams/{stream}/records`:
+  // the RS resolves the named view to its declared field set and projects the
+  // page down to it (see reference-implementation operations/rs-records-list
+  // and the query-contract `view=basic` projection guard). MCP must therefore
+  // advertise and forward it verbatim rather than dropping it client-side.
+  const result = await client.callTool({
+    name: 'query_records',
+    arguments: { stream: 'orders', view: 'basic' },
+  });
+  assert.notEqual(result.isError, true);
+  const recordCalls = calls.filter((c) => c.url.includes('/v1/streams/orders/records'));
+  assert.equal(recordCalls.length, 1, 'MCP must forward view to RS, not strip it');
+  const url = new URL(recordCalls[0].url);
+  assert.equal(url.searchParams.get('view'), 'basic');
+
+  await client.close();
+  await server.close();
+});
+
 test('5.4 MCP rejects Zod-unknown args at the input schema layer rather than silently dropping them', async () => {
   const { fetch, calls } = recordingFetch();
   const { client, server } = await connectClient(fetch);

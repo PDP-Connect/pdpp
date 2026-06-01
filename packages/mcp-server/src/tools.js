@@ -72,6 +72,9 @@ const SEARCH_LIMIT_DESCRIPTION =
 const FIELDS_DESCRIPTION =
   'Field allowlist for projection. Field paths must be declared by the stream; advertised by `GET /v1/schema` (`field_capabilities`). Unknown paths are rejected by the RS rather than silently widened.';
 
+const VIEW_DESCRIPTION =
+  'Named projection. A stream-declared view id (advertised by `GET /v1/schema` under each stream\'s `views`) that projects the returned records down to the view\'s field set. Mutually exclusive with `fields` (passing both is rejected by the RS); an unknown view id is rejected rather than silently ignored. Use `view` for a curated projection and `fields` for an ad-hoc one.';
+
 const FILTER_DESCRIPTION =
   'Typed per-field filter. Pass an OBJECT keyed by field name — never a pre-encoded query string. Exact match: `{ "user_id": "U123" }`. Range: `{ "created_at": { "gte": "2026-01-01T00:00:00Z", "lt": "2026-02-01T00:00:00Z" } }`, where the operator is one of `gte`, `gt`, `lte`, `lt`. Multiple fields AND together. The adapter encodes this into the RS `filter[field]=value` / `filter[field][op]=value` query shape for you. Allowed fields and operators are advertised by `GET /v1/schema` (`field_capabilities`); unsupported fields or operators are rejected by the RS rather than silently ignored. A legacy raw query string using literal `filter[field]=value` bracket syntax is still accepted and parsed; any other string shape (a bare value, `field=value`, `field>value`, or JSON-in-a-string) is rejected with an actionable error telling you to use the typed object — it is never silently no-opped.';
 
@@ -430,6 +433,17 @@ const SCHEMA_STREAM_DESCRIPTION =
   'Optional stream name (as returned by `list_streams`) to scope the schema document to a single stream. Omit to describe every granted stream. Scope to one stream for the cheapest middle step of the `list_streams -> schema(stream) -> query_records` discovery path.';
 
 /**
+ * Resolve the `schema` tool `detail` grade defensively. Absent → the compact
+ * default; the two valid grades pass through; anything else throws rather than
+ * silently coercing to `compact` (defense-in-depth behind the Zod enum).
+ */
+function resolveSchemaDetail(value) {
+  if (value == null) return 'compact';
+  if (value === 'compact' || value === 'full') return value;
+  throw new Error(`Invalid schema detail: ${JSON.stringify(value)} (expected 'compact' or 'full')`);
+}
+
+/**
  * Build the static tool definitions. Descriptions are constant — they are never derived
  * from manifest, stream, or record data. RS payloads are returned as data; nothing is
  * interpolated into instructions to the model.
@@ -451,7 +465,13 @@ export function buildTools({ rs, providerUrl }) {
       outputSchema: z.object(READ_OUTPUT_SCHEMA_SHAPE),
       handler: async (args) => {
         const stream = args?.stream ? requireSafeName(args.stream, 'stream') : null;
-        const detail = args?.detail === 'full' ? 'full' : 'compact';
+        // `detail` is normally constrained by the Zod enum to `compact|full`,
+        // so a direct MCP call can only land here with `'compact'`, `'full'`,
+        // or `undefined` (→ compact default). Resolve it defensively rather
+        // than coercing any non-`full` value to `compact`: an unexpected value
+        // (a future enum loosening, or a caller that bypassed the Zod parse)
+        // fails loudly here instead of silently downgrading the response grade.
+        const detail = resolveSchemaDetail(args?.detail);
         if (detail === 'compact') {
           const compactResponse = await rs.getJson('/v1/schema', {
             query: { view: 'compact', ...(stream ? { stream } : {}) },
@@ -505,7 +525,7 @@ export function buildTools({ rs, providerUrl }) {
           count: z.enum(['none', 'estimated', 'exact']).optional().describe(COUNT_DESCRIPTION),
           filter: TypedFilterInput.optional().describe(FILTER_DESCRIPTION),
           fields: z.array(z.string()).optional().describe(FIELDS_DESCRIPTION),
-          view: z.string().optional(),
+          view: z.string().optional().describe(VIEW_DESCRIPTION),
           expand: z.array(z.string()).optional().describe(EXPAND_DESCRIPTION),
           expand_limit: z
             .record(z.string(), z.number().int().positive())
@@ -2183,4 +2203,5 @@ export const __internal = {
   toEventSubToolResult,
   toEventSubDiscoveryResult,
   resolveStreamName,
+  resolveSchemaDetail,
 };

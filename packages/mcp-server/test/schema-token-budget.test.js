@@ -467,3 +467,21 @@ test('compact projection scales: doubling field count does not blow the budget',
     `compact per-field cost must stay small (got ~${Math.round(perFieldGrowth)} bytes/field)`,
   );
 });
+
+// Defense-in-depth for the `schema` tool `detail` grade. The Zod enum
+// (`compact|full`) already protects the normal MCP boundary; this pins the
+// handler's internal resolution so a value that slips past Zod (a future enum
+// loosening, or a caller that bypasses the parse) fails loudly instead of
+// silently downgrading the response to `compact`.
+test('resolveSchemaDetail defaults to compact, passes valid grades, and rejects unknown values', async () => {
+  const { __internal } = await import('../src/tools.js');
+  const { resolveSchemaDetail } = __internal;
+  assert.equal(resolveSchemaDetail(undefined), 'compact', 'absent detail defaults to compact');
+  assert.equal(resolveSchemaDetail(null), 'compact');
+  assert.equal(resolveSchemaDetail('compact'), 'compact');
+  assert.equal(resolveSchemaDetail('full'), 'full', 'full is preserved, not coerced');
+  // Anything outside the enum must throw, not silently coerce to compact.
+  assert.throws(() => resolveSchemaDetail('summary'), /Invalid schema detail/);
+  assert.throws(() => resolveSchemaDetail('FULL'), /Invalid schema detail/);
+  assert.throws(() => resolveSchemaDetail(''), /Invalid schema detail/);
+});
