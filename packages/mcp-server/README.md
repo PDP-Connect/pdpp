@@ -68,6 +68,7 @@ All tools forward to existing RS endpoints under the scoped client token.
 | `schema` | `GET /v1/schema` |
 | `list_streams` | `GET /v1/streams` |
 | `query_records` | `GET /v1/streams/{stream}/records` |
+| `aggregate` | `GET /v1/streams/{stream}/aggregate` |
 | `search` | `GET /v1/search` |
 | `fetch` | `GET /v1/streams/{stream}/records/{record_id}` |
 | `fetch_blob` | `GET /v1/blobs/{blob_id}` |
@@ -114,6 +115,15 @@ the page size you get — page forward with the returned `cursor` rather than as
 bigger page. (A direct REST client that sends `limit > 100` is clamped to 100 and told so
 via a `limit_clamped` entry in the response `meta.warnings[]`; the cap is never silent on
 either surface.)
+
+`aggregate` is the token-efficient way to answer count / sum / min / max / distinct-count and
+grouped or time-bucketed rollup questions. It returns small bucket rows from
+`GET /v1/streams/{stream}/aggregate`, never record bodies — so an agent that needs "how many
+orders", "total spend by month", or "distinct senders" should call `aggregate` instead of
+paging `query_records` and counting client-side. Group with exactly one dimension per call
+(`group_by` for a scalar field XOR `group_by_time` + `granularity` for a date field).
+Groupable, time-bucketable, and distinct-able fields are advertised by `GET /v1/schema`
+(`field_capabilities.*.aggregation`).
 
 `search` is bounded the same way: omitting `limit` returns at most 25 hits, and `limit` is
 capped at 100 — the bound the published `/v1/search`, `/v1/search/semantic`, and

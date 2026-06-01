@@ -112,6 +112,35 @@ test('aggregate tool exposes the metric and granularity enums and grouping args'
   await server.close();
 });
 
+test('aggregate description teaches the token-efficient path (prefer over paging query_records)', async () => {
+  // Token-efficiency guard. `aggregate` answers count/sum/distinct/group-by
+  // questions by returning small bucket rows, never record bodies — it is the
+  // cheap alternative to paging `query_records` and counting client-side. If a
+  // future edit drops that framing, agents lose the signal that analytics
+  // questions have a context-cheap answer, mirroring the schema/query_records
+  // description guards in schema-token-budget.test.js.
+  const { fetch } = recordingFetch();
+  const { client, server } = await connectClient(fetch);
+
+  const tools = await client.listTools();
+  const aggregate = tools.tools.find((t) => t.name === 'aggregate');
+  assert.ok(aggregate, 'aggregate tool must be registered');
+
+  assert.match(
+    aggregate.description,
+    /query_records/,
+    'description must contrast aggregate with paging query_records',
+  );
+  assert.match(
+    aggregate.description,
+    /never record bodies/i,
+    'description must state aggregate returns buckets, not record bodies',
+  );
+
+  await client.close();
+  await server.close();
+});
+
 test('aggregate forwards a group_by_time request and mirrors the RS body into structuredContent', async () => {
   const { fetch, calls } = recordingFetch();
   const { client, server } = await connectClient(fetch);
