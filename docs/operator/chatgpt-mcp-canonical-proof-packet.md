@@ -194,7 +194,8 @@ missing, the registration is stale — return to **P1** (delete + re-add). A
 missing tool *after* a fresh re-add against a current image is a backend defect to
 file, not drift.
 
-**T3. Event-subscription tools are present.** All six are in T1's list:
+**T3. Event-subscription tools are present.** All seven subscription-related
+tools are in T1's list:
 `create_event_subscription`, `list_event_subscriptions`,
 `get_event_subscription`, `update_event_subscription`,
 `delete_event_subscription`, `send_test_event`, plus
@@ -364,9 +365,9 @@ Using the PDPP MCP connector, do the following and report exact tool-visible
 evidence as short facts (no secrets, no full record bodies):
 
 1. List your PDPP tools. Report the count and names. Confirm query_records exposes
-   a connection_id input, schema exposes detail and stream inputs, and all six
-   event-subscription tools are present (create/list/get/update/delete + send_test
-   + discover capabilities).
+   a connection_id input, schema exposes detail and stream inputs, and all seven
+   subscription-related tools are present (create/list/get/update/delete +
+   send_test + discover capabilities).
 2. Call list_streams and schema. Confirm stream names, field capabilities,
    connector_key, and connection_id are readable in the tool text (not only in
    structuredContent). Quote one stream name.
