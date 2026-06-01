@@ -95,12 +95,13 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "check": "ultracite check",
+    "check:dist": "node ./scripts/check-dist-drift.mjs",
     "fix": "ultracite fix",
     "prepack": "pnpm build",
     "validate:package": "pnpm build && node ./scripts/validate-package.mjs",
     "test": "node --test --test-timeout=15000 --import tsx 'src/**/*.test.ts'",
     "typecheck": "tsc --noEmit",
-    "verify": "pnpm typecheck && pnpm check && pnpm test && pnpm validate:package"
+    "verify": "pnpm typecheck && pnpm check && pnpm test && pnpm validate:package && pnpm check:dist"
   },
   "dependencies": {
     "transformation-matrix": "^3.1.0"
