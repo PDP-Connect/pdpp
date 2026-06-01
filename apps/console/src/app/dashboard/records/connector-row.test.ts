@@ -176,6 +176,54 @@ test("next-step guidance row links to the safe detail href, carries a testid", a
   assert.match(block, NEXT_STEP_TESTID);
 });
 
+// ─── stalled-row count-backed scale wiring ────────────────────────────────
+//
+// The records-list row surfaces a compact count cue ONLY on the stalled-outbox
+// next step. The gating + formatting live in `deriveConnectionNextStep`
+// (unit-tested in connection-evidence.test.ts); these assertions verify the row
+// (1) threads the connection-summary local-device progress into the helper so
+// the cue has a count source, and (2) renders the scale only when present,
+// inside the detail-linked guidance row — never as a standalone badge.
+
+const NEXT_STEP_THREADS_LOCAL_DEVICE_PROGRESS = /localDeviceProgress: overview\.localDeviceProgress \?\? null/;
+const NEXT_STEP_SCALE_GATED = /\{guidance\.scale \?/;
+const NEXT_STEP_SCALE_TESTID = /data-testid="next-step-outbox-scale"/;
+const NEXT_STEP_SCALE_RENDERS_VALUE = /\{guidance\.scale\}/;
+
+test("connector-row threads connection-summary local-device progress into the next-step helper", async () => {
+  // Without this, the stalled-row cue has no count source. The same object also
+  // gates supportsOwnerSync, but the helper reads outbox_counts off it for scale.
+  const src = await readFile(ROW_FILE, "utf8");
+  // The object-literal form `localDeviceProgress: overview.localDeviceProgress
+  // ?? null` is unique to the helper call site (JSX props use `=`, not `:`).
+  const call = src.slice(src.indexOf("const nextStep = deriveConnectionNextStep({"));
+  assert.match(call, NEXT_STEP_THREADS_LOCAL_DEVICE_PROGRESS);
+});
+
+test("connector-row renders the stalled-outbox count cue only when a scale is present", async () => {
+  // No scale (quiet/healthy/active/unknown rows, or a stalled row with no
+  // counts) → no cue. This is the row-level half of the "keep quiet rows quiet"
+  // guarantee; the value-level gating is unit-tested in the helper.
+  const src = await readFile(ROW_FILE, "utf8");
+  const block = src.slice(src.indexOf("function NextStepGuidanceRow"));
+  assert.match(block, NEXT_STEP_SCALE_GATED);
+  assert.match(block, NEXT_STEP_SCALE_TESTID);
+  assert.match(block, NEXT_STEP_SCALE_RENDERS_VALUE);
+});
+
+test("the stalled-outbox count cue lives inside the detail-linked guidance row, not a standalone badge", async () => {
+  // The cue must point at the existing detail/remediation panel (the row is a
+  // Link to detailHref), never invent its own remote fix. We assert the scale
+  // span is rendered within the NextStepGuidanceRow Link block.
+  const src = await readFile(ROW_FILE, "utf8");
+  const block = src.slice(src.indexOf("function NextStepGuidanceRow"), src.indexOf("function StatusDot"));
+  const linkStart = block.indexOf("<Link");
+  const scaleIndex = block.indexOf('data-testid="next-step-outbox-scale"');
+  const detailHrefIndex = block.indexOf("href={detailHref}");
+  assert.ok(linkStart >= 0 && detailHrefIndex > linkStart, "guidance row must be a Link to detailHref");
+  assert.ok(scaleIndex > detailHrefIndex, "scale cue must render inside the detail-linked guidance Link");
+});
+
 // ─── AxisChipBadge dimension/value rendering ─────────────────────────────
 //
 // The chip must render dimension (muted) and value (prominent) as

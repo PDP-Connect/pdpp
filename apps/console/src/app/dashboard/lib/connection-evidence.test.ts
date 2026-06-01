@@ -943,6 +943,130 @@ test("an otherwise-healthy but stale connection still gets a nudge", () => {
   assert.match(out?.label ?? "", SYNC_NOW_RE);
 });
 
+// ─── deriveConnectionNextStep: stalled-row count-backed scale ──────────────
+//
+// The records-list row surfaces a compact count cue ONLY on the stalled-outbox
+// next step, and only when the connection summary carries a non-null
+// `outbox_counts` rollup with at least one positive stuck-work category. Every
+// other guidance — and a stalled outbox with no counts — carries `scale: null`
+// so quiet/healthy/active/unknown rows never grow a numeric cue.
+
+function stalledHealth(): RefConnectionHealthSnapshot {
+  return snapshot({
+    state: "degraded",
+    axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "stalled" },
+  });
+}
+
+function localDeviceProgress(outboxCounts: Record<string, number | string | null> | null) {
+  return {
+    last_heartbeat_at: "2026-05-19T11:55:00Z",
+    last_heartbeat_status: "blocked",
+    last_ingest_at: null,
+    outbox_counts: outboxCounts,
+    records_pending: 12,
+    source_count: 1,
+  } as Parameters<typeof deriveConnectionNextStep>[0]["localDeviceProgress"];
+}
+
+test("stalled-row guidance carries a count-backed scale from outbox_counts", () => {
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: stalledHealth(),
+    localDeviceProgress: localDeviceProgress({ pending: 12, dead_letter: 2, stale_leases: 1, total: 15 }),
+    supportsOwnerSync: false,
+  });
+  assert.ok(out);
+  assert.equal(out?.tone, "danger");
+  assert.match(out?.label ?? "", HOST_RE);
+  assert.equal(out?.scale, "12 pending · 1 stale lease · 2 dead-letter");
+});
+
+test("stalled-row scale omits zero categories so a counted rollup never reads as alarming", () => {
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: stalledHealth(),
+    localDeviceProgress: localDeviceProgress({ pending: 0, dead_letter: 3, stale_leases: 0, total: 3 }),
+    supportsOwnerSync: false,
+  });
+  assert.equal(out?.scale, "3 dead-letter");
+});
+
+test("stalled-row scale is null when the summary carries no count rollup", () => {
+  // Stalled but no outbox_counts: the host guidance still renders, but the cue
+  // is suppressed so the row never shows a misleading "0".
+  const noCounts = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: stalledHealth(),
+    localDeviceProgress: localDeviceProgress(null),
+    supportsOwnerSync: false,
+  });
+  assert.ok(noCounts);
+  assert.equal(noCounts?.scale, null);
+
+  // Stalled with no local-device progress at all (scheduler-managed): same.
+  const noProgress = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: stalledHealth(),
+    supportsOwnerSync: true,
+  });
+  assert.ok(noProgress);
+  assert.equal(noProgress?.scale, null);
+});
+
+test("stalled-row scale is null when every stuck-work category is zero", () => {
+  // succeeded/total are present but no decision-relevant stuck work — the cue
+  // must not appear just because the rollup is non-null.
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: stalledHealth(),
+    localDeviceProgress: localDeviceProgress({ pending: 0, dead_letter: 0, stale_leases: 0, succeeded: 40, total: 40 }),
+    supportsOwnerSync: false,
+  });
+  assert.equal(out?.scale, null);
+});
+
+test("non-stalled guidance never carries a count scale, even with a populated rollup", () => {
+  // A populated rollup on an idle/active/unknown outbox must not leak a cue into
+  // a non-stalled guidance row. These states either return null guidance or a
+  // guidance with scale=null.
+  for (const outbox of ["idle", "active", "unknown"] as const) {
+    const out = deriveConnectionNextStep({
+      hasDominantCondition: false,
+      hasStructuredNextAction: false,
+      health: snapshot({
+        // freshness=stale forces a non-null guidance (Sync now / collector) so
+        // we can assert scale is still null on that non-stalled path.
+        state: "degraded",
+        axes: { coverage: "complete", freshness: "stale", attention: "none", outbox },
+      }),
+      localDeviceProgress: localDeviceProgress({ pending: 9, dead_letter: 4, total: 13 }),
+      supportsOwnerSync: false,
+    });
+    assert.ok(out, `expected guidance for outbox=${outbox}`);
+    assert.equal(out?.scale, null, `expected scale=null for non-stalled outbox=${outbox}`);
+  }
+});
+
+test("a stalled outbox attaches the scale even when a dominant condition is present", () => {
+  // Action-bearing stalled guidance is not suppressed by a dominant-condition
+  // notice, and it keeps its count cue — the condition message has no count.
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: true,
+    hasStructuredNextAction: false,
+    health: stalledHealth(),
+    localDeviceProgress: localDeviceProgress({ pending: 5, total: 5 }),
+    supportsOwnerSync: false,
+  });
+  assert.ok(out);
+  assert.equal(out?.scale, "5 pending");
+});
+
 // ─── derivePrimaryRowAction: the row's modality-aware primary action ───────
 //
 // "Sync now" starts a scheduler-managed pull and is only honest for connectors

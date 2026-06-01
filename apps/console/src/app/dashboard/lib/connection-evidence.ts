@@ -852,6 +852,16 @@ export interface NextStepGuidance {
   detail: string;
   /** Short imperative label, e.g. "Sync now" or "Check the collector host". */
   label: string;
+  /**
+   * Count-backed scale of stuck work, e.g. "12 pending · 2 dead-letter". Set
+   * only on the stalled-outbox guidance when the connection summary carries a
+   * non-null `outbox_counts` rollup with at least one positive stuck-work
+   * category. `null` for every other guidance — and for a stalled outbox with
+   * no counts — so a quiet or healthy row never grows a numeric cue. The
+   * companion `detailHref` row links the owner to the detail remediation panel
+   * for the exact host command; this cue only states how much is stuck.
+   */
+  scale: string | null;
   tone: EvidenceTone;
 }
 
@@ -866,6 +876,7 @@ function staleFreshnessGuidance(supportsOwnerSync: boolean): NextStepGuidance {
     return {
       label: "Sync now",
       detail: "The last successful sync is outside the freshness window. Sync now to refresh this connection.",
+      scale: null,
       tone: "warning",
     };
   }
@@ -873,6 +884,7 @@ function staleFreshnessGuidance(supportsOwnerSync: boolean): NextStepGuidance {
     label: "Check the collector",
     detail:
       "The last successful sync is outside the freshness window. This connection fills in when its local-collector device pushes — confirm the collector is running on the host.",
+    scale: null,
     tone: "warning",
   };
 }
@@ -884,6 +896,7 @@ function degradedGuidance(health: RefConnectionHealthSnapshot, supportsOwnerSync
       label: "Review partial coverage",
       detail:
         "Useful data exists, but some required streams have gaps. Open the connection's latest run to see which streams are incomplete.",
+      scale: null,
       tone: "warning",
     };
   }
@@ -893,6 +906,7 @@ function degradedGuidance(health: RefConnectionHealthSnapshot, supportsOwnerSync
   return {
     label: "Open the connection",
     detail: "Coverage or freshness is incomplete. Open the connection to see which axis is degraded.",
+    scale: null,
     tone: "warning",
   };
 }
@@ -911,21 +925,33 @@ export function deriveConnectionNextStep(input: {
   /** True when a structured `next_action` is already rendered for this row. */
   hasStructuredNextAction: boolean;
   health: RefConnectionHealthSnapshot | null | undefined;
+  /**
+   * Connection-summary local-device progress, including the count-backed
+   * `outbox_counts` rollup. Used to attach a compact count-backed scale to the
+   * stalled-outbox guidance only. Omitted / `null` for scheduler-managed
+   * connections; a stalled outbox with no counts still gets host guidance with
+   * `scale: null`, so the cue never reads as a misleading "0".
+   */
+  localDeviceProgress?: RefLocalDeviceProgress | null;
   /** True when this connector exposes an owner-triggerable Sync now. */
   supportsOwnerSync: boolean;
 }): NextStepGuidance | null {
-  const { hasDominantCondition, hasStructuredNextAction, health, supportsOwnerSync } = input;
+  const { hasDominantCondition, hasStructuredNextAction, health, localDeviceProgress, supportsOwnerSync } = input;
   if (!health || hasStructuredNextAction) {
     return null;
   }
 
   // A stalled local-device outbox is host-local: surface the same "go to the
-  // host" guidance the detail page renders, never a remote button.
+  // host" guidance the detail page renders, never a remote button. This is the
+  // ONLY branch that carries a count-backed scale — the cue is scoped to stuck
+  // work on a connection the owner can actually remediate on the host, and is
+  // omitted (null) when the summary reports no counts.
   if (health.axes.outbox === "stalled") {
     return {
       label: "Check the collector host",
       detail:
         "Retryable work on the local collector is not draining. Open the connection for the exact command to run on the host that holds the data.",
+      scale: formatOutboxCountScale(localDeviceProgress?.outbox_counts),
       tone: "danger",
     };
   }
@@ -939,6 +965,7 @@ export function deriveConnectionNextStep(input: {
         : {
             label: "Open the connection",
             detail: "This connection cannot make progress. Open it to read the blocking condition and how to clear it.",
+            scale: null,
             tone: "danger",
           };
     case "needs_attention":
@@ -949,6 +976,7 @@ export function deriveConnectionNextStep(input: {
         : {
             label: "Open the connection",
             detail: "Owner action is required. Open the connection to see exactly what's needed.",
+            scale: null,
             tone: "warning",
           };
     case "cooling_off":
@@ -957,6 +985,7 @@ export function deriveConnectionNextStep(input: {
         detail: health.next_attempt_at
           ? `In scheduler backoff after recent failures; the next automatic attempt is at ${health.next_attempt_at}. Open the connection to see the failure detail.`
           : "In scheduler backoff after recent failures. Open the connection to see the failure detail and the next attempt time.",
+        scale: null,
         tone: "warning",
       };
     case "degraded":

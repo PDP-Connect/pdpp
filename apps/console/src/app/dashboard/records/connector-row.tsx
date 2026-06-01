@@ -176,6 +176,7 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
     hasDominantCondition: dominantCondition !== null,
     hasStructuredNextAction: nextAction !== null,
     health: connectionHealth,
+    localDeviceProgress: overview.localDeviceProgress ?? null,
     supportsOwnerSync: !overview.localDeviceProgress,
   });
   // The primary row action is modality-aware: "Sync now" is only an honest
@@ -1015,6 +1016,15 @@ function NextStepGuidanceRow({ detailHref, guidance }: { detailHref: string; gui
         <span className={`font-medium ${labelColor}`}>{guidance.label}</span>
       </span>
       <span className="pdpp-caption text-muted-foreground">{guidance.detail}</span>
+      {guidance.scale ? (
+        <span
+          className="pdpp-caption text-muted-foreground tabular-nums"
+          data-testid="next-step-outbox-scale"
+          title="How much retryable work is stuck on the local collector. Open the connection for the host command to clear it."
+        >
+          Stuck on the device: {guidance.scale}
+        </span>
+      ) : null}
     </Link>
   );
 }
