@@ -62,7 +62,8 @@
       `data.results[]` hits.
 - [x] 4.14 Postgres lexical backfill reads and writes the active Postgres
       backend, detects partial historical indexes by exact indexable-text row
-      counts, and restores searchable rows without re-ingest.
+      counts, evaluates active owner-visible connector instances for unpinned
+      manifests, and restores searchable rows without re-ingest.
 
 ## 5. Docs + discovery guidance
 
@@ -81,4 +82,4 @@
       clients should reconnect to reload the current tool schema.
 - [x] 6.4 Owner/live follow-up: confirm unscoped hosted package search returns
       merged child hits and that Postgres lexical backfill restores historical
-      search hits for existing records.
+      search hits for existing records on the active connection.

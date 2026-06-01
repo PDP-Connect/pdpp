@@ -52,15 +52,22 @@ answer must also appear in the `content[]` text.
   (or a compact grouped-bucket preview) in `content[]` text, in addition to the
   canonical `structuredContent.data` envelope. The text stays compact and
   token-efficient (no full JSON dump).
+- Hosted package search merges canonical child `data[]` search envelopes instead
+  of interpreting them as empty on unscoped package-token search.
+- Reference lexical backfill reads and writes the active storage backend and,
+  for unpinned manifests, evaluates active owner-visible connector instances
+  rather than only the default synthetic instance.
 - `connection_id` and the deprecated `connector_instance_id` alias continue to
   forward unchanged. REST filtering semantics are unchanged.
 
 ## Impact
 
-- Affected specs: `mcp-adapter`.
+- Affected specs: `mcp-adapter`, `reference-implementation-architecture`.
 - Affected code: `packages/mcp-server/src/tools.js` (input schema + filter
   translation + aggregate text), `packages/mcp-server/test/typed-filter.test.js`
-  (new), package docs.
+  (new), `reference-implementation/server/package-rs-client.js`,
+  `reference-implementation/server/search.js`, Postgres storage helpers, package
+  docs.
 - No RS contract change. No PDPP Core or REST filtering semantics change.
 - The typed filter object is a superset of the prior contract for the common
   case (object/typed inputs newly work); the only removed behavior is the silent

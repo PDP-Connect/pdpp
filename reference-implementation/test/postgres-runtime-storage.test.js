@@ -51,7 +51,10 @@ import {
   postgresQuery,
   resolveStorageBackend,
 } from '../server/postgres-storage.js';
-import { makeDefaultAccountConnectorInstanceId } from '../server/stores/connector-instance-store.js';
+import {
+  createPostgresConnectorInstanceStore,
+  makeDefaultAccountConnectorInstanceId,
+} from '../server/stores/connector-instance-store.js';
 import {
   shouldAutoReconcilePolyfillManifests,
   startServer,
@@ -266,14 +269,25 @@ if (!POSTGRES_URL) {
     const connectorInstanceId = `cin_pg_lexical_backfill_${suffix}`;
     const stream = 'messages';
     const manifest = {
+      protocol_version: '0.1.0',
       connector_id: connectorId,
-      storage_binding: {
-        connector_id: connectorId,
-        connector_instance_id: connectorInstanceId,
-      },
+      version: '1.0.0',
+      display_name: 'Postgres Lexical Backfill Test',
       streams: [
         {
           name: stream,
+          primary_key: ['id'],
+          cursor_field: 'created_at',
+          consent_time_field: 'created_at',
+          schema: {
+            type: 'object',
+            required: ['id'],
+            properties: {
+              id: { type: 'string' },
+              text: { type: 'string' },
+              created_at: { type: 'string', format: 'date-time' },
+            },
+          },
           query: {
             search: {
               lexical_fields: ['text'],
@@ -298,6 +312,21 @@ if (!POSTGRES_URL) {
     await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
 
     try {
+      await registerConnector(manifest);
+      const instanceStore = createPostgresConnectorInstanceStore();
+      const now = new Date().toISOString();
+      await instanceStore.upsert({
+        connectorInstanceId,
+        ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+        connectorId,
+        displayName: 'Postgres lexical backfill account',
+        status: 'active',
+        sourceKind: 'account',
+        sourceBindingKey: `account_${suffix}`,
+        sourceBinding: { account: `account_${suffix}` },
+        createdAt: now,
+        updatedAt: now,
+      });
       await postgresQuery(
         `INSERT INTO records(connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version, deleted, primary_key_text)
          VALUES
@@ -351,7 +380,7 @@ if (!POSTGRES_URL) {
         resolveOwnerScopeForConnector: () => ({ connectorId }),
         resolveOwnerManifestFromScope: async () => ({ manifest }),
         buildOwnerReadGrantForManifest: () => grant,
-        resolveGrantManifest: async () => ({ manifest, storageBinding: manifest.storage_binding }),
+        resolveGrantManifest: async () => ({ manifest, storageBinding: { connector_id: connectorId } }),
       });
       assert.deepEqual(page.envelope.data.map((hit) => hit.record_key).sort(), ['msg-1', 'msg-2']);
     } finally {
@@ -359,6 +388,7 @@ if (!POSTGRES_URL) {
       await postgresQuery('DELETE FROM lexical_search_meta WHERE connector_id = $1', [connectorId]);
       await postgresQuery('DELETE FROM lexical_search_snapshots WHERE query = $1', ['Redactable']);
       await postgresQuery('DELETE FROM records WHERE connector_id = $1', [connectorId]);
+      await postgresQuery('DELETE FROM connector_instances WHERE connector_id = $1', [connectorId]);
       await closePostgresStorage();
       closeDb();
     }

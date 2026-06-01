@@ -112,7 +112,9 @@ backend. In Postgres mode it reads records, index rows, and meta fingerprints
 from Postgres, and writes rebuilt lexical rows back to Postgres. The drift check
 uses exact indexable-text counts rather than a loose non-zero/max-row band, so a
 partially populated historical index is rebuilt instead of being treated as
-"good enough."
+"good enough." When a manifest is not pinned to one connector instance, startup
+backfill evaluates the active owner-visible bindings for that connector instead
+of only checking the default synthetic instance.
 
 ## Risks / Trade-offs
 
@@ -151,4 +153,5 @@ partially populated historical index is rebuilt instead of being treated as
 - Hosted package search fan-out merges canonical child search hits when
   `connection_id` is omitted.
 - Postgres lexical backfill detects and rebuilds partial historical indexes
-  using exact indexable-text counts.
+  using exact indexable-text counts for active owner-visible connector
+  instances.

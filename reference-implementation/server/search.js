@@ -398,6 +398,24 @@ async function lexicalRecordsCountNonDeleted({ connectorInstanceId, stream }) {
   return Number(row?.n || 0);
 }
 
+async function resolveLexicalBackfillConnectorInstanceIds({ connectorId, manifest }) {
+  const pinned = manifest.storage_binding?.connector_instance_id || manifest.connector_instance_id;
+  if (pinned) {
+    return [resolveLexicalConnectorInstanceId(connectorId, pinned)];
+  }
+
+  const bindings = await listActiveOwnerBindingsForConnectors({
+    ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+    connectorIds: [connectorId],
+  });
+  const ids = Array.from(
+    new Set(bindings.map((binding) => binding.connectorInstanceId).filter(Boolean)),
+  );
+  if (ids.length > 0) return ids;
+
+  return [resolveLexicalConnectorInstanceId(connectorId, null)];
+}
+
 /**
  * Drift-detect + rebuild the lexical index for every participating stream of
  * a manifest. Idempotent and safe to call repeatedly.
@@ -424,11 +442,10 @@ async function lexicalRecordsCountNonDeleted({ connectorInstanceId, stream }) {
  *      alone would skip that case because stale title rows satisfy the
  *      count band, missing all selftext-only historical hits.
  *
- *   2. Row-count guard (secondary). For streams whose fingerprint already
- *      matches, a zero-row index is rebuilt only when stored records actually
- *      contain non-empty declared text. Non-zero counts inside the possible
- *      band are left alone so benign count skew does not trigger expensive
- *      full-stream rebuilds on every restart.
+ *   2. Exact row-count guard (secondary). For streams whose fingerprint already
+ *      matches, the current index row count must equal the number of non-empty
+ *      declared text values in storage. Any mismatch means the index is stale or
+ *      partial and is rebuilt.
  *
  * Streams that previously participated but no longer declare
  * lexical_fields are also handled here: their stale index rows and meta
@@ -458,137 +475,142 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
   };
   lexicalBackfillJobs.set(progressJob.id, progressJob);
   try {
-  const connectorId = manifest.connector_id;
-  const connectorInstanceId = resolveLexicalConnectorInstanceId(
-    connectorId,
-    manifest.storage_binding?.connector_instance_id || manifest.connector_instance_id,
-  );
+    const connectorId = manifest.connector_id;
+    const connectorInstanceIds = await resolveLexicalBackfillConnectorInstanceIds({ connectorId, manifest });
+    progressJob = updateLexicalBackfillJob(progressJob, {
+      manifestStreamsTotal: participatingStreams * connectorInstanceIds.length,
+    });
 
-  // Track which streams we visited so we can detect "previously
-  // participated, no longer participates" — those need their stale index
-  // rows and meta fingerprint dropped.
-  const visitedStreams = new Set();
+    for (const connectorInstanceId of connectorInstanceIds) {
+      // Track which streams we visited so we can detect "previously
+      // participated, no longer participates" — those need their stale index
+      // rows and meta fingerprint dropped.
+      const visitedStreams = new Set();
 
-  for (const mStream of manifest.streams) {
-    if (signal?.aborted) {
-      throw signal.reason instanceof Error ? signal.reason : new Error('lexical backfill aborted');
-    }
-    const stream = mStream?.name;
-    if (typeof stream !== 'string' || stream.length === 0) continue;
-    visitedStreams.add(stream);
+      for (const mStream of manifest.streams) {
+        if (signal?.aborted) {
+          throw signal.reason instanceof Error ? signal.reason : new Error('lexical backfill aborted');
+        }
+        const stream = mStream?.name;
+        if (typeof stream !== 'string' || stream.length === 0) continue;
+        visitedStreams.add(stream);
 
-    const declaredFields = mStream?.query?.search?.lexical_fields;
-    const isParticipating = Array.isArray(declaredFields) && declaredFields.length > 0;
+        const declaredFields = mStream?.query?.search?.lexical_fields;
+        const isParticipating = Array.isArray(declaredFields) && declaredFields.length > 0;
 
-    if (!isParticipating) {
-      // Stream is in the manifest but does not participate. If a prior
-      // version declared lexical_fields for it, drop the stale index +
-      // meta so historical data doesn't keep matching against a field set
-      // that's no longer declared.
-      const metaExists = await lexicalMetaExists({ connectorInstanceId, stream });
-      if (metaExists) {
-        log(`[PDPP] Lexical index: stream='${stream}' connector='${connectorId}' ` +
-            `no longer declares lexical_fields — dropping stale index + meta`);
-        await lexicalIndexAndMetaDeleteByStream({ connectorId, connectorInstanceId, stream });
+        if (!isParticipating) {
+          // Stream is in the manifest but does not participate. If a prior
+          // version declared lexical_fields for it, drop the stale index +
+          // meta so historical data doesn't keep matching against a field set
+          // that's no longer declared.
+          const metaExists = await lexicalMetaExists({ connectorInstanceId, stream });
+          if (metaExists) {
+            log(`[PDPP] Lexical index: stream='${stream}' connector='${connectorId}' ` +
+                `no longer declares lexical_fields — dropping stale index + meta`);
+            await lexicalIndexAndMetaDeleteByStream({ connectorId, connectorInstanceId, stream });
+          }
+          continue;
+        }
+        progressJob = updateLexicalBackfillJob(progressJob, {
+          stream,
+          phase: 'checking',
+          manifestStreamsChecked: Math.min(
+            progressJob.manifestStreamsChecked + 1,
+            progressJob.manifestStreamsTotal,
+          ),
+          recordsScanned: 0,
+          recordsTotal: null,
+          indexedRows: 0,
+        });
+
+        const newFingerprint = fingerprintLexicalFields(declaredFields);
+
+        const fingerprintRow = await lexicalMetaGetFingerprint({ connectorInstanceId, stream });
+        const persistedFingerprint = fingerprintRow?.fields_fingerprint ?? null;
+        const fingerprintChanged = persistedFingerprint !== newFingerprint;
+
+        let needsRebuild = fingerprintChanged;
+        let recordCount = 0;
+        let indexCount = 0;
+        let expectedIndexRows = 0;
+
+        if (!needsRebuild) {
+          // Fingerprint matches — use exact non-empty text counts only to
+          // distinguish a complete index from an unbuilt or partially-built one.
+          // A loose non-zero heuristic lets historical records remain invisible
+          // after a manifest/schema change or interrupted startup backfill.
+          recordCount = await lexicalRecordsCountNonDeleted({ connectorInstanceId, stream });
+          indexCount = await lexicalIndexCountByStream({ connectorInstanceId, stream });
+          expectedIndexRows = await countIndexableTextValues({ connectorInstanceId, stream, declaredFields });
+
+          const maxIndexRows = recordCount * declaredFields.length;
+          const inSync = indexCount === expectedIndexRows && indexCount <= maxIndexRows;
+          needsRebuild = !inSync;
+        }
+
+        if (!needsRebuild) continue;
+        if (recordCount === 0) {
+          recordCount = await lexicalRecordsCountNonDeleted({ connectorInstanceId, stream });
+        }
+        progressJob = updateLexicalBackfillJob(progressJob, {
+          stream,
+          phase: 'rebuilding',
+          recordsScanned: 0,
+          recordsTotal: recordCount,
+          indexedRows: 0,
+        });
+
+        if (fingerprintChanged) {
+          log(`[PDPP] Lexical index field-set change for ${connectorId} stream='${stream}' ` +
+              `(was=${persistedFingerprint ?? 'null'}, now=${newFingerprint}) — rebuilding`);
+        } else {
+          log(`[PDPP] Lexical index drift for ${connectorId} stream='${stream}' ` +
+              `(records=${recordCount}, index=${indexCount}, expected=${expectedIndexRows ?? 'not_checked'}) — rebuilding`);
+        }
+
+        const indexedRows = await rebuildLexicalIndexForStream({
+          connectorId,
+          connectorInstanceId,
+          stream,
+          declaredFields,
+          recordsToScan: recordCount,
+          progressJob,
+          signal,
+        });
+        log(`[PDPP] Lexical index rebuild completed for ${connectorId} stream='${stream}' ` +
+            `(records=${recordCount}, indexed_rows=${indexedRows})`);
+
+        // Persist the new fingerprint so subsequent backfill calls can skip.
+        await lexicalMetaUpsertFingerprint({
+          connectorId,
+          connectorInstanceId,
+          stream,
+          fieldsFingerprint: newFingerprint,
+          updatedAt: new Date().toISOString(),
+        });
       }
-      continue;
+      progressJob = updateLexicalBackfillJob(progressJob, {
+        stream: null,
+        phase: 'cleanup',
+        recordsScanned: 0,
+        recordsTotal: null,
+        indexedRows: 0,
+      });
+
+      // Streams that previously had a meta row but are no longer in the
+      // manifest at all (entire stream removed). Same cleanup as the
+      // "no-longer-participating" case above.
+      // REVIEWED-BOUNDED: lexical_search_meta is keyed by (connector_instance_id, stream)
+      // and the stream count per connector is a small enumeration bounded by the
+      // manifest, well below the @max_rows=1024 declared in the artifact.
+      const orphanRows = await lexicalMetaListStreamsForConnector({ connectorInstanceId });
+      for (const row of orphanRows) {
+        if (visitedStreams.has(row.stream)) continue;
+        log(`[PDPP] Lexical index: stream='${row.stream}' connector='${connectorId}' ` +
+            `no longer in manifest — dropping stale index + meta`);
+        await lexicalIndexAndMetaDeleteByStream({ connectorId, connectorInstanceId, stream: row.stream });
+      }
     }
-    progressJob = updateLexicalBackfillJob(progressJob, {
-      stream,
-      phase: 'checking',
-      manifestStreamsChecked: Math.min(progressJob.manifestStreamsChecked + 1, progressJob.manifestStreamsTotal),
-      recordsScanned: 0,
-      recordsTotal: null,
-      indexedRows: 0,
-    });
-
-    const newFingerprint = fingerprintLexicalFields(declaredFields);
-
-    const fingerprintRow = await lexicalMetaGetFingerprint({ connectorInstanceId, stream });
-    const persistedFingerprint = fingerprintRow?.fields_fingerprint ?? null;
-    const fingerprintChanged = persistedFingerprint !== newFingerprint;
-
-    let needsRebuild = fingerprintChanged;
-    let recordCount = 0;
-    let indexCount = 0;
-    let expectedIndexRows = 0;
-
-    if (!needsRebuild) {
-      // Fingerprint matches — use exact non-empty text counts only to
-      // distinguish a complete index from an unbuilt or partially-built one.
-      // A loose non-zero heuristic lets historical records remain invisible
-      // after a manifest/schema change or interrupted startup backfill.
-      recordCount = await lexicalRecordsCountNonDeleted({ connectorInstanceId, stream });
-      indexCount = await lexicalIndexCountByStream({ connectorInstanceId, stream });
-      expectedIndexRows = await countIndexableTextValues({ connectorInstanceId, stream, declaredFields });
-
-      const maxIndexRows = recordCount * declaredFields.length;
-      const inSync = indexCount === expectedIndexRows && indexCount <= maxIndexRows;
-      needsRebuild = !inSync;
-    }
-
-    if (!needsRebuild) continue;
-    if (recordCount === 0) {
-      recordCount = await lexicalRecordsCountNonDeleted({ connectorInstanceId, stream });
-    }
-    progressJob = updateLexicalBackfillJob(progressJob, {
-      stream,
-      phase: 'rebuilding',
-      recordsScanned: 0,
-      recordsTotal: recordCount,
-      indexedRows: 0,
-    });
-
-    if (fingerprintChanged) {
-      log(`[PDPP] Lexical index field-set change for ${connectorId} stream='${stream}' ` +
-          `(was=${persistedFingerprint ?? 'null'}, now=${newFingerprint}) — rebuilding`);
-    } else {
-      log(`[PDPP] Lexical index drift for ${connectorId} stream='${stream}' ` +
-          `(records=${recordCount}, index=${indexCount}, expected=${expectedIndexRows ?? 'not_checked'}) — rebuilding`);
-    }
-
-    const indexedRows = await rebuildLexicalIndexForStream({
-      connectorId,
-      connectorInstanceId,
-      stream,
-      declaredFields,
-      recordsToScan: recordCount,
-      progressJob,
-      signal,
-    });
-    log(`[PDPP] Lexical index rebuild completed for ${connectorId} stream='${stream}' ` +
-        `(records=${recordCount}, indexed_rows=${indexedRows})`);
-
-    // Persist the new fingerprint so subsequent backfill calls can skip.
-    await lexicalMetaUpsertFingerprint({
-      connectorId,
-      connectorInstanceId,
-      stream,
-      fieldsFingerprint: newFingerprint,
-      updatedAt: new Date().toISOString(),
-    });
-  }
-  progressJob = updateLexicalBackfillJob(progressJob, {
-    stream: null,
-    phase: 'cleanup',
-    recordsScanned: 0,
-    recordsTotal: null,
-    indexedRows: 0,
-  });
-
-  // Streams that previously had a meta row but are no longer in the
-  // manifest at all (entire stream removed). Same cleanup as the
-  // "no-longer-participating" case above.
-  // REVIEWED-BOUNDED: lexical_search_meta is keyed by (connector_instance_id, stream)
-  // and the stream count per connector is a small enumeration bounded by the
-  // manifest, well below the @max_rows=1024 declared in the artifact.
-  const orphanRows = await lexicalMetaListStreamsForConnector({ connectorInstanceId });
-  for (const row of orphanRows) {
-    if (visitedStreams.has(row.stream)) continue;
-    log(`[PDPP] Lexical index: stream='${row.stream}' connector='${connectorId}' ` +
-        `no longer in manifest — dropping stale index + meta`);
-    await lexicalIndexAndMetaDeleteByStream({ connectorId, connectorInstanceId, stream: row.stream });
-  }
   } finally {
     activeLexicalBackfillCount = Math.max(0, activeLexicalBackfillCount - 1);
     lexicalBackfillJobs.delete(progressJob.id);
