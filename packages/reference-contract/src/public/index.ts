@@ -29,6 +29,9 @@ const NonEmptyStringSchema = {
   minLength: 1,
 };
 
+export const BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP = 8;
+export const BATCH_CONSENT_STAGED_ENTRY_WARNING_THRESHOLD = 6;
+
 // Canonical public/operator/LLM-facing connection identity. `connection_id`
 // is the canonical field name; `connector_instance_id` is supported as a
 // deprecated wire alias during the migration window defined by
@@ -821,7 +824,7 @@ const GrantInitiationRequestSchema = {
     authorization_details: {
       type: "array",
       minItems: 1,
-      maxItems: 1,
+      maxItems: BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP,
       items: AuthorizationDetailSchema,
     },
   },
@@ -1712,6 +1715,27 @@ export const publicManifests = [
             request_uri: NonEmptyStringSchema,
             subject_id: NonEmptyStringSchema,
             ai_training_consented: { type: "boolean" },
+            approved_source_indexes: {
+              oneOf: [
+                { type: "integer", minimum: 0 },
+                { type: "string", pattern: "^[0-9]+$" },
+                {
+                  type: "array",
+                  items: {
+                    oneOf: [
+                      { type: "integer", minimum: 0 },
+                      { type: "string", pattern: "^[0-9]+$" },
+                    ],
+                  },
+                },
+              ],
+            },
+            confirm_approve_all: {
+              oneOf: [
+                { type: "boolean" },
+                { type: "string", enum: ["true", "1", "on"] },
+              ],
+            },
           },
           required: ["request_uri"],
         },

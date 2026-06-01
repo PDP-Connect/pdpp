@@ -28,6 +28,8 @@ export interface AsConsentDecisionInput {
   readonly subjectId: string;
   readonly approveOptions?: {
     readonly ai_training_consented?: unknown;
+    readonly approvedSourceIndexes?: readonly number[];
+    readonly confirmedApproveAll?: boolean;
   };
 }
 
@@ -51,6 +53,8 @@ export interface AsConsentDecisionPending {
 export interface AsConsentDecisionApproveResult {
   readonly grant: { readonly grant_id: string; readonly [extra: string]: unknown };
   readonly token: string;
+  readonly package?: boolean;
+  readonly package_id?: string;
 }
 
 export interface AsConsentDecisionDependencies {
@@ -75,7 +79,13 @@ export interface AsConsentDecisionDependencies {
   approveGrant(
     deviceCode: string,
     subjectId: string,
-    opts: { ai_training_consented?: unknown } | undefined,
+    opts:
+      | {
+          ai_training_consented?: unknown;
+          approvedSourceIndexes?: readonly number[];
+          confirmedApproveAll?: boolean;
+        }
+      | undefined,
   ):
     | Promise<AsConsentDecisionApproveResult>
     | AsConsentDecisionApproveResult;
@@ -88,6 +98,8 @@ export interface AsConsentDecisionApproveSuccessOutcome {
   readonly traceContext: { request_id?: string | null; trace_id?: string | null } | null;
   readonly grant: { readonly grant_id: string; readonly [extra: string]: unknown };
   readonly token: string;
+  readonly package?: boolean;
+  readonly package_id?: string;
 }
 
 export interface AsConsentDecisionDenySuccessOutcome {
@@ -161,6 +173,7 @@ export async function executeAsConsentDecision(
       traceContext,
       grant: approve.grant,
       token: approve.token,
+      ...(approve.package ? { package: true, package_id: approve.package_id } : {}),
     };
   }
 

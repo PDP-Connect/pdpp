@@ -145,6 +145,8 @@ Approve a pending data-access request through the JSON consent surface used by t
 - `request_uri` (required) — string
 - `subject_id` — string
 - `ai_training_consented` — boolean
+- `approved_source_indexes` — any
+- `confirm_approve_all` — any
 
 ### Responses
 

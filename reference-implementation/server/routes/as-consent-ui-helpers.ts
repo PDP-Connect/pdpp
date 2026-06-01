@@ -516,12 +516,37 @@ export interface PendingGrantRequest {
 }
 
 export interface PendingGrant {
+  batch?: boolean;
+  cards?: PendingConsentCard[];
+  cumulativeRisk?: PendingConsentCumulativeRisk | null;
+  approveAllGate?: { approve_all_suppressed: boolean; suppression_reasons: string[] } | null;
+  softCapWarning?: boolean;
   manifestStreamNames?: string[] | null;
   request: PendingGrantRequest;
   userCode?: string | null;
 }
 
 type StreamItem = NonNullable<NonNullable<PendingGrantRequest["selection"]>["streams"]>[number];
+
+interface PendingConsentCard {
+  index: number;
+  source?: { id?: string | null; kind?: string | null } | null;
+  sensitivity?: "standard" | "sensitive" | string | null;
+  access_mode?: string | null;
+  purpose_code?: string | null;
+  retention?: { max_duration?: string | null; on_expiry?: string | null } | null;
+  resolvedStreams?: StreamItem[] | null;
+  manifestStreamNames?: string[] | null;
+}
+
+interface PendingConsentCumulativeRisk {
+  source_count?: number;
+  sensitive_source_count?: number;
+  continuous_access_count?: number;
+  no_time_bound_count?: number;
+  no_field_projection_count?: number;
+  total_stream_count?: number;
+}
 
 function buildStreamsBlock(
   requestedStreams: StreamItem[],
@@ -571,6 +596,156 @@ function buildStreamsBlock(
       </div>`;
 }
 
+function buildBatchRiskHeader(risk: PendingConsentCumulativeRisk | null | undefined, ui: ConsentUiRenderer): string {
+  const items = [
+    { label: "Sources in this request", value: risk?.source_count ?? 0 },
+    { label: "Sensitive sources", value: risk?.sensitive_source_count ?? 0 },
+    { label: "Continuous-access sources", value: risk?.continuous_access_count ?? 0 },
+    { label: "Sources with no time bound", value: risk?.no_time_bound_count ?? 0 },
+    { label: "Sources without field projection", value: risk?.no_field_projection_count ?? 0 },
+    { label: "Total streams", value: risk?.total_stream_count ?? 0 },
+  ];
+  return ui.renderSurface({
+    surface: "human",
+    ariaLabel: "Cumulative batch risk",
+    children: `<span class="pdpp-eyebrow">Reference-experimental batch consent</span>
+<h2 class="pdpp-heading">Cumulative access across this request</h2>
+${ui.renderKeyValueList(items)}`,
+  });
+}
+
+function buildBatchSourceCards(cards: PendingConsentCard[], ui: ConsentUiRenderer): string {
+  return cards
+    .map((card) => {
+      const sourceLabel = card.source?.id || `source ${card.index + 1}`;
+      const streams = Array.isArray(card.resolvedStreams) ? card.resolvedStreams : [];
+      const streamsBlock = buildStreamsBlock(streams, sourceLabel, card.manifestStreamNames ?? null, ui);
+      const facts = ui.renderKeyValueList([
+        { label: "Source", value: sourceLabel },
+        { label: "Access mode", value: card.access_mode || "unspecified" },
+        { label: "Sensitivity", value: card.sensitivity || "standard" },
+        { label: "Purpose", value: card.purpose_code || "unspecified" },
+      ]);
+      return ui.renderSurface({
+        surface: "human",
+        ariaLabel: `Source ${card.index + 1}`,
+        children: `<h3 class="pdpp-title">${ui.escapeHtml(sourceLabel)}</h3>${facts}${streamsBlock}`,
+      });
+    })
+    .join("\n");
+}
+
+const APPROVE_ALL_SUPPRESSION_LABELS: Record<string, string> = {
+  continuous_all_streams: "a source requests continuous access to all of its streams",
+  sensitive_no_time_bound: "a sensitive source has no time bound",
+  three_or_more_sensitive_sources: "three or more sources are sensitive",
+};
+
+function buildPerSourceConfirmForm(
+  cards: PendingConsentCard[],
+  requestUri: string,
+  csrfToken: string | null,
+  csrfFieldName: string,
+  ui: ConsentUiRenderer
+): string {
+  const csrfInput = csrfToken
+    ? `<input type="hidden" name="${ui.escapeHtml(csrfFieldName)}" value="${ui.escapeHtml(csrfToken)}" />`
+    : "";
+  const checkboxes = cards
+    .map((card) => {
+      const sourceLabel = card.source?.id || `source ${card.index + 1}`;
+      return `<label class="hosted-ui-source-toggle"><input type="checkbox" name="approved_source_indexes" value="${ui.escapeHtml(
+        String(card.index)
+      )}" checked /> ${ui.escapeHtml(sourceLabel)}</label>`;
+    })
+    .join("\n");
+  return `<form class="hosted-ui-form" method="POST" action="/consent/approve" aria-label="Confirm each source">
+${csrfInput}<input type="hidden" name="request_uri" value="${ui.escapeHtml(requestUri)}" />
+<div class="hosted-ui-source-toggles"><span class="pdpp-title">Confirm each source</span>${checkboxes}</div>
+<button type="submit" class="hosted-ui-button" data-variant="primary">Confirm selected sources</button>
+</form>`;
+}
+
+function buildApproveAllForm(
+  cards: PendingConsentCard[],
+  requestUri: string,
+  csrfToken: string | null,
+  csrfFieldName: string,
+  ui: ConsentUiRenderer
+): string {
+  const csrfInput = csrfToken
+    ? `<input type="hidden" name="${ui.escapeHtml(csrfFieldName)}" value="${ui.escapeHtml(csrfToken)}" />`
+    : "";
+  const sourceList = cards.map((card) => ui.escapeHtml(card.source?.id || `source ${card.index + 1}`)).join(", ");
+  return `<form class="hosted-ui-form" method="POST" action="/consent/approve" aria-label="Allow all sources">
+${csrfInput}<input type="hidden" name="request_uri" value="${ui.escapeHtml(requestUri)}" />
+<label class="hosted-ui-source-toggle"><input type="checkbox" name="confirm_approve_all" value="1" required /> I confirm allowing all ${cards.length} sources: ${sourceList}</label>
+<button type="submit" class="hosted-ui-button" data-variant="default">Allow all sources</button>
+</form>`;
+}
+
+function renderBatchConsentHtml(
+  pending: PendingGrant,
+  requestUri: string,
+  csrfToken: string | null,
+  csrfFieldName: string,
+  providerName: string,
+  ui: ConsentUiRenderer
+): string {
+  const request = pending.request;
+  const client = request.client || {};
+  const clientName = client.client_display?.name || client.client_id || "Client application";
+  const cards = Array.isArray(pending.cards) ? pending.cards : [];
+  const csrfHidden = csrfToken ? [{ name: csrfFieldName, value: csrfToken }] : [];
+  const approveAllSuppressed = pending.approveAllGate?.approve_all_suppressed === true;
+  const suppressionReasons = Array.isArray(pending.approveAllGate?.suppression_reasons)
+    ? pending.approveAllGate.suppression_reasons
+    : [];
+  const suppressionNote = approveAllSuppressed
+    ? `<div class="hosted-ui-warning" role="note"><span class="hosted-ui-warning-title">Per-source confirmation required</span><span class="hosted-ui-warning-body">${ui.escapeHtml(
+        `This request is too broad for a single approve-all (${suppressionReasons
+          .map((reason) => APPROVE_ALL_SUPPRESSION_LABELS[reason] || reason)
+          .join("; ")}). Confirm each source individually below.`
+      )}</span></div>`
+    : "";
+  const broadWarning = pending.softCapWarning
+    ? `<div class="hosted-ui-warning" role="note"><span class="hosted-ui-warning-title">Broad setup</span><span class="hosted-ui-warning-body">This request is at or above the reference warning threshold.</span></div>`
+    : "";
+  const denyForm = ui.renderActionRow([
+    {
+      label: "Deny",
+      variant: "danger",
+      method: "POST",
+      action: "/consent/deny",
+      hidden: [...csrfHidden, { name: "request_uri", value: requestUri }],
+    },
+  ]);
+  const actions = [
+    suppressionNote,
+    buildPerSourceConfirmForm(cards, requestUri, csrfToken, csrfFieldName, ui),
+    approveAllSuppressed ? "" : buildApproveAllForm(cards, requestUri, csrfToken, csrfFieldName, ui),
+    denyForm,
+  ].filter(Boolean).join("\n");
+
+  const body = [
+    ui.renderPageIntro({
+      eyebrow: "Data access request",
+      title: `${clientName} wants access to several sources`,
+      lede: "Review each source. Your server will only issue grants for sources you confirm.",
+    }),
+    broadWarning,
+    buildBatchRiskHeader(pending.cumulativeRisk, ui),
+    buildBatchSourceCards(cards, ui),
+    ui.renderSurface({ surface: "human", ariaLabel: "Consent actions", children: actions }),
+  ].filter(Boolean).join("\n");
+
+  return ui.renderHostedDocument({
+    title: `${providerName} — Batch consent request`,
+    providerName,
+    body,
+  });
+}
+
 /**
  * Renders the active consent review page for GET /consent when a live
  * pending-consent row exists. The owner reviews streams, facts, and submits
@@ -584,6 +759,10 @@ export function renderPendingGrantConsentHtml(
   providerName: string,
   ui: ConsentUiRenderer
 ): string {
+  if (pending.batch) {
+    return renderBatchConsentHtml(pending, requestUri, csrfToken, csrfFieldName, providerName, ui);
+  }
+
   const request = pending.request;
   const client = request.client || {};
   const selection = request.selection || {};

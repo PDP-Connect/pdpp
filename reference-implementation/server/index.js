@@ -3288,6 +3288,7 @@ function buildAsApp(opts = {}) {
     createConsentExchangeCode,
     handleError,
     issueOAuthAuthorizationCodeForDeviceCode,
+    issueOAuthAuthorizationCodeForPackageDeviceCode,
     pdppError,
     providerName,
     setReferenceTraceId,

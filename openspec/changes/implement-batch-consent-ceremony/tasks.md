@@ -42,7 +42,7 @@ These tasks describe the later implementation lane. They are intentionally small
 
 ### 2.6 Approve-all gate
 
-- [ ] 2.6.1 Suppress approve-all whenever (continuous + all streams), (no time bound + sensitive source), or N≥3 sensitive sources; when shown, require one re-asserting confirmation; default to per-source confirmation.
+- [x] 2.6.1 Suppress approve-all whenever (continuous + all streams), (no time bound + sensitive source), or N≥3 sensitive sources; when shown, require one re-asserting confirmation; default to per-source confirmation.
   - Acceptance: each suppression condition hides approve-all; a low-risk batch shows it and requires the re-asserting confirmation.
   - Tests: gate unit tests covering each suppression condition and the shown-path confirmation.
 

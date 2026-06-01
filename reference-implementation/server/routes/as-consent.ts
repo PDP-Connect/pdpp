@@ -79,7 +79,12 @@ interface ConsentStore {
     deviceCode: string,
     subjectId: string,
     opts: unknown
-  ): Promise<{ grant: { grant_id: string; [k: string]: unknown }; token: string }>;
+  ): Promise<{
+    grant: { grant_id: string; [k: string]: unknown };
+    token: string;
+    package?: boolean;
+    package_id?: string;
+  }>;
   denyGrant(deviceCode: string): Promise<boolean>;
   getPendingConsentByApprovalId(id: string): Promise<AsConsentDecisionPendingRow | null>;
   getPendingConsentByDeviceCode(deviceCode: string): Promise<PendingGrant | null>;
@@ -106,6 +111,10 @@ export interface MountAsConsentContext {
   issueOAuthAuthorizationCodeForDeviceCode(
     deviceCode: string | null,
     opts: { grantId: string; token: string }
+  ): Promise<{ redirect_uri: string; code: string; state?: string | null } | null>;
+  issueOAuthAuthorizationCodeForPackageDeviceCode(
+    deviceCode: string | null,
+    opts: { packageId: string; token: string }
   ): Promise<{ redirect_uri: string; code: string; state?: string | null } | null>;
   ownerAuth: OwnerAuth;
   pdppError: PdppErrorFn;
@@ -154,6 +163,46 @@ function renderApproveHtml(
   });
 }
 
+function renderPackageApproveHtml(
+  ctx: MountAsConsentContext,
+  grant: { grant_id: string; child_grants?: Array<{ grant_id?: string }>; [k: string]: unknown },
+  packageId: string
+): string {
+  const childGrants = Array.isArray(grant.child_grants) ? grant.child_grants : [];
+  return ctx.consentUi.renderHostedDocument({
+    title: `${ctx.providerName} — Access approved`,
+    providerName: ctx.providerName,
+    body: [
+      ctx.consentUi.renderPageIntro({
+        eyebrow: "Consent result",
+        title: "Source grants issued",
+        lede: "The request was approved as independent source-bounded grants grouped under one package for audit.",
+      }),
+      ctx.consentUi.renderSurface({
+        surface: "human",
+        children: ctx.consentUi.renderResultState({
+          tone: "success",
+          title: `${childGrants.length} grant${childGrants.length === 1 ? "" : "s"} issued`,
+          body: "You can revoke any single source grant independently from the grants dashboard.",
+        }),
+      }),
+      ctx.consentUi.renderSurface({
+        surface: "protocol",
+        ariaLabel: "Technical package details",
+        children: ctx.consentUi.renderKeyValueList([
+          { label: "Package ID", html: `<code>${ctx.consentUi.escapeHtml(packageId)}</code>` },
+          {
+            label: "Child grant IDs",
+            html: childGrants
+              .map((child) => `<code>${ctx.consentUi.escapeHtml(String(child.grant_id || ""))}</code>`)
+              .join("<br>"),
+          },
+        ]),
+      }),
+    ].join("\n"),
+  });
+}
+
 function buildOAuthRedirectUrl(oauthCode: { redirect_uri: string; code: string; state?: string | null }): string {
   const redirectUrl = new URL(oauthCode.redirect_uri);
   redirectUrl.searchParams.set("code", oauthCode.code);
@@ -169,13 +218,20 @@ async function dispatchApproveResponse(
   res: RouteResponse,
   grant: { grant_id: string; [k: string]: unknown },
   token: string,
-  approvedRequestUri: string | undefined
+  approvedRequestUri: string | undefined,
+  packageInfo?: { package: boolean; package_id?: string | undefined }
 ): Promise<void> {
   const deviceCode = ctx.consentStore.parseRequestUri(approvedRequestUri ?? "");
-  const oauthCode = await ctx.issueOAuthAuthorizationCodeForDeviceCode(deviceCode, {
-    grantId: grant.grant_id,
-    token,
-  });
+  const isPackage = Boolean(packageInfo?.package);
+  const oauthCode = isPackage
+    ? await ctx.issueOAuthAuthorizationCodeForPackageDeviceCode(deviceCode, {
+        packageId: packageInfo?.package_id ?? grant.grant_id,
+        token,
+      })
+    : await ctx.issueOAuthAuthorizationCodeForDeviceCode(deviceCode, {
+        grantId: grant.grant_id,
+        token,
+      });
   if (oauthCode) {
     res.redirect(302, buildOAuthRedirectUrl(oauthCode));
     return;
@@ -183,7 +239,15 @@ async function dispatchApproveResponse(
   ctx.agentConnectAttemptStore.complete(approvedRequestUri, { status: "approved", token, grant });
   const wantsJson = req.is("application/json") || req.accepts(["html", "json"]) === "json";
   if (wantsJson) {
+    if (isPackage) {
+      res.json({ package_id: packageInfo?.package_id ?? grant.grant_id, token, grant });
+      return;
+    }
     res.json({ grant_id: grant.grant_id, token, grant });
+    return;
+  }
+  if (isPackage) {
+    res.send(renderPackageApproveHtml(ctx, grant, packageInfo?.package_id ?? grant.grant_id));
     return;
   }
   // The HTML approval surface is the human-hosted owner consent page. The
@@ -195,6 +259,28 @@ async function dispatchApproveResponse(
   // Spec: openspec/changes/harden-consent-token-handoff/specs/
   //       reference-implementation-architecture/spec.md
   res.send(renderApproveHtml(ctx, grant, token));
+}
+
+function parseBatchApproveSelection(body: Readonly<Record<string, unknown>> | undefined): {
+  approvedSourceIndexes?: number[];
+  confirmedApproveAll?: boolean;
+} {
+  const out: { approvedSourceIndexes?: number[]; confirmedApproveAll?: boolean } = {};
+  const raw = body?.approved_source_indexes;
+  if (raw !== undefined && raw !== null) {
+    const values = Array.isArray(raw) ? raw : [raw];
+    const indexes: number[] = [];
+    for (const value of values) {
+      const index = typeof value === "number" ? value : Number(value);
+      if (Number.isInteger(index)) indexes.push(index);
+    }
+    out.approvedSourceIndexes = indexes;
+  }
+  const confirm = body?.confirm_approve_all;
+  if (confirm === true || confirm === "true" || confirm === "1" || confirm === "on") {
+    out.confirmedApproveAll = true;
+  }
+  return out;
 }
 
 // ─── Route mount ─────────────────────────────────────────────────────────────
@@ -286,7 +372,10 @@ export function mountAsConsent(app: AppLike, ctx: MountAsConsentContext): void {
             requestUri: (req.body?.request_uri || req.query?.request_uri) as string | null | undefined,
             approvalId: (req.body?.approval_id || req.query?.approval_id) as string | null | undefined,
             subjectId,
-            approveOptions: { ai_training_consented: req.body?.ai_training_consented },
+            approveOptions: {
+              ai_training_consented: req.body?.ai_training_consented,
+              ...parseBatchApproveSelection(req.body),
+            },
           },
           buildConsentDecisionDeps()
         );
@@ -305,7 +394,15 @@ export function mountAsConsent(app: AppLike, ctx: MountAsConsentContext): void {
           return;
         }
         const approvedRequestUri = (req.body?.request_uri || req.query?.request_uri) as string | undefined;
-        await dispatchApproveResponse(ctx, req, res, outcome.grant, outcome.token, approvedRequestUri);
+        await dispatchApproveResponse(
+          ctx,
+          req,
+          res,
+          outcome.grant,
+          outcome.token,
+          approvedRequestUri,
+          outcome.package ? { package: true, package_id: outcome.package_id } : undefined
+        );
       } catch (err) {
         ctx.handleError(res, err);
       }

@@ -710,13 +710,20 @@ test('PDPP reference implementation integration', async (t) => {
           ],
         }),
       });
-      assert.equal(multiDetailsResp.status, 400);
-      assert.equal(multiDetailsResp.headers.get('PDPP-Reference-Trace-Id'), null);
+      assert.equal(multiDetailsResp.status, 201);
+      assert.ok(multiDetailsResp.headers.get('PDPP-Reference-Trace-Id'));
       const multiDetailsBody = await multiDetailsResp.json();
-      assert.equal(multiDetailsBody.error.type, 'invalid_request_error');
-      assert.equal(multiDetailsBody.error.code, 'invalid_request');
-      assert.match(multiDetailsBody.error.message, /Exactly one authorization_details entry is supported/);
-      assert.ok(multiDetailsBody.error.request_id);
+      assert.match(multiDetailsBody.request_uri, /^urn:pdpp:pending-consent:/);
+      const multiDeviceCode = parsePendingConsentRequestUri(multiDetailsBody.request_uri);
+      const multiRow = getDb()
+        .prepare('SELECT params_json FROM pending_consents WHERE device_code = ?')
+        .get(multiDeviceCode);
+      const multiStored = JSON.parse(multiRow.params_json);
+      assert.equal(multiStored.request_kind, 'pdpp_selection_request_batch');
+      assert.deepEqual(
+        multiStored.entries.map((entry) => entry.source_binding.id),
+        [SPOTIFY_CONNECTOR_KEY, SPOTIFY_CONNECTOR_KEY],
+      );
 
       const unsupportedRequestFieldsResp = await fetch(`${asUrl}/oauth/par`, {
         method: 'POST',

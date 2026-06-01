@@ -8,6 +8,10 @@
  * - Implements RFC 7662-style introspection with PDPP extensions
  */
 import { createHash, randomBytes } from 'crypto';
+import {
+  BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP,
+  BATCH_CONSENT_STAGED_ENTRY_WARNING_THRESHOLD,
+} from '@pdpp/reference-contract';
 import { runWithSqliteBusyRetry } from './db.js';
 import {
   allowUnboundedReadAcknowledged,
@@ -478,35 +482,44 @@ function isEnvelopeRequest(input) {
   return Array.isArray(input?.authorization_details);
 }
 
-function normalizePendingGrantRequest(input, opts = {}) {
+function invalidGrantInitiationRequest(message) {
+  const err = new Error(message);
+  err.code = 'invalid_request';
+  throw err;
+}
+
+function requireStagedRequestEnvelope(input) {
+  if (!input || typeof input !== 'object') {
+    invalidGrantInitiationRequest('Grant initiation requires a JSON object body');
+  }
+
+  const unsupportedRequestFields = Object.keys(input).filter((field) => !SUPPORTED_PENDING_REQUEST_FIELDS.has(field));
+  if (unsupportedRequestFields.length) {
+    invalidGrantInitiationRequest(`Unsupported request fields: ${unsupportedRequestFields.join(', ')}`);
+  }
+
+  if (!isEnvelopeRequest(input)) {
+    invalidGrantInitiationRequest('Grant initiation requires authorization_details');
+  }
+
+  if (typeof input.client_id !== 'string' || !input.client_id.trim()) {
+    invalidGrantInitiationRequest('Grant initiation requires client_id');
+  }
+
+  if (input.authorization_details.length < 1) {
+    invalidGrantInitiationRequest('authorization_details must contain at least one entry');
+  }
+
+  return input.client_id.trim();
+}
+
+function normalizeAuthorizationDetail(detail, index, opts = {}) {
   const invalidRequest = (message) => {
     const err = new Error(message);
     err.code = 'invalid_request';
     throw err;
   };
-
-  if (!input || typeof input !== 'object') {
-    invalidRequest('Grant initiation requires a JSON object body');
-  }
-
-  const unsupportedRequestFields = Object.keys(input).filter((field) => !SUPPORTED_PENDING_REQUEST_FIELDS.has(field));
-  if (unsupportedRequestFields.length) {
-    invalidRequest(`Unsupported request fields: ${unsupportedRequestFields.join(', ')}`);
-  }
-
-  if (!isEnvelopeRequest(input)) {
-    invalidRequest('Grant initiation requires authorization_details');
-  }
-
-  if (typeof input.client_id !== 'string' || !input.client_id.trim()) {
-    invalidRequest('Grant initiation requires client_id');
-  }
-
-  if (input.authorization_details.length !== 1) {
-    invalidRequest('Exactly one authorization_details entry is supported in the current reference flow');
-  }
-
-  const detail = input.authorization_details[0];
+  const at = `authorization_details[${index}]`;
   if (!detail || detail.type !== 'https://pdpp.org/data-access') {
     invalidRequest('Unsupported authorization_details type');
   }
@@ -518,14 +531,14 @@ function normalizePendingGrantRequest(input, opts = {}) {
     invalidRequest(`Unsupported authorization_details fields: ${unsupportedDetailFields.join(', ')}`);
   }
   if (!Array.isArray(detail.streams) || detail.streams.length === 0) {
-    invalidRequest('authorization_details[0].streams must be a non-empty array');
+    invalidRequest(`${at}.streams must be a non-empty array`);
   }
   if (!SUPPORTED_ACCESS_MODES.has(detail.access_mode)) {
-    invalidRequest('authorization_details[0].access_mode must be "single_use" or "continuous"');
+    invalidRequest(`${at}.access_mode must be "single_use" or "continuous"`);
   }
   for (const stream of detail.streams) {
     if (!stream || typeof stream !== 'object') {
-      invalidRequest('authorization_details[0].streams entries must be objects');
+      invalidRequest(`${at}.streams entries must be objects`);
     }
     const unsupportedStreamFields = Object.keys(stream).filter((field) => !SUPPORTED_STREAM_SELECTION_FIELDS.has(field));
     if (unsupportedStreamFields.length) {
@@ -539,16 +552,16 @@ function normalizePendingGrantRequest(input, opts = {}) {
   const configuredNativeStorageConnectorId = configuredNativeStorageBinding?.connector_id || null;
   const detailSource = detail.source;
   if (!detailSource || typeof detailSource !== 'object' || Array.isArray(detailSource)) {
-    invalidRequest("authorization_details[0].source must be { kind: 'connector' | 'provider_native', id }");
+    invalidRequest(`${at}.source must be { kind: 'connector' | 'provider_native', id }`);
   }
   const detailSourceKeys = Object.keys(detailSource).sort();
   if (detailSourceKeys.length !== 2 || detailSourceKeys[0] !== 'id' || detailSourceKeys[1] !== 'kind') {
-    invalidRequest('authorization_details[0].source must include only kind and id');
+    invalidRequest(`${at}.source must include only kind and id`);
   }
   const bindingKind = detailSource.kind;
   const sourceId = detailSource.id;
   if (!['connector', 'provider_native'].includes(bindingKind) || !isNonEmptyString(sourceId)) {
-    invalidRequest("authorization_details[0].source.kind must be 'connector' or 'provider_native' and source.id is required");
+    invalidRequest(`${at}.source.kind must be 'connector' or 'provider_native' and source.id is required`);
   }
   if (bindingKind === 'provider_native' && configuredNativeProviderId && sourceId !== configuredNativeProviderId) {
     invalidRequest(`Unknown source: { kind: 'provider_native', id: '${sourceId}' }`);
@@ -563,7 +576,7 @@ function normalizePendingGrantRequest(input, opts = {}) {
     ? (canonicalConnectorKey(rawSourceConnectorId) ?? rawSourceConnectorId)
     : rawSourceConnectorId;
   if (!resolvedConnectorId) {
-    invalidRequest("authorization_details[0].source requires configured native storage for provider_native access");
+    invalidRequest(`${at}.source requires configured native storage for provider_native access`);
   }
 
   // Use the canonical connector id in the source binding too so that
@@ -576,12 +589,6 @@ function normalizePendingGrantRequest(input, opts = {}) {
   const sourceBinding = { kind: bindingKind, id: canonicalSourceId };
 
   return {
-    request_kind: 'pdpp_selection_request',
-    request_version: 'reference.v1',
-    client: {
-      client_id: input.client_id.trim(),
-      client_display: normalizeClientDisplay(input.client_display),
-    },
     selection: {
       type: detail.type,
       purpose_code: detail.purpose_code,
@@ -593,6 +600,48 @@ function normalizePendingGrantRequest(input, opts = {}) {
     source_binding: sourceBinding,
     storage_binding: { connector_id: resolvedConnectorId },
   };
+}
+
+function normalizePendingGrantRequest(input, opts = {}) {
+  const clientId = requireStagedRequestEnvelope(input);
+  if (input.authorization_details.length !== 1) {
+    invalidGrantInitiationRequest('Exactly one authorization_details entry is supported in this flow; use the staged batch path for multi-entry requests');
+  }
+  const entry = normalizeAuthorizationDetail(input.authorization_details[0], 0, opts);
+  return {
+    request_kind: 'pdpp_selection_request',
+    request_version: 'reference.v1',
+    client: {
+      client_id: clientId,
+      client_display: normalizeClientDisplay(input.client_display),
+    },
+    selection: entry.selection,
+    source_binding: entry.source_binding,
+    storage_binding: entry.storage_binding,
+  };
+}
+
+function normalizeStagedGrantRequestBatch(input, opts = {}) {
+  const clientId = requireStagedRequestEnvelope(input);
+  const entries = input.authorization_details.map((detail, index) => normalizeAuthorizationDetail(detail, index, opts));
+  const entryCount = entries.length;
+  return {
+    request_kind: 'pdpp_selection_request_batch',
+    request_version: 'reference.v1',
+    client: {
+      client_id: clientId,
+      client_display: normalizeClientDisplay(input.client_display),
+    },
+    entries,
+    entry_count: entryCount,
+    soft_cap: BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP,
+    warning_threshold: BATCH_CONSENT_STAGED_ENTRY_WARNING_THRESHOLD,
+    soft_cap_warning: entryCount >= BATCH_CONSENT_STAGED_ENTRY_WARNING_THRESHOLD,
+  };
+}
+
+function isStagedBatchRequest(request) {
+  return request?.request_kind === 'pdpp_selection_request_batch' && Array.isArray(request.entries);
 }
 
 function getRequestTraceContext(request, scenarioId) {
@@ -2094,6 +2143,24 @@ function validateRefreshPolicyCapability(manifest, code) {
   }
 }
 
+const MANIFEST_SENSITIVITY_LEVELS = new Set(['standard', 'sensitive']);
+const DEFAULT_MANIFEST_SENSITIVITY = 'standard';
+
+function validateManifestSensitivity(manifest, code) {
+  const sensitivity = manifest.sensitivity;
+  if (sensitivity === undefined) return;
+  if (!isNonEmptyString(sensitivity) || !MANIFEST_SENSITIVITY_LEVELS.has(sensitivity)) {
+    throw invalidConnectorManifest(
+      'sensitivity must be "standard" or "sensitive" when declared',
+      code,
+    );
+  }
+}
+
+export function resolveManifestSensitivity(manifest = {}) {
+  return manifest?.sensitivity === 'sensitive' ? 'sensitive' : DEFAULT_MANIFEST_SENSITIVITY;
+}
+
 function validateStreamExpandDeclarations({
   code,
   manifestStreamsByName,
@@ -2251,6 +2318,7 @@ function validateConnectorManifest(manifest = {}, code = 'invalid_request', opts
 
   validateRuntimeRequirements(manifest, code);
   validateRefreshPolicyCapability(manifest, code);
+  validateManifestSensitivity(manifest, code);
 
   const manifestStreamsByName = new Map(
     manifest.streams
@@ -2626,6 +2694,9 @@ export async function getManifestForStorageBinding(storageBinding, opts = {}) {
  * Returns the staged request URI plus the consent URL for the primary request/approval flow.
  */
 export async function initiateGrant(input, opts = {}) {
+  if (Array.isArray(input?.authorization_details) && input.authorization_details.length > 1) {
+    return initiateStagedGrantBatch(input, opts);
+  }
   const normalized = normalizePendingGrantRequest(input, opts);
   requireStructuredPendingRequestShape(normalized);
   const traceContext = getRequestTraceContext(normalized, opts.scenarioId || input?.scenario_id);
@@ -2710,6 +2781,447 @@ export async function initiateGrant(input, opts = {}) {
   }
 }
 
+function asSingleEntryRequestSlice(batchRequest, entry) {
+  return {
+    request_kind: 'pdpp_selection_request',
+    request_version: batchRequest.request_version,
+    client: batchRequest.client,
+    selection: entry.selection,
+    source_binding: entry.source_binding,
+    storage_binding: entry.storage_binding,
+    ...(entry.manifest_version ? { manifest_version: entry.manifest_version } : {}),
+    ...(batchRequest.trace_context ? { trace_context: batchRequest.trace_context } : {}),
+  };
+}
+
+async function initiateStagedGrantBatch(input, opts = {}) {
+  const batch = normalizeStagedGrantRequestBatch(input, opts);
+  const traceContext = getRequestTraceContext(batch, opts.scenarioId || input?.scenario_id);
+  batch.trace_context = traceContext;
+  const firstSource = batch.entries[0]?.source_binding || null;
+
+  try {
+    const registeredClient = await getRegisteredClient(batch.client.client_id);
+    if (!registeredClient) {
+      const err = new Error(`Unknown client_id: ${batch.client.client_id}`);
+      err.code = 'invalid_client';
+      throw err;
+    }
+    batch.client.client_display = buildClientDisplayFromRegistration(registeredClient.metadata);
+
+    for (const entry of batch.entries) {
+      const slice = asSingleEntryRequestSlice(batch, entry);
+      requireStructuredPendingRequestShape(slice);
+      const { sourceBinding, storageBinding } = requireStructuredPendingRequestBindings(slice);
+      entry.source_binding = describeSourceBinding(sourceBinding);
+      entry.storage_binding = normalizeStorageBinding(storageBinding);
+      const manifest = await requireGrantManifestForBindings(sourceBinding, storageBinding, opts);
+      resolveGrantSelection(entry.selection, manifest);
+      entry.manifest_version = manifest.version;
+    }
+
+    const deviceCode = generateId('dc');
+    const userCode = randomBytes(3).toString('hex').toUpperCase();
+    const verificationBaseUrl = opts.baseUrl || process.env.AS_PUBLIC_URL || `http://localhost:${process.env.AS_PORT || '7662'}`;
+    const expiresAt = expiresInIso(300);
+
+    await createPendingConsent(deviceCode, userCode, batch, expiresAt);
+    await emitSpineEvent({
+      event_type: 'request.submitted',
+      trace_id: traceContext.trace_id,
+      scenario_id: traceContext.scenario_id,
+      request_id: traceContext.request_id,
+      actor_type: 'client',
+      actor_id: batch.client.client_id,
+      object_type: 'pending_consent',
+      object_id: deviceCode,
+      status: 'succeeded',
+      client_id: batch.client.client_id,
+      data: {
+        user_code: userCode,
+        staged: true,
+        entry_count: batch.entry_count,
+        soft_cap_warning: batch.soft_cap_warning,
+        sources: batch.entries.map((entry) => describeSourceBinding(entry.source_binding)),
+      },
+    });
+
+    const requestUri = buildPendingConsentRequestUri(deviceCode);
+    return {
+      request_uri: requestUri,
+      authorization_url: buildPendingConsentAuthorizationUrl(requestUri, { baseUrl: verificationBaseUrl }),
+      expires_in: 300,
+      trace_context: traceContext,
+    };
+  } catch (err) {
+    err.trace_id = traceContext.trace_id;
+    err.request_id = traceContext.request_id;
+    err.scenario_id = traceContext.scenario_id;
+    await emitSpineEvent({
+      event_type: 'request.rejected',
+      trace_id: traceContext.trace_id,
+      scenario_id: traceContext.scenario_id,
+      request_id: traceContext.request_id,
+      actor_type: 'client',
+      actor_id: batch.client?.client_id || 'unknown',
+      object_type: 'request',
+      object_id: traceContext.request_id,
+      status: 'rejected',
+      client_id: batch.client?.client_id || null,
+      data: {
+        source: describeSourceBinding(firstSource),
+        staged: true,
+        entry_count: batch.entry_count,
+        error: {
+          code: err.code || 'api_error',
+          message: err.message,
+        },
+      },
+    });
+    throw err;
+  }
+}
+
+async function buildBatchConsentCards(request, opts = {}) {
+  const cards = [];
+  for (let index = 0; index < request.entries.length; index += 1) {
+    const entry = request.entries[index];
+    const slice = asSingleEntryRequestSlice(request, entry);
+    requireStructuredPendingRequestShape(slice);
+    const { sourceBinding, storageBinding } = requireStructuredPendingRequestBindings(slice);
+    entry.source_binding = describeSourceBinding(sourceBinding);
+    entry.storage_binding = normalizeStorageBinding(storageBinding);
+    const manifest = await requireGrantManifestForBindings(sourceBinding, storageBinding, opts);
+    slice.manifest_version = entry.manifest_version;
+    const resolvedStreams = requirePendingRequestContractAgainstManifest(slice, manifest);
+    cards.push({
+      index,
+      source: describeSourceBinding(sourceBinding),
+      sensitivity: resolveManifestSensitivity(manifest),
+      access_mode: entry.selection?.access_mode || null,
+      purpose_code: entry.selection?.purpose_code || null,
+      retention: entry.selection?.retention ?? null,
+      resolvedStreams,
+      manifestStreamNames: Array.isArray(manifest?.streams)
+        ? manifest.streams.map((stream) => stream.name).filter((name) => typeof name === 'string')
+        : null,
+    });
+  }
+  return cards;
+}
+
+function summarizeBatchCumulativeRisk(cards = []) {
+  return {
+    source_count: cards.length,
+    sensitive_source_count: cards.filter((card) => card.sensitivity === 'sensitive').length,
+    continuous_access_count: cards.filter((card) => card.access_mode === 'continuous').length,
+    no_time_bound_count: cards.filter((card) => cardHasNoTimeBound(card)).length,
+    no_field_projection_count: cards.filter((card) => {
+      const streams = Array.isArray(card.resolvedStreams) ? card.resolvedStreams : [];
+      return streams.some((stream) => !Array.isArray(stream.fields) || stream.fields.length === 0);
+    }).length,
+    total_stream_count: cards.reduce((total, card) => (
+      total + (Array.isArray(card.resolvedStreams) ? card.resolvedStreams.length : 0)
+    ), 0),
+  };
+}
+
+function cardRequestsAllStreams(card) {
+  const manifestNames = Array.isArray(card?.manifestStreamNames) ? card.manifestStreamNames : null;
+  const resolved = Array.isArray(card?.resolvedStreams) ? card.resolvedStreams : [];
+  if (!manifestNames || manifestNames.length === 0 || resolved.length === 0) return false;
+  const requested = new Set(resolved.map((stream) => stream.name));
+  return manifestNames.every((name) => requested.has(name));
+}
+
+function cardHasNoTimeBound(card) {
+  const resolved = Array.isArray(card?.resolvedStreams) ? card.resolvedStreams : [];
+  if (resolved.length === 0) return true;
+  return resolved.some((stream) => !stream.time_range);
+}
+
+function evaluateBatchApproveAllGate(cards = []) {
+  const reasons = [];
+  const sensitiveCount = cards.filter((card) => card.sensitivity === 'sensitive').length;
+  if (cards.some((card) => card.access_mode === 'continuous' && cardRequestsAllStreams(card))) {
+    reasons.push('continuous_all_streams');
+  }
+  if (cards.some((card) => card.sensitivity === 'sensitive' && cardHasNoTimeBound(card))) {
+    reasons.push('sensitive_no_time_bound');
+  }
+  if (sensitiveCount >= 3) {
+    reasons.push('three_or_more_sensitive_sources');
+  }
+  return {
+    approve_all_suppressed: reasons.length > 0,
+    suppression_reasons: reasons,
+  };
+}
+
+async function getPendingConsentBatch(request, row) {
+  try {
+    await requirePendingRequestClientRegistration(request);
+    const cards = await buildBatchConsentCards(request);
+    return {
+      request,
+      batch: true,
+      userCode: row.user_code,
+      createdAt: row.created_at,
+      expiresAt: row.expires_at,
+      cards,
+      cumulativeRisk: summarizeBatchCumulativeRisk(cards),
+      approveAllGate: evaluateBatchApproveAllGate(cards),
+      softCapWarning: Boolean(request.soft_cap_warning),
+    };
+  } catch (err) {
+    await emitPendingConsentRejected(
+      { client: request.client, selection: request.entries?.[0]?.selection, source_binding: request.entries?.[0]?.source_binding },
+      row,
+      err,
+    );
+    throw err;
+  }
+}
+
+function resolveApprovedEntryIndexes(request, opts) {
+  const total = request.entries.length;
+  if (opts.approvedSourceIndexes === undefined || opts.approvedSourceIndexes === null) {
+    return Array.from({ length: total }, (_unused, index) => index);
+  }
+  if (!Array.isArray(opts.approvedSourceIndexes)) {
+    throw bindingError('invalid_request', 'approved_source_indexes must be an array of staged entry indexes');
+  }
+  const seen = new Set();
+  for (const raw of opts.approvedSourceIndexes) {
+    const index = typeof raw === 'number' ? raw : Number(raw);
+    if (!Number.isInteger(index) || index < 0 || index >= total) {
+      throw bindingError('invalid_request', `approved_source_indexes contains an out-of-range entry index: ${raw}`);
+    }
+    seen.add(index);
+  }
+  if (seen.size === 0) {
+    throw bindingError('invalid_request', 'approved_source_indexes must approve at least one staged source');
+  }
+  return Array.from(seen).sort((a, b) => a - b);
+}
+
+async function approveStagedGrantBatch(deviceCode, pending, request, subjectId, opts = {}) {
+  const traceContext = requirePersistedPendingTraceContext(pending);
+  request.trace_context = traceContext;
+
+  let approvedIndexes;
+  try {
+    approvedIndexes = resolveApprovedEntryIndexes(request, opts);
+    const isApproveAll = opts.approvedSourceIndexes === undefined || opts.approvedSourceIndexes === null;
+    if (isApproveAll) {
+      const gate = evaluateBatchApproveAllGate(await buildBatchConsentCards(request, opts));
+      if (gate.approve_all_suppressed) {
+        const err = new Error(
+          `Approve-all is not available for this request (${gate.suppression_reasons.join(', ')}); confirm each source individually`,
+        );
+        err.code = 'invalid_request';
+        err.param = 'approved_source_indexes';
+        throw err;
+      }
+      if (opts.confirmedApproveAll !== true) {
+        const err = new Error('Approve-all requires a re-asserting confirmation of the per-source list');
+        err.code = 'invalid_request';
+        err.param = 'confirm_approve_all';
+        throw err;
+      }
+    }
+  } catch (err) {
+    await emitPendingConsentRejected(
+      { client: request.client, selection: request.entries?.[0]?.selection, source_binding: request.entries?.[0]?.source_binding },
+      pending,
+      err,
+      { subjectId },
+    );
+    throw err;
+  }
+
+  const approvedEntries = approvedIndexes.map((index) => request.entries[index]);
+  for (const entry of approvedEntries) {
+    if (entry.selection?.purpose_code === 'https://pdpp.org/purpose/ai_training') {
+      const err = new Error('Staged batch consent does not cover ai_training; request it as a single-entry grant');
+      err.code = 'invalid_request';
+      err.param = 'purpose_code';
+      throw err;
+    }
+  }
+
+  let registeredClient;
+  const resolvedEntries = [];
+  try {
+    registeredClient = await requirePendingRequestClientRegistration(request);
+    for (const entry of approvedEntries) {
+      const slice = asSingleEntryRequestSlice(request, entry);
+      requireStructuredPendingRequestShape(slice);
+      const { sourceBinding, storageBinding } = requireStructuredPendingRequestBindings(slice);
+      entry.source_binding = describeSourceBinding(sourceBinding);
+      entry.storage_binding = normalizeStorageBinding(storageBinding);
+      const manifest = await requireGrantManifestForBindings(sourceBinding, storageBinding, opts);
+      slice.manifest_version = entry.manifest_version;
+      const resolvedStreams = requirePendingRequestContractAgainstManifest(slice, manifest);
+      resolvedEntries.push({ entry, slice, sourceBinding, storageBinding, manifest, resolvedStreams });
+    }
+  } catch (err) {
+    await emitPendingConsentRejected(
+      { client: request.client, selection: request.entries?.[0]?.selection, source_binding: request.entries?.[0]?.source_binding },
+      pending,
+      err,
+      { subjectId },
+    );
+    throw err;
+  }
+
+  const packageId = generateId('gpkg');
+  const createdAt = nowIso();
+  const packageEnvelope = {
+    version: 'reference.batch_consent.v1',
+    package_id: packageId,
+    subject: { id: subjectId },
+    client: {
+      client_id: registeredClient.client_id,
+      ...(request.client?.client_display ? { client_display: request.client.client_display } : {}),
+    },
+    staged_source_count: request.entries.length,
+    approved_source_count: resolvedEntries.length,
+    approved_source_indexes: approvedIndexes,
+    source_bounded_child_grants: true,
+  };
+
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      `INSERT INTO grant_packages(
+         package_id, subject_id, client_id, status, package_json,
+         trace_id, scenario_id, created_at, approved_at, revoked_at
+       ) VALUES($1, $2, $3, 'active', $4::jsonb, $5, $6, $7, $8, NULL)`,
+      [
+        packageId,
+        subjectId,
+        registeredClient.client_id,
+        JSON.stringify(packageEnvelope),
+        traceContext.trace_id,
+        traceContext.scenario_id,
+        createdAt,
+        createdAt,
+      ],
+    );
+  } else {
+    exec(referenceQueries.authGrantPackagesInsert, [
+      packageId,
+      subjectId,
+      registeredClient.client_id,
+      JSON.stringify(packageEnvelope),
+      traceContext.trace_id,
+      traceContext.scenario_id,
+      createdAt,
+      createdAt,
+    ]);
+  }
+
+  const childGrants = [];
+  for (const resolved of resolvedEntries) {
+    const { grant, token } = await persistChildGrantForPackage({
+      request: resolved.slice,
+      registeredClient,
+      subjectId,
+      sourceBinding: resolved.sourceBinding,
+      storageBinding: resolved.storageBinding,
+      manifest: resolved.manifest,
+      resolvedStreams: resolved.resolvedStreams,
+      traceContext,
+    });
+    const source = describePackageMemberSource(grant);
+    const addedAt = nowIso();
+    if (isPostgresStorageBackend()) {
+      await pgExec(
+        `INSERT INTO grant_package_members(
+           package_id, grant_id, token_id, source_json, status, added_at, revoked_at
+         ) VALUES($1, $2, $3, $4::jsonb, 'active', $5, NULL)`,
+        [packageId, grant.grant_id, token, JSON.stringify(source), addedAt],
+      );
+    } else {
+      exec(referenceQueries.authGrantPackageMembersInsert, [
+        packageId,
+        grant.grant_id,
+        token,
+        JSON.stringify(source),
+        addedAt,
+      ]);
+    }
+    childGrants.push({ grant, token, source });
+  }
+
+  await emitSpineEvent({
+    event_type: 'consent.approved',
+    trace_id: traceContext.trace_id,
+    scenario_id: traceContext.scenario_id,
+    request_id: traceContext.request_id,
+    actor_type: 'subject',
+    actor_id: subjectId,
+    subject_type: 'subject',
+    subject_id: subjectId,
+    object_type: 'pending_consent',
+    object_id: deviceCode,
+    status: 'succeeded',
+    client_id: registeredClient.client_id,
+    data: {
+      user_code: pending.user_code,
+      package_id: packageId,
+      approved_source_indexes: approvedIndexes,
+    },
+  });
+
+  const packageToken = await issuePackageToken(packageId, subjectId, registeredClient.client_id, null, {
+    traceContext,
+    source: 'batch_consent_package',
+  });
+
+  await emitSpineEvent({
+    event_type: 'grant_package.issued',
+    trace_id: traceContext.trace_id,
+    scenario_id: traceContext.scenario_id,
+    request_id: traceContext.request_id,
+    actor_type: 'authorization_server',
+    actor_id: 'pdpp_as',
+    subject_type: 'subject',
+    subject_id: subjectId,
+    object_type: 'grant_package',
+    object_id: packageId,
+    status: 'succeeded',
+    client_id: registeredClient.client_id,
+    token_id: packageToken,
+    data: {
+      child_grant_ids: childGrants.map((entry) => entry.grant.grant_id),
+      sources: childGrants.map((entry) => entry.source),
+    },
+  });
+
+  await markPendingConsentApproved(deviceCode, {
+    subjectId,
+    grantId: packageId,
+    tokenId: packageToken,
+    aiTrainingConsented: false,
+  });
+
+  return {
+    grant: {
+      package: true,
+      package_id: packageId,
+      grant_id: packageId,
+      child_grants: childGrants.map((entry) => ({
+        grant_id: entry.grant.grant_id,
+        source: entry.source,
+      })),
+    },
+    token: packageToken,
+    package: true,
+    package_id: packageId,
+  };
+}
+
 /**
  * Get pending consent request for display in consent UI
  */
@@ -2723,6 +3235,9 @@ export async function getPendingConsent(deviceCode) {
   }
   const request = JSON.parse(row.params_json);
   request.trace_context = requirePersistedPendingTraceContext(row);
+  if (isStagedBatchRequest(request)) {
+    return getPendingConsentBatch(request, row);
+  }
   let resolvedStreams = null;
   let manifestStreamNames = null;
   try {
@@ -2775,6 +3290,9 @@ export async function approveGrant(deviceCode, subjectId = 'owner_local', opts =
   }
 
   const request = JSON.parse(pending.params_json);
+  if (isStagedBatchRequest(request)) {
+    return approveStagedGrantBatch(deviceCode, pending, request, subjectId, opts);
+  }
   const traceContext = requirePersistedPendingTraceContext(pending);
   request.trace_context = traceContext;
   let registeredClient;
