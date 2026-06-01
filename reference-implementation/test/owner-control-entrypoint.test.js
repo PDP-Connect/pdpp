@@ -233,6 +233,20 @@ test('control document marks supported families with method + absolute URL', asy
     assert.equal(inspectDiagnostics.url, `${rsUrl}/v1/owner/connections/{connection_id}/diagnostics`);
     assert.match(inspectDiagnostics.reason, /health/);
 
+    // Connection revoke is served over the owner-agent bearer surface as of the
+    // revoke-durability slice (tasks 3.1d/6.1d / design "Deferred:
+    // connection-revoke durability"). It is templated by connection_id; the
+    // representative URL is the connection-scoped route and the reason states it
+    // stops future collection, preserves records, and is reversible only by
+    // explicit re-initiate.
+    const revokeConnection = actionByFamily(body, 'revoke_connection');
+    assert.ok(revokeConnection, 'revoke_connection must be listed');
+    assert.equal(revokeConnection.status, 'supported');
+    assert.equal(revokeConnection.method, 'POST');
+    assert.equal(revokeConnection.url, `${rsUrl}/v1/owner/connections/{connection_id}/revoke`);
+    assert.match(revokeConnection.reason, /future collection/i);
+    assert.match(revokeConnection.reason, /records/i);
+
     // Event-subscription management is served over the owner-agent bearer
     // surface: the `/v1/event-subscriptions*` routes already accept a
     // trusted_owner_agent bearer, and the control catalog now advertises that
@@ -263,9 +277,13 @@ test('control document names unsupported/owner-mediated families instead of omit
     // `run_connection` are intentionally NOT in this list anymore: all are now
     // served over the owner-agent bearer surface (tasks 4.4, 2.3/5.x, 6.1-6.3)
     // and are asserted as `supported` in the "supported families" test above.
+    // `revoke_connection` is intentionally NOT in this list anymore: it is now
+    // served over the owner-agent bearer surface (POST .../revoke, tasks
+    // 3.1d/6.1d) and is asserted as `supported` in the "supported families"
+    // test above. `delete_connection` remains the one destructive family that is
+    // honestly typed-unsupported (no store delete primitive + cascade contract).
     for (const family of [
       'delete_connection',
-      'revoke_connection',
     ]) {
       const action = actionByFamily(body, family);
       assert.ok(action, `${family} must be named in the catalog`);

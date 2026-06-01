@@ -241,9 +241,19 @@ test('owner-agent bearer lists a configured connection with full identity + owne
       inspectDiagnostics.url,
     );
     assert.ok(!inspectDiagnostics.url.includes('{connection_id}'), 'placeholder must be resolved');
-    // Not-yet-exposed instance families are named with a typed status, not omitted.
+    // revoke_connection is supported and instance-scoped: the per-connection
+    // URL resolves to this connection's revoke route.
+    const revokeConnection = byFamily.get('revoke_connection');
+    assert.ok(revokeConnection, 'revoke_connection action must be advertised');
+    assert.equal(revokeConnection.status, 'supported');
+    assert.equal(revokeConnection.method, 'POST');
+    assert.ok(
+      revokeConnection.url.endsWith('/v1/owner/connections/cin_amazon_personal/revoke'),
+      revokeConnection.url,
+    );
+    assert.ok(!revokeConnection.url.includes('{connection_id}'), 'placeholder must be resolved');
+    // delete_connection remains a typed unsupported family (named, not omitted).
     assert.equal(byFamily.get('delete_connection')?.status, 'unsupported');
-    assert.equal(byFamily.get('revoke_connection')?.status, 'unsupported');
   });
 });
 

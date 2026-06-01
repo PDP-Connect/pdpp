@@ -112,9 +112,11 @@ Grant-package revoke (`POST /_ref/grant-packages/:id/revoke`, cascading soft-rev
 
 The catalog advertises the destructive families honestly and typed per the "Owner-agent control SHALL advertise and enforce per-connection actions" requirement (actions are advertised "when available", unavailable ones "marked unsupported with a typed reason"). No spec requirement mandates delete/revoke routes exist; the spec requires honest advertisement, which is in place. A future lane that lands a connection-scoped delete or revoke primitive (with cascade semantics and committed proof) flips the corresponding catalog descriptor from `unsupported` to `supported` without a contract break.
 
-## Deferred: connection-revoke durability (the exact next implementation packet)
+## Shipped: connection-revoke durability (lane `ri-owner-revoke-durability-v1`)
 
-This packet supersedes the prior audit's "missing primitive is `revokeSourceInstance`" framing. The store-level connection-scoped revoke **already exists** (`connectorInstanceStore.updateStatus(connectorInstanceId, { status: 'revoked', revokedAt })`); what is missing is the durability guard that makes a revoke survive implicit default-account re-materialization, plus the owner-bearer route that shares the existing primitive. The packet is two reviewable units, smallest first.
+**Status: shipped.** Both units below landed in lane `ri-owner-revoke-durability-v1`. Unit 1 (durability guard) is realized in `server/stores/connector-instance-store.js` (`ensureDefaultAccountConnection` returns a revoked default-account row unchanged; `resolveOwnerConnectorInstanceNamespace` raises `connector_instance_not_found` for a non-active materialization result so ingest/read fail closed). Unit 2 (route) is realized in `server/routes/owner-connection-revoke.ts` (`POST /v1/owner/connections/{connection_id}/revoke` + connector-only sibling), wired in `server/index.js`, with the catalog descriptor (`server/metadata.ts`) flipped to `supported` and reference-contract ops `ownerRevokeConnection`/`ownerRevokeConnector` + `OwnerConnectionRevokeSchema`. Proof: `test/owner-connection-revoke.test.js` (13 cases) and the Unit 1 assertions in `test/connector-instance-store.test.js`. The contract below is preserved as the realized design; a future lane needs no further revoke work (delete remains separately deferred).
+
+This packet superseded the prior audit's "missing primitive is `revokeSourceInstance`" framing. The store-level connection-scoped revoke **already existed** (`connectorInstanceStore.updateStatus(connectorInstanceId, { status: 'revoked', revokedAt })`); what was missing was the durability guard that makes a revoke survive implicit default-account re-materialization, plus the owner-bearer route that shares the existing primitive. The packet was two reviewable units, smallest first.
 
 ### Semantic boundaries (what revoke is, and what it is NOT)
 
@@ -256,15 +258,18 @@ sharable under a connection-scoped owner-bearer adapter, because doing so would 
 agent addressing one connection read or mutate sibling connections. That is why
 delete is `unsupported` today: not "not built yet" in a vague sense, but "the only
 existing semantic is broader than one connection, and sharing it would violate the
-connection-scoped invariant." Revoke is a refinement of this rule (audit corrected):
-the connection-scoped revoke primitive **does** exist (`updateStatus → 'revoked'`,
-zero cascade, one binding) and is safe for device-collected connections, but it is
-typed `unsupported` because it is not yet *durable* for the implicit default-account
-class (silently resurrected by `ensureDefaultAccountConnection`). Delete needs a
-connection-scoped primitive (`deleteConnection` with a defined cascade); revoke needs
-the durability guard specified in "Deferred: connection-revoke durability" — not a new
-store primitive — before either can be a catalog `supported` row. (Diagnostics is no
-longer in this list; its connection-scoped read shipped, built on `listConnectorSummaries`.)
+connection-scoped invariant." Revoke is **now shipped** (lane
+`ri-owner-revoke-durability-v1`): the connection-scoped revoke primitive
+(`updateStatus → 'revoked'`, zero cascade, one binding) was always safe for
+device-collected connections, and the durability guard specified in "Deferred:
+connection-revoke durability" closed the implicit default-account resurrection hole
+(`ensureDefaultAccountConnection` no longer flips a revoked default-account row back
+to active, and the resolver fails closed on a non-active materialization result), so
+revoke is durable for every class. Delete still needs a connection-scoped primitive
+(`deleteConnection` with a defined cascade) before it can be a catalog `supported`
+row. (Diagnostics and revoke are no longer deferred in this list; both shipped —
+diagnostics built on `listConnectorSummaries`, revoke on the existing `updateStatus`
+soft-flip + the durability guard.)
 
 ### Task disposition against this ideal
 
@@ -280,7 +285,7 @@ brief requires:
 | 6.1 instance-scoped operations | **close now (supported scope done)** | rename/schedule/run are instance-scoped; diagnostics/delete/revoke are `unsupported` for the connection-scoped-boundary reason above. The instance-scoping invariant is fully realized for every *supported* family. Reword and close. |
 | 8.5 live Daisy/Simon smoke | **owner / live gated** | Requires a deployed instance and a real local agent; cannot be closed with unit evidence. Stays open as a residual-risk live gate. |
 | delete_connection | **requires new primitive** | needs `deleteConnection` + a defined cascade contract (records/dataset/spine/device source-instance) before any route or catalog flip. |
-| revoke_connection | **requires durability guard, not a new store primitive (audit corrected)** | the connection-scoped revoke primitive already exists (`updateStatus → 'revoked'`, zero cascade) and is durable for device-collected connections; it stays `unsupported` only until `ensureDefaultAccountConnection` is guarded to not resurrect a revoked default-account row. Then a `POST …/revoke` route shares the existing primitive (mirroring run-now) and flips the catalog. See "Deferred: connection-revoke durability". |
+| revoke_connection | **done (durability guard + route shipped, lane `ri-owner-revoke-durability-v1`)** | Unit 1: `ensureDefaultAccountConnection` (SQLite + Postgres) returns a revoked default-account row unchanged instead of resurrecting it, and the resolver's default-account branch raises `connector_instance_not_found` for a non-active materialization result so the ingest/write path fails closed. Unit 2: `POST /v1/owner/connections/{connection_id}/revoke` (+ connector-only sibling) shares the existing `updateStatus → 'revoked'` soft-flip (zero cascade) under the owner-bearer adapter, mirroring run-now, with ownership resolved before mutation, idempotent double-revoke via typed `connector_instance_inactive`, and `owner_agent.connection.revoke` audit. Catalog flipped `unsupported` → `supported` in the same unit. See "Deferred: connection-revoke durability". |
 | inspect_diagnostics | **done (connection-scoped primitive shipped)** | the per-connection health read keyed on `connection_id` now exists (`GET /v1/owner/connections/{connection_id}/diagnostics`, task 6.5). It is built on the `listConnectorSummaries` session projection — which is already per-connection and carries no device-subsystem/sibling state — and shared under the owner-bearer adapter; the owner-wide device-exporter diagnostics surface was deliberately *not* shared. Catalog flipped `unsupported` → `supported` in the same unit as the route + contract + tests. |
 | Amazon `enroll_browser_collector` (5.3) | **requires new primitive** | gated on `add-browser-collector-enrollment-primitive`; honest `unsupported` until browser-collector enrollment proves end-to-end. |
 | API-connect `open_url` (api_network) | **requires new primitive** | needs a typed owner-agent API-connect intent emitting `open_url`/token-capture with owner-completed authorization; honest `unsupported` until then. |

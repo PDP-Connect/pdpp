@@ -622,11 +622,13 @@ const OWNER_AGENT_CONTROL_ACTION_CATALOG: readonly OwnerAgentControlActionDescri
   {
     family: "revoke_connection",
     scope: "instance",
-    status: "unsupported",
-    method: null,
-    urlTemplate: null,
+    status: "supported",
+    method: "POST",
+    // Templated path: the surface catalog carries the literal `{connection_id}`
+    // placeholder; the per-connection projection substitutes the concrete id.
+    urlTemplate: (rs) => `${rs}/v1/owner/connections/{connection_id}/revoke`,
     reason:
-      "Connection-scoped credential revoke is not yet a durable owner-agent control route in this build. A connection-scoped, zero-cascade revoke primitive does exist (the connector-instance store can soft-flip one connection_id to status 'revoked' without touching records, spine, device rows, or sibling connections), and routine ingest already refuses a revoked connection — so it is durable for device-collected connections. It stays unsupported because it is not yet durable for the implicitly-materialized default-account connection class: that class is silently resurrected to active by implicit default-account materialization on the next owner read, which would make the revoke a faked success. The remaining work is a durability guard on default-account materialization (not a new store primitive); once it lands, a POST /v1/owner/connections/{connection_id}/revoke route shares the existing primitive under the owner-bearer adapter and this flips to supported. Device-scoped device-exporter revoke (which over-revokes sibling connections sharing a device) remains owner-session only and is deliberately not reused here.",
+      "Revoke a connection by connection_id to STOP its future collection: POST this URL. The connection flips to status 'revoked' and no future run/ingest lands for it. Revoke is zero-cascade and is NOT delete — already-collected records stay readable, and spine evidence, device rows, and sibling connections are untouched. It is durable: implicit default-account materialization no longer resurrects a revoked connection, so the revoke survives every owner/dashboard read and grant/polyfill scope resolution. A revoked connection is reversible only by an explicit owner re-initiate, never silently. Use a connection_id from list_connections; connector-only addressing (`POST /v1/owner/connectors/{connector_id}/revoke`) auto-selects a single active connection or returns a typed ambiguous_connection. A second revoke of an already-revoked connection returns a typed connector_instance_inactive. To revoke a client's grant access (not a connection binding) use the owner-session grant-package revoke; that is deliberately not an owner-agent action.",
   },
 ];
 

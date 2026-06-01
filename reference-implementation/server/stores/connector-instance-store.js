@@ -215,6 +215,23 @@ export async function resolveOwnerConnectorInstanceNamespace({
       displayName: displayName ?? connectorId,
       now,
     });
+    // The default-account materialization respects a deliberate revoke (it
+    // returns the revoked row unchanged rather than resurrecting it). A
+    // non-active row is therefore NOT a usable namespace: surface it as
+    // "no active connection" so the ingest/write path fails closed (the write
+    // is refused) and read callers that tolerate connector_instance_not_found
+    // fall through to their no-active-source handling, instead of binding to
+    // a revoked connection. This is the load-bearing half of the durability
+    // guard — without it, the store-level guard alone would still hand back a
+    // revoked namespace. See add-owner-agent-control-surface design
+    // "Deferred: connection-revoke durability" → Unit 1.
+    if (instance.status !== 'active') {
+      throw new ConnectorInstanceResolutionError(
+        'connector_instance_not_found',
+        `No active default-account connection exists for owner '${ownerSubjectId}' and connector '${connectorId}'; the default-account connection is '${instance.status}'.`,
+        { ownerSubjectId, connectorId, connectorInstanceId: instance.connectorInstanceId, status: instance.status },
+      );
+    }
     return namespaceFromInstance(instance, { selector: 'connector_id', createdDefaultAccount: true });
   } catch (err) {
     // The connector_instances row references connectors(connector_id). If
@@ -256,6 +273,23 @@ export function createSqliteConnectorInstanceStore() {
     },
 
     ensureDefaultAccountConnection({ ownerSubjectId, connectorId, displayName, now }) {
+      // Durability guard: a deliberately-revoked default-account connection
+      // MUST NOT be silently resurrected to active. Read the deterministically
+      // keyed row first; if the owner revoked it, return it unchanged so the
+      // revoke survives. Only a missing or active row materializes/upserts.
+      // The device re-enroll path upserts under a different source_binding_key
+      // and never reaches this method, so its reactivation semantics are
+      // untouched. See add-owner-agent-control-surface design "Deferred:
+      // connection-revoke durability" → Unit 1.
+      const existing = this.getByBinding({
+        ownerSubjectId,
+        connectorId,
+        sourceKind: 'account',
+        sourceBindingKey: DEFAULT_ACCOUNT_SOURCE_BINDING_KEY,
+      });
+      if (existing && existing.status === 'revoked') {
+        return existing;
+      }
       return this.upsert({
         connectorInstanceId: makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId),
         ownerSubjectId,
@@ -397,6 +431,23 @@ export function createPostgresConnectorInstanceStore() {
     },
 
     async ensureDefaultAccountConnection({ ownerSubjectId, connectorId, displayName, now }) {
+      // Durability guard: a deliberately-revoked default-account connection
+      // MUST NOT be silently resurrected to active. Read the deterministically
+      // keyed row first; if the owner revoked it, return it unchanged so the
+      // revoke survives. Only a missing or active row materializes/upserts.
+      // The device re-enroll path upserts under a different source_binding_key
+      // and never reaches this method, so its reactivation semantics are
+      // untouched. See add-owner-agent-control-surface design "Deferred:
+      // connection-revoke durability" → Unit 1.
+      const existing = await this.getByBinding({
+        ownerSubjectId,
+        connectorId,
+        sourceKind: 'account',
+        sourceBindingKey: DEFAULT_ACCOUNT_SOURCE_BINDING_KEY,
+      });
+      if (existing && existing.status === 'revoked') {
+        return existing;
+      }
       return await this.upsert({
         connectorInstanceId: makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId),
         ownerSubjectId,

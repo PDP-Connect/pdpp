@@ -372,6 +372,7 @@ import { mountRsBlobRead, mountRsReadQueries } from './routes/rs-read.ts';
 import { mountOwnerConnectionRename, mountOwnerConnectionsList } from './routes/owner-connections.ts';
 import { mountOwnerConnectionSchedule } from './routes/owner-connection-schedule.ts';
 import { mountOwnerConnectionRun } from './routes/owner-connection-run.ts';
+import { mountOwnerConnectionRevoke } from './routes/owner-connection-revoke.ts';
 import { mountOwnerConnectionDiagnostics } from './routes/owner-connection-diagnostics.ts';
 import { mountOwnerConnectionIntent } from './routes/owner-connection-intent.ts';
 import { mountOwnerConnectorTemplates } from './routes/owner-connector-templates.ts';
@@ -3753,6 +3754,44 @@ function buildRsApp(opts = {}) {
     resolveOwnerConnectorNamespace,
     setReferenceTraceId,
     runNow: (connectorId, options) => opts.controller.runNow(connectorId, options),
+  });
+
+  // POST /v1/owner/connections/:connectionId/revoke and
+  // POST /v1/owner/connectors/:connectorId/revoke are the bearer-authed
+  // owner-agent connection-revoke routes: a trusted local owner agent stops ONE
+  // connection's future collection by flipping its connector_instance to status
+  // `revoked`, addressed by connection_id (or connector_id when unambiguous).
+  // There is no cookie-authed `/_ref` revoke route to share with — revoke is a
+  // new owner-agent control surface built directly on the existing
+  // connector-instance store soft-flip primitive (`updateStatus → 'revoked'`),
+  // so it adds NO new destructive semantic; it shares that store primitive under
+  // the same owner-bearer auth adapter the run/schedule routes use. Revoke is
+  // zero-cascade (records, spine, device rows, and sibling connections are
+  // untouched) and durable (default-account materialization no longer resurrects
+  // a revoked row). Ownership is enforced by the namespace resolver BEFORE the
+  // mutation (foreign connection_id → 404), a double-revoke is an idempotent
+  // typed connector_instance_inactive (400), and the connector-only route
+  // auto-selects a single active connection or rejects with a typed
+  // `ambiguous_connection` (409). `/mcp` owner-bearer rejection is untouched. See
+  // openspec/changes/add-owner-agent-control-surface (tasks 3.1d/6.1d, design
+  // "Deferred: connection-revoke durability" → Unit 2).
+  mountOwnerConnectionRevoke(app, {
+    AmbiguousConnectionError,
+    canonicalConnectorKey,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    getOwnerTokenSubjectId,
+    handleError,
+    listActiveBindingsForGrant,
+    pdppError,
+    projectBindingForWire,
+    requireOwner,
+    requireToken,
+    resolveOwnerConnectorNamespace,
+    setReferenceTraceId,
+    updateConnectorInstanceStatus: (connectorInstanceId, options) =>
+      createRequestConnectorInstanceStore().updateStatus(connectorInstanceId, options),
   });
 
   // GET /v1/owner/connections/:connectionId/diagnostics and

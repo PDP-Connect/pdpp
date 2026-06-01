@@ -429,6 +429,24 @@ const OwnerConnectionDiagnosticsSchema = {
   ],
 };
 
+// Owner-agent connection-revoke result: the soft-flipped connection. Revoke is
+// zero-cascade (records, spine, device rows, and sibling connections are
+// untouched) and durable, so the response only confirms the connection's new
+// `revoked` status and the `revoked_at` stamp — there is nothing else to report.
+const OwnerConnectionRevokeSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    object: { const: "owner_connection_revoke" },
+    connection_id: { type: "string" },
+    connector_id: { type: "string" },
+    connector_key: { type: "string" },
+    status: { const: "revoked" },
+    revoked_at: { type: ["string", "null"] },
+  },
+  required: ["object", "connection_id", "connector_id", "connector_key", "status", "revoked_at"],
+};
+
 // Owner-agent connection-intent request: a trusted owner agent names the
 // connector type it wants to add a connection for. `connector_id` accepts the
 // canonical key (`amazon`) or a registry URL; the route canonicalizes it. An
@@ -1544,6 +1562,34 @@ export const referenceManifests = [
     request: { params: ConnectorIdParamSchema },
     responses: {
       202: { schema: RunStartResponseSchema, description: "Accepted" },
+      ...CommonErrors,
+    },
+  },
+  {
+    id: "ownerRevokeConnection",
+    method: "POST",
+    path: "/v1/owner/connections/{connectionId}/revoke",
+    surface: "reference",
+    tags: ["reference", "connections", "owner-agent"],
+    summary:
+      "Owner-agent bearer: revoke one configured connection, addressed by `connection_id`. Flips the connection to status `revoked` so no future run/ingest lands; already-collected records, spine evidence, device rows, and sibling connections are untouched (zero cascade), and the revoke is durable across owner reads and grant/polyfill scope resolution. A double-revoke returns a typed `connector_instance_inactive` (400). Owner bearers only; client/mcp_package grants SHALL NOT reach this route. `/mcp` owner-bearer rejection is untouched.",
+    request: { params: ConnectionIdParamSchema },
+    responses: {
+      200: { schema: OwnerConnectionRevokeSchema, description: "Revoked" },
+      ...CommonErrors,
+    },
+  },
+  {
+    id: "ownerRevokeConnector",
+    method: "POST",
+    path: "/v1/owner/connectors/{connectorId}/revoke",
+    surface: "reference",
+    tags: ["reference", "owner-agent"],
+    summary:
+      "Owner-agent bearer: revoke a connector's connection addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Flips the resolved connection to status `revoked` (zero cascade, durable). Owner bearers only; client/mcp_package grants SHALL NOT reach this route.",
+    request: { params: ConnectorIdParamSchema },
+    responses: {
+      200: { schema: OwnerConnectionRevokeSchema, description: "Revoked" },
       ...CommonErrors,
     },
   },
