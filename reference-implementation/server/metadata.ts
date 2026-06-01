@@ -588,6 +588,28 @@ const OWNER_AGENT_CONTROL_ACTION_CATALOG: readonly OwnerAgentControlActionDescri
     reason:
       "Read connection-scoped diagnostics for a connection by connection_id: last run status, last successful ingest time, current schedule state, freshness, and a typed health classification (healthy/degraded/blocked/cooling_off/idle/needs_attention/unknown). GET this URL. Use a connection_id from list_connections. Connector-only addressing (`GET /v1/owner/connectors/{connector_id}/diagnostics`) auto-selects a single active connection or returns a typed ambiguous_connection. The response describes only the addressed connection and never device-exporter subsystem or sibling-connection state.",
   },
+  // Supported in this build: a trusted owner agent manages CloudEvents webhook
+  // subscriptions over the same bearer. This is a surface-level family (it is not
+  // bound to one configured connection), and it is the one capability the
+  // admin-surface audit found owner-bearer-capable but previously unadvertised:
+  // the `/v1/event-subscriptions*` routes accept a `trusted_owner_agent` bearer
+  // (the resource-server `client_event_subscriptions` capability advertises
+  // `authority_kinds_supported: [client_grant, trusted_owner_agent]`), so a
+  // trusted owner agent can already create/list/get/update/delete subscriptions
+  // and send test events. The representative URL is the list/create collection
+  // route; the per-subscription and test-event siblings are named in the reason
+  // so an agent discovers the whole family without a second probe. The owner
+  // bearer authorizes the control plane only — `/mcp` still rejects owner
+  // bearers, so an MCP client cannot reach these routes with an owner bearer.
+  {
+    family: "manage_event_subscriptions",
+    scope: "surface",
+    status: "supported",
+    method: "GET",
+    urlTemplate: (rs) => `${rs}/v1/event-subscriptions`,
+    reason:
+      "Manage CloudEvents webhook subscriptions over the owner-agent bearer. GET this URL to list and POST it to create (Body: { callback_url, filters? }; create returns a one-time whsec_ signing secret — never log it). GET/PATCH/DELETE `/v1/event-subscriptions/{subscription_id}` reads, updates (enable + rotate_secret), or removes one subscription; POST `/v1/event-subscriptions/{subscription_id}/test-event` enqueues a signed test delivery. Callbacks must be HTTPS (localhost excepted). See the resource-server `client_event_subscriptions` capability for the signing, delivery, and event-type contract.",
+  },
   {
     family: "delete_connection",
     scope: "instance",

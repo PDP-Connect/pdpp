@@ -74,6 +74,23 @@ The owner-agent control surface SHALL advertise supported actions for each conne
 - **THEN** the reference implementation SHALL reject the request with a typed ambiguity error
 - **AND** it SHALL include the available `connection_id` values and retry guidance
 
+### Requirement: Owner-agent control SHALL advertise owner-agent-capable surface families honestly
+
+The owner-agent control surface SHALL advertise as `supported` any non-connection-scoped action family whose routes already accept a trusted owner-agent bearer, so the control catalog is a complete discovery source and a trusted owner agent never has to read route source to find an owner-agent-usable capability. Advertising such a family SHALL NOT widen `/mcp`: the routes remain reachable only over the REST control plane, and `/mcp` SHALL continue to reject owner bearers.
+
+#### Scenario: Owner agent discovers event-subscription management
+
+- **WHEN** a trusted owner agent reads the owner-agent control capability document
+- **THEN** it SHALL include an event-subscription management family marked `supported`
+- **AND** the family SHALL point at the `/v1/event-subscriptions` route family that already accepts a trusted owner-agent bearer
+- **AND** the advertised family SHALL NOT be projected onto any single connection's per-connection action list, because it is not bound to one connection
+
+#### Scenario: Advertised surface family does not widen MCP
+
+- **WHEN** a trusted owner agent presents its owner-agent bearer to `/mcp`
+- **THEN** the reference implementation SHALL reject the bearer for MCP tool access
+- **AND** advertising the event-subscription family in the REST control catalog SHALL NOT make those routes reachable over `/mcp` with an owner bearer
+
 ### Requirement: Owner-agent control mutations SHALL be auditable and secret-safe
 
 Owner-agent control mutations SHALL record non-secret audit evidence including actor kind, client identity, target resource, operation, and outcome. Audit evidence SHALL NOT include bearer tokens, provider credentials, callback secrets, raw uploaded files, or provider session cookies.

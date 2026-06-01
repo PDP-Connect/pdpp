@@ -232,6 +232,21 @@ test('control document marks supported families with method + absolute URL', asy
     assert.equal(inspectDiagnostics.method, 'GET');
     assert.equal(inspectDiagnostics.url, `${rsUrl}/v1/owner/connections/{connection_id}/diagnostics`);
     assert.match(inspectDiagnostics.reason, /health/);
+
+    // Event-subscription management is served over the owner-agent bearer
+    // surface: the `/v1/event-subscriptions*` routes already accept a
+    // trusted_owner_agent bearer, and the control catalog now advertises that
+    // capability (admin-surface audit "one genuine construction gap"). It is a
+    // surface-level family (not bound to one connection); the representative URL
+    // is the list/create collection route and the reason names the
+    // per-subscription and test-event siblings.
+    const manageSubscriptions = actionByFamily(body, 'manage_event_subscriptions');
+    assert.ok(manageSubscriptions, 'manage_event_subscriptions must be listed');
+    assert.equal(manageSubscriptions.status, 'supported');
+    assert.equal(manageSubscriptions.method, 'GET');
+    assert.equal(manageSubscriptions.url, `${rsUrl}/v1/event-subscriptions`);
+    assert.match(manageSubscriptions.reason, /test-event/);
+    assert.match(manageSubscriptions.reason, /subscription_id/);
   });
 });
 
@@ -298,6 +313,68 @@ test('/mcp continues to reject owner-agent bearers (boundary preserved)', async 
     assert.equal(status, 403);
     assert.equal(body?.error?.code, 'permission_error');
     assert.match(body?.error?.message ?? '', /owner-agent/i);
+  });
+});
+
+test('manage_event_subscriptions advertisement is honest: owner bearer is accepted on the route, /mcp rejects it', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+
+    // (1) The control catalog advertises the family as supported, pointing at
+    // the real `/v1/event-subscriptions` collection route.
+    const control = await fetchJson(`${rsUrl}/v1/owner/control`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    const manageSubscriptions = actionByFamily(control.body, 'manage_event_subscriptions');
+    assert.ok(manageSubscriptions, 'manage_event_subscriptions must be advertised');
+    assert.equal(manageSubscriptions.status, 'supported');
+    assert.equal(manageSubscriptions.url, `${rsUrl}/v1/event-subscriptions`);
+
+    // (2) The advertisement is honest: a trusted owner-agent bearer is actually
+    // accepted on the advertised route (it can list its subscriptions; here zero
+    // exist, so an empty data array, not a 401/403).
+    const ownerList = await fetchJson(`${rsUrl}/v1/event-subscriptions`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    assert.equal(ownerList.status, 200, 'owner bearer must be accepted on /v1/event-subscriptions');
+    assert.ok(Array.isArray(ownerList.body.data), 'listing returns a data array');
+    assert.equal(ownerList.body.data.length, 0, 'no subscriptions configured yet');
+
+    // (3) The credential boundary is preserved: the same owner bearer cannot
+    // reach event-subscription tools over /mcp — /mcp rejects owner bearers by
+    // construction, so advertising the REST control family does not widen /mcp.
+    const mcp = await fetchJson(`${rsUrl}/mcp`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${ownerToken}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    });
+    assert.equal(mcp.status, 403, '/mcp must still reject owner bearers');
+    assert.equal(mcp.body?.error?.code, 'permission_error');
+    assert.match(mcp.body?.error?.message ?? '', /owner-agent/i);
+  });
+});
+
+test('manage_event_subscriptions is a surface family, never projected onto a connection row', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connections`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 200);
+    // Surface-level families (discover/list/initiate/manage_event_subscriptions)
+    // must not leak into a connection's instance-scoped supported_actions, even
+    // when configured connections exist.
+    for (const connection of body.data ?? []) {
+      const families = (connection.supported_actions ?? []).map((a) => a.family);
+      assert.ok(
+        !families.includes('manage_event_subscriptions'),
+        'manage_event_subscriptions must not appear in per-connection supported_actions',
+      );
+    }
   });
 });
 
