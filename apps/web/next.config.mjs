@@ -238,6 +238,13 @@ const nextConfig = {
         source: '/.well-known/skills/:path*',
         destination: '/well-known/skills/:path*',
       },
+      // Agents that probe the well-known namespace first should still land on
+      // the canonical agent-readable entrypoint, so there is no single
+      // universal URL to guess. Compact alias, not duplicate content.
+      {
+        source: '/.well-known/llms.txt',
+        destination: '/llms.txt',
+      },
       {
         source: '/.well-known/oauth-authorization-server',
         destination: '/well-known/oauth-authorization-server',

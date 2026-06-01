@@ -11,6 +11,16 @@ const SKILL_BASE_REPO_PATH = "docs/agent-skills/pdpp-data-access";
 const WELL_KNOWN_BASE_PATH = "/.well-known/skills";
 const LEADING_SLASHES = /^\/+/;
 
+// Trusted owner-agent onboarding is the second, deliberately separate agent
+// profile (owner-level local automation, e.g. Daisy). The canonical, live
+// source of truth is the `pdpp_owner_agent_onboarding` advisory block in the
+// resource server's protected-resource metadata; the repo-resident skill is
+// the durable narrative guidance. `/llms.txt` points at both rather than
+// inlining them, so a trusted agent never has to guess one universal URL.
+const OWNER_AGENT_SKILL_REPO_PATH = "docs/agent-skills/pdpp-owner-agent/SKILL.md";
+const PROTECTED_RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource";
+const MCP_ENDPOINT_PATH = "/mcp";
+
 interface AgentSkillFileDefinition {
   readonly mediaType: string;
   readonly repoRelativePath: string;
@@ -141,6 +151,28 @@ export function agentSkillsLLMSIndex(): string {
     `Use the skill when a coding agent needs PDPP data through scoped client grants. The skill is CLI-first and forbids owner-token use for routine data access. Token completion is ${
       pdppCliTokenCompletionUnavailable ? "not yet public; keep the CLI command gated." : "available through the CLI."
     }`,
+    "",
+    ownerAgentOnboardingLLMSIndex(),
+  ].join("\n");
+}
+
+// Agent-readable pointer to the trusted owner-agent onboarding profile. This is
+// owner-level local automation, NOT the default agent path — ordinary agents
+// use the grant-scoped `pdpp-data-access` skill above. The pointers here let a
+// trusted local agent find the onboarding/device flow, the grant-scoped MCP
+// boundary, and the owner REST/CLI guidance without guessing a universal URL.
+export function ownerAgentOnboardingLLMSIndex(): string {
+  return [
+    "## Trusted owner-agent onboarding (owner-level local automation)",
+    "",
+    "Only for a local agent the operator has explicitly authorized to act as themselves (e.g. a local assistant such as Daisy). Routine third-party, coding-agent, and task-scoped assistants are NOT this profile — they use the grant-scoped `pdpp-data-access` skill above.",
+    "",
+    `- Canonical onboarding metadata: ${PROTECTED_RESOURCE_METADATA_PATH} on an operator deployment that fronts the reference AS/RS — when owner-agent onboarding is enabled, the \`pdpp_owner_agent_onboarding\` advisory block names every surface (owner approval / device authorization, token, schema, streams, query base, introspection, revocation, event subscriptions). The standards/docs site does not front a live AS/RS.`,
+    `- Owner-agent onboarding guidance: ${OWNER_AGENT_SKILL_REPO_PATH}`,
+    `- Grant-scoped MCP (ordinary external clients, not owner agents): ${MCP_ENDPOINT_PATH} — \`/mcp\` rejects owner bearers by design.`,
+    "- REST/CLI owner-agent guidance: use the owner bearer only on owner-supported `/v1/**` REST routes; the `pdpp owner-agent onboard <entrypoint>` CLI runs the browser-mediated flow without printing the bearer.",
+    "",
+    "Do not paste tokens. Owner approval happens in a browser/dashboard flow; the credential is written to a local credential target. Never ask the operator to paste a bearer into chat or a terminal, and never echo or log the bearer.",
   ].join("\n");
 }
 

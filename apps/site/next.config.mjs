@@ -180,6 +180,13 @@ const nextConfig = {
         source: '/.well-known/skills/:path*',
         destination: '/well-known/skills/:path*',
       },
+      // Agents that probe the well-known namespace first should still land on
+      // the canonical agent-readable entrypoint, so there is no single
+      // universal URL to guess. Compact alias, not duplicate content.
+      {
+        source: '/.well-known/llms.txt',
+        destination: '/llms.txt',
+      },
       // NOTE: the top-level `/.well-known/oauth-authorization-server` and
       // `/.well-known/oauth-protected-resource` rewrites were dropped with the
       // BFF; the public site does not front a live AS/RS. Operator AS/RS

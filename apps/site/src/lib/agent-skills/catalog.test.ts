@@ -5,7 +5,12 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createPdppCliCommand, getPdppCliPackageInfo } from "../../../../../packages/cli/src/package-info.js";
 import { pdppCliConnectCommand, pdppCliPackageInfo } from "../pdpp-cli-command.ts";
-import { agentSkillsLLMSIndex, buildAgentSkillCatalog, readAgentSkillFile } from "./catalog.ts";
+import {
+  agentSkillsLLMSIndex,
+  buildAgentSkillCatalog,
+  ownerAgentOnboardingLLMSIndex,
+  readAgentSkillFile,
+} from "./catalog.ts";
 
 const SHA256_HEX = /^[a-f0-9]{64}$/;
 const SKILL_FRONTMATTER_NAME = /name: pdpp-data-access/;
@@ -59,6 +64,31 @@ test("agent skill and llms index use the CLI package-info source of truth", asyn
   assert.deepEqual(pdppCliPackageInfo, expectedInfo);
   assert.match(skill.body.toString("utf8"), new RegExp(escapeRegExp(expectedCommand)));
   assert.match(agentSkillsLLMSIndex(), new RegExp(escapeRegExp(expectedCommand)));
+});
+
+test("llms index points trusted owner agents at the canonical onboarding surfaces", async () => {
+  const ownerAgentSection = ownerAgentOnboardingLLMSIndex();
+
+  // Canonical OAuth protected-resource metadata (the live owner-agent block).
+  assert.match(ownerAgentSection, /\/\.well-known\/oauth-protected-resource/);
+  // Owner-agent onboarding / device flow guidance.
+  assert.match(ownerAgentSection, /docs\/agent-skills\/pdpp-owner-agent\/SKILL\.md/);
+  // Grant-scoped MCP guidance, framed as the non-owner-agent path.
+  assert.match(ownerAgentSection, /\/mcp/);
+  assert.match(ownerAgentSection, /rejects owner bearers/);
+  // REST/CLI owner-agent guidance.
+  assert.match(ownerAgentSection, /\/v1\/\*\*/);
+  assert.match(ownerAgentSection, /pdpp owner-agent onboard/);
+  // Do-not-paste-tokens guidance.
+  assert.match(ownerAgentSection, /Do not paste tokens\./);
+
+  // The owner-agent section is part of the single agent-readable entrypoint.
+  assert.ok(agentSkillsLLMSIndex().includes(ownerAgentSection));
+
+  // The referenced owner-agent guidance file must exist so the pointer cannot
+  // silently rot.
+  const skill = readFileSync(path.join(REPO_ROOT, "docs/agent-skills/pdpp-owner-agent/SKILL.md"), "utf8");
+  assert.match(skill, /name: pdpp-owner-agent/);
 });
 
 test("reference docs and web copy use the CLI package-info source of truth", () => {
