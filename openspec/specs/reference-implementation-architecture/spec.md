@@ -8045,3 +8045,212 @@ When a request uses the deprecated `connector_instance_id` alias, the reference 
 - **WHEN** a grant-authorized client calls `rs.blobs.read` with `connector_instance_id=<X>`
 - **AND** the read completes with `200 OK`
 - **THEN** the response SHALL include a `PDPP-Warning` response header naming the `deprecated_alias_used` code for the `connector_instance_id` parameter.
+
+### Requirement: Streaming interaction sessions are reference-only and interaction-scoped
+
+The reference implementation SHALL treat browser streaming as a reference-only control-plane companion for pending run interactions. Streaming sessions SHALL be scoped to one pending run interaction and SHALL NOT authorize record reads, consent approval, grant issuance, collector ingest, or unrelated browser access.
+
+#### Scenario: A pending manual action needs browser control
+
+- **WHEN** a connector run reaches a pending interaction that requires browser control
+- **THEN** the reference MAY mint a short-lived streaming session link for the owner
+- **AND** the link SHALL be scoped to the current run and interaction
+- **AND** the link SHALL expire or be invalidated when the interaction resolves, is cancelled, or the run ends
+
+#### Scenario: A stale stream link is opened
+
+- **WHEN** a streaming link is expired, already consumed, bound to a non-current interaction, or bound to a completed run
+- **THEN** the reference SHALL refuse the stream
+- **AND** it SHALL show an owner-actionable terminal state without exposing connector secrets or browser state
+
+### Requirement: Streaming control does not replace collector or owner credentials
+
+The reference implementation SHALL keep streaming session authority separate from collector credentials and owner tokens. A streaming session SHALL only authorize viewing and input for the scoped browser interaction.
+
+#### Scenario: A stream viewer sends input
+
+- **WHEN** a stream viewer sends mouse, keyboard, touch, or resize input
+- **THEN** the reference SHALL route that input only to the browser session associated with the scoped pending interaction
+- **AND** it SHALL NOT treat the streaming token as an owner session, collector device token, or client grant token
+
+### Requirement: CDP is the default streaming implementation path
+
+The reference implementation SHOULD use CDP screencast frames and CDP input events for the first streaming companion implementation. Heavier remote-browser substrates SHALL NOT be introduced unless a concrete connector case proves CDP insufficient.
+
+#### Scenario: The owner opens the stream on a mobile device
+
+- **WHEN** the stream viewer starts from a mobile-sized device
+- **THEN** the reference SHALL size or map the browser viewport and input coordinates so the owner can complete the pending interaction from that device class
+- **AND** it SHALL document unsupported controls such as multi-touch gestures if they are not implemented
+
+### Requirement: Streaming companion fails closed when unconfigured
+
+The reference implementation SHALL refuse to mint a streaming session token when no streaming companion is configured. It SHALL NOT issue a token that only fails at attach time, because that surfaces as a dead primary action in the dashboard with no operator-actionable error.
+
+#### Scenario: The owner opens the stream on a server with no CDP companion configured
+
+- **WHEN** the owner requests a streaming session on a reference deployment that has no CDP companion configured (no `PDPP_RUN_INTERACTION_CDP_WS_URL`, no `PDPP_RUN_INTERACTION_CDP_HTTP_URL`, and no injected companion factory)
+- **THEN** the mint endpoint SHALL respond with `503 streaming_companion_unavailable`
+- **AND** the response SHALL name the configuration the operator must set
+- **AND** the dashboard SHALL render a configuration-pointer state instead of the streaming canvas
+
+### Requirement: n.eko streaming preserves an owner-controlled browser UX
+
+When the reference implementation uses n.eko as a streaming backend, it SHALL keep the sidecar behind the same stream-token lifecycle while presenting the owner with an embedded browser-control surface rather than a general n.eko room UI. The n.eko surface SHOULD use direct n.eko client integration when available so the reference can preserve native input, clipboard, focus, and geometry behavior without exposing n.eko product controls.
+
+#### Scenario: A managed connector is configured by canonical connector URL
+
+- **WHEN** `PDPP_NEKO_MANAGED_CONNECTORS` names a connector by its canonical `/connectors/{connector_id}` URL
+- **AND** the run source identifies the same connector by short `connector_id`
+- **THEN** the reference SHALL treat the run as managed by the n.eko browser-surface pool
+- **AND** it SHALL acquire or queue a browser-surface lease before spawning the connector child
+
+#### Scenario: The owner opens a n.eko-backed stream
+
+- **WHEN** the stream companion selects the n.eko backend for a pending manual action
+- **THEN** the dashboard SHALL render the n.eko browser surface through the token-scoped same-origin proxy
+- **AND** it SHALL suppress n.eko branding, resolution menus, and non-essential room chrome in the embedded owner view
+- **AND** the sidecar SHALL NOT be reachable without the scoped stream token or stream proxy cookie
+
+#### Scenario: The owner resizes or rotates the viewer
+
+- **WHEN** the n.eko-backed viewer viewport changes size or mobile/touch characteristics
+- **THEN** the reference SHOULD preserve geometry agreement between the visible browser viewport, n.eko's screen model, and input coordinates
+- **AND** it SHOULD use exact 1:1 dimensions when n.eko/X11/Chromium can represent them
+- **AND** otherwise it SHOULD use local crop/remap only for residual capture gutters rather than arbitrary stretching
+- **AND** the reference SHOULD propagate the new dimensions to n.eko screen configuration and Chromium window bounds where those control paths are available
+- **AND** failures in those best-effort control paths SHALL NOT expose unrelated browser authority or invalidate the stream token
+
+#### Scenario: The owner pastes text into the remote browser
+
+- **WHEN** the owner pastes text while using a n.eko-backed stream
+- **THEN** the reference SHOULD preserve the native same-origin n.eko clipboard/input path
+- **AND** any explicit fallback paste bridge SHALL route pasted text only to the scoped browser interaction
+- **AND** the reference SHOULD NOT mirror mobile IME text-entry echoes into the owner's local clipboard
+
+#### Scenario: The owner focuses a remote text field from a phone
+
+- **WHEN** a non-strict n.eko-backed stream detects that the remote page focused an editable element
+- **THEN** the dashboard SHOULD focus n.eko's owner-side keyboard overlay so the mobile software keyboard opens
+- **AND** when the remote page blurs the editable element, the dashboard SHOULD blur the overlay so the software keyboard can dismiss
+- **AND** strict browser-owner mode SHALL still work without requiring that page-level focus bridge
+
+#### Scenario: A stealth-sensitive n.eko stream is opened
+
+- **WHEN** a n.eko stream is marked stealth-sensitive or browser-owner-managed
+- **THEN** the reference SHALL NOT require page-level CDP scripts, Runtime bindings, or CDP paste helpers for baseline viewing and input
+- **AND** browser fingerprint controls such as user agent, client hints, device scale, touch capability, proxy, and profile SHALL be owned by the browser launch/profile boundary rather than silently mutated by the viewer mid-page
+- **AND** any page-level helper SHALL be gated behind an explicit assistive mode or equivalent operator choice
+
+#### Scenario: A local non-n.eko browser-backed connector launches
+
+- **WHEN** a browser-backed connector runs without a managed n.eko browser-surface lease
+- **THEN** the reference SHALL prefer Patchright's bundled Chromium unless the operator explicitly configures a browser channel override
+- **AND** the reference SHALL keep the explicit browser channel override as an operator compatibility control rather than silently preferring branded Chrome
+- **AND** the local launch path SHALL preserve Patchright-owned launch defaults instead of duplicating n.eko-specific X11/window flags
+
+### Requirement: Stream viewer control policy is replayable
+
+The reference implementation SHALL keep stream viewer protocol parsing,
+viewport classification, keyboard-occlusion policy, and media-settle policy
+observable through pure, replayable modules. The React viewer SHALL remain
+responsible for DOM lifecycle and side effects, but SHOULD NOT be the only
+place where stream control decisions can be observed or tested.
+
+#### Scenario: A mobile viewport emits transient resize events
+
+- **WHEN** the owner opens a stream on a mobile browser and browser chrome,
+  orientation, or software keyboard events change viewport geometry
+- **THEN** the reference SHOULD classify the observed layout viewport, visual
+  viewport, focus intent, and orientation facts before POSTing a remote viewport
+- **AND** it SHOULD avoid resizing the remote browser for keyboard occlusion
+  alone
+- **AND** it SHOULD hold local presentation remaps during orientation and
+  browser-chrome settle so transient dimensions are not shown as stretched
+  stream frames
+- **AND** it SHOULD make the classification replayable from redacted telemetry
+
+#### Scenario: A n.eko resize is requested
+
+- **WHEN** the viewer requests a new n.eko-backed viewport size
+- **THEN** the reference SHOULD distinguish the requested viewport from the
+  n.eko screen status, media intrinsic size, and WebRTC inbound frame size
+- **AND** it MAY request bounded high-DPR n.eko screen/capture dimensions
+  separately from the CSS viewport dimensions when the viewer display would
+  otherwise upscale the decoded media
+- **AND** it SHOULD avoid treating the stream as visually settled until those
+  facts agree or a degraded state is diagnosed
+
+### Requirement: Browser-step instructions avoid accidental interaction resolution
+
+The reference implementation SHALL keep browser-step guidance visible enough for an owner to complete the pending
+connector step without making a non-terminal panel control look like the completion action. If the guidance can cover
+the browser surface, the viewer SHALL provide a non-terminal way to hide and restore it.
+
+#### Scenario: Browser-step guidance covers an interactive page element
+
+- **WHEN** the owner is using the stream viewer to complete a pending browser step
+- **THEN** the viewer SHALL provide a hide or minimize affordance that does not resolve the interaction
+- **AND** the viewer SHALL provide a way to restore the guidance without changing the run state
+
+#### Scenario: The owner completes the browser step
+
+- **WHEN** the owner uses the action that resumes or resolves the pending browser step
+- **THEN** the action label SHALL make it clear that the run will continue after the current browser step
+
+### Requirement: Connector detail cursors are stream-specific
+When a reference connector derives a child stream by fetching details for records discovered through a parent stream, the reference implementation SHALL track child-detail progress separately from the parent-list cursor. A parent stream cursor SHALL NOT cause a later child-stream collection to skip parent records whose child detail has not yet been collected.
+
+#### Scenario: Child stream enabled after parent-only run
+- **WHEN** a parent stream has advanced its cursor during a parent-only collection run
+- **THEN** a later collection run that requests the child stream SHALL still fetch detail for parent records not yet covered by the child stream cursor
+
+#### Scenario: Detail cursor advances after coverage
+- **WHEN** child detail collection completes or records recoverable detail gaps for a batch of parent records
+- **THEN** the child stream cursor SHALL advance only after the corresponding detail coverage is emitted
+
+### Requirement: Reference Lexical Backfill Uses Active Storage And Connections
+
+The reference implementation SHALL compute lexical index drift against the active
+record storage backend and rebuild lexical index rows in that same backend. When
+a connector manifest is registered without a pinned connector instance, lexical
+backfill SHALL evaluate active owner-visible connector instances for that
+connector rather than only the connector's default synthetic instance. Drift
+detection SHALL compare the index row count to the exact number of non-empty
+declared text values for each `(connector_instance_id, stream)` and SHALL NOT
+treat an arbitrary non-zero in-band index count as complete.
+
+#### Scenario: Postgres backfill reads and writes Postgres
+
+- **WHEN** the reference server runs with Postgres-backed record storage
+- **THEN** lexical backfill SHALL read records, index rows, and meta fingerprints
+  from Postgres
+- **AND** rebuilt lexical rows SHALL be written to Postgres
+
+#### Scenario: Unpinned manifest covers active connections
+
+- **WHEN** a registered connector manifest declares searchable fields but is not
+  pinned to a single connector instance
+- **AND** the owner has an active connection for that connector
+- **THEN** lexical backfill SHALL check and rebuild the active connection's
+  `(connector_instance_id, stream)` index state
+- **AND** it SHALL NOT limit the check to the default synthetic connector
+  instance
+
+#### Scenario: Partial historical index is rebuilt
+
+- **WHEN** a stream has more indexable declared text values than lexical index
+  rows for the same `(connector_instance_id, stream)`
+- **THEN** lexical backfill SHALL treat the stream as stale or partial and
+  rebuild it
+- **AND** it SHALL NOT accept the partial index merely because at least one index
+  row exists
+
+#### Scenario: Startup manifest reconciliation does not block health
+
+- **WHEN** startup manifest reconciliation updates first-party connector
+  manifests before AS/RS listen
+- **THEN** it SHALL NOT synchronously run full retrieval index rebuilds for those
+  manifests before the servers listen
+- **AND** retrieval index repair SHALL run through the post-listen startup
+  backfill path

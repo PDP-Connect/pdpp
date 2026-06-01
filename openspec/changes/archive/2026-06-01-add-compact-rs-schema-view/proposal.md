@@ -25,25 +25,27 @@ body any existing client receives.
   schema document that preserves stream identity, per-connection identity
   (`granted_connections[].{connection_id, display_name}`, deprecated
   `connector_instance_id` alias where present), field names, declared types, and
-  a single terse capability-flag string per field (declared type, grant, and
-  usable filter/search/aggregation flags — the same vocabulary the MCP compact
-  projection and the `content[]` summary advertise, e.g.
-  `type=string,granted=true,exact,range=gte|lte,agg=count_distinct`). It drops
+  a single terse capability-flag string per field (declared type, non-default
+  grant state, and usable filter/search/aggregation flags, e.g.
+  `t=string,eq,r=gte|lte,a=count_distinct`). It drops
   the raw per-stream/per-field JSON Schema blobs and the verbose capability
   sub-objects. The envelope shape (`object: "schema"`, `bearer`, `connectors[]`)
-  is preserved and a top-level `detail: "compact"` marker is added.
+  is preserved and a top-level `detail: "compact"` marker is added. Shared
+  `granted_connections` are lifted to the connector level so a many-connection
+  grant does not repeat the same connection list on every stream.
 - `GET /v1/schema?view=compact&stream=<name>` narrows the document to a single
   stream so an agent can run the cheap middle step `schema(stream)` of
   `list_streams -> schema(stream) -> query_records`.
 - Full detail remains opt-in/current: any other (or omitted) `view` value serves
   the current full body. No existing client loses fields by default. Compact is
   NOT the REST default in this tranche.
+- The MCP `schema` tool's compact/default path uses the REST compact view when
+  the RS supports it (`GET /v1/schema?view=compact`, plus `stream=<name>` when
+  scoped). If an older RS ignores or rejects the selector, MCP falls back to a
+  local projection that is parity-tested against the REST compact semantics.
 - Add enforceable byte-budget / structural acceptance tests modeled on the MCP
   schema compact tests, driving the real `/v1/schema` route from a registered
   manifest fixture (no live external data required).
-- Update `@pdpp/reference-contract`, generated OpenAPI, and generated route docs
-  so agents can discover `view=compact` / `stream=<name>` and validators can
-  admit the compact response marker plus compact field-capability flag strings.
 
 ## Capabilities
 
@@ -53,18 +55,18 @@ body any existing client receives.
   route gains an additive, opt-in compact projection selected by `view=compact`,
   optionally scoped to one stream by `stream=<name>`, with the full body
   preserved by default.
+- `mcp-adapter`: the MCP `schema` tool's compact/default output is aligned with
+  the REST compact projection semantics and budget.
 
 ## Impact
 
 - Additive change: existing consumers that omit `view` SHALL continue to receive
   the exhaustive body unchanged. The compact view is a strict opt-in.
-- No change to the MCP `schema` compaction (that is the orthogonal presentation
-  layer in `packages/mcp-server`); the REST flag vocabulary is intentionally the
-  same so the two surfaces speak one terse capability language to agents.
-- Public contract/doc impact is additive: the `getSchema` query contract names
-  the compact selectors, and the response contract admits both the full
-  field-capability object and the compact flag-string form. Compact is still not
-  the default.
+- MCP `schema` compact output now converges on the REST compact view. Existing
+  `detail: "full"` behavior remains the exhaustive verbatim escape hatch.
+- No change to the public `@pdpp/reference-contract` request/response schemas,
+  OpenAPI, or generated artifacts: the compact view is a route-level projection
+  of the existing response shape, not a new field on the contract envelope.
 - No change to grant evaluation, visibility, connection identity, the deprecated
   `connector_instance_id` alias, the scheduler-side `ambiguous_connector_instance`
   behavior, or the record envelope. The compact view is a pure, read-only
