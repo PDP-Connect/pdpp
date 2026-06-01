@@ -22,7 +22,7 @@ import type { RefRecordVersionStatsRow } from "../../lib/ref-client.ts";
 import type { ConnectorOverview, ConnectorRunRef } from "../../lib/rs-client.ts";
 import { buildChurnDrilldownRows, summarizeVersionChurn } from "../../lib/version-churn-summary.ts";
 import { ConnectorRow } from "../../records/connector-row.tsx";
-import { DataList, PageHeader, Section } from "../primitives.tsx";
+import { Callout, DataList, PageHeader, Section } from "../primitives.tsx";
 import { EmptyState } from "../shell.tsx";
 import type { Routes } from "./routes.ts";
 
@@ -74,6 +74,22 @@ export function connectorSortKey(o: ConnectorOverview): [number, number, string]
 
 function overviewRouteId(o: ConnectorOverview): string {
   return o.connectionId ?? o.connectorInstanceId ?? o.connector.connector_id;
+}
+
+/**
+ * Copy for the zero-primary empty state. When no-data registrations exist they
+ * are listed in their own section below; otherwise the instance has no
+ * connections at all and we say so plainly (the add-connection guidance then
+ * points at the only supported creation path). Sandbox keeps its own copy.
+ */
+function resolvePrimaryEmptyHint(interactive: boolean, hasNoDataRegistrations: boolean): string {
+  if (!interactive) {
+    return "This sandbox has no seeded data.";
+  }
+  if (hasNoDataRegistrations) {
+    return "Registered connections with no durable progress yet are listed below. Sync now a scheduled connector, or wait for a local-collector device to push.";
+  }
+  return "No connections are registered on this instance yet.";
 }
 
 /**
@@ -222,6 +238,8 @@ export function RecordsListView({
       ? `${summary.registeredTotal} registered connections · ${summary.primaryList} listed`
       : `${summary.registeredTotal} connections`;
 
+  const primaryEmptyHint = resolvePrimaryEmptyHint(interactive, empty.length > 0);
+
   return (
     <>
       {pollerSlot}
@@ -238,7 +256,7 @@ export function RecordsListView({
         }
         description={
           interactive
-            ? "Manage your connections and monitor sync health. Retained record counts appear here; local-collector backlogs show as 'pending on devices'. Click Sync now to pull fresh data, or open a connection to browse its streams and records."
+            ? "Manage your connections and monitor sync health. Retained record counts appear here; local-collector backlogs show as 'pending on devices'. Where a connector supports an owner-triggered pull, Sync now refetches it; otherwise open a connection to browse its streams and records."
             : "Sandbox demo: deterministic mock connections. Click into a connection to browse its streams and records."
         }
         title="Connections"
@@ -277,14 +295,12 @@ export function RecordsListView({
 
       <Section title={`Connections (${primaryConnections.length})`}>
         {primaryConnections.length === 0 ? (
-          <EmptyState
-            hint={
-              interactive
-                ? "Click Sync now on a connection below to pull your first records."
-                : "This sandbox has no seeded data."
-            }
-            title="No data ingested yet"
-          />
+          <>
+            <EmptyState hint={primaryEmptyHint} title="No data ingested yet" />
+            {interactive && empty.length === 0 ? (
+              <AddConnectionGuidance deviceExportersHref={routes.section.deviceExporters} />
+            ) : null}
+          </>
         ) : (
           <DataList>
             {sorted.map((o) =>
@@ -302,11 +318,12 @@ export function RecordsListView({
         <Section
           description={
             interactive
-              ? "These connections are registered but have no durable progress yet. Click Sync now to pull initial data, or wait for a local-collector device to push its first records."
+              ? "These connections are registered but have no durable progress yet. A scheduled or owner-triggerable connector pulls its first records on Sync now; a local-collector connection fills in when its device pushes."
               : "These mock connections are registered but have no seeded records."
           }
           title={`No data yet (${empty.length})`}
         >
+          {interactive ? <AddConnectionGuidance deviceExportersHref={routes.section.deviceExporters} /> : null}
           <DataList>
             {empty.map((o) =>
               interactive ? (
@@ -319,6 +336,41 @@ export function RecordsListView({
         </Section>
       ) : null}
     </>
+  );
+}
+
+/**
+ * Honest add-connection guidance.
+ *
+ * The console has no owner-facing path to create a browser/OAuth/import
+ * connection (no `/_ref/*` route mints a connection instance; instances are
+ * created only by the runtime). Rather than show a dead "Add connection"
+ * button, this states that reality plainly and points to the one supported
+ * console creation path: enrolling a local-collector device, which the
+ * reference scopes to the `claude_code` and `codex` connectors.
+ *
+ * Scope is deliberate — per `docs/voice-and-framing.md` we do not imply every
+ * connector can be added from here, and we frame the local collector as the
+ * reference-experimental control it is. When a typed connection-intent route
+ * ships (`add-owner-agent-control-surface` tasks 5.1–5.3), this is where a real
+ * creation entry point belongs.
+ */
+function AddConnectionGuidance({ deviceExportersHref }: { deviceExportersHref: string }) {
+  return (
+    <Callout
+      className="mb-4"
+      description="Connecting a new browser, OAuth, or imported source from the console isn't supported yet — those connections are created by the connector runtime, not from this page. One creation path works today: enroll a local-collector device."
+      surface="human"
+      title="Add a connection"
+    >
+      <p className="pdpp-caption text-muted-foreground">
+        Local collectors are scoped to the <code className="font-mono">claude_code</code> and{" "}
+        <code className="font-mono">codex</code> connectors.{" "}
+        <Link className="text-foreground underline underline-offset-2 hover:no-underline" href={deviceExportersHref}>
+          Enroll a device →
+        </Link>
+      </p>
+    </Callout>
   );
 }
 

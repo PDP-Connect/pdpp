@@ -157,3 +157,61 @@ test("version-churn copy frames churn as retained history, not data loss", async
   const src = await readFile(VIEW_FILE, "utf8");
   assert.match(src, CHURN_HISTORY_NOT_LOSS);
 });
+
+// ─── Honest add-connection affordance + copy ──────────────────────────────
+//
+// The console has no path to create a browser/OAuth/import connection (no
+// `/_ref/*` route mints a connection instance). Rather than a dead "Add
+// connection" button, the view must state that plainly and point to the one
+// supported creation path: enrolling a local-collector device, scoped to the
+// claude_code/codex connectors. The two audit copy soft spots are also fixed:
+// the blanket "Click Sync now to pull fresh data" promise and the
+// local-collector-only "No data yet" wording.
+
+const ADD_CONNECTION_GUIDANCE_DEF = /function AddConnectionGuidance\(/;
+// The guidance is rendered (live only) — once in the no-data section and once
+// in the zero-connections empty state — and points at device enrollment.
+const ADD_CONNECTION_GUIDANCE_RENDERED =
+  /<AddConnectionGuidance deviceExportersHref=\{routes\.section\.deviceExporters\}/;
+const ADD_CONNECTION_HONEST_COPY =
+  /Connecting a new browser, OAuth, or imported source from the console isn't supported yet/;
+const ADD_CONNECTION_SCOPES_LOCAL = /Local collectors are scoped to the/;
+const ADD_CONNECTION_LINKS_ENROLL = /Enroll a device →/;
+const ADD_CONNECTION_NAMES_CLAUDE_CODE = /claude_code/;
+const ADD_CONNECTION_NAMES_CODEX = /codex/;
+// The PageHeader must not promise that every connection supports Sync now.
+const NO_BLANKET_SYNC_NOW_PROMISE = /Click Sync now to pull fresh data/;
+const QUALIFIED_SYNC_NOW = /Where a connector supports an owner-triggered pull, Sync now refetches it/;
+// The "No data yet" section copy must not present local-collector push as the
+// universal next step for every registered-but-empty connection.
+const NO_DATA_SECTION_LOCAL_ONLY =
+  /Click Sync now to pull initial data, or wait for a local-collector device to push its first records/;
+const NO_DATA_SECTION_MIXED_POPULATION = /a local-collector connection fills in when its device pushes/;
+
+test("view exposes an honest add-connection guidance, not a dead Add button", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.match(src, ADD_CONNECTION_GUIDANCE_DEF);
+  assert.match(src, ADD_CONNECTION_GUIDANCE_RENDERED);
+  assert.match(src, ADD_CONNECTION_HONEST_COPY);
+});
+
+test("add-connection guidance scopes the local-collector path to its connectors", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.match(src, ADD_CONNECTION_SCOPES_LOCAL);
+  // Must name the only two connectors the local-collector path supports.
+  assert.match(src, ADD_CONNECTION_NAMES_CLAUDE_CODE);
+  assert.match(src, ADD_CONNECTION_NAMES_CODEX);
+  assert.match(src, ADD_CONNECTION_LINKS_ENROLL);
+});
+
+test("page header no longer promises every connection supports Sync now", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.doesNotMatch(src, NO_BLANKET_SYNC_NOW_PROMISE);
+  assert.match(src, QUALIFIED_SYNC_NOW);
+});
+
+test("no-data section copy no longer treats local-collector push as the universal next step", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.doesNotMatch(src, NO_DATA_SECTION_LOCAL_ONLY);
+  assert.match(src, NO_DATA_SECTION_MIXED_POPULATION);
+});
