@@ -282,6 +282,46 @@ test('schema tool description teaches the compact discovery path', async () => {
   await server.close();
 });
 
+test('query_records description documents the bounded default page and readable preview', async () => {
+  // Token-efficiency guard for the query step of the discovery path. An agent
+  // reading the tool description must be able to tell that calling
+  // query_records without a `limit` is cheap and bounded (the RS defaults to 25
+  // and caps at 100) and that the content[] text preview is readable without
+  // pulling the full structured page. If a future edit drops these affordances
+  // from the description, agents lose the signal that the call is safe to make
+  // before knowing a stream is small.
+  const { fetch } = makeLargeSchemaFetch();
+  const { client, server } = await connectClient(fetch);
+
+  const tools = await client.listTools();
+  const queryTool = tools.tools.find((t) => t.name === 'query_records');
+  assert.ok(queryTool, 'query_records tool must be exposed');
+
+  assert.match(
+    queryTool.description,
+    /at most 25 records/,
+    'description must state the default page size (25)',
+  );
+  assert.match(
+    queryTool.description,
+    /caps any `limit` at 100/,
+    'description must state the RS limit cap (100)',
+  );
+  assert.match(
+    queryTool.description,
+    /previews up to the first 5 records/,
+    'description must state the bounded readable record preview',
+  );
+  assert.match(
+    queryTool.description,
+    /structuredContent\.data/,
+    'description must point at the canonical full page in structuredContent.data',
+  );
+
+  await client.close();
+  await server.close();
+});
+
 test('compact projection scales: doubling field count does not blow the budget', async () => {
   // Guards against the compact projection accidentally retaining per-field size
   // drivers — if it did, doubling fields would roughly double the payload and

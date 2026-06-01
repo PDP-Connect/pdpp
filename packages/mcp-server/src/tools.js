@@ -278,7 +278,7 @@ export function buildTools({ rs, providerUrl }) {
       name: 'query_records',
       title: 'Query PDPP records',
       description:
-        'Query records in a stream via `GET /v1/streams/{stream}/records`. Forwards canonical public read args verbatim — MCP does not silently drop a parameter the RS would reject. Omitting `connection_id` on a multi-connection grant fans in across granted connections; records carry `connection_id` for attribution and package-source metadata uses canonical `connector_key` for connector type. ' +
+        'Query records in a stream via `GET /v1/streams/{stream}/records`. Forwards canonical public read args verbatim — MCP does not silently drop a parameter the RS would reject. The page is bounded by default: omitting `limit` returns at most 25 records and the RS caps any `limit` at 100, so this tool is safe to call before you know a stream is small; page forward with the returned `cursor` and narrow the payload with `fields` (a schema-advertised projection) when records are wide. The `content[]` text summary previews up to the first 5 records within a fixed character budget; the full page stays in `structuredContent.data`. Omitting `connection_id` on a multi-connection grant fans in across granted connections; records carry `connection_id` for attribution and package-source metadata uses canonical `connector_key` for connector type. ' +
         CANONICAL_SCHEMA_HINT +
         ' Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
