@@ -201,7 +201,7 @@ opt (no contract manifest existed for it).
 
 ## Deferred Items (as of branch `complete-storage-fan-in-read-contract`, 2026-05-26; tail-reconciled 2026-06-01)
 
-The contract, MCP server, consent-card, server-side rs-\* fan-in
+The contract, MCP server, consent-card connection props, server-side rs-\* fan-in
 threading, identifier-ambiguity emission, grant-scope `connection_id`
 enforcement, and owner-mode `display_name` mutation land end-to-end
 in this tranche. The items below were re-checked on 2026-06-01 against
@@ -236,7 +236,15 @@ the `apps/web` → `apps/site` + `apps/console` split
    pointer at `apps/web/.../ref-connectors-view.tsx` is superseded — that
    file no longer exists.) See tasks.md Section 6.
 
-4. **Multi-connection consent-card render test.** **OPEN (blocker
+4. **Owner-meaningful default labels on consent.** **OPEN (partial
+   props-boundary support).** The connection-aware card documents that callers
+   must not pass storage placeholders and should derive `<Connector> · account N`
+   when no owner label exists, but the card renders `displayName` verbatim and no
+   active grant-request mapper derives that fallback today. This stays open until
+   consent-card props are built from connection identity with a stable
+   owner-meaningful fallback before render. Tracked under tasks.md Section 5.
+
+5. **Multi-connection consent-card render test.** **OPEN (blocker
    corrected).** The connection-aware card moved to
    `apps/site/src/components/pdpp/consent-card.tsx`. A render test needs
    React DOM infra (Vitest + `@testing-library/react`) that neither
@@ -249,7 +257,7 @@ the `apps/web` → `apps/site` + `apps/console` split
    `reference-implementation/test/rs-streams-list-operation.test.js:132`.
    Tracked under tasks.md Sections 5 + 8.
 
-5. **Hosted MCP gateway tool descriptions.** External, out-of-repo. The
+6. **Hosted MCP gateway tool descriptions.** External, out-of-repo. The
    in-repo MCP server (`packages/mcp-server`) is fully aligned and can
    serve as the reference implementation when the gateway PR is filed.
    The reference RS now emits the typed `ambiguous_connection` (HTTP
@@ -259,9 +267,10 @@ the `apps/web` → `apps/site` + `apps/console` split
 None of the open items invalidate the canonical noun, the field
 shapes, the error envelope, or the consent surface — those are
 contract-frozen and now runtime-honest end-to-end on the reference
-implementation. The remaining work is one product decision
-(per-connection grant-request UI) and one render-test infra gap against
-a stable contract.
+implementation. The remaining work is one product/UX decision
+(per-connection grant-request UI), one consent-props mapping gap
+(owner-meaningful default labels), and one render-test infra gap against a
+stable contract.
 
 ## MCP schema token-efficiency (2026-05-31)
 
