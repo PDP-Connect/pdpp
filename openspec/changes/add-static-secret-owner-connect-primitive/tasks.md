@@ -102,20 +102,62 @@
       non-static-secret no-op, revoke fails the run closed). This closes the
       build→run gap WITHOUT touching a live provider; the live-ingest leg below is
       still gated.)
-- [ ] Land the end-to-end proof: intent → owner-mediated capture → first ingest →
-      addressable labeled `connection_id`, with audit asserting no secret leak and
-      two mailboxes producing two `connection_id`s; plus revoke/delete durability.
-      (PARTIAL — owner-session capture, revoke/delete durability, two-mailbox
-      distinctness, and no-leakage are proven at the route/store/seam/injection
-      level with synthetic secrets. The intent → owner-capture → first-ingest
-      LIVE leg still requires a real provider secret and is deferred to a lane
-      that can supply one.)
-- [ ] Flip the `api_network` intent branch to return
-      `complete_credential_capture` and flip the catalog `initiate_connection`
-      descriptor — only after the proof lands, in the same reviewable unit.
-      (NOT FLIPPED — gated on the live proof above. The runtime branch stays
-      `unsupported`, pinned by `owner-connection-intent.test.js`; the contract
-      enum reservation remains in place.)
+- [~] DEFERRED (owner-only live verification — see "Owner-only residual risk"
+      below). Land the end-to-end proof: intent → owner-mediated capture → first
+      ingest → addressable labeled `connection_id`, with audit asserting no secret
+      leak and two mailboxes producing two `connection_id`s; plus revoke/delete
+      durability.
+      (Every leg that does NOT require a live provider is already proven with
+      synthetic secrets: owner-session capture, revoke/delete durability,
+      two-mailbox distinctness, no-leakage audit, and connection-scoped injection
+      at the route/store/seam/spawn level. The ONLY unproven leg is
+      `first ingest` against a real provider — that requires a real Gmail
+      app-password / GitHub PAT and a live network call, which an agent cannot
+      supply without faking the success the design forbids (Decision 6). It is
+      therefore recorded as an owner-only residual risk rather than left
+      pseudo-active, per `openspec/README.md` line 60.)
+- [~] DEFERRED (gated on the live proof above; same residual risk). Flip the
+      `api_network` intent branch to return `complete_credential_capture` and flip
+      the catalog `initiate_connection` descriptor — only after the proof lands, in
+      the same reviewable unit.
+      (NOT FLIPPED — the runtime branch stays `unsupported`, pinned by
+      `owner-connection-intent.test.js`; the contract enum reservation remains in
+      place. The flip is a one-unit change the owner-proof lane makes alongside the
+      committed live test.)
+
+## Owner-only residual risk (live provider proof)
+
+Per `openspec/README.md` line 60, the remaining work is owner-only live
+verification and is recorded here as a residual risk so this change can be
+archived rather than remain pseudo-active. Everything an agent can prove without
+a live provider secret is proven and green (39 focused tests across the four
+`static-secret-*` / `owner-connection-intent` suites).
+
+What still needs a human owner with a real provider secret:
+
+1. Configure `PDPP_CREDENTIAL_ENCRYPTION_KEY` (32-byte base64) on the reference
+   server.
+2. Create a Gmail connection (and a second one) under an owner session; capture a
+   real Gmail app-password into each via
+   `POST /_ref/connections/:connectorInstanceId/static-secret-credential`
+   (owner-session cookie required; the secret travels only in the request body).
+3. Run each connection (`runNow`). Confirm a real first ingest persists records
+   addressable under that one `connection_id`, and that the two mailboxes
+   materialize as two distinct `connection_id`s with no cross-contamination.
+4. Inspect the `owner_agent.connection.initiate` / capture audit evidence and the
+   stored credential row: confirm NO plaintext secret appears in any audit event,
+   REST/MCP/console read surface, or log line.
+5. Revoke one credential and confirm the next run fails closed (no stale or
+   process-global secret); delete the connection and confirm the credential row is
+   cascade-removed and does not resurrect.
+6. ONLY after 1–5 are observed green: flip the `api_network` intent branch to
+   `complete_credential_capture` and flip the catalog `initiate_connection`
+   descriptor in one reviewable unit, replacing the `unsupported` pin in
+   `owner-connection-intent.test.js` with the committed live-proof assertion.
+
+Rollback remains route-level: the intent branch reverts to `unsupported`; stored
+credentials remain valid instance-scoped state under normal retention/delete
+rules.
 
 ## Acceptance checks
 
