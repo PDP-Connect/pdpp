@@ -1,5 +1,18 @@
 ## Why
 
+> **Status note (2026-06-01): this change is superseded and should be archived, not proven.**
+> The host-browser bridge designed here was implemented and then **deleted** by the
+> archived change `2026-05-29-introduce-local-collector-runner` (its task §2.2 removed
+> `packages/polyfill-connectors/src/host-browser-bridge-config.ts`, `bin/host-browser-bridge.ts`,
+> the bridge-unavailable web error UI, and the `host_browser_required` interaction kind).
+> Browser-backed connectors now acquire a **local persistent-context Chrome** on whatever host
+> runs the local collector runner (`bin/local-device-exporter.ts` / `bin/collector-runner.ts`)
+> or local `pnpm dev`, gated by `runtime_capabilities` / `runtime_capability_mismatch` — there is
+> no Docker→host CDP bridge to prove. The two open boxes here (§1.2 and §5) reference deleted
+> code and **cannot be honestly closed**; treat them as superseded residual risk and archive this
+> change per `AGENTS.md` § Archiving. The ChatGPT live-pilot value moved to
+> `add-connector-adaptive-lanes` §5, which runs through the local browser path.
+
 Browser-backed polyfill connectors can require human interaction: Cloudflare challenges, OTP prompts, "is this you?" confirmations, and archive-export verification steps. In a native local deployment, the headed browser appears on the owner's desktop. In Docker, the connector process can launch Chrome inside the container, but the owner cannot see or control that browser.
 
 The owner decision for the short-term local-device story is explicit: **Docker should be able to drive a visible browser on the user's host machine**. This is not noVNC, WebRTC, or remote browser streaming. It is a local host-browser bridge for Docker/Compose deployments.
