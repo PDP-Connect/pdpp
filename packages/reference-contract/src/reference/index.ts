@@ -200,6 +200,39 @@ const OwnerConnectionListResponseSchema = {
   required: ["object", "data"],
 };
 
+// Owner-agent control entrypoint capability document returned by
+// `GET /v1/owner/control`. A trusted owner agent reads this to discover which
+// owner-agent control action families exist, which are supported in this build
+// (with method + absolute URL), and which remain owner-mediated or unsupported.
+// The catalog is honest by construction: unsupported/owner-mediated families
+// are named with a typed `status` and reason rather than silently omitted. See
+// openspec/changes/add-owner-agent-control-surface.
+const OwnerControlActionSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    family: { type: "string" },
+    status: { type: "string", enum: ["supported", "owner_mediated", "unsupported"] },
+    method: { type: ["string", "null"] },
+    url: { type: ["string", "null"] },
+    reason: { type: "string" },
+  },
+  required: ["family", "status", "method", "url", "reason"],
+};
+
+const OwnerControlSurfaceResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    object: { const: "owner_agent_control_surface" },
+    entrypoint: { type: "string" },
+    scope: { const: "reference_implementation" },
+    mcp_owner_bearer_rejected: { const: true },
+    actions: { type: "array", items: OwnerControlActionSchema },
+  },
+  required: ["object", "entrypoint", "scope", "mcp_owner_bearer_rejected", "actions"],
+};
+
 const ApprovalItemSchema = {
   type: "object",
   additionalProperties: true,
@@ -1106,6 +1139,16 @@ export const referenceManifests = [
       "Owner-agent bearer listing of configured connections with connection_id, connector_key, owner-meaningful display_name, label status, lifecycle fields, and schedules.",
     request: { query: ConnectionQuerySchema },
     responses: { 200: { schema: OwnerConnectionListResponseSchema }, ...CommonErrors },
+  },
+  {
+    id: "ownerControlCapabilities",
+    method: "GET",
+    path: "/v1/owner/control",
+    surface: "reference",
+    tags: ["reference", "owner-agent"],
+    summary:
+      "Owner-agent bearer control entrypoint: capability document naming supported, owner-mediated, and unsupported owner-agent control action families with links to supported routes.",
+    responses: { 200: { schema: OwnerControlSurfaceResponseSchema }, ...CommonErrors },
   },
   {
     id: "refGetConnection",

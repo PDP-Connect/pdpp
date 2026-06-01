@@ -608,6 +608,39 @@ const ProtectedResourceAgentDiscoverySchema = {
 // and ongoing sync, and it states that `/mcp` is not the owner-agent
 // transport. See:
 //   openspec/changes/add-trusted-owner-agent-onboarding/specs/reference-implementation-architecture/spec.md
+// Advisory owner-agent control-surface discovery hint carried inside the
+// onboarding block. Names the bearer-authed control entrypoint and the action
+// families this build supports vs. defers to owner mediation / leaves
+// unsupported. Reference-only vocabulary; not promoted to PDPP Core. The live
+// `GET /v1/owner/control` capability document is projected from the same builder
+// so discovery and the document agree. See
+// openspec/changes/add-owner-agent-control-surface.
+const ProtectedResourceOwnerAgentControlActionSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    family: NonEmptyStringSchema,
+    status: { type: "string", enum: ["supported", "owner_mediated", "unsupported"] },
+    method: { type: ["string", "null"] },
+    url: { type: ["string", "null"] },
+    reason: NonEmptyStringSchema,
+  },
+  required: ["family", "status", "method", "url", "reason"],
+};
+
+const ProtectedResourceOwnerAgentControlSurfaceSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    object: { const: "owner_agent_control_surface" },
+    entrypoint: UriSchema,
+    scope: { const: "reference_implementation" },
+    mcp_owner_bearer_rejected: { const: true },
+    actions: { type: "array", items: ProtectedResourceOwnerAgentControlActionSchema },
+  },
+  required: ["object", "entrypoint", "scope", "mcp_owner_bearer_rejected", "actions"],
+};
+
 const ProtectedResourceOwnerAgentOnboardingSchema = {
   type: "object",
   additionalProperties: false,
@@ -638,6 +671,8 @@ const ProtectedResourceOwnerAgentOnboardingSchema = {
     // `/mcp` rejects them. Grant-scoped MCP remains the external-client path.
     mcp_owner_bearer_rejected: { const: true },
     pdpp_token_kind: { const: "owner" },
+    // Owner-agent control entrypoint + action-family catalog.
+    control_surface: ProtectedResourceOwnerAgentControlSurfaceSchema,
   },
   required: [
     "advisory",
@@ -655,6 +690,7 @@ const ProtectedResourceOwnerAgentOnboardingSchema = {
     "query_base",
     "mcp_owner_bearer_rejected",
     "pdpp_token_kind",
+    "control_surface",
   ],
 };
 

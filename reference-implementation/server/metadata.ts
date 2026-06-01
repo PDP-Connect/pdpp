@@ -374,6 +374,11 @@ export interface ProtectedResourceAgentDiscovery {
 export interface ProtectedResourceOwnerAgentOnboarding {
   advisory: true;
   authorization_server: string;
+  // Pointer to the bearer-authed owner-agent control entrypoint and the
+  // action families it currently supports vs. defers to owner mediation. A
+  // trusted local agent reads this before guessing at control routes. See
+  // openspec/changes/add-owner-agent-control-surface.
+  control_surface: OwnerAgentControlSurface;
   device_authorization_endpoint: string;
   event_subscriptions_endpoint?: string;
   introspection_endpoint: string;
@@ -389,6 +394,148 @@ export interface ProtectedResourceOwnerAgentOnboarding {
   streams_endpoint: string;
   token_endpoint: string;
   warning: string;
+}
+
+// Owner-agent control surface catalog. This is the single source of truth for
+// which owner-agent REST control actions the running reference implementation
+// supports, where their routes live, and which action families remain
+// owner-mediated or unsupported in this build. Both the advisory
+// `pdpp_owner_agent_onboarding.control_surface` discovery hint and the
+// bearer-authed `GET /v1/owner/control` capability document are projected from
+// this builder so a trusted agent cannot read a supported claim from one
+// surface and a different claim from the other.
+//
+// Honesty rule (full-context-refresh "Treat gaps as first-class outputs"):
+// an action family is only ever listed `supported` when this build actually
+// serves it over the owner-agent bearer surface. Everything else is named
+// explicitly — never silently omitted — with `status` set to
+// `owner_mediated` (the operation exists but requires a browser owner session
+// or owner-mediated provider step today) or `unsupported` (no route in this
+// build). See:
+//   openspec/changes/add-owner-agent-control-surface/specs/
+//     reference-owner-agent-control-surface/spec.md
+//   openspec/changes/add-owner-agent-control-surface/specs/
+//     reference-agent-access-workflow/spec.md
+//     (#"Owner-agent onboarding metadata SHALL describe control-plane scope")
+
+export type OwnerAgentControlActionStatus = "supported" | "owner_mediated" | "unsupported";
+
+export interface OwnerAgentControlAction {
+  // Stable action-family key an agent can branch on without parsing prose.
+  family: string;
+  // HTTP method + absolute URL when `status` is `supported`; null otherwise so
+  // an agent does not probe a 404 for an action this build does not serve.
+  method: string | null;
+  // One-line, secret-free explanation. For non-supported families this names
+  // where the action lives today (owner session / dashboard) or why it is
+  // unsupported.
+  reason: string;
+  status: OwnerAgentControlActionStatus;
+  url: string | null;
+}
+
+export interface OwnerAgentControlSurface {
+  actions: readonly OwnerAgentControlAction[];
+  // Absolute URL of the capability document route itself.
+  entrypoint: string;
+  mcp_owner_bearer_rejected: true;
+  object: "owner_agent_control_surface";
+  // Reference-only control vocabulary; not promoted to PDPP Core.
+  scope: "reference_implementation";
+}
+
+export interface OwnerAgentControlSurfaceInput {
+  // Already-trusted, forwarded-origin-safe RS public base (no trailing slash
+  // required; this builder normalizes). Every URL is derived from it so the
+  // catalog can never name an untrusted host.
+  resource: string;
+}
+
+export function buildOwnerAgentControlSurface({ resource }: OwnerAgentControlSurfaceInput): OwnerAgentControlSurface {
+  const rs = stripTrailingSlash(resource);
+  const entrypoint = `${rs}/v1/owner/control`;
+  // Supported in this build: discovery + connection listing.
+  const actions: OwnerAgentControlAction[] = [
+    {
+      family: "discover_control_capabilities",
+      status: "supported",
+      method: "GET",
+      url: entrypoint,
+      reason: "Read this owner-agent control capability document.",
+    },
+    {
+      family: "list_connections",
+      status: "supported",
+      method: "GET",
+      url: `${rs}/v1/owner/connections`,
+      reason:
+        "List configured connection instances with connection_id, connector identity, display_name, and label status.",
+    },
+    // Owner-mediated today: the operation exists on the browser owner-session
+    // (`/_ref/*`) surface but is NOT yet served over the owner-agent bearer.
+    {
+      family: "initiate_connection",
+      status: "owner_mediated",
+      method: null,
+      url: null,
+      reason:
+        "Adding a new connection requires an owner-mediated provider step (OAuth, browser assistance, upload, or local-collector enrollment). No owner-agent bearer route serves this in the current build; use the dashboard.",
+    },
+    {
+      family: "rename_connection",
+      status: "owner_mediated",
+      method: null,
+      url: null,
+      reason:
+        "Renaming a connection is available on the browser owner-session surface; it is not yet exposed to owner-agent bearers in this build.",
+    },
+    {
+      family: "run_connection",
+      status: "owner_mediated",
+      method: null,
+      url: null,
+      reason:
+        "Run-now is available on the browser owner-session surface; it is not yet exposed to owner-agent bearers in this build.",
+    },
+    {
+      family: "manage_schedule",
+      status: "owner_mediated",
+      method: null,
+      url: null,
+      reason:
+        "Schedule create/pause/resume/delete is available on the browser owner-session surface; it is not yet exposed to owner-agent bearers in this build.",
+    },
+    {
+      family: "inspect_diagnostics",
+      status: "unsupported",
+      method: null,
+      url: null,
+      reason:
+        "Per-connection diagnostics is not implemented as an owner-agent control route in this build. Device-exporter diagnostics remain on the browser owner-session surface.",
+    },
+    {
+      family: "delete_connection",
+      status: "unsupported",
+      method: null,
+      url: null,
+      reason: "Connection delete is not implemented as an owner-agent control route in this build.",
+    },
+    {
+      family: "revoke_connection",
+      status: "unsupported",
+      method: null,
+      url: null,
+      reason:
+        "Connection credential revoke is not implemented as an owner-agent control route in this build. Device-exporter revoke remains on the browser owner-session surface.",
+    },
+  ];
+  return {
+    object: "owner_agent_control_surface",
+    entrypoint,
+    scope: "reference_implementation",
+    mcp_owner_bearer_rejected: true,
+    actions,
+  };
 }
 
 export interface ProtectedResourceMetadataInput {

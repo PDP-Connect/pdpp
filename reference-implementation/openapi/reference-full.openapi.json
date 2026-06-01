@@ -168,6 +168,76 @@
                         },
                         "pdpp_token_kind": {
                           "const": "owner"
+                        },
+                        "control_surface": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "object": {
+                              "const": "owner_agent_control_surface"
+                            },
+                            "entrypoint": {
+                              "type": "string",
+                              "format": "uri"
+                            },
+                            "scope": {
+                              "const": "reference_implementation"
+                            },
+                            "mcp_owner_bearer_rejected": {
+                              "const": true
+                            },
+                            "actions": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "family": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "status": {
+                                    "type": "string",
+                                    "enum": [
+                                      "supported",
+                                      "owner_mediated",
+                                      "unsupported"
+                                    ]
+                                  },
+                                  "method": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  },
+                                  "url": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  },
+                                  "reason": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "required": [
+                                  "family",
+                                  "status",
+                                  "method",
+                                  "url",
+                                  "reason"
+                                ]
+                              }
+                            }
+                          },
+                          "required": [
+                            "object",
+                            "entrypoint",
+                            "scope",
+                            "mcp_owner_bearer_rejected",
+                            "actions"
+                          ]
                         }
                       },
                       "required": [
@@ -185,7 +255,8 @@
                         "streams_endpoint",
                         "query_base",
                         "mcp_owner_bearer_rejected",
-                        "pdpp_token_kind"
+                        "pdpp_token_kind",
+                        "control_surface"
                       ]
                     }
                   },
@@ -585,6 +656,76 @@
                         },
                         "pdpp_token_kind": {
                           "const": "owner"
+                        },
+                        "control_surface": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "object": {
+                              "const": "owner_agent_control_surface"
+                            },
+                            "entrypoint": {
+                              "type": "string",
+                              "format": "uri"
+                            },
+                            "scope": {
+                              "const": "reference_implementation"
+                            },
+                            "mcp_owner_bearer_rejected": {
+                              "const": true
+                            },
+                            "actions": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "family": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "status": {
+                                    "type": "string",
+                                    "enum": [
+                                      "supported",
+                                      "owner_mediated",
+                                      "unsupported"
+                                    ]
+                                  },
+                                  "method": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  },
+                                  "url": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  },
+                                  "reason": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "required": [
+                                  "family",
+                                  "status",
+                                  "method",
+                                  "url",
+                                  "reason"
+                                ]
+                              }
+                            }
+                          },
+                          "required": [
+                            "object",
+                            "entrypoint",
+                            "scope",
+                            "mcp_owner_bearer_rejected",
+                            "actions"
+                          ]
                         }
                       },
                       "required": [
@@ -602,7 +743,8 @@
                         "streams_endpoint",
                         "query_base",
                         "mcp_owner_bearer_rejected",
-                        "pdpp_token_kind"
+                        "pdpp_token_kind",
+                        "control_surface"
                       ]
                     },
                     "capabilities": {
@@ -1132,6 +1274,76 @@
                         },
                         "pdpp_token_kind": {
                           "const": "owner"
+                        },
+                        "control_surface": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "object": {
+                              "const": "owner_agent_control_surface"
+                            },
+                            "entrypoint": {
+                              "type": "string",
+                              "format": "uri"
+                            },
+                            "scope": {
+                              "const": "reference_implementation"
+                            },
+                            "mcp_owner_bearer_rejected": {
+                              "const": true
+                            },
+                            "actions": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "family": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "status": {
+                                    "type": "string",
+                                    "enum": [
+                                      "supported",
+                                      "owner_mediated",
+                                      "unsupported"
+                                    ]
+                                  },
+                                  "method": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  },
+                                  "url": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  },
+                                  "reason": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "required": [
+                                  "family",
+                                  "status",
+                                  "method",
+                                  "url",
+                                  "reason"
+                                ]
+                              }
+                            }
+                          },
+                          "required": [
+                            "object",
+                            "entrypoint",
+                            "scope",
+                            "mcp_owner_bearer_rejected",
+                            "actions"
+                          ]
                         }
                       },
                       "required": [
@@ -1149,7 +1361,8 @@
                         "streams_endpoint",
                         "query_base",
                         "mcp_owner_bearer_rejected",
-                        "pdpp_token_kind"
+                        "pdpp_token_kind",
+                        "control_surface"
                       ]
                     },
                     "capabilities": {
@@ -10549,6 +10762,225 @@
                   "required": [
                     "object",
                     "data"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict (e.g. run_already_active)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/owner/control": {
+      "get": {
+        "operationId": "ownerControlCapabilities",
+        "tags": [
+          "reference",
+          "owner-agent"
+        ],
+        "summary": "Owner-agent bearer control entrypoint: capability document naming supported, owner-mediated, and unsupported owner-agent control action families with links to supported routes.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "object": {
+                      "const": "owner_agent_control_surface"
+                    },
+                    "entrypoint": {
+                      "type": "string"
+                    },
+                    "scope": {
+                      "const": "reference_implementation"
+                    },
+                    "mcp_owner_bearer_rejected": {
+                      "const": true
+                    },
+                    "actions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "family": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "supported",
+                              "owner_mediated",
+                              "unsupported"
+                            ]
+                          },
+                          "method": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "url": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "reason": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "family",
+                          "status",
+                          "method",
+                          "url",
+                          "reason"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "entrypoint",
+                    "scope",
+                    "mcp_owner_bearer_rejected",
+                    "actions"
                   ]
                 }
               }

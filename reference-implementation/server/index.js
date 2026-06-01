@@ -20,6 +20,7 @@ import {
   buildClientEventSubscriptionsCapability,
   buildHybridRetrievalCapability,
   buildLexicalRetrievalCapability,
+  buildOwnerAgentControlSurface,
   buildProtectedResourceMetadata,
   buildSemanticRetrievalCapability,
   isLocalOrPrivateRequestOrigin,
@@ -367,6 +368,7 @@ import {
 } from './routes/ref-connectors.ts';
 import { mountRsBlobRead, mountRsReadQueries } from './routes/rs-read.ts';
 import { mountOwnerConnectionsList } from './routes/owner-connections.ts';
+import { mountOwnerControl } from './routes/owner-control.ts';
 import {
   mountRsBlobsUpload,
   mountRsEventSubscriptions,
@@ -3345,6 +3347,12 @@ function buildOwnerAgentOnboardingMetadata({ origin, resource, issuer }) {
     streams_endpoint: `${rs}/v1/streams`,
     query_base: `${rs}/v1`,
     event_subscriptions_endpoint: `${rs}/v1/event-subscriptions`,
+    // Owner-agent control entrypoint + action-family catalog. Projected from
+    // the same `buildOwnerAgentControlSurface` builder the bearer-authed
+    // `GET /v1/owner/control` route returns, so discovery and the live
+    // capability document never disagree on what is supported. See
+    // openspec/changes/add-owner-agent-control-surface.
+    control_surface: buildOwnerAgentControlSurface({ resource: rs }),
     mcp_owner_bearer_rejected: true,
     pdpp_token_kind: 'owner',
   };
@@ -3638,6 +3646,26 @@ function buildRsApp(opts = {}) {
     listSchedules: async () => (opts.controller ? await opts.controller.listSchedules() : []),
     projectStorageDisplayName,
     resolveSingleConnectorIdQueryValue,
+  });
+
+  // GET /v1/owner/control is the bearer-authed owner-agent control entrypoint:
+  // a non-secret capability document that names every owner-agent control
+  // action family, marks supported vs owner-mediated vs unsupported, and links
+  // to the supported owner-agent routes (e.g. /v1/owner/connections). It is the
+  // durable discovery surface for trusted local owner agents. Same owner-bearer
+  // guards as /v1/owner/connections; /mcp owner-bearer rejection is untouched.
+  // The action catalog is projected from `buildOwnerAgentControlSurface` (the
+  // same builder the `pdpp_owner_agent_onboarding.control_surface` metadata hint
+  // uses) so discovery and the live document never disagree. URLs are resolved
+  // from the caller-visible trusted RS public base with the same
+  // forwarded-origin handling as the metadata routes. See
+  // openspec/changes/add-owner-agent-control-surface.
+  mountOwnerControl(app, {
+    requireToken,
+    requireOwner,
+    handleError,
+    buildOwnerAgentControlSurface,
+    resolveResource: (req) => resolvePublicUrl(req, explicitResource),
   });
 
   // GET /v1/blobs/:blob_id is mounted via `server/routes/rs-read.ts` (§3),

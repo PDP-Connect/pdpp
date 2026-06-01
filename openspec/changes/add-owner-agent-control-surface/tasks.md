@@ -1,20 +1,20 @@
 ## 1. Current-State Audit
 
-- [ ] 1.1 Inventory existing dashboard/session owner control routes for connectors, connections, runs, schedules, diagnostics, delete/revoke, and display-name mutation.
-- [ ] 1.2 Inventory owner-agent bearer authorization paths and identify which owner-session operations can safely share handlers with owner-agent REST.
-- [ ] 1.3 Capture the current Amazon evidence: template `amazon` listing, record-level `connection_id`, registry-URL fallback `display_name`, and missing owner-agent connection-initiation path.
-- [ ] 1.4 Record the selected route-family decision in `design.md`: extend `/_ref/*` for owner-agent bearer access or introduce a cleaner owner REST family.
+- [x] 1.1 Inventory existing dashboard/session owner control routes for connectors, connections, runs, schedules, diagnostics, delete/revoke, and display-name mutation. (Read-only audit: `tmp/workstreams/ri-owner-agent-control-audit-v1-report.md`, "Route inventory table".)
+- [x] 1.2 Inventory owner-agent bearer authorization paths and identify which owner-session operations can safely share handlers with owner-agent REST. (Audit report "Auth boundary table" + "Safe implementation lanes".)
+- [x] 1.3 Capture the current Amazon evidence: template `amazon` listing, record-level `connection_id`, registry-URL fallback `display_name`, and missing owner-agent connection-initiation path. (Audit report "Amazon / multi-connection evidence".)
+- [x] 1.4 Record the selected route-family decision in `design.md`: extend `/_ref/*` for owner-agent bearer access or introduce a cleaner owner REST family. (Audit report "Route-family recommendation": introduce `/v1/owner/*`; realized by `GET /v1/owner/connections` and `GET /v1/owner/control`.)
 
 ## 2. Contract And Metadata
 
-- [ ] 2.1 Define owner-agent control metadata in root/protected-resource discovery, including entrypoint URL, action families, and unsupported-action semantics.
+- [x] 2.1 Define owner-agent control metadata in root/protected-resource discovery, including entrypoint URL, action families, and unsupported-action semantics. (`pdpp_owner_agent_onboarding.control_surface` hint + bearer-authed `GET /v1/owner/control` capability document, both projected from `buildOwnerAgentControlSurface`; supported families carry method + URL, owner-mediated/unsupported families are named with a typed `status` and reason. Lane `ri-owner-agent-control-entrypoint-v1`.)
 - [ ] 2.2 Define connector template and connection instance response shapes with `connector_id`/`connector_key`, `connection_id`, deprecated `connector_instance_id` compatibility, `display_name`, label status, lifecycle status, and supported actions. (Connection-instance shape landed via `ownerListConnections` reference-contract op + `OwnerConnectionSchema`: `connection_id`, deprecated `connector_instance_id`, `connector_id`/`connector_key`, `display_name`, `label_status`, lifecycle fields. Template shape and `supported_actions` remain for other lanes.)
 - [ ] 2.3 Define typed connection-intent response shapes for OAuth, browser assistance, upload/import, local-collector enrollment, and unsupported connectors.
 - [ ] 2.4 Add typed error envelopes for ambiguous connector-only actions, unsupported actions, missing owner-agent action family, and unsafe provider step.
 
 ## 3. Authorization And Audit
 
-- [ ] 3.1 Add explicit owner-agent bearer allowlisting for the selected owner control routes without making `/mcp` accept owner bearers.
+- [ ] 3.1 Add explicit owner-agent bearer allowlisting for the selected owner control routes without making `/mcp` accept owner bearers. (Partial: `GET /v1/owner/control` is gated by `requireToken` + `requireOwner`; client/`mcp_package` bearers → 403, missing bearer → 401, `/mcp` owner-bearer rejection pinned by regression test. Mutating control routes remain for later lanes.)
 - [ ] 3.2 Share control operation handlers between browser owner sessions and owner-agent bearers where semantics match, while keeping auth adapters separate.
 - [ ] 3.3 Add non-secret audit evidence for owner-agent mutations: actor kind, client id/name, target resource, operation, result, and request id.
 - [ ] 3.4 Add revocation/authorization tests proving a revoked owner-agent credential cannot perform read or control operations.
