@@ -44,7 +44,7 @@ skip() {
   local label="$1"
   local why="$2"
   printf '\n=== %s ===\nSKIP: %s\n' "$label" "$why"
-  SKIP+=("$label — $why")
+  SKIP+=("$label -- $why")
 }
 
 chrome_available() {
@@ -131,14 +131,14 @@ fi
 
 printf '\n================ NO-HUMAN STREAM CLOSEOUT SUMMARY ================\n'
 printf 'PASS (%d):\n' "${#PASS[@]}"
-for item in "${PASS[@]:-}"; do [ -n "$item" ] && printf '  ✔ %s\n' "$item"; done
+for item in "${PASS[@]:-}"; do [ -n "$item" ] && printf '  [pass] %s\n' "$item"; done
 if [ "${#SKIP[@]}" -gt 0 ]; then
   printf 'SKIP (%d):\n' "${#SKIP[@]}"
-  for item in "${SKIP[@]}"; do printf '  • %s\n' "$item"; done
+  for item in "${SKIP[@]}"; do printf '  [skip] %s\n' "$item"; done
 fi
 if [ "${#FAIL[@]}" -gt 0 ]; then
   printf 'FAIL (%d):\n' "${#FAIL[@]}"
-  for item in "${FAIL[@]}"; do printf '  ✖ %s\n' "$item"; done
+  for item in "${FAIL[@]}"; do printf '  [fail] %s\n' "$item"; done
 fi
 
 cat <<'LIVE'
@@ -158,7 +158,7 @@ The checks above cover every no-human part of tasks 12.8, 13.5, 14.7,
   2. Real-phone smoke (no automation substitute): soft-keyboard
      open/dismiss/reopen, touch precision (<=10 CSS px), rotation
      settle (<=250 ms), reconnect/app-switch recovery, local-to-remote
-     paste, and visual sharpness — per the same checklist.
+     paste, and visual sharpness -- per the same checklist.
 
 Mobile-emulated Playwright smoke is NOT a substitute for item 2.
 LIVE
