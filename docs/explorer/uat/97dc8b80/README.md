@@ -88,8 +88,10 @@ Identical to `10fb2f59`. From a deps-installed checkout at this commit (ports
 #    manifests, seeds synthetic records, self-verifies declared types surface):
 AS_PORT=7762 RS_PORT=7763 node docs/explorer/uat/harness/seed-and-serve.mjs   # stays alive
 
-# 2. Dashboard pointed at the isolated stack, owner gate disabled:
-cd apps/web && PDPP_AS_URL=http://localhost:7762 PDPP_RS_URL=http://localhost:7763 \
+# 2. Dashboard pointed at the isolated stack, owner gate disabled (the live
+#    operator console is apps/console after the public-site/operator-console split;
+#    at this commit it was apps/web):
+cd apps/console && PDPP_AS_URL=http://localhost:7762 PDPP_RS_URL=http://localhost:7763 \
   PDPP_REFERENCE_ORIGIN=http://localhost:3300 PDPP_ENABLE_DASHBOARD=1 \
   PDPP_DASHBOARD_AUTH_REDIRECT=0 PDPP_WEB_PORT=3300 \
   pnpm exec next dev --webpack --port 3300
@@ -105,8 +107,6 @@ The fast, browser-free regression guard for the same fix lives in the unit
 suite — run it without a stack:
 
 ```bash
-node --test apps/web/src/app/dashboard/lib/record-preview.test.ts \
-            apps/web/src/app/dashboard/lib/timeline-summaries.test.ts
 node --test apps/console/src/app/dashboard/lib/record-preview.test.ts \
             apps/console/src/app/dashboard/lib/timeline-summaries.test.ts
 ```
