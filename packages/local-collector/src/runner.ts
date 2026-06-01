@@ -30,6 +30,7 @@ import {
 
 export {
   buildCollectorStartMessage,
+  COLLECTOR_COVERAGE_STATUSES,
   COLLECTOR_PROTOCOL_VERSION,
   CollectorStateReadError,
   drainCollectorQueue,
@@ -54,9 +55,12 @@ export {
   resourceSet,
   runCollectorConnector,
   stringifyForJsonl,
+  summarizeCollectorCompleteness,
   transformRecordsToCollectorEnvelopes,
   type CollectorChildContext,
+  type CollectorCompletenessSummary,
   type CollectorConnectorSpec,
+  type CollectorCoverageStatus,
   type CollectorEnrollmentConfig,
   type CollectorRunConfig,
   type CollectorRunResult,

@@ -140,6 +140,163 @@ test("runCollectorConnector gives changed emitted_at records a distinct local ba
   }
 });
 
+test("runCollectorConnector summarizes coverage completeness distinct from declared-stream success", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    // The connector reports a clean DONE for its declared stream while the
+    // coverage diagnostic shows a mix of accounted statuses — collected,
+    // excluded, deferred, and missing. Declared-stream success must not
+    // flatten that completeness picture (Section 5.2).
+    const fixture = await writeFixtureConnector({
+      script: `
+        await new Promise((r) => {
+          let buf = "";
+          process.stdin.on("data", (c) => { buf += c; if (buf.includes("\\n")) r(); });
+        });
+        const coverage = [
+          { store: "sessions", stream: "sessions", status: "collected", reason: "declared stream" },
+          { store: "auth", stream: null, status: "excluded", reason: "auth-adjacent" },
+          { store: "logs", stream: "logs", status: "deferred", reason: "redaction pending" },
+          { store: "downloads", stream: "downloads", status: "missing", reason: "not present" },
+        ];
+        process.stdout.write(JSON.stringify({
+          type: "RECORD", stream: "sessions", key: "s-1",
+          data: { id: "s-1" }, emitted_at: new Date().toISOString(),
+        }) + "\\n");
+        for (const c of coverage) {
+          process.stdout.write(JSON.stringify({
+            type: "RECORD", stream: "coverage_diagnostics", key: c.store + ":" + c.status,
+            data: { id: c.store + ":" + c.status, ...c }, emitted_at: new Date().toISOString(),
+          }) + "\\n");
+        }
+        process.stdout.write(JSON.stringify({ type: "DONE", status: "succeeded", records_emitted: 5 }) + "\\n");
+      `,
+    });
+
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-coverage",
+        runtime_requirements: { bindings: {} },
+        streams: ["sessions", "coverage_diagnostics"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      queuePath: await tempQueuePath(),
+      sourceInstanceId: "src-coverage",
+    });
+
+    // Declared-stream success is reported on `done`.
+    assert.equal(result.done?.status, "succeeded");
+
+    // Completeness is a separate, non-failing signal.
+    assert.ok(result.completeness, "expected a completeness summary");
+    assert.equal(result.completeness?.storeCount, 4);
+    assert.equal(result.completeness?.fullyAccounted, true);
+    assert.deepEqual(result.completeness?.unaccountedStores, []);
+    assert.equal(result.completeness?.countsByStatus.collected, 1);
+    assert.equal(result.completeness?.countsByStatus.excluded, 1);
+    assert.equal(result.completeness?.countsByStatus.deferred, 1);
+    assert.equal(result.completeness?.countsByStatus.missing, 1);
+    assert.equal(result.completeness?.byStore.auth, "excluded");
+    assert.equal(result.completeness?.byStore.downloads, "missing");
+
+    // The summary must not carry paths, payloads, or the reason free-text.
+    const json = JSON.stringify(result.completeness);
+    assert.equal(json.includes("reason"), false);
+    assert.equal(json.includes("redaction pending"), false);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector reports null completeness when no coverage diagnostic is observed", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const fixture = await writeFixtureConnector({
+      script: `
+        await new Promise((r) => {
+          let buf = "";
+          process.stdin.on("data", (c) => { buf += c; if (buf.includes("\\n")) r(); });
+        });
+        process.stdout.write(JSON.stringify({
+          type: "RECORD", stream: "messages", key: "m-1",
+          data: { id: "m-1" }, emitted_at: new Date().toISOString(),
+        }) + "\\n");
+        process.stdout.write(JSON.stringify({ type: "DONE", status: "succeeded", records_emitted: 1 }) + "\\n");
+      `,
+    });
+
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-no-coverage",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      queuePath: await tempQueuePath(),
+      sourceInstanceId: "src-no-coverage",
+    });
+
+    // A run that does not request coverage reports absence as absence, not
+    // as "complete".
+    assert.equal(result.done?.status, "succeeded");
+    assert.equal(result.completeness, null);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector flags an unrecognized coverage status as unaccounted", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const fixture = await writeFixtureConnector({
+      script: `
+        await new Promise((r) => {
+          let buf = "";
+          process.stdin.on("data", (c) => { buf += c; if (buf.includes("\\n")) r(); });
+        });
+        process.stdout.write(JSON.stringify({
+          type: "RECORD", stream: "coverage_diagnostics", key: "mystery:weird",
+          data: { id: "mystery:weird", store: "mystery", stream: null, status: "weird-new-status" },
+          emitted_at: new Date().toISOString(),
+        }) + "\\n");
+        process.stdout.write(JSON.stringify({ type: "DONE", status: "succeeded", records_emitted: 1 }) + "\\n");
+      `,
+    });
+
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-unaccounted",
+        runtime_requirements: { bindings: {} },
+        streams: ["coverage_diagnostics"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      queuePath: await tempQueuePath(),
+      sourceInstanceId: "src-unaccounted",
+    });
+
+    // An unknown status from a future tool release surfaces as unaccounted,
+    // so declared-stream success cannot read as complete.
+    assert.equal(result.done?.status, "succeeded");
+    assert.equal(result.completeness?.fullyAccounted, false);
+    assert.deepEqual(result.completeness?.unaccountedStores, ["mystery"]);
+    assert.equal(result.completeness?.countsByStatus.unaccounted, 1);
+  } finally {
+    await harness.close();
+  }
+});
+
 test("drainCollectorQueue marks sent and preserves retryable failures", async () => {
   const queue = new LocalDeviceQueue({
     path: await tempQueuePath(),

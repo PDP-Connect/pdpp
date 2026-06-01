@@ -32,8 +32,11 @@
 export { COLLECTOR_PROTOCOL_HEADER, COLLECTOR_PROTOCOL_VERSION } from "../collector-protocol.ts";
 export {
   buildCollectorStartMessage,
+  COLLECTOR_COVERAGE_STATUSES,
   type CollectorChildContext,
+  type CollectorCompletenessSummary,
   type CollectorConnectorSpec,
+  type CollectorCoverageStatus,
   type CollectorEnrollmentConfig,
   type CollectorRunConfig,
   type CollectorRunResult,
@@ -41,6 +44,7 @@ export {
   drainCollectorQueue,
   enrollCollector,
   runCollectorConnector,
+  summarizeCollectorCompleteness,
   transformRecordsToCollectorEnvelopes,
 } from "../collector-runner.ts";
 export type {

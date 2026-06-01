@@ -1907,6 +1907,95 @@ async function getSnapshotAtVersion(connectorInstanceId, stream, recordKey, vers
 }
 
 /**
+ * Stream on which local collectors emit coverage diagnostics. Records on
+ * this stream carry `{ id, store, stream, status, reason }`; the reader
+ * below projects only the safe `store`/`stream`/`status` triple.
+ */
+const LOCAL_COVERAGE_DIAGNOSTICS_STREAM = 'coverage_diagnostics';
+
+const SAFE_COVERAGE_STATUSES = new Set([
+  'collected',
+  'inventory_only',
+  'excluded',
+  'deferred',
+  'missing',
+  'unsupported',
+  'unaccounted',
+]);
+
+function projectCoverageRow(rawData) {
+  if (!rawData || typeof rawData !== 'object') {
+    return null;
+  }
+  const store = typeof rawData.store === 'string' && rawData.store ? rawData.store : null;
+  if (!store) {
+    return null;
+  }
+  const status =
+    typeof rawData.status === 'string' && SAFE_COVERAGE_STATUSES.has(rawData.status)
+      ? rawData.status
+      : 'unaccounted';
+  const stream =
+    typeof rawData.stream === 'string' && rawData.stream ? rawData.stream : null;
+  // Deliberately omit `id`, `reason`, and anything else: the operator
+  // diagnostic only needs the safe store/stream/status triple, never the
+  // reason free-text or any payload.
+  return { store, stream, status };
+}
+
+/**
+ * Read the latest `coverage_diagnostics` records for one connector instance
+ * and return only the safe `{ store, stream, status }` triple per store.
+ *
+ * This is the server-side source for Section 5.3 operator completeness
+ * diagnostics. It reads live records (the inventory rebuilds them each run,
+ * so the live row is the latest), and never returns paths, payloads, the
+ * coverage `reason` text, or secrets. Returns an empty array when the
+ * instance has no coverage records (a run that never requested the stream).
+ */
+export async function listLocalCoverageDiagnostics(storageTarget) {
+  const connectorId = resolveStorageConnectorId(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
+  if (!connectorInstanceId) {
+    return [];
+  }
+
+  const byStore = new Map();
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery(
+      `SELECT record_key, record_json FROM records
+         WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE
+         ORDER BY record_key ASC`,
+      [connectorInstanceId, LOCAL_COVERAGE_DIAGNOSTICS_STREAM],
+    );
+    for (const row of result.rows) {
+      const projected = projectCoverageRow(
+        typeof row.record_json === 'string' ? JSON.parse(row.record_json) : row.record_json,
+      );
+      if (projected) {
+        byStore.set(projected.store, projected);
+      }
+    }
+  } else {
+    const rows = getDb()
+      .prepare(
+        `SELECT record_key, record_json FROM records
+           WHERE connector_instance_id = ? AND stream = ? AND deleted = 0
+           ORDER BY record_key ASC`,
+      )
+      .all(connectorInstanceId, LOCAL_COVERAGE_DIAGNOSTICS_STREAM);
+    for (const row of rows) {
+      const projected = projectCoverageRow(JSON.parse(row.record_json));
+      if (projected) {
+        byStore.set(projected.store, projected);
+      }
+    }
+  }
+
+  return [...byStore.values()].sort((a, b) => a.store.localeCompare(b.store));
+}
+
+/**
  * Query records for a stream under grant enforcement
  */
 export async function queryRecords(storageTarget, stream, grant, requestParams = {}, manifest = null) {

@@ -200,7 +200,76 @@ export interface CollectorRunConfig {
   sourceInstanceId: string;
 }
 
+/**
+ * Coverage statuses emitted by the local source inventory's
+ * `coverage_diagnostics` stream. Kept in sync with
+ * `local-source-inventory.ts`'s `CoverageStatus`. `unaccounted` is not a
+ * connector-emitted status today; it is reserved so a future inventory
+ * that cannot classify a discovered store has a home in the summary
+ * without changing this contract.
+ */
+export const COLLECTOR_COVERAGE_STATUSES = [
+  "collected",
+  "inventory_only",
+  "excluded",
+  "deferred",
+  "missing",
+  "unsupported",
+  "unaccounted",
+] as const;
+
+export type CollectorCoverageStatus = (typeof COLLECTOR_COVERAGE_STATUSES)[number];
+
+/**
+ * Completeness summary derived from the `coverage_diagnostics` RECORDs a
+ * connector emits during this run. This is deliberately distinct from
+ * {@link CollectorRunResult.done}: `done.status` reports whether the
+ * declared streams ran to a clean DONE, while this summary reports what
+ * the local source inventory saw, collected, inventoried, excluded,
+ * deferred, or could not account for. A run can succeed on every declared
+ * stream while completeness shows excluded/deferred/missing stores — that
+ * is the honest, non-failing local-completeness signal Section 5.2
+ * requires.
+ *
+ * `null` on the run result means no coverage diagnostic was observed this
+ * pass (the run did not request `coverage_diagnostics`, or the connector
+ * did not spawn — e.g. a backlog skip). Absence is reported as absence,
+ * not as "complete".
+ *
+ * The summary carries only the safe coverage fields — `store`, `stream`,
+ * `status`. Each coverage RECORD's `data` is `{ id, store, stream, status,
+ * reason }`; this summary keeps counts plus the per-store status map and
+ * never copies `reason` text or any path/payload. The inventory itself
+ * keeps `reason` free of paths and secrets.
+ */
+export interface CollectorCompletenessSummary {
+  /** Per-store latest coverage status, keyed by store name. */
+  byStore: Readonly<Record<string, CollectorCoverageStatus>>;
+  /** Count of stores at each coverage status. */
+  countsByStatus: Readonly<Record<CollectorCoverageStatus, number>>;
+  /**
+   * True when every discovered store reached an accounted status
+   * (anything other than `unaccounted`). Declared-stream success does not
+   * imply this; this is the completeness bit Section 5.2 separates out.
+   */
+  fullyAccounted: boolean;
+  /** Total number of distinct stores the coverage diagnostic reported. */
+  storeCount: number;
+  /**
+   * Stores whose coverage status is `unaccounted` — discovered but not
+   * classified. Empty on a healthy run; non-empty means the connector saw
+   * a store it could not place, which must not read as complete.
+   */
+  unaccountedStores: readonly string[];
+}
+
 export interface CollectorRunResult {
+  /**
+   * Local-completeness summary from this run's `coverage_diagnostics`
+   * RECORDs, distinct from {@link CollectorRunResult.done} (declared-stream
+   * success). `null` when no coverage diagnostic was observed this pass.
+   */
+  completeness: CollectorCompletenessSummary | null;
   done: Extract<EmittedMessage, { type: "DONE" }> | null;
   enqueuedBatches: number;
   /**
@@ -384,6 +453,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     }
 
     return {
+      completeness: summarizeCollectorCompleteness(streamResult.coverageByStore),
       done,
       enqueuedBatches: enqueueResult.enqueuedBatches,
       flushedState: checkpointResult.flushedState,
@@ -449,6 +519,8 @@ async function maybeSkipScanForBacklog(input: MaybeSkipScanInput): Promise<Colle
     status: heartbeatStatusForSummary(summaryAfterGap, input.policy),
   });
   return {
+    // No connector spawned on a backlog skip, so no coverage was observed.
+    completeness: null,
     done: null,
     enqueuedBatches: 0,
     flushedState: null,
@@ -502,10 +574,86 @@ interface StreamConnectorIntoOutboxInput {
 interface StreamConnectorIntoOutboxResult {
   bufferedState: Readonly<Record<string, unknown>>;
   bufferHighWaterMark: number;
+  /**
+   * Per-store coverage status accumulated from `coverage_diagnostics`
+   * RECORDs seen this pass, or `null` when none were observed. Last write
+   * wins per store so a re-emitted store keeps its final status.
+   */
+  coverageByStore: Map<string, CollectorCoverageStatus> | null;
   done: Extract<EmittedMessage, { type: "DONE" }> | null;
   enqueuedBatches: number;
   recordsQueued: number;
   scanBudgetExceeded: boolean;
+}
+
+/**
+ * Stream name on which the local source inventory emits coverage records.
+ * Mirrors the connector-side stream contract; the runner only needs the
+ * name to recognize and aggregate the diagnostic.
+ */
+const COVERAGE_DIAGNOSTICS_STREAM = "coverage_diagnostics";
+
+/**
+ * Extract the safe `{ store, status }` coverage entry from a
+ * `coverage_diagnostics` RECORD, or `null` when the message is not a
+ * coverage record or lacks a store. An unrecognized status maps to
+ * `unaccounted` so a future tool release cannot read as complete.
+ */
+function coverageEntryFromRecord(
+  message: Extract<EmittedMessage, { type: "RECORD" }>
+): { status: CollectorCoverageStatus; store: string } | null {
+  if (message.stream !== COVERAGE_DIAGNOSTICS_STREAM) {
+    return null;
+  }
+  const data = message.data;
+  const dataStore = isRecord(data) && typeof data.store === "string" && data.store ? data.store : null;
+  const keyStore = typeof message.key === "string" && message.key ? message.key : null;
+  const store = dataStore ?? keyStore;
+  if (!store) {
+    return null;
+  }
+  const rawStatus = isRecord(data) && typeof data.status === "string" ? data.status : null;
+  if (!rawStatus) {
+    return null;
+  }
+  const status = (COLLECTOR_COVERAGE_STATUSES as readonly string[]).includes(rawStatus)
+    ? (rawStatus as CollectorCoverageStatus)
+    : "unaccounted";
+  return { status, store };
+}
+
+/**
+ * Fold the per-store coverage map collected during a run into the safe
+ * {@link CollectorCompletenessSummary} surfaced on the run result. Returns
+ * `null` when no coverage diagnostic was observed so absence reads as
+ * absence rather than "complete".
+ */
+export function summarizeCollectorCompleteness(
+  coverageByStore: Map<string, CollectorCoverageStatus> | null
+): CollectorCompletenessSummary | null {
+  if (!coverageByStore || coverageByStore.size === 0) {
+    return null;
+  }
+  const countsByStatus: Record<CollectorCoverageStatus, number> = Object.fromEntries(
+    COLLECTOR_COVERAGE_STATUSES.map((status) => [status, 0])
+  ) as Record<CollectorCoverageStatus, number>;
+  const unaccountedStores: string[] = [];
+  const byStore: Record<string, CollectorCoverageStatus> = {};
+  for (const store of [...coverageByStore.keys()].sort()) {
+    const status = coverageByStore.get(store) as CollectorCoverageStatus;
+    byStore[store] = status;
+    countsByStatus[status] += 1;
+    if (status === "unaccounted") {
+      unaccountedStores.push(store);
+    }
+  }
+  return {
+    byStore,
+    countsByStatus,
+    fullyAccounted: unaccountedStores.length === 0,
+    storeCount: coverageByStore.size,
+    unaccountedStores,
+  };
 }
 
 /**
@@ -554,6 +702,10 @@ async function streamConnectorIntoOutbox(
   let enqueuedBatches = 0;
   let done: Extract<EmittedMessage, { type: "DONE" }> | null = null;
   let scanBudgetExceeded = false;
+  // Accumulate coverage diagnostics as we see them so completeness can be
+  // summarized without re-reading the durable outbox. Stays null until the
+  // first coverage record so an absent diagnostic reads as absent.
+  let coverageByStore: Map<string, CollectorCoverageStatus> | null = null;
 
   const flushPendingBatch = (): void => {
     if (pendingRecords.length === 0) {
@@ -604,8 +756,18 @@ async function streamConnectorIntoOutbox(
     });
   };
 
+  const recordCoverageIfPresent = (message: Extract<EmittedMessage, { type: "RECORD" }>): void => {
+    const entry = coverageEntryFromRecord(message);
+    if (!entry) {
+      return;
+    }
+    coverageByStore ??= new Map<string, CollectorCoverageStatus>();
+    coverageByStore.set(entry.store, entry.status);
+  };
+
   const handleMessage = (message: EmittedMessage): void => {
     if (message.type === "RECORD") {
+      recordCoverageIfPresent(message);
       pendingRecords.push(message);
       if (pendingRecords.length > bufferHighWaterMark) {
         bufferHighWaterMark = pendingRecords.length;
@@ -735,6 +897,10 @@ async function streamConnectorIntoOutbox(
   return {
     bufferedState: Object.freeze(scanBudgetExceeded ? {} : { ...bufferedState }),
     bufferHighWaterMark,
+    // Coverage is a diagnostic of what the inventory saw, not record-level
+    // checkpoint state, so it is reported even when the scan budget cut the
+    // run short — an honest partial coverage beats none.
+    coverageByStore,
     done: scanBudgetExceeded ? null : done,
     enqueuedBatches,
     recordsQueued,

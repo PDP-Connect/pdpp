@@ -284,6 +284,11 @@ export interface MountRefDeviceExportersContext {
 
   // Record ingest and sync state
   ingestRecord(storageTarget: StorageTarget, record: unknown): Promise<void>;
+
+  // Safe local-collector coverage read (Section 5.3). Returns only the
+  // `{ store, stream, status }` triple per store — never paths, payloads,
+  // the coverage `reason` text, or secrets.
+  listLocalCoverageDiagnostics(storageTarget: StorageTarget): Promise<LocalCoverageRow[]>;
   makeConnectorInstanceSourceBindingKey(identity: { kind: string; local_binding_name: string }): string;
   pdppError: PdppErrorFn;
   putSyncState(
@@ -417,6 +422,66 @@ function normalizeDeviceIngestRecords(body: Record<string, unknown>): unknown[] 
 type GapStatMap = Map<string, { pending: number; lastUpdatedAt: string | null; reasons: Set<string> }>;
 type OutcomeStatMap = Map<string, { accepted: number; rejected: number; lastIngestAt: string | null }>;
 
+/** Safe per-store coverage triple read from `coverage_diagnostics` records. */
+export interface LocalCoverageRow {
+  status: string;
+  store: string;
+  stream: string | null;
+}
+
+/**
+ * Per-source-instance local-completeness projection surfaced in the
+ * device-exporter diagnostics (Section 5.3). Carries only safe coverage
+ * statuses and counts; never raw paths, payloads, reasons, or secrets.
+ * `observed` is false when the instance has no coverage records yet (no run
+ * has requested `coverage_diagnostics`), so absence reads as absence.
+ */
+interface LocalCoverageProjection {
+  by_store: Record<string, string>;
+  counts_by_status: Record<string, number>;
+  fully_accounted: boolean;
+  observed: boolean;
+  store_count: number;
+  unaccounted_stores: string[];
+}
+
+const COVERAGE_STATUSES = [
+  "collected",
+  "inventory_only",
+  "excluded",
+  "deferred",
+  "missing",
+  "unsupported",
+  "unaccounted",
+] as const;
+
+function summarizeLocalCoverage(rows: readonly LocalCoverageRow[]): LocalCoverageProjection {
+  const countsByStatus: Record<string, number> = {};
+  for (const status of COVERAGE_STATUSES) {
+    countsByStatus[status] = 0;
+  }
+  const byStore: Record<string, string> = {};
+  const unaccountedStores: string[] = [];
+  for (const row of rows) {
+    const status = (COVERAGE_STATUSES as readonly string[]).includes(row.status) ? row.status : "unaccounted";
+    countsByStatus[status] = (countsByStatus[status] ?? 0) + 1;
+    byStore[row.store] = status;
+    if (status === "unaccounted") {
+      unaccountedStores.push(row.store);
+    }
+  }
+  return {
+    by_store: byStore,
+    counts_by_status: countsByStatus,
+    // `fully_accounted` requires actually observing coverage. An empty
+    // coverage set is "nothing seen", not "everything accounted for".
+    fully_accounted: rows.length > 0 && unaccountedStores.length === 0,
+    observed: rows.length > 0,
+    store_count: rows.length,
+    unaccounted_stores: unaccountedStores.sort(),
+  };
+}
+
 function accumulateGapRow(stats: GapStatMap, gap: GapRow): void {
   if (!gap || gap.status !== "pending") {
     return;
@@ -465,6 +530,85 @@ async function aggregateLocalCollectorGapStats(
   return { stats, unreliableIds };
 }
 
+/**
+ * Resolve the connector instance for a source instance using the same
+ * binding fallback as the projection, so coverage attaches to exactly the
+ * instance whose storage holds the records.
+ */
+function resolveConnectorInstanceForSource(
+  ctx: MountRefDeviceExportersContext,
+  source: SourceInstanceRow,
+  devicesById: Map<string, DeviceRow>,
+  connectorInstancesById: Map<string, ConnectorInstanceRow>,
+  connectorInstancesByBinding: Map<string, ConnectorInstanceRow>
+): ConnectorInstanceRow | undefined {
+  if (source.connectorInstanceId) {
+    return connectorInstancesById.get(source.connectorInstanceId);
+  }
+  if (!devicesById.get(source.deviceId)) {
+    return;
+  }
+  const identityKey = ctx.makeConnectorInstanceSourceBindingKey(
+    deviceExporterSourceBindingIdentity(source.localBindingId)
+  );
+  return connectorInstancesByBinding.get(`${source.connectorId}\nlocal_device\n${identityKey}`);
+}
+
+/**
+ * Read safe local coverage diagnostics once per distinct connector instance
+ * referenced by the owner's source instances. Failures to read one
+ * instance must not break the whole diagnostics response, so a read error
+ * yields no coverage for that instance (observed=false) rather than
+ * throwing.
+ */
+async function aggregateLocalCoverage(
+  ctx: MountRefDeviceExportersContext,
+  sourceInstances: readonly SourceInstanceRow[],
+  maps: {
+    connectorInstancesById: Map<string, ConnectorInstanceRow>;
+    connectorInstancesByBinding: Map<string, ConnectorInstanceRow>;
+  }
+): Promise<Map<string, LocalCoverageProjection>> {
+  const devicesById = new Map<string, DeviceRow>();
+  // projectSourceInstance only checks for device presence via the same
+  // map; build a presence-only view from the source rows themselves.
+  for (const source of sourceInstances) {
+    if (!devicesById.has(source.deviceId)) {
+      devicesById.set(source.deviceId, { deviceId: source.deviceId } as DeviceRow);
+    }
+  }
+
+  const targets = new Map<string, { connectorId: string; connectorInstanceId: string }>();
+  for (const source of sourceInstances) {
+    const instance = resolveConnectorInstanceForSource(
+      ctx,
+      source,
+      devicesById,
+      maps.connectorInstancesById,
+      maps.connectorInstancesByBinding
+    );
+    if (instance?.connectorInstanceId && !targets.has(instance.connectorInstanceId)) {
+      targets.set(instance.connectorInstanceId, {
+        connectorId: source.connectorId,
+        connectorInstanceId: instance.connectorInstanceId,
+      });
+    }
+  }
+
+  const coverage = new Map<string, LocalCoverageProjection>();
+  for (const { connectorId, connectorInstanceId } of targets.values()) {
+    try {
+      const rows = await ctx.listLocalCoverageDiagnostics(
+        referenceLocalDeviceStorageTarget(ctx, connectorId, connectorInstanceId)
+      );
+      coverage.set(connectorInstanceId, summarizeLocalCoverage(rows));
+    } catch {
+      // Leave unset → EMPTY_LOCAL_COVERAGE (observed=false) in projection.
+    }
+  }
+  return coverage;
+}
+
 function aggregateOutcomeStats(outcomes: BatchOutcomeRow[]): OutcomeStatMap {
   const map: OutcomeStatMap = new Map();
   for (const outcome of outcomes) {
@@ -491,7 +635,8 @@ function projectSourceInstance(
   connectorInstancesByBinding: Map<string, ConnectorInstanceRow>,
   outcomeStats: OutcomeStatMap,
   gapStats: GapStatMap,
-  unreliableIds: Set<string>
+  unreliableIds: Set<string>,
+  coverageByConnectorInstance: Map<string, LocalCoverageProjection>
 ): unknown {
   const stats = outcomeStats.get(source.sourceInstanceId) ?? { accepted: 0, rejected: 0, lastIngestAt: null };
   const device = devicesById.get(source.deviceId);
@@ -529,9 +674,30 @@ function projectSourceInstance(
       last_updated_at: gap ? gap.lastUpdatedAt : null,
       unreliable: unreliableIds.has(source.connectorId),
     },
+    local_collector_coverage:
+      (connectorInstance?.connectorInstanceId
+        ? coverageByConnectorInstance.get(connectorInstance.connectorInstanceId)
+        : null) ?? EMPTY_LOCAL_COVERAGE,
     last_error: source.lastError,
   };
 }
+
+/**
+ * Coverage projection for a source instance that has no coverage records
+ * yet (or whose connector instance could not be resolved). `observed`
+ * false is the honest "no completeness signal seen" state.
+ */
+const EMPTY_LOCAL_COVERAGE: LocalCoverageProjection = Object.freeze({
+  by_store: Object.freeze({}) as Record<string, string>,
+  counts_by_status: Object.freeze(Object.fromEntries(COVERAGE_STATUSES.map((status) => [status, 0]))) as Record<
+    string,
+    number
+  >,
+  fully_accounted: false,
+  observed: false,
+  store_count: 0,
+  unaccounted_stores: Object.freeze([]) as unknown as string[],
+});
 
 function projectDeviceExporter(device: DeviceRow, sourceList: unknown[], now: number): unknown {
   const lastIngestAt = sourceList.reduce((latest: string | null, source) => {
@@ -578,6 +744,10 @@ async function buildDeviceExporterDiagnostics(
   const connectorIds = new Set(sourceInstances.map((s) => s.connectorId).filter(Boolean));
   const { stats: gapStats, unreliableIds } = await aggregateLocalCollectorGapStats(ctx, connectorIds);
   const outcomeStats = aggregateOutcomeStats(outcomes);
+  const coverageByConnectorInstance = await aggregateLocalCoverage(ctx, sourceInstances, {
+    connectorInstancesById,
+    connectorInstancesByBinding,
+  });
 
   const sourcesByDevice = new Map<string, unknown[]>();
   for (const source of sourceInstances) {
@@ -589,7 +759,8 @@ async function buildDeviceExporterDiagnostics(
       connectorInstancesByBinding,
       outcomeStats,
       gapStats,
-      unreliableIds
+      unreliableIds,
+      coverageByConnectorInstance
     );
     const list = sourcesByDevice.get(source.deviceId) ?? [];
     list.push(projected);

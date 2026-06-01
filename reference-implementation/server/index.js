@@ -111,6 +111,7 @@ import {
   queryRecordsAcrossBindings, getRecordAcrossBindings,
   aggregateRecordsAcrossBindings, listStreamsAcrossBindings,
   getStreamDetailAcrossBindings, resolveReadRequestBindings,
+  listLocalCoverageDiagnostics,
 } from './records.js';
 import {
   applyDatasetSummaryBlobDelta,
@@ -3160,6 +3161,7 @@ function buildAsApp(opts = {}) {
     ingestRecord,
     getSyncState,
     putSyncState,
+    listLocalCoverageDiagnostics,
     DeviceBatchConflictError,
   };
 
