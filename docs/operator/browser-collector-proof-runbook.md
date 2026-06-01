@@ -92,12 +92,20 @@ Amazon by design, so mint the code directly against the enrollment-code route
 instead:
 
 ```bash
-# PDPP_OWNER_SESSION_COOKIE is read from the environment; never echo it.
-curl -sS -X POST "$BASE_URL/_ref/device-exporters/enrollment-codes" \
-  -H 'Content-Type: application/json' \
-  -H "Cookie: $PDPP_OWNER_SESSION_COOKIE" \
-  -d '{"connector_id":"amazon","local_binding_name":"the owner-personal-amazon"}' \
-  | python3 -c 'import json,sys;d=json.load(sys.stdin);print("expires_at:",d["expires_at"]);print("got_code:",bool(d.get("enrollment_code")))'
+node --input-type=module <<'NODE'
+const baseUrl = process.env.BASE_URL?.replace(/\/$/, '');
+const cookie = process.env.PDPP_OWNER_SESSION_COOKIE;
+if (!baseUrl) throw new Error('Set BASE_URL first.');
+if (!cookie) throw new Error('Set PDPP_OWNER_SESSION_COOKIE first.');
+const response = await fetch(`${baseUrl}/_ref/device-exporters/enrollment-codes`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', Cookie: cookie },
+  body: JSON.stringify({ connector_id: 'amazon', local_binding_name: 'the owner-personal-amazon' }),
+});
+const body = await response.json();
+console.log('expires_at:', body.expires_at);
+console.log('got_code:', Boolean(body.enrollment_code));
+NODE
 ```
 
 The pipe prints only whether a code was returned and its expiry — **not the
@@ -105,10 +113,20 @@ code itself**. Keep the raw code in a shell variable, never in a file or the
 transcript:
 
 ```bash
-ENROLLMENT_CODE="$(curl -sS -X POST "$BASE_URL/_ref/device-exporters/enrollment-codes" \
-  -H 'Content-Type: application/json' -H "Cookie: $PDPP_OWNER_SESSION_COOKIE" \
-  -d '{"connector_id":"amazon","local_binding_name":"the owner-personal-amazon"}' \
-  | python3 -c 'import json,sys;print(json.load(sys.stdin)["enrollment_code"])')"
+ENROLLMENT_CODE="$(node --input-type=module <<'NODE'
+const baseUrl = process.env.BASE_URL?.replace(/\/$/, '');
+const cookie = process.env.PDPP_OWNER_SESSION_COOKIE;
+if (!baseUrl) throw new Error('Set BASE_URL first.');
+if (!cookie) throw new Error('Set PDPP_OWNER_SESSION_COOKIE first.');
+const response = await fetch(`${baseUrl}/_ref/device-exporters/enrollment-codes`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', Cookie: cookie },
+  body: JSON.stringify({ connector_id: 'amazon', local_binding_name: 'the owner-personal-amazon' }),
+});
+const body = await response.json();
+console.log(body.enrollment_code);
+NODE
+)"
 ```
 
 Binding-aware enrollment will record this connection as `browser_collector`
@@ -140,9 +158,19 @@ export PDPP_CONNECTION_ID=dsrc_...        # the source_instance_id
 Sanity-check the source kind without exposing anything sensitive:
 
 ```bash
-curl -sS "$BASE_URL/_ref/device-exporters/source-instances?connector_instance_id=$CONNECTOR_INSTANCE_ID" \
-  -H "Cookie: $PDPP_OWNER_SESSION_COOKIE" \
-  | python3 -c 'import json,sys;d=json.load(sys.stdin)["data"];print("connector_id:",d[0]["connector_id"]);print("connector_instance_id:",d[0]["connector_instance_id"])'
+node --input-type=module <<'NODE'
+const baseUrl = process.env.BASE_URL?.replace(/\/$/, '');
+const cookie = process.env.PDPP_OWNER_SESSION_COOKIE;
+const connectionId = process.env.CONNECTOR_INSTANCE_ID;
+if (!baseUrl) throw new Error('Set BASE_URL first.');
+if (!cookie) throw new Error('Set PDPP_OWNER_SESSION_COOKIE first.');
+if (!connectionId) throw new Error('Set CONNECTOR_INSTANCE_ID first.');
+const url = `${baseUrl}/_ref/device-exporters/source-instances?connector_instance_id=${encodeURIComponent(connectionId)}`;
+const response = await fetch(url, { headers: { Cookie: cookie, Accept: 'application/json' } });
+const data = (await response.json()).data;
+console.log('connector_id:', data[0]?.connector_id);
+console.log('connector_instance_id:', data[0]?.connector_instance_id);
+NODE
 ```
 
 (The owner-facing instance row carries `source_kind: browser_collector`; confirm
@@ -177,9 +205,20 @@ PDPP_AMAZON_YEARS="$(date +%Y)" \
 ## Step 4 — Verify ingest landed
 
 ```bash
-curl -sS "$BASE_URL/_ref/device-exporters/source-instances?connector_instance_id=$CONNECTOR_INSTANCE_ID" \
-  -H "Cookie: $PDPP_OWNER_SESSION_COOKIE" \
-  | python3 -c 'import json,sys;s=json.load(sys.stdin)["data"][0];print("accepted:",s["accepted_record_count"]);print("last_ingest_at:",s["last_ingest_at"]);print("outbox_state:",s["outbox_state"])'
+node --input-type=module <<'NODE'
+const baseUrl = process.env.BASE_URL?.replace(/\/$/, '');
+const cookie = process.env.PDPP_OWNER_SESSION_COOKIE;
+const connectionId = process.env.CONNECTOR_INSTANCE_ID;
+if (!baseUrl) throw new Error('Set BASE_URL first.');
+if (!cookie) throw new Error('Set PDPP_OWNER_SESSION_COOKIE first.');
+if (!connectionId) throw new Error('Set CONNECTOR_INSTANCE_ID first.');
+const url = `${baseUrl}/_ref/device-exporters/source-instances?connector_instance_id=${encodeURIComponent(connectionId)}`;
+const response = await fetch(url, { headers: { Cookie: cookie, Accept: 'application/json' } });
+const source = (await response.json()).data[0];
+console.log('accepted:', source.accepted_record_count);
+console.log('last_ingest_at:', source.last_ingest_at);
+console.log('outbox_state:', source.outbox_state);
+NODE
 ```
 
 A non-zero `accepted_record_count`, a recent `last_ingest_at`, and
