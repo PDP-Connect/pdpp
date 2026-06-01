@@ -143,3 +143,11 @@ export {
   type StreamRequest,
   type TimeRange,
 } from "../scope-filters.ts";
+export {
+  buildConnectionScopedSecretEnv,
+  isStaticSecretConnector,
+  type RecoveredStaticSecret,
+  STATIC_SECRET_CONNECTOR_REGISTRY,
+  type StaticSecretCredentialKind,
+  StaticSecretInjectionError,
+} from "../static-secret-injection.ts";
