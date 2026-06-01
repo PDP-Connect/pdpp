@@ -117,3 +117,43 @@ test("records-list-view does not render raw connectorInstanceId in the caption",
   // The view must never surface the raw `cin_*` ID as a visible label.
   assert.equal(NO_RAW_INSTANCE_ID_IN_DISPLAY.test(src), false);
 });
+
+// ─── Version-churn notice is an actionable disclosure ─────────────────────
+//
+// The owner observed the churn banner was a dead end. The notice must be a
+// native <details>/<summary> disclosure (keyboard-activatable, no client JS)
+// whose expanded body renders every supplied churn row, not a static banner
+// showing only the highest-signal stream.
+
+const CHURN_DETAILS_DISCLOSURE = /<details[\s\S]*?data-testid="version-churn-notice"/;
+const CHURN_SUMMARY_ELEMENT = /<summary[\s\S]*?Show streams/;
+const CHURN_DELEGATES_TO_PURE_SUMMARY = /summarizeVersionChurn\(rows\)/;
+const CHURN_RENDERS_ALL_ROWS = /buildChurnDrilldownRows\(rows\)[\s\S]*?drilldownRows\.map\(/;
+const CHURN_HAS_TABLE_HEADERS =
+  /Versions \/ record[\s\S]*?Current[\s\S]*?History[\s\S]*?Keys[\s\S]*?Last history write/;
+const CHURN_PER_ROW_RISK_BADGE = /<ChurnRiskBadge risk=\{row\.risk\}/;
+// Copy must frame churn as retained history, not current-data loss.
+const CHURN_HISTORY_NOT_LOSS = /not current data loss/;
+
+test("version-churn notice is a native details/summary disclosure, not a dead banner", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.match(src, CHURN_DETAILS_DISCLOSURE);
+  assert.match(src, CHURN_SUMMARY_ELEMENT);
+});
+
+test("version-churn notice delegates summary + rows to the pure module", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.match(src, CHURN_DELEGATES_TO_PURE_SUMMARY);
+  assert.match(src, CHURN_RENDERS_ALL_ROWS);
+});
+
+test("version-churn drilldown surfaces the full operator-readable column set", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.match(src, CHURN_HAS_TABLE_HEADERS);
+  assert.match(src, CHURN_PER_ROW_RISK_BADGE);
+});
+
+test("version-churn copy frames churn as retained history, not data loss", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.match(src, CHURN_HISTORY_NOT_LOSS);
+});

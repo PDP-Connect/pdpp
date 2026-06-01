@@ -20,6 +20,7 @@ import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "../
 import { shouldShowInPrimaryConnections } from "../../lib/records-list-classification.ts";
 import type { RefRecordVersionStatsRow } from "../../lib/ref-client.ts";
 import type { ConnectorOverview, ConnectorRunRef } from "../../lib/rs-client.ts";
+import { buildChurnDrilldownRows, summarizeVersionChurn } from "../../lib/version-churn-summary.ts";
 import { ConnectorRow } from "../../records/connector-row.tsx";
 import { DataList, PageHeader, Section } from "../primitives.tsx";
 import { EmptyState } from "../shell.tsx";
@@ -321,31 +322,128 @@ export function RecordsListView({
   );
 }
 
+/**
+ * Actionable version-churn notice. The collapsed summary keeps the
+ * highest-signal headline; expanding the disclosure reveals every supplied
+ * churn row in an operator-readable table (connector/stream, risk, retained
+ * versions per record, current/history/key counts, and last-history
+ * evidence).
+ *
+ * Built on the native `<details>`/`<summary>` disclosure already used by the
+ * connection diagnostics block — no client JS, keyboard-activatable, and
+ * screen-reader navigable by default. The `group-open:` Tailwind idiom flips
+ * the Show/Hide affordance from the open state.
+ *
+ * This is metadata only: counts come from `/_ref/records/version-stats`,
+ * which never returns record payloads. Copy frames the warning as retained
+ * history, not current-data loss.
+ */
 function VersionChurnNotice({ rows }: { rows: RefRecordVersionStatsRow[] }) {
-  const strongest = rows[0];
-  if (!strongest) {
+  const summary = summarizeVersionChurn(rows);
+  if (!summary) {
     return null;
   }
-  const high = rows.filter((row) => row.risk_level === "high").length;
-  const watch = rows.filter((row) => row.risk_level === "watch").length;
-  const label = [high > 0 ? `${high} high-risk` : null, watch > 0 ? `${watch} watch` : null].filter(Boolean).join(", ");
+  const drilldownRows = buildChurnDrilldownRows(rows);
   return (
-    <section
+    <details
       aria-label="Record version churn diagnostics"
-      className="mb-6 border-[color:var(--warning)] border-l-2 bg-[color:var(--warning)]/5 px-4 py-3 text-[color:var(--warning)]"
+      className="group mb-6 border-[color:var(--warning)] border-l-2 bg-[color:var(--warning)]/5"
+      data-testid="version-churn-notice"
     >
-      <p className="pdpp-body font-medium">
-        Version churn needs review: {label} stream{rows.length === 1 ? "" : "s"}.
-      </p>
-      <p className="pdpp-caption mt-1">
-        Highest signal:{" "}
-        {formatConnectorNameForDisplay({
-          connectorId: strongest.connector_id ?? strongest.connector_instance_id,
-          displayName: strongest.display_name,
-        })}{" "}
-        / {strongest.stream} has {strongest.versions_per_record.toLocaleString()} retained versions per current record.
-      </p>
-    </section>
+      <summary className="flex cursor-pointer items-start justify-between gap-3 px-4 py-3 text-[color:var(--warning)]">
+        <span className="min-w-0">
+          <span className="pdpp-body block font-medium">{summary.headline}</span>
+          <span className="pdpp-caption mt-1 block">{summary.highestSignal}</span>
+        </span>
+        <span className="pdpp-caption shrink-0 whitespace-nowrap underline-offset-2 group-hover:underline">
+          <span className="group-open:hidden">Show streams →</span>
+          <span className="hidden group-open:inline">Hide streams</span>
+        </span>
+      </summary>
+      <div className="border-[color:var(--warning)]/30 border-t px-4 py-3">
+        <p className="pdpp-caption mb-3 text-muted-foreground">
+          These streams retain many historical versions per current record. This is kept{" "}
+          <strong className="font-medium text-foreground">change history</strong>, not current data loss — your latest
+          records are intact. High churn usually means a connector re-emits unchanged records; compacting history is a
+          separate, non-destructive maintenance step.
+        </p>
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-left">
+            <thead>
+              <tr className="pdpp-eyebrow border-border/70 border-b text-muted-foreground">
+                <th className="py-1.5 pr-3 font-medium" scope="col">
+                  Stream
+                </th>
+                <th className="py-1.5 pr-3 font-medium" scope="col">
+                  Risk
+                </th>
+                <th className="py-1.5 pr-3 text-right font-medium" scope="col">
+                  Versions / record
+                </th>
+                <th className="py-1.5 pr-3 text-right font-medium" scope="col">
+                  Current
+                </th>
+                <th className="py-1.5 pr-3 text-right font-medium" scope="col">
+                  History
+                </th>
+                <th className="py-1.5 pr-3 text-right font-medium" scope="col">
+                  Keys
+                </th>
+                <th className="py-1.5 font-medium" scope="col">
+                  Last history write
+                </th>
+              </tr>
+            </thead>
+            <tbody className="pdpp-caption divide-y divide-border/60">
+              {drilldownRows.map((row) => (
+                <tr key={row.key}>
+                  <td className="py-2 pr-3 text-foreground">{row.label}</td>
+                  <td className="py-2 pr-3">
+                    <ChurnRiskBadge risk={row.risk} title={row.reasons ?? undefined} />
+                  </td>
+                  <td className="py-2 pr-3 text-right text-foreground tabular-nums">{row.versionsPerRecord.label}</td>
+                  <td
+                    className={`py-2 pr-3 text-right tabular-nums ${row.current.unknown ? "text-muted-foreground" : "text-foreground"}`}
+                  >
+                    {row.current.label}
+                  </td>
+                  <td
+                    className={`py-2 pr-3 text-right tabular-nums ${row.history.unknown ? "text-muted-foreground" : "text-foreground"}`}
+                  >
+                    {row.history.label}
+                  </td>
+                  <td
+                    className={`py-2 pr-3 text-right tabular-nums ${row.keys.unknown ? "text-muted-foreground" : "text-foreground"}`}
+                  >
+                    {row.keys.label}
+                  </td>
+                  <td className="py-2 text-muted-foreground tabular-nums">
+                    {row.lastHistoryAt ? <Timestamp value={row.lastHistoryAt} /> : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </details>
+  );
+}
+
+const CHURN_RISK_TONE: Record<RefRecordVersionStatsRow["risk_level"], string> = {
+  high: "bg-destructive/10 text-destructive",
+  watch: "bg-[color:var(--warning-wash)] text-[color:var(--warning)]",
+  normal: "bg-muted text-muted-foreground",
+};
+
+function ChurnRiskBadge({ risk, title }: { risk: RefRecordVersionStatsRow["risk_level"]; title?: string }) {
+  return (
+    <span
+      className={`pdpp-eyebrow inline-flex rounded-[3px] px-1.5 py-0.5 font-medium ${CHURN_RISK_TONE[risk]}`}
+      title={title}
+    >
+      {risk}
+    </span>
   );
 }
 
