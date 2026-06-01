@@ -535,3 +535,58 @@ Confidence: high for CDP default and high that n.eko should be an alternate back
 - `pnpm --dir apps/web run build`
 - n.eko proxy/control tests prove token-scoped access and no unauthenticated sidecar exposure.
 - Native n.eko smoke tests run only when a browser-facing `/neko/*` proxy supports WebSocket upgrade forwarding and the n.eko sidecar is available.
+
+## Residual Owner-Only Verification
+
+Per the OpenSpec closeout rule ("If only owner-only live verification remains,
+record it as a residual risk instead of leaving the change pseudo-active"), the
+long tail of this change is recorded here rather than left as perpetually-open
+tasks.
+
+Every no-human, no-physical-device part of tasks 12.8, 13.5, 14.7, 15.8, and
+17.5 is consolidated into one auditable gate:
+
+```
+pnpm stream:no-human-verify
+```
+
+That gate runs, with no silent skips:
+
+- `openspec validate add-run-interaction-streaming-companion --strict`
+- `openspec validate --all --strict`
+- `packages/remote-surface` unit tests + typecheck (matrix-transform coordinate
+  and letterbox coverage, protocol validators, viewport/keyboard classification,
+  media-settle, replay harness, clipboard-policy fixtures, viewport-authority,
+  bounded-capture, keyboard-reacquire, CSS-vs-capture behavior)
+- the scoped `reference-implementation` streaming unit suite (CDP adapter,
+  companion, n.eko adapter/compose/playground, routes, store, surface allocator,
+  runtime config, manifest stream availability, readiness smoke,
+  cdp-method-allowlist, neko-adapter, run-target-registry)
+- `reference-implementation` typecheck
+- `apps/console` `types:check` (stream viewer + n.eko client compile)
+- `git diff --check`
+- the `PDPP_TEST_LIVE_CDP=1` live-CDP smoke against a real headless Chromium
+  (frame/ack/input/resize round-trip) when a Chrome/Chromium binary is present
+- the `PDPP_DOCKER_DYNAMIC_NEKO_ALLOCATOR_SMOKE=1` n.eko Docker overlay smoke
+  (rebuild/recreate + dynamic two-surface allocation) when Docker is reachable
+
+What genuinely cannot be self-certified — and is therefore the residual risk a
+human owner must clear before archiving — is **physical-device acceptance**:
+
+1. **Public desktop smoke** against the deployed origin
+   (`PDPP_STREAM_SMOKE_URL=https://peregrine-dev.vivid.fish pnpm docker:stream-smoke`
+   after recreating `reference` + `neko` together).
+2. **Real-phone smoke** (no automation substitute): soft-keyboard
+   open/dismiss/reopen, touch precision (≤10 CSS px), rotation settle (≤250 ms),
+   reconnect/app-switch recovery, local-to-remote paste, and visual sharpness,
+   per the Manual Acceptance Checklist in
+   `design-notes/neko-ux-acceptance-2026-05-06.md`.
+
+Mobile-emulated Playwright smoke is explicitly **not** a substitute for item 2.
+
+The Docker rebuild sub-gate that previously blocked 12.8/13.5/14.7/15.8/17.5
+(the `patchright-chromium` build hang) is closed — see the 12.8 task note for
+the root cause and fix. With that closed, the residual risk for all five tasks
+is the same single owner-only item: the physical real-phone matrix (and its
+companion public desktop smoke). It does not block the reference implementation
+landing; it blocks the final "verified on real hardware" sign-off.
