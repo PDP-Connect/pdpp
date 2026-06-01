@@ -96,5 +96,49 @@ export function pdppCliMonorepoCommand(cliCommand: string): string | null {
   return `pnpm exec ${cliCommand}`;
 }
 
+/**
+ * Render a local-only `@pdpp/local-collector@beta` diagnostic command
+ * (`doctor` or `status`). These subcommands inspect the device-local durable
+ * outbox; they take no `--base-url`, exchange no credentials, and the operator
+ * runs them on the host that owns the data — so the generated string is safe
+ * to display remotely. We deliberately omit `--queue` (a device-local
+ * filesystem path) so the dashboard never leaks or guesses host paths; the
+ * collector resolves the default queue on the device. When the connection's
+ * source identity is known we scope with `--connection-id <id>`, which is a
+ * non-secret stable source identity already shown elsewhere in diagnostics.
+ */
+function pdppLocalCollectorDiagnosticCommand(
+  subcommand: "doctor" | "status",
+  args?: { connectionId?: string | null | undefined }
+): string {
+  const parts = ["npx", "-y", localCollectorPackageSpecifier, subcommand];
+  const connectionId = args?.connectionId?.trim();
+  if (connectionId) {
+    parts.push("--connection-id", connectionId);
+  }
+  return parts.join(" ");
+}
+
+/**
+ * Render the public `@pdpp/local-collector@beta doctor` command. `doctor`
+ * prints operator-facing durable-outbox diagnostics (expired leases, dead
+ * letters, missing DB) as JSON. This is the command an owner runs on the
+ * local collector host when the dashboard shows the outbox as stalled.
+ */
+export function pdppLocalCollectorDoctorCommand(args?: { connectionId?: string | null | undefined }): string {
+  return pdppLocalCollectorDiagnosticCommand("doctor", args);
+}
+
+/**
+ * Render the public `@pdpp/local-collector@beta status` command. `status`
+ * prints the raw durable-outbox health snapshot (queue counts, oldest pending,
+ * expired leases) as JSON.
+ */
+export function pdppLocalCollectorStatusCommand(args?: { connectionId?: string | null | undefined }): string {
+  return pdppLocalCollectorDiagnosticCommand("status", args);
+}
+
 export const pdppCliCollectorEnrollCommand = pdppLocalCollectorEnrollCommand;
 export const pdppCliCollectorRunCommand = pdppLocalCollectorRunCommand;
+export const pdppCliCollectorDoctorCommand = pdppLocalCollectorDoctorCommand;
+export const pdppCliCollectorStatusCommand = pdppLocalCollectorStatusCommand;

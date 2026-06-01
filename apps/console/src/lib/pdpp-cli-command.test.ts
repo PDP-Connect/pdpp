@@ -16,9 +16,15 @@ import {
   pdppCliMonorepoCommand,
   pdppCliNoInstallCommand,
   pdppCliPackageInfo,
+  pdppLocalCollectorDoctorCommand,
+  pdppLocalCollectorStatusCommand,
 } from "./pdpp-cli-command.ts";
 
 const NPX_CONNECT_PREFIX = /^npx -y @pdpp\/cli@beta connect /;
+const QUEUE_FLAG = /--queue/;
+const BASE_URL_FLAG = /--base-url/;
+const DEVICE_TOKEN_FLAG = /--device-token/;
+const HOST_PATH_ARG = /\s\/|~\//;
 
 test("package info advertises the @pdpp/cli@beta specifier", () => {
   assert.equal(pdppCliPackageInfo.packageName, "@pdpp/cli");
@@ -96,6 +102,47 @@ test("pdppCliCollectorRunCommand renders the canonical run form", () => {
     pdppCliCollectorRunCommand({ baseUrl: "https://ref.example.com", connectorId: "codex" }),
     "npx -y @pdpp/local-collector@beta run --base-url https://ref.example.com --connector codex"
   );
+});
+
+test("pdppLocalCollectorDoctorCommand renders a local-only doctor form with no base-url or secret", () => {
+  assert.equal(pdppLocalCollectorDoctorCommand(), "npx -y @pdpp/local-collector@beta doctor");
+});
+
+test("pdppLocalCollectorDoctorCommand scopes to a connection id when one is known", () => {
+  assert.equal(
+    pdppLocalCollectorDoctorCommand({ connectionId: "claude_code:laptop" }),
+    "npx -y @pdpp/local-collector@beta doctor --connection-id claude_code:laptop"
+  );
+});
+
+test("pdppLocalCollectorDoctorCommand ignores blank connection ids", () => {
+  assert.equal(pdppLocalCollectorDoctorCommand({ connectionId: "   " }), "npx -y @pdpp/local-collector@beta doctor");
+  assert.equal(pdppLocalCollectorDoctorCommand({ connectionId: null }), "npx -y @pdpp/local-collector@beta doctor");
+});
+
+test("pdppLocalCollectorStatusCommand renders the status form", () => {
+  assert.equal(pdppLocalCollectorStatusCommand(), "npx -y @pdpp/local-collector@beta status");
+  assert.equal(
+    pdppLocalCollectorStatusCommand({ connectionId: "codex:server" }),
+    "npx -y @pdpp/local-collector@beta status --connection-id codex:server"
+  );
+});
+
+test("local collector diagnostic commands never leak a filesystem path or base-url", () => {
+  // The doctor/status commands run on the device that owns the data. They must
+  // not embed a host-local queue path or the reference base URL — that would
+  // leak device-local internals into a remotely-rendered command.
+  for (const command of [
+    pdppLocalCollectorDoctorCommand({ connectionId: "claude_code:laptop" }),
+    pdppLocalCollectorStatusCommand({ connectionId: "claude_code:laptop" }),
+  ]) {
+    assert.doesNotMatch(command, QUEUE_FLAG);
+    assert.doesNotMatch(command, BASE_URL_FLAG);
+    assert.doesNotMatch(command, DEVICE_TOKEN_FLAG);
+    // The only legitimate `/` is inside the npm package specifier; no path
+    // argument (absolute or `~/`) should appear.
+    assert.doesNotMatch(command, HOST_PATH_ARG, "no host filesystem path arguments");
+  }
 });
 
 test("pdppCliMonorepoCommand wraps pdpp invocations with pnpm exec", () => {

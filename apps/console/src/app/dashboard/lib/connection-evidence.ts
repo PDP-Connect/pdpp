@@ -451,6 +451,58 @@ export function summarizeOutboxForRow(
   }
 }
 
+/**
+ * Operator remediation for a stalled local-device outbox.
+ *
+ * The reference projects `outbox === "stalled"` and a `clear_backlog`
+ * condition (with a `remediation.label`) when retryable outbound work on a
+ * local collector host is no longer progressing. The dashboard cannot fix a
+ * device-local outbox remotely — only the operator, on the host, can. So this
+ * helper turns that projection into a *visible* next step:
+ *
+ *   - the reference's own `remediation.label` as readable copy (today it only
+ *     appears in hover/title text), and
+ *   - a deterministic, non-secret local command the operator runs on the host.
+ *
+ * It returns `null` for healthy / idle / active / unknown outboxes so we never
+ * add remediation noise to a connection that is fine or whose state we cannot
+ * read. The trigger is intentionally narrow: a stalled outbox axis, or a
+ * current `clear_backlog` remediation that the projection surfaced as a
+ * blocking condition.
+ */
+export interface OutboxStallRemediation {
+  /** The reference-authored operator copy, e.g. "Inspect the local collector backlog". */
+  label: string;
+  /**
+   * The condition reason backing the remediation, humanized for a tooltip.
+   * Null when the trigger was the outbox axis alone (no matching condition).
+   */
+  reason: string | null;
+}
+
+export function summarizeOutboxStallRemediation(
+  snapshot: RefConnectionHealthSnapshot | null | undefined
+): OutboxStallRemediation | null {
+  if (!snapshot) {
+    return null;
+  }
+  const backlogCondition = (snapshot.conditions ?? []).find(
+    (condition) => condition.status === "false" && condition.remediation?.action === "clear_backlog"
+  );
+  const stalled = snapshot.axes.outbox === "stalled";
+  if (!(backlogCondition || stalled)) {
+    return null;
+  }
+  // Prefer the reference's own remediation copy; fall back to a generic, still
+  // honest line keyed to the stalled axis so the operator is never left with a
+  // danger chip and no next step.
+  const label = backlogCondition?.remediation?.label ?? "Inspect the local collector backlog";
+  return {
+    label,
+    reason: backlogCondition ? humanizeReason(backlogCondition.reason) : null,
+  };
+}
+
 export function formatSourceOutboxState(
   source: Pick<DeviceSourceInstance, "outbox_diagnostics" | "outbox_state">
 ): AxisChip {

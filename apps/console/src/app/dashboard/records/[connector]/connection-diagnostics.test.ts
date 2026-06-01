@@ -51,6 +51,15 @@ const SOURCE_OUTBOX_STATE_TESTID = /data-testid="diagnostics-outbox-state"/;
 const SOURCE_OUTBOX_STATE_HELPER = /formatSourceOutboxState/;
 const SOURCE_LOCAL_GAPS_TESTID = /data-testid="diagnostics-local-gaps"/;
 const SOURCE_LOCAL_GAPS_MISSING_TESTID = /data-testid="diagnostics-local-gaps-missing"/;
+const OUTBOX_REMEDIATION_HELPER = /summarizeOutboxStallRemediation/;
+const OUTBOX_REMEDIATION_TESTID = /data-testid="diagnostics-outbox-remediation"/;
+const OUTBOX_REMEDIATION_LABEL_TESTID = /data-testid="diagnostics-outbox-remediation-label"/;
+const OUTBOX_REMEDIATION_COMMAND_TESTID = /data-testid="diagnostics-outbox-remediation-command"/;
+const OUTBOX_REMEDIATION_DOCTOR_COMMAND = /pdppLocalCollectorDoctorCommand/;
+const OUTBOX_REMEDIATION_COPY_BUTTON = /CopyButton/;
+const OUTBOX_REMEDIATION_NO_BASE_URL = /diagnostics-outbox-remediation-command[\s\S]{0,400}--base-url/;
+const OUTBOX_REMEDIATION_NO_DEVICE_TOKEN = /diagnostics-outbox-remediation-command[\s\S]{0,400}--device-token/;
+const PAGE_PASSES_CONNECTION_ID = /connectionId=\{connectorInstanceId \?\? connectionId\}/;
 const NEVER_INGESTED_COPY = /never ingested/;
 const NO_LAST_SUCCESS_TESTID = /data-testid="diagnostics-no-last-success"/;
 // The filter has been split across multiple lines so the connector_instance_id
@@ -117,6 +126,36 @@ test("connection-diagnostics renders per-source runtime and backlog evidence", a
   assert.match(src, SOURCE_OUTBOX_STATE_HELPER);
   assert.match(src, SOURCE_LOCAL_GAPS_TESTID);
   assert.match(src, SOURCE_LOCAL_GAPS_MISSING_TESTID);
+});
+
+test("connection-diagnostics renders visible stalled-outbox remediation copy and a copy-pasteable doctor command", async () => {
+  // The brief's core deliverable: when the outbox is stalled (or a
+  // clear_backlog condition is dominant), the operator must see the
+  // remediation label as readable text — not hover-only — plus a
+  // deterministic local command to run on the host.
+  const src = await readFile(DIAG_FILE, "utf8");
+  assert.match(src, OUTBOX_REMEDIATION_HELPER);
+  assert.match(src, OUTBOX_REMEDIATION_TESTID);
+  assert.match(src, OUTBOX_REMEDIATION_LABEL_TESTID);
+  assert.match(src, OUTBOX_REMEDIATION_COMMAND_TESTID);
+  assert.match(src, OUTBOX_REMEDIATION_DOCTOR_COMMAND);
+  assert.match(src, OUTBOX_REMEDIATION_COPY_BUTTON);
+});
+
+test("connection-diagnostics remediation command carries no base-url, token, or filesystem path", async () => {
+  // The command is rendered remotely; it must not leak device-local internals.
+  // The builder enforces this, but assert the component does not re-introduce
+  // them inline around the command.
+  const src = await readFile(DIAG_FILE, "utf8");
+  // The doctor command is sourced from the helper, not hand-assembled with
+  // a base URL or token. Guard against a regression that inlines secrets.
+  assert.doesNotMatch(src, OUTBOX_REMEDIATION_NO_BASE_URL);
+  assert.doesNotMatch(src, OUTBOX_REMEDIATION_NO_DEVICE_TOKEN);
+});
+
+test("connector detail page passes the connection identity to diagnostics for command scoping", async () => {
+  const page = await readFile(PAGE_FILE, "utf8");
+  assert.match(page, PAGE_PASSES_CONNECTION_ID);
 });
 
 test("connection-diagnostics renders an explicit no-last-success line when projection has no last_success_at", async () => {

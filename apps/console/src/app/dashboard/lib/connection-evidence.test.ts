@@ -20,9 +20,10 @@ import {
   resolveRecordCountDisplay,
   summarizeAxisChips,
   summarizeOutboxForRow,
+  summarizeOutboxStallRemediation,
   summarizeSchedule,
 } from "./connection-evidence.ts";
-import type { RefConnectionHealthSnapshot, RefSchedule } from "./ref-client.ts";
+import type { RefConnectionHealthCondition, RefConnectionHealthSnapshot, RefSchedule } from "./ref-client.ts";
 import type { ConnectorOverview } from "./rs-client.ts";
 
 function snapshot(overrides: Partial<RefConnectionHealthSnapshot> = {}): RefConnectionHealthSnapshot {
@@ -359,6 +360,73 @@ test("summarizeOutboxForRow returns null for idle and a label otherwise", () => 
 
 test("summarizeOutboxForRow returns null when there is no snapshot at all", () => {
   assert.equal(summarizeOutboxForRow(null), null);
+});
+
+function clearBacklogCondition(overrides: Partial<RefConnectionHealthCondition> = {}): RefConnectionHealthCondition {
+  return {
+    id: "cond-backlog",
+    type: "LocalExporterAvailable",
+    status: "false",
+    severity: "error",
+    reason: "local_exporter_stalled",
+    message: "Local exporter work is stalled or blocked.",
+    origin: "local_device",
+    observed_at: "2026-05-19T12:00:00Z",
+    expires_at: null,
+    sensitivity: "owner",
+    remediation: {
+      action: "clear_backlog",
+      label: "Inspect the local collector backlog",
+      retryable: true,
+      target: "local_device",
+    },
+    ...overrides,
+  };
+}
+
+test("summarizeOutboxStallRemediation surfaces the reference remediation label for a clear_backlog condition", () => {
+  const remediation = summarizeOutboxStallRemediation(
+    snapshot({
+      state: "degraded",
+      axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "stalled" },
+      conditions: [clearBacklogCondition()],
+    })
+  );
+  assert.equal(remediation?.label, "Inspect the local collector backlog");
+  assert.equal(remediation?.reason, "local exporter stalled");
+});
+
+test("summarizeOutboxStallRemediation fires on the stalled axis even without a matching condition", () => {
+  const remediation = summarizeOutboxStallRemediation(
+    snapshot({ axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "stalled" } })
+  );
+  assert.equal(remediation?.label, "Inspect the local collector backlog");
+  assert.equal(remediation?.reason, null);
+});
+
+test("summarizeOutboxStallRemediation stays quiet for healthy/idle/active/unknown outboxes", () => {
+  for (const outbox of ["idle", "active", "unknown"] as const) {
+    assert.equal(
+      summarizeOutboxStallRemediation(
+        snapshot({ axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox } })
+      ),
+      null,
+      `expected no remediation for outbox=${outbox}`
+    );
+  }
+  assert.equal(summarizeOutboxStallRemediation(null), null);
+});
+
+test("summarizeOutboxStallRemediation ignores a clear_backlog remediation on a resolved (status=true) condition", () => {
+  // A backlog condition that has cleared (status true) must not keep showing
+  // remediation noise once the outbox is no longer stalled.
+  const remediation = summarizeOutboxStallRemediation(
+    snapshot({
+      axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "idle" },
+      conditions: [clearBacklogCondition({ status: "true" })],
+    })
+  );
+  assert.equal(remediation, null);
 });
 
 function baseSchedule(overrides: Partial<RefSchedule> = {}): RefSchedule {

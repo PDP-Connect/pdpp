@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { pdppLocalCollectorDoctorCommand } from "@/lib/pdpp-cli-command.ts";
+import { CopyButton } from "../../components/copy-button.tsx";
 import { DataList, Section } from "../../components/primitives.tsx";
 import {
   formatDominantCondition,
@@ -7,6 +9,7 @@ import {
   formatSourceOutboxState,
   summarizeAxisChips,
   summarizeOutboxForRow,
+  summarizeOutboxStallRemediation,
   summarizeSchedule,
 } from "../../lib/connection-evidence.ts";
 import type { DeviceSourceInstance, RefConnectionHealthSnapshot, RefSchedule } from "../../lib/ref-client.ts";
@@ -21,6 +24,12 @@ import type { DeviceSourceInstance, RefConnectionHealthSnapshot, RefSchedule } f
  */
 export interface ConnectionDiagnosticsProps {
   connectionHealth: RefConnectionHealthSnapshot | null;
+  /**
+   * Stable, non-secret source identity for this connection. Used to scope the
+   * local collector `doctor` command shown when the outbox is stalled. May be
+   * null for legacy single-instance rows; the command then runs unscoped.
+   */
+  connectionId: string | null;
   schedule: RefSchedule | null;
   /** Optional load-error message for the schedule fetch. */
   scheduleError: string | null;
@@ -32,6 +41,7 @@ export interface ConnectionDiagnosticsProps {
 
 export function ConnectionDiagnostics({
   connectionHealth,
+  connectionId,
   schedule,
   scheduleError,
   sourceInstances,
@@ -51,7 +61,7 @@ export function ConnectionDiagnostics({
 
         <div className="flex flex-col gap-5 px-3 py-4">
           <DiagnosticsBlock title="Projected state">
-            <ProjectedStateDiagnostics connectionHealth={connectionHealth} />
+            <ProjectedStateDiagnostics connectionHealth={connectionHealth} connectionId={connectionId} />
           </DiagnosticsBlock>
 
           <DiagnosticsBlock title="Schedule & backoff">
@@ -67,7 +77,13 @@ export function ConnectionDiagnostics({
   );
 }
 
-function ProjectedStateDiagnostics({ connectionHealth }: { connectionHealth: RefConnectionHealthSnapshot | null }) {
+function ProjectedStateDiagnostics({
+  connectionHealth,
+  connectionId,
+}: {
+  connectionHealth: RefConnectionHealthSnapshot | null;
+  connectionId: string | null;
+}) {
   if (!connectionHealth) {
     return (
       <p
@@ -83,6 +99,7 @@ function ProjectedStateDiagnostics({ connectionHealth }: { connectionHealth: Ref
   const projection = formatProjectionFreshness(connectionHealth);
   const axisChips = summarizeAxisChips(connectionHealth.axes);
   const outbox = summarizeOutboxForRow(connectionHealth);
+  const outboxRemediation = summarizeOutboxStallRemediation(connectionHealth);
   const dominantCondition = formatDominantCondition(connectionHealth);
   const conditionById = new Map((connectionHealth.conditions ?? []).map((condition) => [condition.id, condition]));
   const visibleConditions = (connectionHealth.supporting_condition_ids ?? [])
@@ -136,6 +153,9 @@ function ProjectedStateDiagnostics({ connectionHealth }: { connectionHealth: Ref
         <p className="pdpp-caption text-muted-foreground" data-testid="diagnostics-outbox">
           {outbox.label}
         </p>
+      ) : null}
+      {outboxRemediation ? (
+        <OutboxStallRemediationPanel connectionId={connectionId} remediation={outboxRemediation} />
       ) : null}
       {visibleConditions.length ? (
         <ul className="pdpp-caption flex flex-col gap-1 text-muted-foreground" data-testid="diagnostics-conditions">
@@ -376,6 +396,49 @@ function sourceOutboxToneClass(tone: ReturnType<typeof formatSourceOutboxState>[
     default:
       return "text-muted-foreground";
   }
+}
+
+/**
+ * Visible operator remediation for a stalled local-device outbox.
+ *
+ * The reference projects the stall and an `Inspect the local collector backlog`
+ * remediation, but the dashboard cannot drain a device-local outbox remotely —
+ * the host that owns the data has to run the local collector. So we surface the
+ * reference's own remediation label as readable copy (not hover-only) plus a
+ * deterministic, non-secret command the operator runs on that host. The command
+ * carries no base URL, token, or filesystem path.
+ */
+function OutboxStallRemediationPanel({
+  connectionId,
+  remediation,
+}: {
+  connectionId: string | null;
+  remediation: NonNullable<ReturnType<typeof summarizeOutboxStallRemediation>>;
+}) {
+  const command = pdppLocalCollectorDoctorCommand(connectionId ? { connectionId } : undefined);
+  return (
+    <div
+      className="flex flex-col gap-1.5 border border-destructive/40 bg-destructive/5 px-3 py-2"
+      data-testid="diagnostics-outbox-remediation"
+    >
+      <p className="pdpp-caption font-medium text-foreground" data-testid="diagnostics-outbox-remediation-label">
+        {remediation.label}
+      </p>
+      <p className="pdpp-caption text-muted-foreground" title={remediation.reason ?? undefined}>
+        Retryable outbound work on the local collector host is not draining. The dashboard cannot clear it remotely —
+        run this on the host that holds the data:
+      </p>
+      <div className="flex min-w-0 items-center gap-2 border border-border/70 bg-muted/30 px-3 py-2">
+        <code
+          className="pdpp-caption min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-foreground"
+          data-testid="diagnostics-outbox-remediation-command"
+        >
+          {command}
+        </code>
+        <CopyButton ariaLabel="Copy local collector doctor command" value={command} />
+      </div>
+    </div>
+  );
 }
 
 function DiagnosticsBlock({ title, children }: { title: string; children: React.ReactNode }) {
