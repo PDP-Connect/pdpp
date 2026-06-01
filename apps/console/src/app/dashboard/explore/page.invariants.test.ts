@@ -7,9 +7,7 @@ const HERE = fileURLToPath(new URL(".", import.meta.url));
 // explore-data-assembler.ts moved to the shared @pdpp/operator-ui package;
 // resolve it from the repo root. page.tsx + next.config.mjs stay console-local.
 const REPO_ROOT = new URL("../../../../../../", import.meta.url);
-const ASSEMBLER_FILE = fileURLToPath(
-  new URL("packages/operator-ui/src/explore/explore-data-assembler.ts", REPO_ROOT)
-);
+const ASSEMBLER_FILE = fileURLToPath(new URL("packages/operator-ui/src/explore/explore-data-assembler.ts", REPO_ROOT));
 const LIVE_PAGE_FILE = `${HERE}page.tsx`;
 const NEXT_CONFIG_FILE = fileURLToPath(new URL("../../../../next.config.mjs", import.meta.url));
 
