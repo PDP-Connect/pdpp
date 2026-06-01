@@ -45,6 +45,9 @@ The ChatGPT half is **partially** proven. From the owner ledger
   event-subscription tools.
 - A `messages` `query_records` call retried successfully with a
   `connection_id`.
+- A separate scoped retry against a Slack connection succeeded, confirming the
+  `connection_id` selector works across connector types (not just `messages`),
+  and the event-subscription tools are present on the 14-tool surface.
 
 That is exactly the evidence the owner had when a prior lane
 (`ri-canonical-keys-live-evidence-reconcile-v1`) tried to flip task 5.2 to `[x]`
@@ -267,6 +270,26 @@ the HTTPS receiver from P3 running, drive the full lifecycle through ChatGPT:
 
 Record `subscription_id`, the two event ids (verify + test), the status
 transition, and the final empty list. Do not record secrets or record bodies.
+
+> **Signed-callback caveat (carried from the Claude run, 2026-06-01).** The
+> *signature-verifying* half of S5 step 6 — confirming the `webhook-signature`
+> on the `pdpp.subscription.test` envelope against the one-time `whsec_...`
+> secret — can only be driven from chat if the MCP client surfaces that secret
+> in a form the operator can copy into the receiver's `--secret-file`. Some
+> clients (notably mobile or structured-only surfaces) render the secret as
+> non-selectable / hidden / mobile-truncated. When that happens, the lifecycle
+> (`create -> verify -> active -> list -> get -> send-test -> delete`) and the
+> canonical-id invariant are still fully provable from chat, but the
+> *cryptographic* signature check is not — the receiver records delivery and
+> envelope shape, not a verified signature. **This does not block closing 5.2:**
+> 5.2 requires creating event subscriptions without URL-shaped ids, not a
+> chat-driven signature verification. Record the lifecycle + canonical-id
+> invariant as proven and note the signature check as "delivered, signature
+> unverified-from-chat (secret not extractable on this client)". To get a
+> verified signature, run the receiver against a client/surface that exposes the
+> secret as copyable text, or use the owner-bearer `curl` path in
+> [`event-subscriptions.md`](event-subscriptions.md) where the secret is
+> returned to a terminal you control.
 
 ---
 

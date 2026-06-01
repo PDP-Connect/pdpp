@@ -16,9 +16,10 @@ Read order:
 - Do not duplicate the packet's commands here; follow the linked packet during
   the sitting.
 
-Verified against `main` at the head of branch
-`workstream/ri-live-proof-batch-runbook-v1`. OpenSpec task numbers are quoted
-verbatim from each change's `tasks.md` as of 2026-06-01.
+OpenSpec task numbers are quoted verbatim from each change's `tasks.md`. Gate
+state reconciled against the latest human-reported external Claude / ChatGPT /
+Daisy / Simon / callback results as of 2026-06-01 (lane
+`ri-live-gate-evidence-compiler-v2`).
 
 ---
 
@@ -322,12 +323,24 @@ for the full step sequence, schema checks, partial-evidence classification, and
 Codex pass/fail bar. Do not duplicate its steps here.
 
 **The precise residual this gate must close:** ChatGPT registration refresh
-(stale 6-tool surface → delete/re-add → current 14-tool surface) and a `messages`
-`query_records` retry with a `connection_id` were *already observed*. What is
-**still unproven for ChatGPT** is the **event-subscription create / list / get /
-send-test / delete lifecycle**. That lifecycle is the whole point of this
-sitting; a registration refresh alone does not close 5.2. A stale 6-tool surface
-is host registration drift (fix by delete + re-add), **not** a backend defect.
+(stale 6-tool surface → delete/re-add → current 14-tool surface), a `messages`
+`query_records` retry with a `connection_id`, a separate scoped Slack retry by
+`connection_id`, and the **event-subscription tools now exposed** on the 14-tool
+surface were *all already observed* (2026-06-01). What is **still unproven for
+ChatGPT** is *driving* the **event-subscription create / list / get / send-test /
+delete lifecycle** — exposure of the tools is not the same as exercising the
+lifecycle. That lifecycle is the whole point of this sitting; a registration
+refresh and tool exposure alone do not close 5.2. A stale 6-tool surface is host
+registration drift (fix by delete + re-add), **not** a backend defect.
+
+> **Signed-callback caveat (from the Claude run, 2026-06-01):** the
+> signature-verifying half of `send_test_event` can only be driven from chat if
+> the client surfaces the one-time `whsec_...` secret as copyable text. On
+> mobile / structured-only client surfaces it may be hidden or non-selectable;
+> then the lifecycle and canonical-id invariant are still provable but the
+> cryptographic signature check is not. This does **not** block closing 5.2 —
+> see the caveat block in
+> [`chatgpt-mcp-canonical-proof-packet.md`](chatgpt-mcp-canonical-proof-packet.md).
 
 **Command/action (in the ChatGPT client):** connect → list tools → inspect a
 stream/schema → query records → trigger `ambiguous_connection` and retry by
@@ -364,6 +377,16 @@ configured connections, plus an owner-agent bearer credential. The reference
 skill and runbook are
 `docs/agent-skills/pdpp-owner-agent/references/control-surface.md` and
 `docs/agent-skills/pdpp-owner-agent/references/daisy-runbook.md`.
+
+**Prerequisites now confirmed working (2026-06-01):** the owner-token **device
+flow** works, and **Simon and Daisy can both store owner tokens** — so the
+credential-acquisition half of this gate is no longer in question. The `/mcp`
+rejection of an owner bearer is **intentional** (owner bearers are control-plane
+only; `/mcp` is the trusted-client data plane), and is already pinned by
+`test/owner-connection-intent.test.js`. **What 8.5 still needs** is a clean,
+task-by-task REST control smoke against a live deployment: list instances → label
+one → initiate an Amazon intent → stop at the owner-mediated step. The device
+flow working is a precondition, not the proof.
 
 **Prerequisite:** an owner-agent bearer credential file (e.g.
 `~/applications/daisy/.pi/agent/pdpp-owner-agent.json`); the deployment from the
@@ -612,8 +635,8 @@ only the schema-level finding (IDs present/absent, fallback survives/not).
 | Amazon / browser-collector live proof + intent flip | A | `add-browser-collector-enrollment-primitive` lines 42, 62; `add-owner-agent-control-surface` 5.3 | code+deterministic proof green; live session + flip pending |
 | Adaptive ChatGPT Docker pilot | A | `add-connector-adaptive-lanes` lines 45, 46 (pilot/compare); 51, 52 (desk decisions on telemetry) | runtime + simulator tested; live pilot pending |
 | Reddit pilot real-shape capture | A | `add-reddit-pilot-real-shape-fixture` (0/20) | capture is human-gated; scrub→test→docs no-human after |
-| ChatGPT hosted-MCP event-sub proof | B | `canonicalize-connector-keys` 5.2 (ChatGPT half) | Claude proven 2026-05-31; ChatGPT event-sub lifecycle unproven |
-| Daisy/Simon owner-agent live smoke | B | `add-owner-agent-control-surface` 8.5 | typed-unsupported path unit-covered; live smoke pending |
+| ChatGPT hosted-MCP event-sub proof | B | `canonicalize-connector-keys` 5.2 (ChatGPT half) | Claude proven 2026-05-31; ChatGPT 14-tool surface + `connection_id` (messages & Slack) + event-sub tools exposed; event-sub **lifecycle** still undriven |
+| Daisy/Simon owner-agent live smoke | B | `add-owner-agent-control-surface` 8.5 | typed-unsupported path unit-covered; owner-token device flow + token storage confirmed working; task-by-task REST control smoke still pending |
 | n.eko public desktop + real-phone smoke | C | `add-run-interaction-streaming-companion` 12.8, 13.5, 14.7, 15.8, 17.5 | no-human halves green via `pnpm stream:no-human-verify`; real phone pending |
 | Canonical production-backup restore proof | D | `canonicalize-connector-keys` 3.4 | synthetic harness 38+15+17 green; real-prod restore pending |
 | Chase current-activity ID check | Rider | `add-chase-current-activity-stream` 1.2 | investigation only; folds into a future Chase run |
@@ -661,3 +684,9 @@ human/live slot.
 The silent `limit`-clamp token-efficiency gap is **closed** (see
 `add-records-limit-clamp-warning`, 25/25, shipped to `main`) — it is no longer a
 pending gate.
+
+**Low-priority, not a gate:** Simon found that USAA Zelle details are **not**
+richer when sourced via CSV than via the existing path — a USAA-connector
+enrichment opportunity, not a blocking proof. It has no OpenSpec checkbox and
+consumes no human/live slot. If pursued, it belongs in a new connector-scoped
+change, not in any sitting here.
