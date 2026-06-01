@@ -10,7 +10,10 @@ It contains the current:
 - reference manifests and sample connector
 - executable black-box test suite
 
-It is not the website. The website in `apps/web/` explains and showcases the reference implementation, but the runnable implementation lives here.
+It is not the public site or the operator console. The public site in
+`apps/site/` explains and showcases the reference implementation; the operator
+console in `apps/console/` fronts a running instance. The runnable
+implementation lives here.
 
 ## What it proves today
 
@@ -272,7 +275,7 @@ Routes gated by the placeholder (when enabled):
 
 - `GET /consent`, `POST /consent/approve`, `POST /consent/deny`
 - `GET /device`, `POST /device/approve`, `POST /device/deny`
-- `/dashboard`, `/dashboard/*` (via the composed web origin)
+- `/dashboard`, `/dashboard/*` (via the composed console origin)
 - every reference-only `_ref` read (`GET /_ref/*`) and mutation (`POST/PUT /_ref/*`). When `PDPP_OWNER_PASSWORD` is unset, `_ref` routes preserve the open local-dev behavior. When set, callers must present an owner session — the dashboard already forwards the `pdpp_owner_session` cookie, and CLI callers can pass the same value via `PDPP_OWNER_SESSION_COOKIE`.
 
 Stable owner-entry routes:
@@ -294,7 +297,7 @@ The placeholder is intentionally narrow:
 
 Server-rendered HTML pages (`GET /consent`, `GET /device` and its result pages, `POST /consent/approve`/`deny` result pages, and the stable owner-entry page at `GET /owner/login`) all go through a small shared hosted-UI module, [`server/hosted-ui.js`](server/hosted-ui.js). That module renders the PDPP brand mark and typography, reuses the `data-surface="human"` / `data-surface="protocol"` language from `packages/pdpp-brand/base.css`, and serves a single shared stylesheet at `GET /__pdpp/hosted-ui.css`.
 
-This hosted-UI layer is **reference-only** implementation support. It is **not** a PDPP protocol surface; clients and providers never need to fetch `/__pdpp/hosted-ui.css` or consume any of the `hosted-ui-*` class names. The React/Next website in `apps/web/` remains the canonical design-system surface.
+This hosted-UI layer is **reference-only** implementation support. It is **not** a PDPP protocol surface; clients and providers never need to fetch `/__pdpp/hosted-ui.css` or consume any of the `hosted-ui-*` class names. The React/Next public site in `apps/site/` and operator console in `apps/console/` remain the canonical app-layer design-system surfaces.
 
 ## How to use it
 
@@ -360,7 +363,7 @@ pnpm --dir reference-implementation run server
 ```
 
 That starts the AS/RS directly on their own listen ports (`:7662` / `:7663`)
-without the composed browser-facing web origin.
+without the composed browser-facing console origin.
 
 If you need to force direct mode while other composition-oriented env is set in
 your shell, run:

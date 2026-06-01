@@ -57,7 +57,7 @@ const env = {
   PDPP_REFERENCE_ORIGIN: process.env.PDPP_REFERENCE_ORIGIN ?? `http://localhost:${webPort}`,
 };
 
-console.error(`[pdpp dev] web origin: ${env.PDPP_REFERENCE_ORIGIN}`);
+console.error(`[pdpp dev] console origin: ${env.PDPP_REFERENCE_ORIGIN}`);
 
 const child = spawn(
   "pnpm",

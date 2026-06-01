@@ -36,8 +36,8 @@ Different artifacts have different voice contracts. Mixing them is the single mo
 | `design-notes/**` | **Requirements discovery**. Question → context → stakes → current leaning → promotion trigger. Not normative. | Mixed. State status (`captured`, `decided`, `superseded`). | Open questions, prior art, decisions not yet promoted. |
 | `docs/**` (this folder) | **Contributor / reviewer guides**. Durable explainers, playbooks, audits, research syntheses. | Mixed. | Explain reality. Cite specs and code. Label aspiration. |
 | `README.md`, `reference-implementation/README.md`, package READMEs | **Operator-facing**. Describe what the artifact *does today*, with a quick-start that works. | Imperative for instructions, present for descriptions. | Current behavior of the code at this commit. |
-| `apps/web/` site copy (`/docs`, `/reference`, `/sandbox`, etc.) | **Public site**. Calm, technical, illustrated. | Present. | Protocol facts, clearly labeled reference behavior, clearly labeled mock specimens. |
-| `apps/web/` operator copy (`/dashboard`, `/owner/**`) | **Operator console**. UI strings for someone running their own instance. | Imperative or descriptive. | The owner's instance state. Not the protocol. |
+| `apps/site/` site copy (`/docs`, `/reference`, `/sandbox`, etc.) | **Public site**. Calm, technical, illustrated. | Present. | Protocol facts, clearly labeled reference behavior, clearly labeled mock specimens. |
+| `apps/console/` operator copy (`/dashboard`, `/owner/**`) | **Operator console**. UI strings for someone running their own instance. | Imperative or descriptive. | The owner's instance state. Not the protocol. |
 
 A common failure: writing dashboard tooltip text in the voice of a hosted SaaS ("We'll sync your Gmail nightly"). The reference does not offer a service to "us." Use operator-voice: "This connection runs on the schedule you configured."
 
