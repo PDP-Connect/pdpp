@@ -185,9 +185,9 @@ export function RecordsListView({
   now?: number;
 }) {
   const labeled = labelConnections(overviews);
-  const withData = labeled.filter(shouldShowInPrimaryConnections);
+  const primaryConnections = labeled.filter(shouldShowInPrimaryConnections);
   const empty = labeled.filter((o) => !shouldShowInPrimaryConnections(o));
-  const sorted = [...withData].sort((a, b) => {
+  const sorted = [...primaryConnections].sort((a, b) => {
     const [ak, at, an] = connectorSortKey(a);
     const [bk, bt, bn] = connectorSortKey(b);
     if (ak !== bk) {
@@ -199,8 +199,8 @@ export function RecordsListView({
     return an.localeCompare(bn);
   });
 
-  const totalRecords = withData.reduce((sum, o) => sum + o.totalRecords, 0);
-  const totalStreams = withData.reduce((sum, o) => sum + (o.streamCount ?? o.streams.length), 0);
+  const totalRecords = primaryConnections.reduce((sum, o) => sum + o.totalRecords, 0);
+  const totalStreams = primaryConnections.reduce((sum, o) => sum + (o.streamCount ?? o.streams.length), 0);
 
   // Summary rollup lives in a pure, importable module so the counter behavior
   // is testable without rendering this JSX component. The summary is lossless:
@@ -213,13 +213,13 @@ export function RecordsListView({
   const runningCount = summary.running;
   const staleCount = summary.stale;
 
-  // Name the population the count describes. The number is the with-data list;
-  // when registered no-data connections exist we say so instead of letting a
-  // bare "connections" number imply the registered total.
+  // Name the population the count describes. The summary stat uses the
+  // registered total; when no-data registrations exist, the hint explains how
+  // many connections are currently surfaced in the primary list.
   const connectionsCountLabel =
     summary.noData > 0
-      ? `${summary.withData} with data · ${summary.registeredTotal} registered`
-      : `${summary.withData} connections`;
+      ? `${summary.registeredTotal} registered connections · ${summary.primaryList} listed`
+      : `${summary.registeredTotal} connections`;
 
   return (
     <>
@@ -247,10 +247,14 @@ export function RecordsListView({
 
       <section aria-label="Connection health summary" className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-5">
         <HealthStat
-          hint={summary.noData > 0 ? `${summary.registeredTotal.toLocaleString()} registered` : undefined}
-          label={summary.noData > 0 ? "With data" : "Connections"}
+          hint={
+            summary.noData > 0
+              ? `${summary.primaryList.toLocaleString()} listed · ${summary.noData.toLocaleString()} no data yet`
+              : undefined
+          }
+          label="Connections"
           tone="neutral"
-          value={summary.withData.toLocaleString()}
+          value={summary.registeredTotal.toLocaleString()}
         />
         <HealthStat
           label="Needs attention"
@@ -270,8 +274,8 @@ export function RecordsListView({
         <HealthStat label="Stale" tone={staleCount > 0 ? "warning" : "neutral"} value={staleCount.toLocaleString()} />
       </section>
 
-      <Section title={`Connections (${withData.length})`}>
-        {withData.length === 0 ? (
+      <Section title={`Connections (${primaryConnections.length})`}>
+        {primaryConnections.length === 0 ? (
           <EmptyState
             hint={
               interactive

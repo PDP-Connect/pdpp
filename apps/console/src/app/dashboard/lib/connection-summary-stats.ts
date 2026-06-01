@@ -19,9 +19,10 @@
  *   - Unknown freshness is NOT counted as stale. Staleness requires the health
  *     projection's freshness axis to say `stale` (a freshness policy verdict).
  *     We never re-derive staleness from raw `last ingest` age here.
- *   - The connection count names its population: `withData` is the primary
- *     (durable-progress) list, `registeredTotal` includes the no-data
- *     registrations, and `noData` is the difference.
+ *   - The connection count names its population: `primaryList` is the
+ *     operator-surfaced list (records, local-device progress, or actionable
+ *     health/run state), `registeredTotal` includes no-data registrations, and
+ *     `noData` is the difference.
  */
 
 import { shouldShowInPrimaryConnections } from "./records-list-classification.ts";
@@ -39,14 +40,14 @@ export interface ConnectionHealthSummaryStats {
   readonly needsAttention: number;
   /** Registered connections with no durable progress yet. */
   readonly noData: number;
+  /** Connections surfaced in the primary list. May include zero-record actionable rows. */
+  readonly primaryList: number;
   /** All registered connections, including no-data registrations. */
   readonly registeredTotal: number;
   /** A run or durable work item is actively progressing. */
   readonly running: number;
   /** Freshness axis says `stale` (policy-aware); unknown freshness is excluded. */
   readonly stale: number;
-  /** Connections with durable progress (the primary list population). */
-  readonly withData: number;
 }
 
 /** Owner action required now. */
@@ -91,12 +92,12 @@ function isStale(overview: ConnectorOverview): boolean {
 }
 
 export function summarizeConnectionHealth(overviews: readonly ConnectorOverview[]): ConnectionHealthSummaryStats {
-  const withDataList = overviews.filter(shouldShowInPrimaryConnections);
+  const primaryList = overviews.filter(shouldShowInPrimaryConnections);
   let needsAttention = 0;
   let degraded = 0;
   let running = 0;
   let stale = 0;
-  for (const overview of withDataList) {
+  for (const overview of primaryList) {
     if (isNeedsAttention(overview)) {
       needsAttention += 1;
     }
@@ -114,9 +115,9 @@ export function summarizeConnectionHealth(overviews: readonly ConnectorOverview[
     }
   }
   return {
-    withData: withDataList.length,
+    primaryList: primaryList.length,
     registeredTotal: overviews.length,
-    noData: overviews.length - withDataList.length,
+    noData: overviews.length - primaryList.length,
     needsAttention,
     degraded,
     running,

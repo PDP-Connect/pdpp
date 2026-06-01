@@ -117,23 +117,33 @@ test("running counts active runs and push-mode syncing badges", () => {
 
 // ─── Connection count population ──────────────────────────────────────────
 
-test("counts name their population: withData, registeredTotal, noData", () => {
+test("counts name their population: primaryList, registeredTotal, noData", () => {
   const stats = summarizeConnectionHealth([
-    withDataInState("healthy", "fresh"), // with data
-    withDataInState("degraded"), // with data (degraded forces primary list)
+    withDataInState("healthy", "fresh"), // primary list, with data
+    withDataInState("degraded"), // primary list, with data
+    overview({
+      lastRun: {
+        event_count: 1,
+        failure_reason: null,
+        first_at: "2026-05-22T10:00:00Z",
+        last_at: "2026-05-22T10:00:10Z",
+        run_id: "run_failed",
+        status: "failed",
+      },
+    }), // primary list, no records
     overview({}), // registered, no data, no actionable state -> no-data partition
     overview({}), // registered, no data
   ]);
-  assert.equal(stats.withData, 2);
-  assert.equal(stats.registeredTotal, 4);
+  assert.equal(stats.primaryList, 3);
+  assert.equal(stats.registeredTotal, 5);
   assert.equal(stats.noData, 2);
 });
 
-test("no-data registrations are excluded from the with-data attention counts", () => {
+test("no-data registrations are excluded from the primary-list attention counts", () => {
   // A bare registration with no projection and no run must not inflate any
   // health bucket.
   const stats = summarizeConnectionHealth([overview({}), overview({})]);
-  assert.equal(stats.withData, 0);
+  assert.equal(stats.primaryList, 0);
   assert.equal(stats.registeredTotal, 2);
   assert.equal(stats.needsAttention, 0);
   assert.equal(stats.degraded, 0);
