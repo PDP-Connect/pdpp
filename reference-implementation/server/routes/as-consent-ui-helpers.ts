@@ -212,24 +212,39 @@ export function buildHostedMcpAuthorizationDetailsForConnector(connectorId: stri
  * non-empty; null preserves the wildcard default. `accessMode` is validated
  * against `HOSTED_MCP_PICKER_SUPPORTED_ACCESS_MODES`; unknown values fall back
  * to `HOSTED_MCP_PICKER_DEFAULT_ACCESS_MODE` (continuous).
+ *
+ * `connectionId`, when a non-empty string, pins every stream entry to that
+ * connection by stamping `connection_id` onto it. This is the enforcement
+ * lever: `resolveGrantSelection` copies `streams[].connection_id` onto the
+ * issued child grant, and the read-path binding resolver narrows fan-in to the
+ * named connection. Wildcard stream selections are pinned identically — the
+ * runtime narrows the binding to the connection, then expands streams under
+ * it. Callers MUST only pass a `connectionId` the picker presented and
+ * validated as active, and MUST omit it when the surface did not present a
+ * specific-connection choice (single-connection or unconfigured connector), so
+ * fan-in semantics and existing grants are preserved.
  */
 export function buildHostedMcpAuthorizationDetailForConnector(
   connectorId: string,
   streamNames: string[] | null = null,
-  accessMode: string | null = null
+  accessMode: string | null = null,
+  connectionId: string | null = null
 ): {
   type: string;
   source: { kind: string; id: string };
   purpose_code: string;
   purpose_description: string;
   access_mode: string;
-  streams: Array<{ name: string }>;
+  streams: Array<{ name: string; connection_id?: string }>;
 } {
-  let streams: Array<{ name: string }>;
+  const pinnedConnectionId = typeof connectionId === "string" && connectionId.trim() ? connectionId.trim() : null;
+  const withPin = (name: string): { name: string; connection_id?: string } =>
+    pinnedConnectionId ? { name, connection_id: pinnedConnectionId } : { name };
+  let streams: Array<{ name: string; connection_id?: string }>;
   if (Array.isArray(streamNames) && streamNames.length > 0) {
-    streams = streamNames.map((name) => ({ name }));
+    streams = streamNames.map((name) => withPin(name));
   } else {
-    streams = [{ name: "*" }];
+    streams = [withPin("*")];
   }
   const resolvedAccessMode = HOSTED_MCP_PICKER_SUPPORTED_ACCESS_MODES.has(accessMode ?? "")
     ? (accessMode as string)

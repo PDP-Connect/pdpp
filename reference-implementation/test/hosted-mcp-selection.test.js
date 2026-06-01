@@ -25,6 +25,8 @@ import {
   parseHostedMcpStreamSelection,
   parseHostedMcpStreamSelections,
 } from '../server/hosted-mcp-selection.js';
+import { buildHostedMcpAuthorizationDetailForConnector } from '../server/routes/as-consent-ui-helpers.ts';
+import { shouldPinSelectedConnection } from '../server/routes/as-authorize.ts';
 
 test('round-trips a URL-shaped connector id without delimiter collapse', () => {
   const urlShaped = 'https://registry.pdpp.org/connectors/gmail';
@@ -260,4 +262,71 @@ test('hostedMcpSourceKey matches the dedupe key parseHostedMcpStreamSelections u
     bySource.get(hostedMcpSourceKey({ connectorId: 'gmail', connectionId: null })),
     'blank connection id and present connection id must produce different keys',
   );
+});
+
+// ─── Connection-pin enforcement lever (selection → grant scope) ─────────────
+//
+// The hosted MCP picker validates the owner's chosen connection, but the
+// issued child grant only enforces it when `connection_id` lands on
+// `grant.streams[]`. These tests pin the two pure deciders for that lever:
+//   - `buildHostedMcpAuthorizationDetailForConnector` stamps (or omits)
+//     `streams[].connection_id`, including on the wildcard entry;
+//   - `shouldPinSelectedConnection` pins ONLY when a specific connection was
+//     chosen among more than one active binding, so single-connection grants
+//     stay fan-in (no brittle stored id, no reissuance pressure).
+// The end-to-end persisted-grant + read-path proof lives in
+// `hosted-mcp-oauth.test.js`; these are the unit-level guards.
+
+test('buildHostedMcpAuthorizationDetailForConnector omits connection_id when none is selected', () => {
+  const detail = buildHostedMcpAuthorizationDetailForConnector('gmail', ['messages'], 'continuous', null);
+  assert.deepEqual(detail.streams, [{ name: 'messages' }]);
+  for (const stream of detail.streams) {
+    assert.equal('connection_id' in stream, false, 'unpinned stream entry must not carry connection_id');
+  }
+});
+
+test('buildHostedMcpAuthorizationDetailForConnector pins connection_id onto every narrowed stream entry', () => {
+  const detail = buildHostedMcpAuthorizationDetailForConnector(
+    'gmail',
+    ['messages', 'threads'],
+    'continuous',
+    'cin_work',
+  );
+  assert.deepEqual(detail.streams, [
+    { name: 'messages', connection_id: 'cin_work' },
+    { name: 'threads', connection_id: 'cin_work' },
+  ]);
+});
+
+test('buildHostedMcpAuthorizationDetailForConnector pins the wildcard stream entry (narrow-then-expand)', () => {
+  // A wildcard pinned to a connection is intentionally valid: the runtime
+  // narrows the binding to the connection, then expands streams under it.
+  const detail = buildHostedMcpAuthorizationDetailForConnector('gmail', null, 'continuous', 'cin_personal');
+  assert.deepEqual(detail.streams, [{ name: '*', connection_id: 'cin_personal' }]);
+});
+
+test('buildHostedMcpAuthorizationDetailForConnector treats blank/whitespace connectionId as unpinned', () => {
+  assert.deepEqual(
+    buildHostedMcpAuthorizationDetailForConnector('gmail', ['messages'], 'continuous', '   ').streams,
+    [{ name: 'messages' }],
+  );
+  assert.deepEqual(
+    buildHostedMcpAuthorizationDetailForConnector('gmail', ['messages'], 'continuous', '').streams,
+    [{ name: 'messages' }],
+  );
+});
+
+test('shouldPinSelectedConnection pins only a specific connection chosen among siblings', () => {
+  // Pin: specific connection AND more than one active binding to choose among.
+  assert.equal(shouldPinSelectedConnection('cin_a', 2), true);
+  assert.equal(shouldPinSelectedConnection('cin_a', 5), true);
+  // Do not pin: exactly one (or zero) active binding — fan-in over a set of one
+  // already resolves to that connection, so a stored id adds no enforcement.
+  assert.equal(shouldPinSelectedConnection('cin_a', 1), false);
+  assert.equal(shouldPinSelectedConnection('cin_a', 0), false);
+  // Do not pin: no specific connection chosen, regardless of binding count.
+  assert.equal(shouldPinSelectedConnection(null, 2), false);
+  assert.equal(shouldPinSelectedConnection('', 2), false);
+  assert.equal(shouldPinSelectedConnection('   ', 2), false);
+  assert.equal(shouldPinSelectedConnection(undefined, 2), false);
 });

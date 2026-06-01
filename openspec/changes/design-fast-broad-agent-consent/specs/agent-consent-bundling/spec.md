@@ -72,6 +72,34 @@ When the hosted MCP package picker presents a connector-backed source, it SHALL 
 - **THEN** the AS SHALL NOT silently drop the source or issue a child grant for that source
 - **AND** the AS SHALL re-render the hosted picker with an HTML validation error naming the affected source(s) by display name, not raw connector URLs or internal connection ids.
 
+### Requirement: Hosted MCP picker SHALL enforce a selected connection on the issued child grant
+
+When the hosted MCP package picker presents a connector that has more than one active connection and the owner selects one specific connection row, the issued child grant SHALL carry `streams[].connection_id` for every stream entry it authorizes, including the canonical wildcard entry, so that the selection the owner saw is enforced on every grant-authorized read rather than recorded only as audit or display metadata. When the picker presents a connector with exactly one active connection, or presents only the connector with no connection-level choice, the issued child grant SHALL omit `connection_id` and preserve cross-connection (fan-in) read semantics. The connection enforced on the issued grant SHALL equal the connection named to the owner in the picker; the AS SHALL NOT enforce a different connection than the one shown, and SHALL NOT silently drop a stale or unknown connection after validation.
+
+#### Scenario: Owner selects one connection among siblings
+
+- **WHEN** the owner selects a hosted MCP source whose connector has more than one active connection and chooses one specific connection before submitting
+- **THEN** every stream entry on the issued child grant SHALL carry that connection's `connection_id`
+- **AND** a grant-authorized read under that child grant SHALL return records only from the selected connection and SHALL NOT disclose records reachable only from a sibling connection of the same connector.
+
+#### Scenario: Owner approves the whole source for a selected connection
+
+- **WHEN** the owner selects every manifest stream for a hosted MCP source whose connector has more than one active connection and a specific connection is chosen
+- **THEN** the AS MAY emit the canonical `[{ name: "*", connection_id }]` shorthand for that source
+- **AND** the issued child grant SHALL constrain every authorized stream to the selected connection, whether the grant stores the wildcard form or its expanded per-stream equivalent.
+
+#### Scenario: Single-connection source preserves fan-in
+
+- **WHEN** the owner selects a hosted MCP source whose connector has exactly one active connection
+- **THEN** the issued child grant SHALL NOT carry a `streams[].connection_id` constraint
+- **AND** previously-issued single-connection grants SHALL continue to function without re-issuance.
+
+#### Scenario: Enforced connection matches the shown connection
+
+- **WHEN** the picker issues a child grant pinned to a connection
+- **THEN** the package member audit metadata (`source_json.connection_id`) and the enforceable grant scope (`grant.streams[].connection_id`) SHALL name the same connection
+- **AND** the AS SHALL reject a submitted connection that is not an active binding for the owner and connector rather than issuing a grant pinned to an unknown connection.
+
 ### Requirement: Hosted MCP picker SHALL let the owner choose the package access mode
 
 The hosted MCP package picker SHALL expose a single owner-facing control that selects the package access mode for every child grant issued by the ceremony. The control SHALL offer the two protocol-enforced access modes (`single_use` and `continuous`) defined by `spec-core.md`. The AS SHALL apply the submitted access mode to every `authorization_details[]` entry the picker emits; mixed-access packages are out of scope for this picker. The picker SHALL default to `continuous` to preserve the prior baseline behavior, and the owner-facing copy SHALL describe what each mode means in plain language before submission.

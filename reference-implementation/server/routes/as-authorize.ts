@@ -165,6 +165,30 @@ interface SourceEntryAccumulator {
   storageBindings: Array<{ connector_id: string }>;
 }
 
+// Decides whether the owner's selected connection should be pinned as an
+// enforceable `grant.streams[].connection_id` constraint on the issued child
+// grant, versus omitted to preserve fan-in.
+//
+// Pin iff the owner selected a specific connection AND the connector has more
+// than one active binding — i.e. the picker presented sibling connections and
+// the owner disambiguated among them. When the connector has exactly one active
+// binding (or none), "selecting" it is not a disambiguating choice: fan-in over
+// a set of one already resolves to that connection, auto-select covers it, and
+// stamping a `connection_id` would only add a brittle stored id that pressures
+// existing grants without changing what the read returns. This keeps
+// single-connection deployments and existing grants byte-for-byte unchanged.
+//
+// Pure and side-effect free so the pin policy is unit-testable in isolation.
+export function shouldPinSelectedConnection(
+  connectionId: string | null | undefined,
+  activeBindingCount: number
+): boolean {
+  if (typeof connectionId !== "string" || !connectionId.trim()) {
+    return false;
+  }
+  return activeBindingCount > 1;
+}
+
 // Returns true if the entry was added, false if it was skipped/deduped.
 // Mutates acc in place. Extracted to reduce cognitive complexity of the POST handler.
 async function accumulateSourceEntry(
@@ -185,12 +209,17 @@ async function accumulateSourceEntry(
   }
 
   let matchedBinding: ConsentPickerBinding | null = null;
+  let activeBindingCount = 0;
   if (connectionId) {
     // Verify the requested connection is currently active for this
-    // owner+connector. Reject silently-pinning a stale connection.
+    // owner+connector. Reject silently-pinning a stale connection. The active
+    // set also drives the pin-vs-fan-in decision below: a chosen connection is
+    // only an enforceable constraint when there is more than one to choose
+    // among.
     const active = await caps
       .listActiveBindingsForGrant({ connectorId, ownerSubjectId })
       .catch(() => [] as ConsentPickerBinding[]);
+    activeBindingCount = active.length;
     matchedBinding = active.find((row) => row.connectorInstanceId === connectionId) || null;
     if (!matchedBinding) {
       oauthError(res, 400, "invalid_request", `Connection ${connectionId} is not active for ${connectorId}`);
@@ -220,8 +249,19 @@ async function accumulateSourceEntry(
     return "skipped";
   }
 
+  // Pin the validated connection onto the issued child grant only when it
+  // disambiguates among sibling connections; otherwise omit it to preserve
+  // fan-in. The same value already flows to the package member audit metadata
+  // below via acc.connectionIds, so "what the owner saw" and "what is enforced"
+  // agree when pinned.
+  const pinnedConnectionId = shouldPinSelectedConnection(connectionId, activeBindingCount) ? connectionId : null;
   acc.authorizationDetails.push(
-    buildHostedMcpAuthorizationDetailForConnector(connectorId, narrowedStreamNames, packageAccessMode)
+    buildHostedMcpAuthorizationDetailForConnector(
+      connectorId,
+      narrowedStreamNames,
+      packageAccessMode,
+      pinnedConnectionId
+    )
   );
   acc.storageBindings.push({ connector_id: connectorId });
   acc.connectionIds.push(connectionId || null);

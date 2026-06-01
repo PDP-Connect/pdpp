@@ -809,7 +809,17 @@ function requireGrantManifestForBindings(sourceBinding, storageBinding, opts = {
 function resolveGrantSelection(selection = {}, manifest = {}) {
   let streams = selection.streams || [];
   if (streams.length === 1 && streams[0].name === '*') {
-    streams = manifest.streams.map((stream) => ({ name: stream.name }));
+    // Expanding the wildcard MUST preserve a per-stream `connection_id`
+    // constraint. A wildcard pinned to a connection (the hosted MCP picker's
+    // whole-source approval for a chosen sibling connection) means "every
+    // stream, but only from this connection" — dropping the pin here would
+    // silently fan the grant back in across every connection of the connector.
+    const wildcardConnectionId = isNonEmptyString(streams[0].connection_id) ? streams[0].connection_id : null;
+    streams = manifest.streams.map((stream) => (
+      wildcardConnectionId
+        ? { name: stream.name, connection_id: wildcardConnectionId }
+        : { name: stream.name }
+    ));
   }
 
   return streams.map((streamRequest) => {

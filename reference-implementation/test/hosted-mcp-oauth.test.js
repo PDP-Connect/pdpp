@@ -15,6 +15,11 @@ import {
 } from '../server/hosted-mcp-selection.js';
 import { startServer } from '../server/index.js';
 import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import {
+  ingestRecord,
+  queryRecordsAcrossBindings,
+  resolveReadRequestBindings,
+} from '../server/records.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
@@ -2710,6 +2715,305 @@ test('picker hides URL-shaped default connection labels from owner-visible copy'
       false,
       'URL-shaped connector ids must not appear in owner-visible picker text',
     );
+  } finally {
+    await closeServer(server);
+  }
+});
+
+// ─── Connection-pin: selection → enforceable grant scope ────────────────────
+//
+// The picker validates the owner's chosen connection, but the bug the scout
+// report surfaced is that the value never reached `grant.streams[].connection_id`
+// — it was stored only in the package member's `source_json` (audit/display),
+// so a "Slack work" pick still fanned in across every Slack connection at read
+// time. These tests prove the enforcement parity invariant end-to-end:
+//
+//   - a connection chosen among >1 active binding pins `streams[].connection_id`
+//     on the persisted child grant;
+//   - a single-connection connector keeps the field OMITTED (fan-in preserved,
+//     no brittle stored id, no reissuance pressure);
+//   - the pinned `connection_id` is enforced on the read path — a grant-scoped
+//     read under the persisted child grant excludes the unselected sibling's
+//     records (the decisive anti-Goodhart check: `source_json` alone is the
+//     pre-existing bug, so we run the real fan-in resolver, not metadata);
+//   - the wildcard stream case persists `{ name: "*", connection_id }`;
+//   - audit metadata (`source_json.connection_id`) and the enforced grant scope
+//     agree for the pinned member (no drift between shown and enforced).
+//
+// A custom connector with an ingestible `messages` stream lets us seed real
+// records per connection and prove disclosure narrowing, which the
+// spotify/github fixtures (no ingestible records) cannot.
+
+const PIN_CONNECTOR_ID = 'pin-fixture';
+const PIN_STREAM = 'messages';
+
+function pinConnectorManifest() {
+  return {
+    protocol_version: '0.1.0',
+    connector_id: PIN_CONNECTOR_ID,
+    version: '1.0.0',
+    display_name: 'Pin Fixture Connector',
+    capabilities: { human_interaction: [] },
+    streams: [
+      {
+        name: PIN_STREAM,
+        primary_key: ['id'],
+        cursor_field: 'received_at',
+        consent_time_field: 'received_at',
+        schema: {
+          type: 'object',
+          required: ['id', 'subject', 'received_at'],
+          properties: {
+            id: { type: 'string' },
+            subject: { type: 'string' },
+            received_at: { type: 'string', format: 'date-time' },
+          },
+        },
+      },
+    ],
+  };
+}
+
+async function registerPinConnector(asUrl) {
+  const manifest = pinConnectorManifest();
+  const { status } = await fetchJson(`${asUrl}/connectors`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(manifest),
+  });
+  assert.equal(status, 201);
+  return manifest;
+}
+
+async function seedPinConnection({ store, connectionId, displayName, account }) {
+  const now = new Date().toISOString();
+  await store.upsert({
+    connectorInstanceId: connectionId,
+    ownerSubjectId: 'owner_local',
+    connectorId: PIN_CONNECTOR_ID,
+    displayName,
+    status: 'active',
+    sourceKind: 'account',
+    sourceBindingKey: account,
+    sourceBinding: { account },
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
+function pinRecord(id, subject, receivedAt) {
+  return {
+    stream: PIN_STREAM,
+    key: id,
+    data: { id, subject, received_at: receivedAt },
+    emitted_at: receivedAt,
+  };
+}
+
+// Drive the picker for a single source/connection, narrowing to `streamNames`
+// (pass null to submit the whole-source wildcard via every-stream selection),
+// and return the persisted package access object.
+async function approvePinPackage({ asUrl, client, connectionId, streamNames }) {
+  const verifier = randomBytes(32).toString('base64url');
+  const challenge = pkceChallenge(verifier);
+  const state = `pin-${connectionId || 'none'}`;
+
+  const params = new URLSearchParams();
+  params.append('client_id', client.client_id);
+  params.append('redirect_uri', 'https://client.example/callback');
+  params.append('response_type', 'code');
+  params.append('state', state);
+  params.append('code_challenge', challenge);
+  params.append('code_challenge_method', 'S256');
+  params.append('selection', encodeHostedMcpSelection({ connectorId: PIN_CONNECTOR_ID, connectionId }));
+  const names = streamNames || [PIN_STREAM];
+  for (const streamName of names) {
+    params.append('stream', encodeHostedMcpStreamSelection({ connectorId: PIN_CONNECTOR_ID, connectionId, streamName }));
+  }
+
+  const approveResp = await fetch(`${asUrl}/oauth/authorize/mcp-package`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString(),
+  });
+  assert.equal(approveResp.status, 302);
+  const code = new URL(approveResp.headers.get('location')).searchParams.get('code');
+  assert.ok(code);
+  const { status, body } = await fetchJson(`${asUrl}/oauth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      code,
+      client_id: client.client_id,
+      redirect_uri: 'https://client.example/callback',
+      code_verifier: verifier,
+    }).toString(),
+  });
+  assert.equal(status, 200);
+  assert.ok(body.grant_package_id, 'pin approval issues a package-bound token');
+  return getGrantPackageAccess(body.grant_package_id);
+}
+
+test('hosted MCP picker pins streams[].connection_id on the child grant for a connection chosen among siblings, and enforces it on reads', async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    await registerPinConnector(asUrl);
+    const store = createSqliteConnectorInstanceStore();
+    const connA = 'cin_pin_work';
+    const connB = 'cin_pin_personal';
+    await seedPinConnection({ store, connectionId: connA, displayName: 'Work', account: 'work@example.com' });
+    await seedPinConnection({ store, connectionId: connB, displayName: 'Personal', account: 'me@example.com' });
+    // Distinct records per connection so the read-path proof can show the
+    // unselected sibling's records are excluded — not merely de-emphasised.
+    await ingestRecord(
+      { connector_id: PIN_CONNECTOR_ID, connector_instance_id: connA },
+      pinRecord('rec-work-1', 'Work first', '2026-05-18T12:00:00.000Z'),
+    );
+    await ingestRecord(
+      { connector_id: PIN_CONNECTOR_ID, connector_instance_id: connA },
+      pinRecord('rec-work-2', 'Work second', '2026-05-18T12:01:00.000Z'),
+    );
+    await ingestRecord(
+      { connector_id: PIN_CONNECTOR_ID, connector_instance_id: connB },
+      pinRecord('rec-personal-1', 'Personal first', '2026-05-18T12:02:00.000Z'),
+    );
+
+    const client = await registerAuthCodeClient(asUrl);
+    const access = await approvePinPackage({ asUrl, client, connectionId: connA, streamNames: [PIN_STREAM] });
+    assert.equal(access.members.length, 1);
+    const member = access.members[0];
+
+    // Criterion 1: the persisted child grant carries the selected connection_id
+    // on every stream entry.
+    const pinnedStreams = member.grant.streams.filter((s) => s.name === PIN_STREAM);
+    assert.ok(pinnedStreams.length >= 1, 'child grant carries the messages stream');
+    for (const stream of member.grant.streams) {
+      assert.equal(
+        stream.connection_id,
+        connA,
+        `every issued stream entry must pin connection_id=${connA}; got ${JSON.stringify(stream)}`,
+      );
+    }
+
+    // Criterion 3: audit/display metadata and the enforced grant scope agree.
+    assert.equal(member.connection_id, connA, 'package member audit metadata pins the same connection');
+    assert.equal(member.source?.connection_id, connA, 'source_json connection_id matches the enforced grant');
+
+    // Criterion 2 (decisive, anti-Goodhart): run a real grant-authorized read
+    // through the fan-in resolver under the PERSISTED child grant and prove the
+    // unselected sibling's records are absent. Testing source_json alone would
+    // reproduce the original bug as a green check.
+    const { bindings } = await resolveReadRequestBindings({
+      ownerSubjectId: 'owner_local',
+      storageBinding: member.grant_storage_binding,
+      grant: member.grant,
+      requestParams: {},
+      streamName: PIN_STREAM,
+    });
+    assert.equal(bindings.length, 1, 'pinned grant resolves to exactly one binding');
+    assert.equal(bindings[0].connectorInstanceId, connA, 'resolved binding is the selected connection');
+
+    const response = await queryRecordsAcrossBindings(
+      bindings,
+      PIN_STREAM,
+      member.grant,
+      {},
+      pinConnectorManifest(),
+    );
+    const returnedIds = response.data.map((r) => r.id).sort();
+    assert.deepEqual(returnedIds, ['rec-work-1', 'rec-work-2'], 'read returns only the selected connection records');
+    for (const record of response.data) {
+      assert.equal(record.connection_id, connA, 'every returned record is attributed to the selected connection');
+      assert.notEqual(record.id, 'rec-personal-1', 'the unselected sibling record MUST NOT be disclosed');
+    }
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('hosted MCP picker omits connection_id for a single-connection connector (fan-in preserved)', async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    await registerPinConnector(asUrl);
+    const store = createSqliteConnectorInstanceStore();
+    const soleConn = 'cin_pin_sole';
+    await seedPinConnection({ store, connectionId: soleConn, displayName: 'Sole', account: 'sole@example.com' });
+    await ingestRecord(
+      { connector_id: PIN_CONNECTOR_ID, connector_instance_id: soleConn },
+      pinRecord('rec-sole-1', 'Sole first', '2026-05-18T12:00:00.000Z'),
+    );
+
+    const client = await registerAuthCodeClient(asUrl);
+    // Owner picks the only connection row. Because there is exactly one active
+    // binding, this is not a disambiguating choice — the grant must stay fan-in.
+    const access = await approvePinPackage({ asUrl, client, connectionId: soleConn, streamNames: [PIN_STREAM] });
+    assert.equal(access.members.length, 1);
+    const member = access.members[0];
+
+    // Criterion 5: no connection_id appears where none did before.
+    for (const stream of member.grant.streams) {
+      assert.equal(
+        'connection_id' in stream,
+        false,
+        `single-connection grant must NOT pin connection_id; got ${JSON.stringify(stream)}`,
+      );
+    }
+
+    // Fan-in over a set of one still resolves and reads the sole connection.
+    const { bindings } = await resolveReadRequestBindings({
+      ownerSubjectId: 'owner_local',
+      storageBinding: member.grant_storage_binding,
+      grant: member.grant,
+      requestParams: {},
+      streamName: PIN_STREAM,
+    });
+    assert.equal(bindings.length, 1);
+    assert.equal(bindings[0].connectorInstanceId, soleConn);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('hosted MCP picker pins the wildcard stream entry when the whole source is approved for a chosen sibling', async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const manifest = await registerPinConnector(asUrl);
+    const store = createSqliteConnectorInstanceStore();
+    const connA = 'cin_pin_wild_a';
+    const connB = 'cin_pin_wild_b';
+    await seedPinConnection({ store, connectionId: connA, displayName: 'Wild A', account: 'a@example.com' });
+    await seedPinConnection({ store, connectionId: connB, displayName: 'Wild B', account: 'b@example.com' });
+
+    const client = await registerAuthCodeClient(asUrl);
+    // Submit every manifest stream for connection A → the AS emits the
+    // canonical wildcard authorization detail (`{ name: "*", connection_id }`),
+    // which `resolveGrantSelection` expands into the enforceable narrowed
+    // wildcard: one entry per manifest stream, each carrying the connection
+    // pin. Criterion 4 accepts that equivalent enforceable form.
+    const allStreamNames = manifest.streams.map((s) => s.name);
+    const access = await approvePinPackage({ asUrl, client, connectionId: connA, streamNames: allStreamNames });
+    assert.equal(access.members.length, 1);
+    const member = access.members[0];
+
+    // Criterion 4: the persisted grant covers every manifest stream and pins
+    // the chosen connection on every entry — no stream escapes the pin.
+    const grantedNames = member.grant.streams.map((s) => s.name).sort();
+    assert.deepEqual(grantedNames, [...allStreamNames].sort(), 'whole-source approval covers every manifest stream');
+    for (const stream of member.grant.streams) {
+      assert.equal(
+        stream.connection_id,
+        connA,
+        `wildcard-expanded stream "${stream.name}" must carry the connection pin; got ${JSON.stringify(stream)}`,
+      );
+    }
   } finally {
     await closeServer(server);
   }
