@@ -1313,51 +1313,90 @@ export async function runConversationsAndMessagesStreams(
   options: { detailPacing?: ConversationDetailPacingOptions } = {}
 ): Promise<void> {
   const conversationsCursor = state.conversations as { last_update_time?: string | null } | undefined;
-  const priorCursor = conversationsCursor?.last_update_time || null;
+  const messagesCursor = state.messages as { last_update_time?: string | null } | undefined;
+  const priorConversationsCursor = conversationsCursor?.last_update_time || null;
+  const priorMessagesCursor = messagesCursor?.last_update_time || null;
+  const wantsConversations = deps.requested.has("conversations");
+  const wantsMessages = deps.requested.has("messages");
+  const listedByCursor = new Map<string, Promise<ConversationListItem[]>>();
+  const listForCursor = (cursor: string | null): Promise<ConversationListItem[]> => {
+    const key = cursor ?? "";
+    const existing = listedByCursor.get(key);
+    if (existing) {
+      return existing;
+    }
+    const listed = listConversationsSinceCursor(deps, cursor);
+    listedByCursor.set(key, listed);
+    return listed;
+  };
   const emitConversation = async (c: ConversationListItem, detail: ConversationDetail | null): Promise<void> => {
-    if (!deps.requested.has("conversations")) {
+    if (!wantsConversations) {
       return;
     }
     await deps.emitRecord("conversations", buildConversationRecord(c, detail));
   };
 
-  if (deps.requested.has("messages")) {
+  if (wantsMessages) {
     await recoverPendingConversationDetailGaps(deps, emitConversation, options.detailPacing);
   }
 
-  const convosToSync = await listConversationsSinceCursor(deps, priorCursor);
-  const foundProgressMsg = {
-    type: "PROGRESS",
-    stream: "conversations",
-    message: `Found ${convosToSync.length} conversations to sync`,
-    count: convosToSync.length,
-    total: convosToSync.length,
-  } as const;
-  deps.emit(foundProgressMsg);
+  const conversationsToSync = wantsConversations ? await listForCursor(priorConversationsCursor) : [];
+  if (wantsConversations) {
+    const foundProgressMsg = {
+      type: "PROGRESS",
+      stream: "conversations",
+      message: `Found ${conversationsToSync.length} conversations to sync`,
+      count: conversationsToSync.length,
+      total: conversationsToSync.length,
+    } as const;
+    deps.emit(foundProgressMsg);
+  }
 
-  if (deps.requested.has("messages")) {
+  const messageDetailConversations = wantsMessages ? await listForCursor(priorMessagesCursor) : [];
+  if (wantsMessages) {
+    const foundMessageDetailProgressMsg = {
+      type: "PROGRESS",
+      stream: "messages",
+      message: `Found ${messageDetailConversations.length} conversations requiring message detail`,
+      count: messageDetailConversations.length,
+      total: messageDetailConversations.length,
+    } as const;
+    deps.emit(foundMessageDetailProgressMsg);
     const coverage = await runMessagesAndConversationsWithDetail(
       deps,
-      convosToSync,
+      messageDetailConversations,
       emitConversation,
       options.detailPacing
     );
-    if (convosToSync.length) {
-      await deps.emit(makeConversationDetailCoverage(convosToSync, coverage));
+    if (messageDetailConversations.length) {
+      await deps.emit(makeConversationDetailCoverage(messageDetailConversations, coverage));
+      const maxMessagesUpdate = maxUpdateTimeIso(messageDetailConversations);
+      deps.emit({
+        type: "STATE",
+        stream: "messages",
+        cursor: { last_update_time: maxMessagesUpdate || priorMessagesCursor || null },
+      });
     }
-  } else if (deps.requested.has("conversations")) {
-    // Conversations-only sync: emit from list (detail fields stay null).
-    for (const c of convosToSync) {
+  }
+
+  if (wantsConversations) {
+    const detailedIds = new Set(messageDetailConversations.map((c) => c.id));
+    // Emit list-only parents for conversation rows not already repaired by
+    // message-detail fetches in this run.
+    for (const c of conversationsToSync) {
+      if (detailedIds.has(c.id)) {
+        continue;
+      }
       await emitConversation(c, null);
     }
   }
 
-  if (convosToSync.length) {
-    const maxUpdate = maxUpdateTimeIso(convosToSync);
+  if (wantsConversations && conversationsToSync.length) {
+    const maxUpdate = maxUpdateTimeIso(conversationsToSync);
     deps.emit({
       type: "STATE",
       stream: "conversations",
-      cursor: { last_update_time: maxUpdate || priorCursor || null },
+      cursor: { last_update_time: maxUpdate || priorConversationsCursor || null },
     });
   }
 }

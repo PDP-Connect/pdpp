@@ -353,3 +353,41 @@ test("runConversationsAndMessagesStreams: conversations-only (no messages scope)
   const states = protocolMessages.filter((m: EmittedMessage) => m.type === "STATE" && m.stream === "conversations");
   assert.equal(states.length, 1, "STATE still fires on the conversations-only path");
 });
+
+test("runConversationsAndMessagesStreams: messages backfill is independent from conversations cursor", async () => {
+  const list = [makeListItem("conv-new", "2026-04-22T10:00:00Z"), makeListItem("conv-old", "2026-04-22T09:00:00Z")];
+  const details = new Map<string, ChatGptFetchResult>([
+    ["conv-new", makeDetail("conv-new", 1)],
+    ["conv-old", makeDetail("conv-old", 1)],
+  ]);
+  const fetches: string[] = [];
+  const api = makeFakeApi(list, details);
+  const recordingApi: ChatGptApi = {
+    auth: api.auth,
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      fetches.push(path);
+      return api.fetch(path);
+    },
+  };
+  const { deps, emitted, protocolMessages } = makeDeps(recordingApi, ["messages"]);
+
+  await runConversationsAndMessagesStreams(deps, {
+    conversations: { last_update_time: "2026-04-22T10:00:00.000Z" },
+  });
+
+  assert.deepEqual(fetches, [
+    "/conversations?offset=0&limit=100&order=updated",
+    "/conversation/conv-new",
+    "/conversation/conv-old",
+  ]);
+  assert.equal(emitted.filter((r) => r.stream === "conversations").length, 0);
+  assert.equal(emitted.filter((r) => r.stream === "messages").length, 2);
+  assert.equal(
+    protocolMessages.some((m) => m.type === "STATE" && m.stream === "conversations"),
+    false,
+    "messages-only backfill must not advance the parent conversations cursor"
+  );
+  const messagesState = protocolMessages.find((m) => m.type === "STATE" && m.stream === "messages");
+  assert.ok(messagesState && messagesState.type === "STATE");
+  assert.deepEqual(messagesState.cursor, { last_update_time: "2026-04-22T10:00:00.000Z" });
+});
