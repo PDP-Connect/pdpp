@@ -18,7 +18,7 @@ Note: an earlier draft of this proposal asserted "a 2026-04-25 raw Reddit run ex
 
 ### Out of scope (live-gated owner follow-up)
 
-Replacing the synthetic fixture with a reviewed real owner capture is a separate sitting that needs owner credentials and is not required to lock the shape. Its exact owner packet lives in `tasks.md §8`. It does not block this change.
+Replacing the synthetic fixture with a reviewed real owner capture is a separate sitting that needs owner credentials and is not required to lock the shape. Its exact owner packet lives in `tasks.md §5`. It does not block this change.
 
 ## Capabilities
 
