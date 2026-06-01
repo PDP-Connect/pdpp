@@ -8,8 +8,8 @@
  * session has no owner bearer. But the console should tell the owner the *same*
  * honest story the trusted-agent surface tells: which connector types the
  * reference can actually create from here, and — for the ones it can't — the
- * exact missing primitive, never an implied "Add connection" / "Sync now" that
- * would silently fail.
+ * exact missing primitive for reviewers plus plain-language dashboard copy,
+ * never an implied "Add connection" / "Sync now" that would silently fail.
  *
  * The proven console creation primitive is local-collector device enrollment via
  * the cookie-authed `POST /_ref/device-exporters/enrollment-codes` route
@@ -68,10 +68,11 @@ export function isSupportedLocalCollectorConnector(
 }
 
 /**
- * One honestly-unsupported connection modality, with a human exemplar and the
- * exact missing primitive named. Worded to agree with the backend
- * `unsupportedReason` so the console and the trusted-agent surface tell the owner
- * the same truth.
+ * One honestly-unsupported connection modality, with a human exemplar, the
+ * exact missing primitive for reviewers, and plain-language dashboard copy.
+ * The technical primitive stays worded to agree with the backend
+ * `unsupportedReason` so the console and the trusted-agent surface tell the same
+ * truth without forcing implementation jargon into the visible dashboard row.
  */
 export interface UnsupportedAddModality {
   /** Representative connector names so the owner recognizes the class. */
@@ -81,13 +82,16 @@ export interface UnsupportedAddModality {
   /** The exact reference primitive that does not yet exist. */
   missingPrimitive: string;
   modality: Exclude<ConnectionAddModality, "local_collector">;
+  /** Plain-language dashboard copy explaining why the flow is unavailable. */
+  ownerFacingReason: string;
 }
 
 /**
  * The connection modalities the console cannot create today. Amazon is the
  * standing browser-bound exemplar (matching the backend's Amazon acceptance
- * fixture). Each entry names the precise missing primitive so the copy can be
- * honest without implying the owner can complete the flow here.
+ * fixture). Each entry names the precise missing primitive and a plain
+ * owner-facing reason so the copy can be honest without implying the owner can
+ * complete the flow here.
  */
 export const UNSUPPORTED_ADD_MODALITIES: readonly UnsupportedAddModality[] = [
   {
@@ -96,6 +100,8 @@ export const UNSUPPORTED_ADD_MODALITIES: readonly UnsupportedAddModality[] = [
     examples: ["Amazon", "Chase", "ChatGPT"],
     missingPrimitive:
       "a browser-collector enrollment primitive (a browser_collector source kind, binding-aware enrollment, and committed proof that a local collector drives the browser connector end-to-end)",
+    ownerFacingReason:
+      "needs a local browser enrollment flow, so PDPP can confirm the owner completes provider login locally before any data is ingested",
   },
   {
     modality: "api_network",
@@ -103,5 +109,7 @@ export const UNSUPPORTED_ADD_MODALITIES: readonly UnsupportedAddModality[] = [
     examples: ["GitHub", "Gmail"],
     missingPrimitive:
       "a standalone owner API-connect route — today an API connection only materializes implicitly on first ingest",
+    ownerFacingReason:
+      "needs an owner-approved API connection flow; today these connections appear only after a connector has ingested data",
   },
 ] as const;

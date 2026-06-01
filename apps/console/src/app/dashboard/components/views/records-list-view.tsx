@@ -357,9 +357,9 @@ export function RecordsListView({
  * This entry point gives owners a *real path*, not a dead button: the connectors
  * the reference can create from here (`claude_code`, `codex`) deep-link into the
  * enrollment form pre-selected; the connectors it cannot create yet (browser-
- * bound like Amazon, API/network like GitHub/Gmail) are listed honestly with the
- * exact missing primitive named — never an implied "Add connection" or "Sync
- * now" that would silently fail.
+ * bound like Amazon, API/network like GitHub/Gmail) are listed honestly with a
+ * plain-language reason and a technical primitive in the tooltip — never an
+ * implied "Add connection" or "Sync now" that would silently fail.
  *
  * The supported set and the unsupported reasons come from the shared
  * `connection-modality` module, which is the cookie-session sibling of the
@@ -370,7 +370,7 @@ function AddConnectionGuidance({ deviceExportersHref }: { deviceExportersHref: s
   return (
     <Callout
       className="mb-4"
-      description="Two connector types can be added from the console today by enrolling a local-collector device. Other sources are created elsewhere — they're listed below with the reason."
+      description="Two connector types can be added from the console today by enrolling a local-collector device. Other source classes are listed below with the missing owner-approved flow."
       surface="human"
       title="Add a connection"
     >
@@ -403,10 +403,10 @@ function AddConnectionGuidance({ deviceExportersHref }: { deviceExportersHref: s
           <p className="pdpp-caption mb-1.5 font-medium text-foreground">Not supported from the console yet</p>
           <ul className="space-y-1.5">
             {UNSUPPORTED_ADD_MODALITIES.map((entry) => (
-              <li className="pdpp-caption text-muted-foreground" key={entry.modality}>
+              <li className="pdpp-caption text-muted-foreground" key={entry.modality} title={entry.missingPrimitive}>
                 <span className="text-foreground">{entry.label}</span>{" "}
-                <span className="text-muted-foreground">({entry.examples.join(", ")})</span> — the reference has no{" "}
-                {entry.missingPrimitive}.
+                <span className="text-muted-foreground">({entry.examples.join(", ")})</span> — {entry.ownerFacingReason}
+                {"."}
               </li>
             ))}
           </ul>

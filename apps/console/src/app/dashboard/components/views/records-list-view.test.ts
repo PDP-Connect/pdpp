@@ -167,12 +167,13 @@ test("version-churn copy frames churn as retained history, not data loss", async
 // The records-list entry point must therefore be a REAL path: the supported
 // connectors (claude_code, codex) deep-link into the enrollment form
 // pre-selected, and the unsupported modalities (browser-bound like Amazon,
-// API/network) are named honestly with the missing primitive — never an
-// implied "Add connection"/"Sync now" that would silently fail. The supported
-// set + unsupported reasons come from the shared connection-modality module
-// (one source of truth across the console and the backend intent route). The
-// two audit copy soft spots are also fixed: the blanket "Click Sync now to
-// pull fresh data" promise and the local-collector-only "No data yet" wording.
+// API/network) are named honestly with a plain-language reason plus a technical
+// primitive for reviewers — never an implied "Add connection"/"Sync now" that
+// would silently fail. The supported set + unsupported reasons come from the
+// shared connection-modality module (one source of truth across the console and
+// the backend intent route). The two audit copy soft spots are also fixed: the
+// blanket "Click Sync now to pull fresh data" promise and the
+// local-collector-only "No data yet" wording.
 
 const ADD_CONNECTION_GUIDANCE_DEF = /function AddConnectionGuidance\(/;
 // The guidance is rendered (live only) — once in the no-data section and once

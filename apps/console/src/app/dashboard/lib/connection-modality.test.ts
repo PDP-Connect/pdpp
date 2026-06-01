@@ -70,6 +70,12 @@ test("unsupported modalities are honest: each names a missing primitive", () => 
   assert.ok(UNSUPPORTED_ADD_MODALITIES.length >= 2);
   for (const entry of UNSUPPORTED_ADD_MODALITIES) {
     assert.ok(entry.missingPrimitive.trim().length > 0, `${entry.modality} must name its missing primitive`);
+    assert.ok(entry.ownerFacingReason.trim().length > 0, `${entry.modality} must explain the gap to owners`);
+    assert.notEqual(
+      entry.ownerFacingReason,
+      entry.missingPrimitive,
+      `${entry.modality} must keep dashboard copy distinct from the technical primitive`
+    );
     assert.ok(entry.examples.length > 0, `${entry.modality} must list recognizable examples`);
     // The supported local-collector path must never be listed as unsupported.
     assert.notEqual(entry.modality, "local_collector");
