@@ -3635,7 +3635,7 @@ function buildRsApp(opts = {}) {
     canonicalConnectorKey,
     createRequestConnectorInstanceStore,
     getOwnerTokenSubjectId,
-    listSchedules: async () => await getDefaultSchedulerStore().listSchedules(),
+    listSchedules: async () => (opts.controller ? await opts.controller.listSchedules() : []),
     projectStorageDisplayName,
     resolveSingleConnectorIdQueryValue,
   });

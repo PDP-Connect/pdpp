@@ -18,6 +18,8 @@
  * tripping the conflict check.
  */
 
+import { canonicalConnectorKey, isRegistryUrlConnectorId } from './connector-key.js';
+
 /**
  * Canonical warning code emitted when a request used the deprecated
  * `connector_instance_id` alias. Surface this via the operation's
@@ -124,8 +126,8 @@ export function resolveRequestConnectionId(requestParams) {
  * "owner-meaningful label for the connection. Never the storage-layer
  * placeholder (`legacy`, `default_account`)." (reference-contract
  * `ConnectionDisplayNameSchema`); we treat connectorId / connectorInstanceId
- * equality and the documented placeholder strings as "no useful label" and
- * return `null` so callers omit the field entirely.
+ * equality, registry-URL connector ids, and the documented placeholder strings
+ * as "no useful label" and return `null` so callers omit the field entirely.
  *
  * Spec: openspec/changes/canonicalize-public-read-contract/specs/
  *       reference-implementation-architecture/spec.md
@@ -138,6 +140,10 @@ export function projectStorageDisplayName(displayName, { connectorId = null, con
   const trimmed = displayName.trim();
   if (!trimmed) return null;
   if (PLACEHOLDER_DISPLAY_NAMES.has(trimmed)) return null;
+  const displayNameKey = canonicalConnectorKey(trimmed);
+  const connectorKey = canonicalConnectorKey(connectorId) ?? connectorId;
+  if (connectorKey && displayNameKey && displayNameKey === connectorKey) return null;
+  if (isRegistryUrlConnectorId(trimmed)) return null;
   if (connectorId && trimmed === connectorId) return null;
   if (connectorInstanceId && trimmed === connectorInstanceId) return null;
   return trimmed;

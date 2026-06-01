@@ -182,6 +182,7 @@ const OwnerConnectionSchema = {
     "label_status",
     "status",
     "source_kind",
+    "source_binding",
     "created_at",
     "updated_at",
     "revoked_at",

@@ -56,7 +56,7 @@ async function fetchJson(url, opts = {}) {
 }
 
 async function withServer(fn) {
-  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:', ownerAuthPassword: '' });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
   try {
@@ -208,6 +208,30 @@ test('owner-agent bearer sees fallback label_status for a never-labeled connecti
     assert.equal(status, 200);
     const row = body.data.find((r) => r.connection_id === 'cin_spotify_unlabeled');
     assert.ok(row, 'unlabeled connection must appear in the listing');
+    assert.equal(row.label_status, 'fallback');
+  });
+});
+
+test('owner-agent bearer sees fallback label_status for a registry URL display_name', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const manifest = await registerConnector(asUrl, loadManifest('amazon'));
+    const connectorKey = canonicalConnectorKey(manifest.connector_id);
+    await seedInstance({
+      connectorInstanceId: 'cin_amazon_registry_fallback',
+      connectorId: connectorKey,
+      displayName: manifest.connector_id,
+      sourceBindingKey: 'acct_registry_fallback',
+    });
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connections`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+
+    assert.equal(status, 200);
+    const row = body.data.find((r) => r.connection_id === 'cin_amazon_registry_fallback');
+    assert.ok(row, 'registry fallback connection must appear in the listing');
+    assert.equal(row.display_name, manifest.connector_id);
     assert.equal(row.label_status, 'fallback');
   });
 });

@@ -18,6 +18,7 @@ import test from 'node:test';
 
 import {
   CONNECTION_ALIAS_DEPRECATED_WARNING_CODE,
+  projectStorageDisplayName,
   resolveRequestConnectionId,
 } from '../server/connection-id-request.js';
 import { executeSearchLexical } from '../operations/rs-search-lexical/index.ts';
@@ -192,6 +193,26 @@ test('resolveRequestConnectionId treats empty alias as absent (no warning, no va
   });
   assert.equal(connectionId, null);
   assert.deepEqual(warnings, []);
+});
+
+test('projectStorageDisplayName treats registry URL connector labels as fallback placeholders', () => {
+  assert.equal(
+    projectStorageDisplayName('https://registry.pdpp.org/connectors/amazon', {
+      connectorId: 'amazon',
+      connectorInstanceId: 'cin_amazon_personal',
+    }),
+    null,
+  );
+});
+
+test('projectStorageDisplayName treats legacy alias labels as fallback placeholders', () => {
+  assert.equal(
+    projectStorageDisplayName('claude_code', {
+      connectorId: 'claude-code',
+      connectorInstanceId: 'cin_claude_code',
+    }),
+    null,
+  );
 });
 
 // ─── rs.search.lexical: envelope-level coverage ─────────────────────────────
