@@ -214,6 +214,23 @@ const DISCOVERY_STREAM_SUMMARY_LIMIT = 50;
 const DISCOVERY_FIELD_SUMMARY_LIMIT = 16;
 const DISCOVERY_CONNECTION_SUMMARY_LIMIT = 8;
 
+// The `schema` tool's default `structuredContent.data` is a COMPACT projection
+// of the RS `/v1/schema` document, not the verbatim body. A real owner's
+// grant-scoped schema can exceed 2 MB once every connector advertises
+// per-field JSON Schema, so returning it verbatim as the default agent-facing
+// payload blows the context budget. The compact projection keeps the discovery
+// path `list_streams -> schema(stream) -> query_records` cheap by dropping the
+// heavy per-field JSON Schema blobs while preserving the capability flags,
+// connection identity, and connector metadata an agent needs to build a query.
+// Exhaustive JSON remains available via `detail: "full"`. See:
+//   openspec/changes/expose-connection-identity-on-public-read/tasks.md (§7
+//   MCP discovery/schema token-efficiency target).
+const SCHEMA_DETAIL_DESCRIPTION =
+  'Response detail grade for `structuredContent.data`. `compact` (default) returns a token-efficient projection: per-stream field names with capability flags, expandable relation names, connection identities, and connector metadata, with the heavy per-field JSON Schema blobs dropped. `full` returns the exhaustive verbatim `GET /v1/schema` body — opt in only when you need raw JSON Schema for a field. The concise `content[]` text summary is identical for both grades.';
+
+const SCHEMA_STREAM_DESCRIPTION =
+  'Optional stream name (as returned by `list_streams`) to scope the schema document to a single stream. Omit to describe every granted stream. Scope to one stream for the cheapest middle step of the `list_streams -> schema(stream) -> query_records` discovery path.';
+
 /**
  * Build the static tool definitions. Descriptions are constant — they are never derived
  * from manifest, stream, or record data. RS payloads are returned as data; nothing is
@@ -225,13 +242,20 @@ export function buildTools({ rs, providerUrl }) {
       name: 'schema',
       title: 'Get PDPP schema',
       description:
-        'Return the grant-scoped PDPP schema document from `GET /v1/schema`. This is the canonical capability source: streams, canonical connector-type metadata (`connector_key`), per-field filter operators (`field_capabilities`), expandable relations (`expand_capabilities`), projection support, search modes, pagination support, count support, and granted connection identities (`connection_id`, `display_name`). Call this first to discover what filter, sort, expand, fields, count, or connection-disambiguation arguments are valid before issuing other tools. Read-only.',
+        'Return the grant-scoped PDPP schema document from `GET /v1/schema`. This is the canonical capability source: streams, canonical connector-type metadata (`connector_key`), per-field filter operators (`field_capabilities`), expandable relations (`expand_capabilities`), projection support, search modes, pagination support, count support, and granted connection identities (`connection_id`, `display_name`). Defaults to a compact, token-efficient projection (`detail: "compact"`) so the `list_streams -> schema(stream) -> query_records` discovery path stays cheap; pass `detail: "full"` only when you need the exhaustive raw JSON Schema for a field, and pass `stream` to scope to one stream. Call this to discover what filter, sort, expand, fields, count, or connection-disambiguation arguments are valid before issuing other tools. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
-      inputSchema: EMPTY_TOOL_INPUT_SCHEMA,
+      inputSchema: z
+        .object({
+          detail: z.enum(['compact', 'full']).optional().describe(SCHEMA_DETAIL_DESCRIPTION),
+          stream: z.string().min(1).optional().describe(SCHEMA_STREAM_DESCRIPTION),
+        })
+        .strict(),
       outputSchema: z.object(READ_OUTPUT_SCHEMA_SHAPE),
-      handler: async () => {
+      handler: async (args) => {
+        const stream = args?.stream ? requireSafeName(args.stream, 'stream') : null;
+        const detail = args?.detail === 'full' ? 'full' : 'compact';
         const response = await rs.getJson('/v1/schema');
-        return toToolResult(response, providerUrl, 'PDPP schema');
+        return toSchemaToolResult(response, providerUrl, { detail, stream });
       },
     },
     {
@@ -699,6 +723,185 @@ function toToolResult(response, providerUrl, label = 'response', options = {}) {
   return errorToolResult(response, providerUrl);
 }
 
+// Build the `schema` tool result. The text summary is always the compact,
+// parseable discovery line. The `structuredContent.data` payload is a compact
+// projection by default and the verbatim RS body only when `detail === "full"`.
+// When `stream` is supplied, both the summary and the structured payload are
+// scoped to that single stream so an agent can fetch one stream's capabilities
+// without pulling the whole document.
+function toSchemaToolResult(response, providerUrl, { detail = 'compact', stream = null } = {}) {
+  if (!response.ok) {
+    return errorToolResult(response, providerUrl);
+  }
+  const scopedBody = stream ? scopeSchemaBodyToStream(response.body, stream) : response.body;
+  const data = detail === 'full' ? scopedBody : compactSchemaDocument(scopedBody);
+  return {
+    content: [
+      {
+        type: 'text',
+        text: summarizeSchemaDiscovery(scopedBody, 'PDPP schema'),
+      },
+    ],
+    structuredContent: { data, provider_url: providerUrl, request_id: response.requestId },
+  };
+}
+
+// Narrow a schema document to a single stream, preserving the envelope shape
+// (top-level `data` wrapper and `connectors[]` grouping) so downstream
+// compaction and the discovery summary see the same structure they would for
+// the full document. Connectors that contribute no matching stream are dropped.
+function scopeSchemaBodyToStream(body, streamNameTarget) {
+  const wrapped =
+    body && typeof body === 'object' && body.data && typeof body.data === 'object' && !Array.isArray(body.data);
+  const schema = unwrapSchemaBody(body);
+  const connectors = extractSchemaConnectors(schema);
+  let scopedSchema;
+  if (connectors.length > 0) {
+    const scopedConnectors = connectors
+      .map((connector) => {
+        const streams = Array.isArray(connector.streams) ? connector.streams : [];
+        const matching = streams.filter((entry) => streamName(entry) === streamNameTarget);
+        if (matching.length === 0) return null;
+        return { ...connector, streams: matching, stream_count: matching.length };
+      })
+      .filter(Boolean);
+    scopedSchema = {
+      ...schema,
+      connectors: scopedConnectors,
+      connector_count: scopedConnectors.length,
+      stream_count: scopedConnectors.reduce(
+        (total, connector) => total + (Array.isArray(connector.streams) ? connector.streams.length : 0),
+        0,
+      ),
+    };
+  } else {
+    const streams = Array.isArray(schema?.streams) ? schema.streams : [];
+    const matching = streams.filter((entry) => streamName(entry) === streamNameTarget);
+    scopedSchema = { ...schema, streams: matching, stream_count: matching.length };
+  }
+  return wrapped ? { ...body, data: scopedSchema } : scopedSchema;
+}
+
+// Compact projection of the schema document. Drops the heavy per-field JSON
+// Schema (`field_capabilities.*.schema`) and any other verbose nested blobs,
+// keeping the field name, declared type, grant flag, and usable capability
+// flags an agent needs to build filter/sort/expand/fields/count arguments.
+// Connection identity (`connection_id`, `connector_instance_id`,
+// `display_name`) and canonical connector metadata (`connector_key`) are
+// preserved verbatim. The envelope shape (top-level `data` wrapper,
+// `connectors[]` grouping) is preserved so the payload is structurally a
+// schema document, just lighter.
+function compactSchemaDocument(body) {
+  const wrapped =
+    body && typeof body === 'object' && body.data && typeof body.data === 'object' && !Array.isArray(body.data);
+  const schema = unwrapSchemaBody(body);
+  if (!schema || typeof schema !== 'object') {
+    return body;
+  }
+  const connectors = extractSchemaConnectors(schema);
+  let compactSchema;
+  if (connectors.length > 0) {
+    compactSchema = {
+      ...stripSchemaStreamArrays(schema),
+      connectors: connectors.map((connector) => compactSchemaConnector(connector)),
+    };
+  } else if (Array.isArray(schema.streams)) {
+    compactSchema = {
+      ...schema,
+      streams: schema.streams.map((entry) => compactSchemaStream(entry)),
+    };
+  } else {
+    compactSchema = schema;
+  }
+  compactSchema = { ...compactSchema, detail: 'compact' };
+  return wrapped ? { ...body, data: compactSchema } : compactSchema;
+}
+
+function stripSchemaStreamArrays(schema) {
+  const { streams: _streams, ...rest } = schema;
+  return rest;
+}
+
+function compactSchemaConnector(connector) {
+  if (!connector || typeof connector !== 'object') return connector;
+  const streams = Array.isArray(connector.streams) ? connector.streams : [];
+  return {
+    ...connector,
+    streams: streams.map((entry) => compactSchemaStream(entry)),
+  };
+}
+
+// Project a single stream-metadata entry to its compact form. Whitelisted
+// identity/metadata fields pass through verbatim; `field_capabilities` and
+// `expand_capabilities` are compacted; everything else is dropped to keep the
+// payload bounded.
+function compactSchemaStream(entry) {
+  if (!entry || typeof entry !== 'object') return entry;
+  const out = {};
+  const passthrough = [
+    'object',
+    'name',
+    'stream',
+    'stream_name',
+    'connector_key',
+    'connector_id',
+    'connector_display_name',
+    'display_name',
+    'connection_display_name',
+    'connection_id',
+    'connector_instance_id',
+    'record_count',
+    'granted',
+    'source',
+    'granted_connections',
+  ];
+  for (const key of passthrough) {
+    if (entry[key] !== undefined) out[key] = entry[key];
+  }
+  if (entry.field_capabilities !== undefined) {
+    out.field_capabilities = compactFieldCapabilities(entry.field_capabilities);
+  }
+  if (entry.expand_capabilities !== undefined) {
+    out.expand_capabilities = compactExpandCapabilities(entry.expand_capabilities);
+  }
+  return out;
+}
+
+// Compact a `field_capabilities` map. Each field collapses to the same terse,
+// agent-usable capability flag string the `content[]` summary already
+// advertises (e.g. `type=string,granted=true,exact,range=gte|lt,agg=group_by_time`).
+// Two size drivers are removed at the compact grade: the per-field JSON Schema
+// blob and the five verbose `{declared, usable}` capability sub-objects per
+// field. The flag string preserves every usable capability an agent needs to
+// build filter / sort / expand / fields / count / aggregate arguments.
+// `detail: "full"` remains the path to the raw per-field JSON Schema and the
+// structured capability sub-objects. Preserves the map vs array container shape.
+function compactFieldCapabilities(fieldCapabilities) {
+  const entries = fieldCapabilityEntries(fieldCapabilities);
+  if (entries.length === 0) return fieldCapabilities;
+  const isArray = Array.isArray(fieldCapabilities);
+  if (isArray) {
+    return entries.map(([name, capabilities]) => ({ name, flags: formatFieldCapabilityFlags(capabilities) }));
+  }
+  const out = {};
+  for (const [name, capabilities] of entries) {
+    out[name] = formatFieldCapabilityFlags(capabilities);
+  }
+  return out;
+}
+
+function compactExpandCapabilities(expandCapabilities) {
+  if (!Array.isArray(expandCapabilities)) return expandCapabilities;
+  return expandCapabilities.map((relation) => {
+    if (!relation || typeof relation !== 'object') return relation;
+    const out = {};
+    for (const key of ['relation', 'name', 'target_stream', 'cardinality', 'max_limit', 'default_limit']) {
+      if (relation[key] !== undefined) out[key] = relation[key];
+    }
+    return Object.keys(out).length > 0 ? out : relation;
+  });
+}
+
 function toSearchToolResult(response, providerUrl) {
   if (!response.ok) {
     return errorToolResult(response, providerUrl);
@@ -837,7 +1040,15 @@ function summarizeStreamsDiscovery(body, label) {
   return `${label}: ${streams.length} stream(s)\n${lines.join('\n')}`;
 }
 
-function summarizeSchemaDiscovery(body, label) {
+// When the package-level schema spans many streams, the per-field flag segment
+// (`fields=...`) per stream dominates the text summary and pushes it into tens
+// of KB — the same token-budget problem the structured compaction solves. Field
+// flags are emitted in the text only when the document is scoped to a single
+// stream (the `schema(stream)` discovery middle step). For multi-stream package
+// summaries the text lists streams + connection + connector_key and points the
+// agent at `schema(stream)` for per-field capability flags. Callers can force
+// inclusion via `includeFieldDetail`.
+function summarizeSchemaDiscovery(body, label, { includeFieldDetail } = {}) {
   const schema = unwrapSchemaBody(body);
   const streamRefs = extractSchemaStreamRefs(schema);
   const connectorCount = extractSchemaConnectors(schema).length || numberValue(schema?.connector_count) || 0;
@@ -853,13 +1064,17 @@ function summarizeSchemaDiscovery(body, label) {
     return `${label}: connectors=${connectorCount} streams=0`;
   }
 
+  const withFields = includeFieldDetail ?? streamRefs.length <= 1;
   const lines = streamRefs
     .slice(0, DISCOVERY_STREAM_SUMMARY_LIMIT)
-    .map(({ stream, connector }) => formatSchemaStreamSummary(stream, connector));
+    .map(({ stream, connector }) => formatSchemaStreamSummary(stream, connector, { includeFieldDetail: withFields }));
   if (streamRefs.length > DISCOVERY_STREAM_SUMMARY_LIMIT) {
     lines.push(`more_streams=${streamRefs.length - DISCOVERY_STREAM_SUMMARY_LIMIT}`);
   }
-  return `${label}: connectors=${connectorCount} streams=${streamRefs.length}\n${lines.join('\n')}`;
+  const hint = withFields
+    ? ''
+    : '\ncall schema(stream) for per-field capability flags (filter/sort/expand/fields/count/aggregate)';
+  return `${label}: connectors=${connectorCount} streams=${streamRefs.length}\n${lines.join('\n')}${hint}`;
 }
 
 function extractListRows(body) {
@@ -942,7 +1157,7 @@ function formatStreamListSummary(stream) {
   return parts.join(' ');
 }
 
-function formatSchemaStreamSummary(stream, connector) {
+function formatSchemaStreamSummary(stream, connector, { includeFieldDetail = true } = {}) {
   const name = streamName(stream) || 'unknown';
   const connectorKey = connectorKeyFor(stream, connector);
   const displayName = displayNameFor(stream, connector);
@@ -952,8 +1167,10 @@ function formatSchemaStreamSummary(stream, connector) {
     `connector_key=${formatScalar(connectorKey)}`,
     `display_name=${formatScalar(displayName)}`,
     `connections=${formatConnections(connections)}`,
-    `fields=${formatFieldCapabilities(stream?.field_capabilities)}`,
   ];
+  if (includeFieldDetail) {
+    parts.push(`fields=${formatFieldCapabilities(stream?.field_capabilities)}`);
+  }
   return parts.join(' ');
 }
 

@@ -248,3 +248,61 @@ shapes, the error envelope, or the consent surface — those are
 contract-frozen and now runtime-honest end-to-end on the reference
 implementation. The deferred work is pure UI / cross-binding search /
 external-coordination plumbing against a stable contract.
+
+## MCP schema token-efficiency (2026-05-31)
+
+Live agent clients observed the package-level `schema` tool returning
+around 2 MB of JSON. The RS `GET /v1/schema` body is structurally correct
+but carries, for every field of every stream of every connector under the
+grant, both the full per-field JSON Schema and five verbose
+`{declared, usable}` capability sub-objects. That is too large as the
+default agent-facing payload and defeats the intended discovery path.
+
+Contract decision (smallest compatible extension):
+
+- The MCP `schema` tool gains two optional inputs: `detail` (`"compact"` |
+  `"full"`, default `"compact"`) and `stream` (scope to one stream).
+- `detail: "compact"` returns a projection of the schema document in
+  `structuredContent.data` that, per field, keeps a single terse,
+  agent-usable capability flag string (declared type, grant, and usable
+  filter/search/aggregation flags — the same vocabulary the `content[]`
+  summary already advertises, e.g.
+  `type=string,granted=true,exact,range=gte|lt,agg=group_by_time`). It
+  drops the raw per-field JSON Schema and the verbose capability
+  sub-objects. Connection identity (`connection_id`, deprecated
+  `connector_instance_id` alias, `display_name`), canonical
+  `connector_key`, expandable relation names, and the envelope shape
+  (top-level `data` wrapper, `connectors[]` grouping) are preserved, and a
+  `detail: "compact"` marker is added.
+- `detail: "full"` returns the exhaustive verbatim RS body (the prior
+  behavior), now an explicit opt-in — the path to raw per-field JSON
+  Schema and structured capability sub-objects.
+- `stream` narrows the document to a single stream so an agent can run the
+  cheap middle step `schema(stream)` of `list_streams -> schema(stream) ->
+  query_records`.
+- The `content[]` text summary is also bounded: per-field flags appear
+  only when the document is scoped to one stream; the multi-stream
+  package-level summary lists streams + connection + connector_key and
+  points the agent at `schema(stream)` for per-field flags.
+
+This is additive and preserves all `connection_id` / deprecated
+`connector_instance_id` behavior; it only changes the *default* payload of
+the `schema` tool's `structuredContent.data` and `content[]`. The change
+lives entirely in the MCP presentation layer
+(`packages/mcp-server/src/tools.js`); no RS contract, OpenAPI, or
+`@pdpp/reference-contract` artifact changed, so no contract regeneration
+was required. Both the stdio path and the hosted Streamable HTTP /
+injected `PackageRsClient` path inherit the compaction through the single
+`buildTools` -> `toSchemaToolResult` route.
+
+Acceptance checks (enforceable, local):
+`packages/mcp-server/test/schema-token-budget.test.js` builds a
+representative large fixture (4 connectors x 6 streams x 30 fields, ~1.44 MB
+verbatim) and asserts the default `schema` `structuredContent` stays under
+a documented byte budget (`PACKAGE_SCHEMA_STRUCTURED_BYTE_BUDGET = 60_000`;
+measured ~52 KB, a ~27x reduction) with a bounded `content[]` summary
+(measured ~3.5 KB), the per-stream compact schema stays under
+`STREAM_SCHEMA_STRUCTURED_BYTE_BUDGET = 6_000` (measured ~2.5 KB) and
+remains usable, `detail: "full"` still returns exhaustive data, connection
+identity survives compaction, the tool description teaches the discovery
+path, and the compact per-field cost stays bounded as field count grows.

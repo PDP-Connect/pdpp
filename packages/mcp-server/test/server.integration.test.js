@@ -276,11 +276,11 @@ test('lists the expected tools and annotates read-only tools as read-only', asyn
   await server.close();
 });
 
-test('schema tool returns RS schema verbatim under the scoped token', async () => {
+test('schema tool returns RS schema verbatim under the scoped token with detail=full', async () => {
   const { fetch, calls } = makeFakeRs();
   const { client, server } = await connectClient(fetch);
 
-  const result = await client.callTool({ name: 'schema', arguments: {} });
+  const result = await client.callTool({ name: 'schema', arguments: { detail: 'full' } });
   assert.equal(result.isError, undefined);
   assert.deepEqual(result.structuredContent.data, { version: '1', streams: ['orders', 'emails'] });
   const schemaCall = calls.find((call) => call.url.endsWith('/v1/schema'));
@@ -292,12 +292,30 @@ test('schema tool returns RS schema verbatim under the scoped token', async () =
 });
 
 test('discovery tools include parseable stream and schema facts in text content', async () => {
-  const { fetch, schemaBody, streamsBody } = makeDiscoveryFakeRs();
+  const { fetch, streamsBody } = makeDiscoveryFakeRs();
   const { client, server } = await connectClient(fetch);
 
   const schemaResult = await client.callTool({ name: 'schema', arguments: {} });
   assert.equal(schemaResult.isError, undefined);
-  assert.deepEqual(schemaResult.structuredContent.data, schemaBody);
+  // Default detail is compact: each field collapses to a terse capability flag
+  // string (type, grant, usable filter/search/aggregation flags) — the raw
+  // per-field JSON Schema and verbose {declared,usable} sub-objects are dropped.
+  // Connection identity and connector metadata survive.
+  const compactStream = schemaResult.structuredContent.data.data.connectors[0].streams[0];
+  assert.equal(typeof compactStream.field_capabilities.id, 'string', 'compact schema field is a terse flag string');
+  assert.match(compactStream.field_capabilities.id, /type=string/, 'compact flag string keeps declared field type');
+  assert.match(compactStream.field_capabilities.id, /(^|,)exact(,|$)/, 'compact flag string keeps usable capability flags');
+  assert.match(
+    compactStream.field_capabilities.created_at,
+    /range=gte\|lt/,
+    'compact flag string keeps usable range operators',
+  );
+  assert.deepEqual(
+    compactStream.granted_connections,
+    [{ connection_id: 'conn_work', display_name: 'Work Claude' }],
+    'compact schema must preserve connection identity',
+  );
+  assert.equal(schemaResult.structuredContent.data.data.detail, 'compact');
   const schemaText = schemaResult.content[0].text;
   assert.match(schemaText, /PDPP schema: connectors=1 streams=1/);
   assert.match(schemaText, /stream name="conversations"/);

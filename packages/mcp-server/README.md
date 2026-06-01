@@ -82,11 +82,25 @@ ChatGPT-compatible `structuredContent.results[]` entries with `id`, `title`, and
 `fetch` accepts result ids in `stream:record_id` form and returns `id`, `title`, `text`,
 `url`, and `metadata`.
 
-Discovery tools (`schema`, `list_streams`) preserve the full RS body in
-`structuredContent.data` and also include concise parseable text with stream names,
-`connection_id`, `connector_key`, display labels, and schema field-capability essentials
-so MCP clients whose models read only `content[]` can still choose streams, fields, and
-connection scopes.
+Discovery tools (`schema`, `list_streams`) include concise parseable text with stream
+names, `connection_id`, `connector_key`, display labels, and schema field-capability
+essentials so MCP clients whose models read only `content[]` can still choose streams,
+fields, and connection scopes.
+
+`schema` defaults to a **compact** `structuredContent.data` projection (`detail: "compact"`).
+A real owner's grant-scoped `GET /v1/schema` body can exceed 2 MB once every connector
+advertises full per-field JSON Schema, which is too large as the default agent-facing
+payload. The compact projection collapses each field to a terse capability flag string
+(declared type, grant, and usable filter/search/aggregation flags — e.g.
+`type=string,granted=true,exact,range=gte|lt,agg=group_by_time`) and drops the raw
+per-field JSON Schema, while preserving connection identities (`connection_id`, deprecated
+`connector_instance_id`, `display_name`) and canonical `connector_key` metadata. This keeps
+the discovery path `list_streams -> schema(stream) -> query_records` cheap: the package-level
+text summary lists streams without per-field flags and points the agent at `schema(stream)`
+for them. Pass `detail: "full"` to get the exhaustive verbatim body (raw per-field JSON
+Schema and structured capability sub-objects), and `stream` to scope the document to a
+single stream (the cheapest middle step of the discovery path). `list_streams` continues to
+preserve the full RS body in `structuredContent.data`.
 
 `query_records` also preserves the full RS envelope in `structuredContent.data`, and its
 text content includes a bounded preview of returned records. This keeps agents that can
