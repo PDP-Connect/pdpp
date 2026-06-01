@@ -1,10 +1,21 @@
 # Explorer record-kind tags and the typed-manifest-schema gap
 
-Status: captured
+Status: superseded
 Owner: reference implementation owner
 Created: 2026-05-28
-Updated: 2026-05-28
-Related: openspec/changes/archive/2026-05-28-add-dashboard-records-explorer/design.md, apps/web/src/app/dashboard/lib/record-kind.ts, apps/web/src/app/dashboard/lib/record-preview.ts, apps/web/src/app/dashboard/lib/timeline-summaries.ts, docs/voice-and-framing.md
+Updated: 2026-06-01
+Related: openspec/changes/archive/2026-06-01-add-explorer-live-presentation-types, openspec/changes/archive/2026-05-31-complete-explorer-slvp-ideal, openspec/changes/archive/2026-05-28-add-dashboard-records-explorer/design.md, packages/operator-ui/src/lib/record-kind.ts, packages/operator-ui/src/lib/record-preview.ts, packages/operator-ui/src/lib/timeline-summaries.ts, design-notes/explorer-designer-parity-remaining-2026-06-01.md, docs/voice-and-framing.md
+
+> **Superseded note (2026-06-01).** The "typed-manifest gap" this note frames as
+> the blocker was promoted to OpenSpec and landed: `add-explorer-live-presentation-types`
+> added the additive declared `field_capabilities[].type` on stream metadata and
+> lit up money + message cards on live chase/gmail data. The implementation also
+> moved out of the deleted `apps/web` tree into the shared `@pdpp/operator-ui`
+> package (`packages/operator-ui/src/lib/*`, `.../explore/*`). The *remaining*
+> designer-parity surface (the three unbuilt card kinds, the per-stream view
+> switcher, and the grant-projection toggle) is now tracked in its own note,
+> `design-notes/explorer-designer-parity-remaining-2026-06-01.md`. The body below
+> is retained verbatim for history; its `apps/web/**` paths are stale.
 
 ## Question
 
@@ -133,3 +144,13 @@ already has.
   responses; search hits still fall back to snippets. This remains below the
   OpenSpec promotion threshold until declared field schemas, type facets,
   relation fetches, or new read capabilities are introduced.
+- 2026-06-01: Superseded. The declared-field-`type` contract gap this note
+  identified was promoted to OpenSpec as `add-explorer-live-presentation-types`
+  and landed (additive `field_capabilities[].type`; live chase/gmail money +
+  message cards proven by `reference-implementation/test/explorer-live-presentation-types.test.js`
+  and the committed UAT at `docs/explorer/uat/97dc8b80/`). The heuristic
+  `record-kind.ts` survives as the declared-type fallback, exactly as this note
+  recommended. The Explorer code now lives in `@pdpp/operator-ui`, not the
+  deleted `apps/web`. Remaining designer-parity work (3 card kinds + view
+  switcher + grant toggle) split out to
+  `explorer-designer-parity-remaining-2026-06-01.md`.
