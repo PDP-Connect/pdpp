@@ -8,6 +8,14 @@ restore, or a real deployment** to close. It exists so the owner can execute the
 runs over hours/days without rediscovering context, and so no box gets checked
 on faith.
 
+> **Planning a sitting?** [`live-proof-batch-runbook.md`](live-proof-batch-runbook.md)
+> is the session-batched companion: it groups these gates into the smallest set
+> of human sittings by shared environment (one local browser bench, one hosted-MCP
+> bench, one real-phone bench, one disposable production restore) and adds the
+> Reddit-pilot and Daisy/Simon owner-agent gates this packet does not. Use the
+> batch runbook to decide *which sittings to schedule*; use this packet for the
+> per-gate mechanical detail during the sitting.
+
 It distills and corrects the earlier read-only map at
 `tmp/workstreams/ri-live-gated-proof-map-v1-report.md`. Where a deeper runbook
 already exists it links rather than duplicates. The non-negotiable rule across
