@@ -241,6 +241,81 @@ const OwnerConnectionListResponseSchema = {
   required: ["object", "data"],
 };
 
+const OwnerConnectionSummarySchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    object: { const: "owner_connection_summary" },
+    connection_id: { type: "string" },
+    connector_instance_id: { type: "string" },
+    connector_id: { type: "string" },
+    connector_key: { type: "string" },
+    display_name: { type: ["string", "null"] },
+    label_status: { type: "string", enum: ["owner_set", "fallback"] },
+    status: { type: ["string", "null"] },
+    source_kind: { type: ["string", "null"] },
+    created_at: { type: ["string", "null"] },
+    updated_at: { type: ["string", "null"] },
+    revoked_at: { type: ["string", "null"] },
+  },
+  required: [
+    "object",
+    "connection_id",
+    "connector_instance_id",
+    "connector_id",
+    "connector_key",
+    "display_name",
+    "label_status",
+    "status",
+    "source_kind",
+    "created_at",
+    "updated_at",
+    "revoked_at",
+  ],
+};
+
+const OwnerConnectorTemplateSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    object: { const: "owner_connector_template" },
+    connector_id: { type: "string" },
+    connector_key: { type: "string" },
+    display_name: { type: "string" },
+    version: { type: ["string", "null"] },
+    connector_modality: {
+      type: "string",
+      enum: ["local_collector", "browser_bound", "api_network", "unknown"],
+    },
+    stream_count: { type: "integer", minimum: 0 },
+    connection_count: { type: "integer", minimum: 0 },
+    connections: { type: "array", items: OwnerConnectionSummarySchema },
+    supported_actions: { type: "array", items: OwnerControlActionSchema },
+  },
+  required: [
+    "object",
+    "connector_id",
+    "connector_key",
+    "display_name",
+    "version",
+    "connector_modality",
+    "stream_count",
+    "connection_count",
+    "connections",
+    "supported_actions",
+  ],
+};
+
+const OwnerConnectorTemplateListResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    object: { const: "list" },
+    data: { type: "array", items: OwnerConnectorTemplateSchema },
+  },
+  required: ["object", "data"],
+};
+
 // Owner-agent control entrypoint capability document returned by
 // `GET /v1/owner/control`. A trusted owner agent reads this to discover which
 // owner-agent control action families exist, which are supported in this build
@@ -1231,6 +1306,16 @@ export const referenceManifests = [
       "Owner-agent bearer listing of configured connections with connection_id, connector_key, owner-meaningful display_name, label status, lifecycle fields, and schedules.",
     request: { query: ConnectionQuerySchema },
     responses: { 200: { schema: OwnerConnectionListResponseSchema }, ...CommonErrors },
+  },
+  {
+    id: "ownerListConnectorTemplates",
+    method: "GET",
+    path: "/v1/owner/connector-templates",
+    surface: "reference",
+    tags: ["reference", "connections", "owner-agent"],
+    summary:
+      "Owner-agent bearer listing of connector templates separated from configured connection instances. Embeds related connection summaries and template-level supported_actions for adding new connections as typed intents.",
+    responses: { 200: { schema: OwnerConnectorTemplateListResponseSchema }, ...CommonErrors },
   },
   {
     id: "ownerControlCapabilities",

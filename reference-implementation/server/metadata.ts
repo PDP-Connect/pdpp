@@ -487,6 +487,15 @@ const OWNER_AGENT_CONTROL_ACTION_CATALOG: readonly OwnerAgentControlActionDescri
     reason: "Read this owner-agent control capability document.",
   },
   {
+    family: "list_connector_templates",
+    scope: "surface",
+    status: "supported",
+    method: "GET",
+    urlTemplate: (rs) => `${rs}/v1/owner/connector-templates`,
+    reason:
+      "List available connector templates with connector_id, modality, connection-intent status, and related configured connection summaries.",
+  },
+  {
     family: "list_connections",
     scope: "surface",
     status: "supported",

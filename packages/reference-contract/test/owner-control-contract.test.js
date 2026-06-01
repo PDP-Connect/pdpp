@@ -58,15 +58,64 @@ const OWNER_CONNECTION_ROW = {
   ],
 };
 
+const OWNER_CONNECTOR_TEMPLATE_ROW = {
+  object: 'owner_connector_template',
+  connector_id: 'amazon',
+  connector_key: 'amazon',
+  display_name: 'Amazon',
+  version: '0.1.0',
+  connector_modality: 'browser_bound',
+  stream_count: 2,
+  connection_count: 1,
+  connections: [
+    {
+      object: 'owner_connection_summary',
+      connection_id: 'cin_amazon_personal',
+      connector_instance_id: 'cin_amazon_personal',
+      connector_id: 'amazon',
+      connector_key: 'amazon',
+      display_name: 'the owner personal',
+      label_status: 'owner_set',
+      status: 'active',
+      source_kind: 'account',
+      created_at: '2026-05-31T00:00:00.000Z',
+      updated_at: '2026-05-31T00:00:00.000Z',
+      revoked_at: null,
+    },
+  ],
+  supported_actions: [
+    {
+      family: 'initiate_connection',
+      status: 'unsupported',
+      method: null,
+      url: null,
+      reason: 'Browser-bound connectors require a browser-collector primitive.',
+    },
+  ],
+};
+
 test('ownerListConnections declares a 200 and the shared error statuses', () => {
   assert.equal(hasResponseSchema('ownerListConnections', 200), true);
   assert.equal(hasResponseSchema('ownerListConnections', 409), true);
+});
+
+test('ownerListConnectorTemplates declares a 200 and the shared error statuses', () => {
+  assert.equal(hasResponseSchema('ownerListConnectorTemplates', 200), true);
+  assert.equal(hasResponseSchema('ownerListConnectorTemplates', 409), true);
 });
 
 test('a connection row with supported_actions validates against the contract', () => {
   const result = validateResponse('ownerListConnections', {
     status: 200,
     body: { object: 'list', data: [OWNER_CONNECTION_ROW] },
+  });
+  assert.deepEqual(result, { ok: true, skipped: false });
+});
+
+test('a connector template row with connection summaries validates against the contract', () => {
+  const result = validateResponse('ownerListConnectorTemplates', {
+    status: 200,
+    body: { object: 'list', data: [OWNER_CONNECTOR_TEMPLATE_ROW] },
   });
   assert.deepEqual(result, { ok: true, skipped: false });
 });

@@ -10,6 +10,7 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | **GET** | `/_ref/connections` | `refListConnections` | List owner-facing configured connector connections with labels, lifecycle status, binding metadata, and schedules. |
 | **GET** | `/_ref/connector-instances` | `refListConnectorInstances` | Compatibility alias for listing configured connector instances behind owner-facing connections. |
 | **GET** | `/v1/owner/connections` | `ownerListConnections` | Owner-agent bearer listing of configured connections with connection_id, connector_key, owner-meaningful display_name, label status, lifecycle fields, and schedules. |
+| **GET** | `/v1/owner/connector-templates` | `ownerListConnectorTemplates` | Owner-agent bearer listing of connector templates separated from configured connection instances. Embeds related connection summaries and template-level supported_actions for adding new connections as typed intents. |
 | **GET** | `/v1/owner/control` | `ownerControlCapabilities` | Owner-agent bearer control entrypoint: capability document naming supported, owner-mediated, and unsupported owner-agent control action families with links to supported routes. |
 | **PATCH** | `/v1/owner/connections/{connectionId}` | `ownerSetConnectionDisplayName` | Owner-agent bearer rename of the owner-meaningful `display_name` on a connection, addressed by `connection_id`. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. Shares the connector-instance store rename semantics with the cookie-authed `/_ref` PATCH; on success the returned row reports label_status owner_set. |
 | **POST** | `/v1/owner/connections/intents` | `ownerCreateConnectionIntent` | Owner-agent bearer: initiate a new connection as a typed, auditable, owner-mediated intent. Returns a typed `next_step` (`enroll_local_collector` for proven local-collector connectors; `unsupported` with a reason for browser-bound, API/network-only, and unknown connectors) and never marks a connection active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
@@ -152,6 +153,19 @@ Owner-agent bearer listing of configured connections with connection_id, connect
 
 - `connector_id` — string
 - `status` — enum `active | paused | revoked`
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## ownerListConnectorTemplates
+
+`GET /v1/owner/connector-templates`
+
+Owner-agent bearer listing of connector templates separated from configured connection instances. Embeds related connection summaries and template-level supported_actions for adding new connections as typed intents.
 
 ### Responses
 

@@ -422,7 +422,7 @@ export function mountOwnerConnectionIntent(app: AppLike, ctx: MountOwnerConnecti
 // modality so a trusted agent can explain the gap and the owner can act. These
 // are honest classifications, not stubs: the reference genuinely has no proven
 // browser-collector enrollment or standalone API-connect route.
-function unsupportedReason(modality: ConnectorIntentModality): string {
+export function unsupportedReason(modality: ConnectorIntentModality): string {
   if (modality === "browser_bound") {
     return "This connector is browser-bound. The reference has no proven browser-collector enrollment primitive: a `browser_collector` source kind (distinct from `local_device`), binding-aware enrollment gating, and committed proof that a local collector runs the browser connector end-to-end and ingests. Until that ships, add this connection from the dashboard.";
   }

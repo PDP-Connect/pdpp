@@ -370,6 +370,7 @@ import {
 import { mountRsBlobRead, mountRsReadQueries } from './routes/rs-read.ts';
 import { mountOwnerConnectionRename, mountOwnerConnectionsList } from './routes/owner-connections.ts';
 import { mountOwnerConnectionIntent } from './routes/owner-connection-intent.ts';
+import { mountOwnerConnectorTemplates } from './routes/owner-connector-templates.ts';
 import { mountOwnerControl } from './routes/owner-control.ts';
 import {
   mountRsBlobsUpload,
@@ -652,6 +653,12 @@ function readReferenceLocalConnectorCatalogManifest(connectorId) {
       streams: [],
     };
   }
+}
+
+function listReferenceLocalConnectorCatalogManifests() {
+  return Array.from(REFERENCE_LOCAL_CONNECTOR_CATALOG_MANIFESTS.keys())
+    .map((connectorId) => readReferenceLocalConnectorCatalogManifest(connectorId))
+    .filter(Boolean);
 }
 
 async function ensureReferenceConnectorCatalogEntry(connectorId, connectorDisplayName) {
@@ -3719,6 +3726,27 @@ function buildRsApp(opts = {}) {
     getConnectorManifest: (connectorId) => getConnectorManifest(connectorId),
     readReferenceLocalConnectorCatalogManifest,
     resolveEnrollBaseUrl: resolveAsIssuerBase,
+  });
+
+  // GET /v1/owner/connector-templates is the bearer-authed owner-agent template
+  // catalog. It separates connector implementation metadata from configured
+  // connection instances, embeds related connection summaries, and reports
+  // template-level `initiate_connection` support truthfully: proven
+  // local-collector templates can create an enrollment intent; browser-bound and
+  // API/network-only templates name the missing primitive instead of pretending
+  // an owner bearer can add a provider account.
+  mountOwnerConnectorTemplates(app, {
+    requireToken,
+    requireOwner,
+    handleError,
+    canonicalConnectorKey,
+    createRequestConnectorInstanceStore,
+    getConnectorManifest: (connectorId) => getConnectorManifest(connectorId),
+    getOwnerTokenSubjectId,
+    listReferenceLocalConnectorCatalogManifests,
+    listRegisteredConnectorIds,
+    projectStorageDisplayName,
+    resolveResource: (req) => resolvePublicUrl(req, explicitResource),
   });
 
   // GET /v1/owner/control is the bearer-authed owner-agent control entrypoint:
