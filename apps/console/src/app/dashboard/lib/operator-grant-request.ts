@@ -107,7 +107,10 @@ export async function loadConnectionPinOptions(draft: GrantRequestDraft): Promis
   }
   try {
     const response = await listConnectorSummaries();
-    return buildConnectionPinOptions({ id: draft.sourceId, kind: draft.sourceKind }, response.data);
+    return buildConnectionPinOptions(
+      { id: draft.sourceId, kind: draft.sourceKind, streamName: draft.streamName },
+      response.data
+    );
   } catch {
     return [];
   }

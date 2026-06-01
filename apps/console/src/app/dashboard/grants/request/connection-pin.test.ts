@@ -64,9 +64,9 @@ function draft(overrides = {}) {
 
 test("buildConnectionPinOptions shows owner-set names verbatim and excludes other connectors", () => {
   const options = buildConnectionPinOptions({ id: "gmail", kind: "connector" }, [
-    { connector_id: "gmail", connection_id: "cin_a", display_name: "Work Gmail" },
-    { connector_id: "gmail", connection_id: "cin_b", display_name: "Personal Gmail" },
-    { connector_id: "slack", connection_id: "cin_s", display_name: "Team Slack" },
+    { connector_id: "gmail", connection_id: "cin_a", display_name: "Work Gmail", streams: ["messages"] },
+    { connector_id: "gmail", connection_id: "cin_b", display_name: "Personal Gmail", streams: ["messages"] },
+    { connector_id: "slack", connection_id: "cin_s", display_name: "Team Slack", streams: ["messages"] },
   ]);
   assert.deepEqual(options, [
     { value: "cin_a", label: "Work Gmail" },
@@ -74,12 +74,20 @@ test("buildConnectionPinOptions shows owner-set names verbatim and excludes othe
   ]);
 });
 
+test("buildConnectionPinOptions filters to connections that expose the addressed stream", () => {
+  const options = buildConnectionPinOptions({ id: "gmail", kind: "connector", streamName: "messages" }, [
+    { connector_id: "gmail", connection_id: "cin_messages", display_name: "Messages Gmail", streams: ["messages"] },
+    { connector_id: "gmail", connection_id: "cin_contacts", display_name: "Contacts Gmail", streams: ["contacts"] },
+  ]);
+  assert.deepEqual(options, [{ value: "cin_messages", label: "Messages Gmail" }]);
+});
+
 test("buildConnectionPinOptions derives an owner-meaningful default for never-renamed connections", () => {
   // A blank label and a bare-connector-type label are both fallbacks; they get
   // a stable `· account N` disambiguator instead of a placeholder/URL/id.
   const options = buildConnectionPinOptions({ id: "gmail", kind: "connector" }, [
-    { connector_id: "gmail", connection_id: "cin_a", display_name: null },
-    { connector_id: "gmail", connection_id: "cin_b", display_name: "gmail" },
+    { connector_id: "gmail", connection_id: "cin_a", display_name: null, streams: ["messages"] },
+    { connector_id: "gmail", connection_id: "cin_b", display_name: "gmail", streams: ["messages"] },
   ]);
   assert.deepEqual(options, [
     { value: "cin_a", label: "gmail · account 1" },
@@ -94,13 +102,15 @@ test("buildConnectionPinOptions derives an owner-meaningful default for never-re
 
 test("buildConnectionPinOptions keeps a lone connection's label undisambiguated", () => {
   const options = buildConnectionPinOptions({ id: "gmail", kind: "connector" }, [
-    { connector_id: "gmail", connection_id: "cin_a", display_name: "Work Gmail" },
+    { connector_id: "gmail", connection_id: "cin_a", display_name: "Work Gmail", streams: ["messages"] },
   ]);
   assert.deepEqual(options, [{ value: "cin_a", label: "Work Gmail" }]);
 });
 
 test("buildConnectionPinOptions returns [] for provider-native and empty sources (no connection dimension)", () => {
-  const summaries = [{ connector_id: "gmail", connection_id: "cin_a", display_name: "Work Gmail" }];
+  const summaries = [
+    { connector_id: "gmail", connection_id: "cin_a", display_name: "Work Gmail", streams: ["messages"] },
+  ];
   assert.deepEqual(buildConnectionPinOptions({ id: "gmail", kind: "provider_native" }, summaries), []);
   assert.deepEqual(buildConnectionPinOptions({ id: "", kind: "connector" }, summaries), []);
 });

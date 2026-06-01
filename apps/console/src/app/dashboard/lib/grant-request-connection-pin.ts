@@ -19,6 +19,7 @@ export interface ConnectionSummaryLike {
   connection_id?: string | null;
   connector_id?: string | null;
   display_name?: string | null;
+  streams?: readonly string[] | null;
 }
 
 /** A draft's connection-relevant fields. */
@@ -88,15 +89,21 @@ export function streamSelectionFromDraft(draft: ConnectionPinDraft, streamName: 
  * - `connection_id` is the pinned value, never rendered as the label.
  */
 export function buildConnectionPinOptions(
-  source: { id: string; kind: GrantRequestSourceKind },
+  source: { id: string; kind: GrantRequestSourceKind; streamName?: string },
   summaries: readonly ConnectionSummaryLike[]
 ): ConnectionPinOption[] {
   const sourceId = trim(source.id);
+  const streamName = trim(source.streamName);
   if (source.kind !== "connector" || !sourceId) {
     return [];
   }
   const matching = summaries
-    .filter((summary) => trim(summary.connector_id) === sourceId && trim(summary.connection_id))
+    .filter((summary) => {
+      if (trim(summary.connector_id) !== sourceId || !trim(summary.connection_id)) {
+        return false;
+      }
+      return !streamName || (summary.streams ?? []).includes(streamName);
+    })
     .map((summary) => {
       const connectorId = trim(summary.connector_id);
       const owned = !isFallbackConnectionLabel({
