@@ -14,7 +14,9 @@ canonical `connector_key`.
 | `cli.mjs` | `inspect` and `write [--apply]` commands. |
 | `inspect.test.mjs`, `writer.test.mjs` | Fixture-backed unit tests (synthetic driver) for the classification and rewrite logic, transactional rollback, row-count parity, and idempotency. |
 | `verify-backup-restore.mjs` | §3.4 post-migration STORAGE-layer assertions (SQL joins, JSONB ids, row counts) against a live DB. |
-| `verify-http-surfaces.mjs` | §3.4 post-migration LIVE HTTP READ-PATH assertions. Boots the reference app in-process against the migrated restore and checks owner record hydration (canonical key + stale-URL alias / Decision 8), single reads, `/v1/search`, owner dashboard connection hydration (`/v1/owner/connections`), and grant-package membership (`/_ref/grant-packages`). |
+| `verify-http-surfaces.mjs` | §3.4 post-migration LIVE HTTP READ-PATH assertions. Boots the reference app in-process against the migrated restore and checks owner record hydration (canonical key + stale-URL alias / Decision 8), single reads, `/v1/search`, owner dashboard connection hydration (`/v1/owner/connections`), and grant-package membership (`/_ref/grant-packages`). **Seed-specific** (hard-codes the synthetic seed's ids/counts/owner) — do NOT run against production data. |
+| `verify-production-invariants.mjs` | §3.4 **DATA-AGNOSTIC** post-migration assertions for the owner-run production gate. Asserts only structural invariants true for ANY dataset: zero non-canonical stragglers in active `connector_id` columns and active JSONB surfaces, all `connectors` rows canonical, and row-count parity vs a `--before` snapshot (`connectors` may shrink via parent collapse, never grow). This is the verifier the owner runs against a restore of their own production backup. |
+| `verify-production-invariants.test.mjs` | Deterministic unit coverage for the data-agnostic verifier's straggler predicate, incl. the guard that valid CUSTOM connector keys are NOT flagged (no DB; run via `node --test`). |
 | `seed-real-manifests.mjs` | Overwrites the seed's thin connector manifests with the real first-party manifests before the dump, so the HTTP read path can resolve streams. |
 | `run-backup-restore-validation.sh` | §3.4 restore→migrate→verify(SQL)→verify(HTTP) harness (below). |
 | `fixtures/backup-restore-seed.sql` | Pre-migration seed for the §3.4 harness (incl. the device-flow `oauth_clients` row the HTTP verifier needs to mint an owner token). |
@@ -108,11 +110,13 @@ Last full run: **38/38 storage checks + 15/15 HTTP checks + idempotency + backup
   production. It uses the real **schema** but author-controlled **data**.
 
 A real operator sign-off therefore still requires running this same cycle
-against a restore of the operator's **own production backup** (point
-`LIVE_DB` at the operator DB, or restore the operator dump into `RESTORED_DB`
-and run `verify-http-surfaces.mjs` against it). The HTTP read surfaces that
-previously required manual dashboard/MCP clicking are now asserted by code;
-the remaining owner step is supplying real production-shaped data and, where
-the operator wants belt-and-suspenders, a hosted-`/mcp` package read spot
-check against the live deployment (the bearer-rejecting `/mcp` and package
-token paths are exercised separately by tasks 5.x / 7.4).
+against a restore of the operator's **own production backup**. The
+step-by-step owner runbook is
+`docs/operator/canonical-connector-keys-production-restore-packet.md`. It uses
+the **data-agnostic** `verify-production-invariants.mjs` (not the seed-specific
+SQL/HTTP verifiers, which assert synthetic values) plus `inspect` + `write` +
+an idempotency re-run, all against a disposable restore. The remaining owner
+step is supplying real production-shaped data and, where the operator wants
+belt-and-suspenders, a hosted-`/mcp` package read spot check against the live
+deployment (the bearer-rejecting `/mcp` and package token paths are exercised
+separately by tasks 5.x / 7.4).

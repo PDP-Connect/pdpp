@@ -173,6 +173,15 @@ log "9b. verify LIVE HTTP read surfaces against the migrated restore"
 ( cd "$RI_DIR" && PDPP_DATABASE_URL="$HOST_URL" \
   node scripts/canonical-connector-keys/verify-http-surfaces.mjs --owner-subject owner_sub_1 )
 
+log "9c. verify DATA-AGNOSTIC production invariants against the migrated restore"
+# The same data-agnostic verifier the owner-run production packet uses
+# (docs/operator/canonical-connector-keys-production-restore-packet.md). It
+# asserts only structural invariants true for ANY dataset — zero non-canonical
+# stragglers in active columns/JSONB and row-count parity — so proving it green
+# here proves the exact tool the operator runs against real production data.
+( cd "$RI_DIR" && PDPP_DATABASE_URL="$HOST_URL" \
+  node scripts/canonical-connector-keys/verify-production-invariants.mjs --before "$BEFORE_COUNTS" )
+
 log "10. idempotency: write --apply a SECOND time (plan must be empty)"
 ( cd "$RI_DIR" && PDPP_STORAGE_BACKEND=postgres PDPP_DATABASE_URL="$HOST_URL" \
   node scripts/canonical-connector-keys/cli.mjs write --apply --json ) \

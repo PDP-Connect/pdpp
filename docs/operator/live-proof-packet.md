@@ -334,10 +334,15 @@ command) to tear the overlay back down when finished.
 ## Gate 7: Production-backup canonical-key migration close-out (LAST, deliberate)
 
 **Closes:** `canonicalize-connector-keys` task 3.4, the owner sign-off remainder.
-The synthetic-data harness already passes **38/38 + idempotency** against the real
-reference schema (`run-backup-restore-validation.sh`). What remains is the
-**real-data, real-HTTP-path** close-out: run `cli.mjs write --apply` against a
-restore of the operator's own production backup and spot-check the running app.
+The synthetic-data harness already passes **38/38 SQL + 15/15 HTTP + 17/17
+data-agnostic invariants + idempotency** against the real reference schema
+(`run-backup-restore-validation.sh`). What remains is the **real-data**
+close-out: run the same restore → migrate → verify cycle against a restore of the
+operator's own production backup.
+
+**The full step-by-step, copy-pasteable runbook for this gate lives in
+[`canonical-connector-keys-production-restore-packet.md`](canonical-connector-keys-production-restore-packet.md).**
+Follow that packet; the summary below is the index entry.
 
 **This is the only destructive-capable act in the packet. Run it against a
 DISPOSABLE restore, never the live production DB.**
@@ -351,15 +356,21 @@ DISPOSABLE restore, never the live production DB.**
 **Commands (against the disposable restore only):**
 
 ```bash
+# capture before-counts first (see the dedicated packet §4.2), then:
 node reference-implementation/scripts/canonical-connector-keys/cli.mjs inspect
 node reference-implementation/scripts/canonical-connector-keys/cli.mjs write --apply
 #   fail-closed on unmapped active values; do NOT pass --allow-unmapped to bypass.
+node reference-implementation/scripts/canonical-connector-keys/verify-production-invariants.mjs \
+  --before /tmp/cck-prod-before.json
+#   data-agnostic: asserts zero stragglers + row-count parity for ANY dataset.
 ```
 
 Then point the app at the restored+migrated DB and spot-check the HTTP path
 (this is the task 7.3 surface smoke against migrated production-shaped data):
 `/dashboard`, `/dashboard/explore`, `/dashboard/event-subscriptions`,
-grant-package membership, record reads, owner dashboard hydration.
+grant-package membership, record reads, owner dashboard hydration. The
+seed-specific verifiers (`verify-backup-restore.mjs`, `verify-http-surfaces.mjs`)
+must NOT be run against production data — they assert synthetic-seed values.
 
 **Acceptance (the box-check bar):**
 - Row counts preserved on all touched tables (assert preservation, not a fixed
