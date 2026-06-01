@@ -1428,6 +1428,34 @@ export const referenceManifests = [
     responses: { 204: { description: "Schedule deleted" }, ...CommonErrors },
   },
   {
+    id: "ownerRunConnection",
+    method: "POST",
+    path: "/v1/owner/connections/{connectionId}/run",
+    surface: "reference",
+    tags: ["reference", "runs", "connections", "owner-agent"],
+    summary:
+      "Owner-agent bearer: start a run-now for one configured connection, addressed by `connection_id`. Returns 202 with run_id + trace_id, or 409 run_already_active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. Shares the controller `runNow` semantics with the cookie-authed `/_ref` run route under a separate owner-bearer auth adapter.",
+    request: { params: ConnectionIdParamSchema },
+    responses: {
+      202: { schema: RunStartResponseSchema, description: "Accepted" },
+      ...CommonErrors,
+    },
+  },
+  {
+    id: "ownerRunConnector",
+    method: "POST",
+    path: "/v1/owner/connectors/{connectorId}/run",
+    surface: "reference",
+    tags: ["reference", "runs", "owner-agent"],
+    summary:
+      "Owner-agent bearer: start a run-now for a connector addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Returns 202 with run_id + trace_id, or 409 run_already_active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route.",
+    request: { params: ConnectorIdParamSchema },
+    responses: {
+      202: { schema: RunStartResponseSchema, description: "Accepted" },
+      ...CommonErrors,
+    },
+  },
+  {
     id: "refGetConnection",
     method: "GET",
     path: "/_ref/connections/{connectorInstanceId}",

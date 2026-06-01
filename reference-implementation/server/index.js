@@ -370,6 +370,7 @@ import {
 import { mountRsBlobRead, mountRsReadQueries } from './routes/rs-read.ts';
 import { mountOwnerConnectionRename, mountOwnerConnectionsList } from './routes/owner-connections.ts';
 import { mountOwnerConnectionSchedule } from './routes/owner-connection-schedule.ts';
+import { mountOwnerConnectionRun } from './routes/owner-connection-run.ts';
 import { mountOwnerConnectionIntent } from './routes/owner-connection-intent.ts';
 import { mountOwnerConnectorTemplates } from './routes/owner-connector-templates.ts';
 import { mountOwnerControl } from './routes/owner-control.ts';
@@ -3720,6 +3721,36 @@ function buildRsApp(opts = {}) {
     setScheduleEnabled: (connectorId, enabled, options) =>
       opts.controller.setScheduleEnabled(connectorId, enabled, options),
     deleteSchedule: (connectorId, options) => opts.controller.deleteSchedule(connectorId, options),
+  });
+
+  // POST /v1/owner/connections/:connectionId/run and
+  // POST /v1/owner/connectors/:connectorId/run are the bearer-authed owner-agent
+  // run-now siblings of the cookie-authed `/_ref/connections/:id/run` and
+  // `/_ref/connectors/:id/run` routes. They converge on ONE mutation path — the
+  // controller's `runNow`, owner-scoped via the connector-instance namespace
+  // resolver — under separate auth adapters (`requireToken` + `requireOwner` vs
+  // `requireOwnerSession`), so the async run semantics (202 with the run handle,
+  // typed `run_already_active` 409) are shared, not cloned. The connector-only
+  // route auto-selects the single active connection or rejects with a typed
+  // `ambiguous_connection` (409) carrying available `connection_id` values;
+  // `/mcp` owner-bearer rejection is untouched. See
+  // openspec/changes/add-owner-agent-control-surface (tasks 6.1-6.3).
+  mountOwnerConnectionRun(app, {
+    AmbiguousConnectionError,
+    canonicalConnectorKey,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    getOwnerTokenSubjectId,
+    handleError,
+    listActiveBindingsForGrant,
+    pdppError,
+    projectBindingForWire,
+    requireOwner,
+    requireToken,
+    resolveOwnerConnectorNamespace,
+    setReferenceTraceId,
+    runNow: (connectorId, options) => opts.controller.runNow(connectorId, options),
   });
 
   // POST /v1/owner/connections/intents is the bearer-authed owner-agent

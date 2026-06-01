@@ -43,10 +43,10 @@ const OWNER_CONNECTION_ROW = {
     },
     {
       family: 'run_connection',
-      status: 'owner_mediated',
-      method: null,
-      url: null,
-      reason: 'Run-now is owner-session only in this build.',
+      status: 'supported',
+      method: 'POST',
+      url: 'https://rs.example/v1/owner/connections/cin_amazon_personal/run',
+      reason: 'Start a run-now for a connection by connection_id.',
     },
     {
       family: 'delete_connection',

@@ -209,6 +209,17 @@ test('control document marks supported families with method + absolute URL', asy
     assert.equal(manageSchedule.method, 'POST');
     assert.equal(manageSchedule.url, `${rsUrl}/v1/owner/connections/{connection_id}/schedule/pause`);
     assert.match(manageSchedule.reason, /resume/);
+
+    // Run-now is served over the owner-agent bearer surface as of the run
+    // control slice (tasks 6.1-6.3). It is templated by connection_id; the
+    // representative URL is the connection-scoped route and the reason names the
+    // connector-only addressing.
+    const runConnection = actionByFamily(body, 'run_connection');
+    assert.ok(runConnection, 'run_connection must be listed');
+    assert.equal(runConnection.status, 'supported');
+    assert.equal(runConnection.method, 'POST');
+    assert.equal(runConnection.url, `${rsUrl}/v1/owner/connections/{connection_id}/run`);
+    assert.match(runConnection.reason, /connector_id/);
   });
 });
 
@@ -221,12 +232,11 @@ test('control document names unsupported/owner-mediated families instead of omit
 
     // Important admin tasks the change explicitly does NOT overclaim in this
     // branch must be present and typed, not silently dropped.
-    // `rename_connection` and `initiate_connection` are intentionally NOT in
-    // this list anymore: both are now served over the owner-agent bearer surface
-    // (tasks 4.4 and 2.3/5.x) and are asserted as `supported` in the "supported
-    // families" test above.
+    // `rename_connection`, `initiate_connection`, `manage_schedule`, and
+    // `run_connection` are intentionally NOT in this list anymore: all are now
+    // served over the owner-agent bearer surface (tasks 4.4, 2.3/5.x, 6.1-6.3)
+    // and are asserted as `supported` in the "supported families" test above.
     for (const family of [
-      'run_connection',
       'inspect_diagnostics',
       'delete_connection',
       'revoke_connection',

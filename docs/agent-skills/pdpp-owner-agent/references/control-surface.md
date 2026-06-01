@@ -55,8 +55,10 @@ NODE
 - `supported` — this build serves the action over the owner-agent bearer surface;
   `method` + `url` are populated. Call it.
 - `owner_mediated` — the operation exists but only on the browser owner-session
-  surface today (for example run-now). Tell the operator; do not fabricate a route.
-- `unsupported` — no route in this build. The `reason` names why. Do not retry.
+  surface today (no family is in this state in the current build, but the status
+  is reserved). Tell the operator; do not fabricate a route.
+- `unsupported` — no route in this build (for example per-connection
+  `inspect_diagnostics`). The `reason` names why. Do not retry.
 
 ## Listing and labeling connection instances
 

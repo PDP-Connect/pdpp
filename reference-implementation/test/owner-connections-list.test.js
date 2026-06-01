@@ -217,9 +217,19 @@ test('owner-agent bearer lists a configured connection with full identity + owne
     );
     assert.ok(!manageSchedule.url.includes('{connection_id}'), 'placeholder must be resolved');
     assert.match(manageSchedule.reason, /resume/);
+    // run_connection is supported over the owner-agent bearer and carries THIS
+    // connection's concrete run URL (placeholder resolved); connector-only
+    // addressing is named in the reason (tasks 6.1-6.3).
+    const runConnection = byFamily.get('run_connection');
+    assert.ok(runConnection, 'run_connection action must be advertised');
+    assert.equal(runConnection.status, 'supported');
+    assert.equal(runConnection.method, 'POST');
+    assert.ok(
+      runConnection.url.endsWith('/v1/owner/connections/cin_amazon_personal/run'),
+      runConnection.url,
+    );
+    assert.ok(!runConnection.url.includes('{connection_id}'), 'placeholder must be resolved');
     // Not-yet-exposed instance families are named with a typed status, not omitted.
-    assert.equal(byFamily.get('run_connection')?.status, 'owner_mediated');
-    assert.equal(byFamily.get('run_connection')?.url, null);
     assert.equal(byFamily.get('delete_connection')?.status, 'unsupported');
     assert.equal(byFamily.get('revoke_connection')?.status, 'unsupported');
     assert.equal(byFamily.get('inspect_diagnostics')?.status, 'unsupported');

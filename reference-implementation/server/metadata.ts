@@ -530,14 +530,23 @@ const OWNER_AGENT_CONTROL_ACTION_CATALOG: readonly OwnerAgentControlActionDescri
     reason:
       "Set a connection's owner-meaningful display_name by connection_id. Body: { display_name }. Use a connection_id from list_connections.",
   },
+  // Supported in this build: a trusted owner agent starts a run-now for a
+  // connection by connection_id. The representative URL is the connection-scoped
+  // route; connector-only addressing (`POST /v1/owner/connectors/{connector_id}/run`)
+  // auto-selects a single active connection or returns a typed
+  // `ambiguous_connection`. The run resolves asynchronously (202 with the run
+  // handle); the route shares the controller `runNow` semantics with the
+  // cookie-authed `/_ref` run route.
   {
     family: "run_connection",
     scope: "instance",
-    status: "owner_mediated",
-    method: null,
-    urlTemplate: null,
+    status: "supported",
+    method: "POST",
+    // Templated path: the surface catalog carries the literal `{connection_id}`
+    // placeholder; the per-connection projection substitutes the concrete id.
+    urlTemplate: (rs) => `${rs}/v1/owner/connections/{connection_id}/run`,
     reason:
-      "Run-now is available on the browser owner-session surface; it is not yet exposed to owner-agent bearers in this build.",
+      "Start a run-now for a connection by connection_id. POST this URL; the run resolves asynchronously (202 with run_id + trace_id, or 409 run_already_active). Use a connection_id from list_connections. Connector-only addressing (`POST /v1/owner/connectors/{connector_id}/run`) auto-selects a single active connection or returns a typed ambiguous_connection.",
   },
   // Supported in this build: a trusted owner agent pauses, resumes, or deletes a
   // connection's schedule by connection_id. The representative URL is the pause
