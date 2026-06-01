@@ -127,6 +127,55 @@ test("null next_action surfaces no CTA at all", () => {
   assert.equal(formatNextAction(null), null);
 });
 
+// ─── per-state "what next" guidance wiring ────────────────────────────────
+//
+// When the spine supplies no structured next_action for a non-green state,
+// the row must still give the owner a concrete next step. The vocabulary lives
+// in `deriveConnectionNextStep` (unit-tested in connection-evidence.test.ts);
+// these assertions verify the row consumes it, suppresses it when a structured
+// CTA already renders, and links the guidance to the safe detail href rather
+// than any raw target.
+
+const DERIVES_NEXT_STEP = /deriveConnectionNextStep\(\{/;
+const NEXT_STEP_SUPPRESSED_BY_STRUCTURED = /hasStructuredNextAction: nextAction !== null/;
+const NEXT_STEP_SUPPRESSED_BY_DOMINANT = /hasDominantCondition: dominantCondition !== null/;
+const NEXT_STEP_SYNC_GATED_ON_PUSH_MODE = /supportsOwnerSync: !overview\.localDeviceProgress/;
+const NEXT_STEP_RENDERED = /\{nextStep \? <NextStepGuidanceRow /;
+const NEXT_STEP_ROW_LINKS_DETAIL = /href=\{detailHref\}/;
+const NEXT_STEP_TESTID = /data-testid="next-step-guidance"/;
+
+test("connector-row derives per-state next-step guidance from the shared helper", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.match(src, DERIVES_NEXT_STEP);
+});
+
+test("next-step guidance is suppressed when a structured next_action already renders", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.match(src, NEXT_STEP_SUPPRESSED_BY_STRUCTURED);
+});
+
+test("next-step guidance is wired to suppress when a dominant condition already explains the row", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.match(src, NEXT_STEP_SUPPRESSED_BY_DOMINANT);
+});
+
+test("next-step Sync now suggestion is gated on the connection not being push-mode", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.match(src, NEXT_STEP_SYNC_GATED_ON_PUSH_MODE);
+});
+
+test("connector-row renders the next-step guidance row only when guidance exists", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.match(src, NEXT_STEP_RENDERED);
+});
+
+test("next-step guidance row links to the safe detail href, carries a testid", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  const block = src.slice(src.indexOf("function NextStepGuidanceRow"));
+  assert.match(block, NEXT_STEP_ROW_LINKS_DETAIL);
+  assert.match(block, NEXT_STEP_TESTID);
+});
+
 // ─── AxisChipBadge dimension/value rendering ─────────────────────────────
 //
 // The chip must render dimension (muted) and value (prominent) as

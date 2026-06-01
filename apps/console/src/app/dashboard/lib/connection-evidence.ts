@@ -772,3 +772,150 @@ function dominantConditionTitle(snapshot: RefConnectionHealthSnapshot): string |
   const summary = formatDominantCondition(snapshot);
   return summary?.title ?? null;
 }
+
+/**
+ * Owner-facing "what you can do next" guidance for a connection-health state.
+ *
+ * The reference projects a structured `next_action` only when a durable
+ * attention record (or a schedule fallback) exists — typically the
+ * `needs_attention` path with an explicit prompt. But several non-green states
+ * (`stale`, `cooling_off`, `degraded`, `blocked`, and an attention state with
+ * no structured prompt) leave the operator looking at a coloured pill with no
+ * concrete next step. This helper closes that gap.
+ *
+ * Design rules, matching the rest of this module:
+ *   - It NEVER fires when a structured `next_action` already carries the CTA
+ *     (`hasStructuredNextAction`), so the row shows exactly one next step.
+ *   - It NEVER invents a remote action the dashboard cannot perform. For a
+ *     stalled local-collector outbox it points at the host, not a button.
+ *   - It only suggests "Sync now" when the connector actually supports an
+ *     owner-triggered pull; push-mode (local-collector) connections are told to
+ *     check the device instead.
+ *   - It returns `null` for `healthy` / `idle` / `unknown` — there is no
+ *     honest, specific action to recommend there, and a generic nudge would be
+ *     noise.
+ *
+ * The returned object is intentionally narrow (a short label, a one-line
+ * detail, and a tone) so the JSX row stays thin and this stays unit-testable
+ * without a browser harness.
+ */
+export interface NextStepGuidance {
+  /** One-line operator detail expanding on the label. */
+  detail: string;
+  /** Short imperative label, e.g. "Sync now" or "Check the collector host". */
+  label: string;
+  tone: EvidenceTone;
+}
+
+/**
+ * Guidance for a connection whose last successful sync is outside the freshness
+ * window. An owner-syncable connector gets a direct "Sync now"; a push-mode
+ * local-collector connection is told to check the host (the dashboard cannot
+ * pull it). Shared by the `degraded` and `healthy`/idle stale paths.
+ */
+function staleFreshnessGuidance(supportsOwnerSync: boolean): NextStepGuidance {
+  if (supportsOwnerSync) {
+    return {
+      label: "Sync now",
+      detail: "The last successful sync is outside the freshness window. Sync now to refresh this connection.",
+      tone: "warning",
+    };
+  }
+  return {
+    label: "Check the collector",
+    detail:
+      "The last successful sync is outside the freshness window. This connection fills in when its local-collector device pushes — confirm the collector is running on the host.",
+    tone: "warning",
+  };
+}
+
+/** Guidance for the `degraded` state, split by which axis is degraded. */
+function degradedGuidance(health: RefConnectionHealthSnapshot, supportsOwnerSync: boolean): NextStepGuidance {
+  if (health.axes.coverage === "gaps" || health.axes.coverage === "partial") {
+    return {
+      label: "Review partial coverage",
+      detail:
+        "Useful data exists, but some required streams have gaps. Open the connection's latest run to see which streams are incomplete.",
+      tone: "warning",
+    };
+  }
+  if (health.axes.freshness === "stale") {
+    return staleFreshnessGuidance(supportsOwnerSync);
+  }
+  return {
+    label: "Open the connection",
+    detail: "Coverage or freshness is incomplete. Open the connection to see which axis is degraded.",
+    tone: "warning",
+  };
+}
+
+export function deriveConnectionNextStep(input: {
+  /**
+   * True when a `DominantConditionNotice` is already rendered for this row.
+   * When set, the generic "open the connection" fallbacks for blocked /
+   * needs_attention are suppressed: the condition notice already explains the
+   * situation and carries its own remediation, so a second generic row would be
+   * noise. Action-bearing guidance (outbox host, retry timing, partial
+   * coverage, stale sync) is still surfaced — it adds a concrete next step the
+   * condition message does not.
+   */
+  hasDominantCondition: boolean;
+  /** True when a structured `next_action` is already rendered for this row. */
+  hasStructuredNextAction: boolean;
+  health: RefConnectionHealthSnapshot | null | undefined;
+  /** True when this connector exposes an owner-triggerable Sync now. */
+  supportsOwnerSync: boolean;
+}): NextStepGuidance | null {
+  const { hasDominantCondition, hasStructuredNextAction, health, supportsOwnerSync } = input;
+  if (!health || hasStructuredNextAction) {
+    return null;
+  }
+
+  // A stalled local-device outbox is host-local: surface the same "go to the
+  // host" guidance the detail page renders, never a remote button.
+  if (health.axes.outbox === "stalled") {
+    return {
+      label: "Check the collector host",
+      detail:
+        "Retryable work on the local collector is not draining. Open the connection for the exact command to run on the host that holds the data.",
+      tone: "danger",
+    };
+  }
+
+  switch (health.state) {
+    case "blocked":
+      // The dominant-condition notice (when present) already names the blocker
+      // and its remediation; don't add a generic "open the connection" row.
+      return hasDominantCondition
+        ? null
+        : {
+            label: "Open the connection",
+            detail: "This connection cannot make progress. Open it to read the blocking condition and how to clear it.",
+            tone: "danger",
+          };
+    case "needs_attention":
+      // Reached only when no structured prompt accompanied the attention
+      // state. If a dominant condition already explains it, stay quiet.
+      return hasDominantCondition
+        ? null
+        : {
+            label: "Open the connection",
+            detail: "Owner action is required. Open the connection to see exactly what's needed.",
+            tone: "warning",
+          };
+    case "cooling_off":
+      return {
+        label: "Wait for the next retry",
+        detail: health.next_attempt_at
+          ? `In scheduler backoff after recent failures; the next automatic attempt is at ${health.next_attempt_at}. Open the connection to see the failure detail.`
+          : "In scheduler backoff after recent failures. Open the connection to see the failure detail and the next attempt time.",
+        tone: "warning",
+      };
+    case "degraded":
+      return degradedGuidance(health, supportsOwnerSync);
+    default:
+      // healthy / idle / unknown — no honest, specific action to recommend,
+      // except a stale-but-otherwise-healthy connection is worth a nudge.
+      return health.axes.freshness === "stale" ? staleFreshnessGuidance(supportsOwnerSync) : null;
+  }
+}

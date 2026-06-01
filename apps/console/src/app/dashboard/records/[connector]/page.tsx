@@ -1,3 +1,4 @@
+import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import {
   formatConnectorKeyForDisplay,
@@ -402,7 +403,10 @@ function ConnectionIdentityLine({
 }) {
   return (
     <>
-      <code className="font-mono text-xs">{connectionId}</code>
+      <span className="inline-flex items-center gap-1 align-middle" data-testid="connection-id-disclosure">
+        <code className="font-mono text-xs">{connectionId}</code>
+        <CopyButton ariaLabel="Copy connection ID" value={connectionId} />
+      </span>
       {connectionId === connectorId ? null : (
         <>
           {" · "}

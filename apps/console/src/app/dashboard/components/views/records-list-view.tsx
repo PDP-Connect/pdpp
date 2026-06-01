@@ -11,6 +11,7 @@
  * existing client-component ConnectorRow with its server action.
  */
 
+import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { EmptyState } from "@pdpp/operator-ui/components/empty-state";
 import { Callout, DataList, PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import type { Routes } from "@pdpp/operator-ui/components/views/routes";
@@ -249,11 +250,7 @@ export function RecordsListView({
     <>
       {pollerSlot}
       <PageHeader
-        actions={
-          <Link className={buttonVariants({ variant: "outline", size: "sm" })} href={routes.section.explore}>
-            Open in Explore →
-          </Link>
-        }
+        actions={<RecordsHeaderActions interactive={interactive} routes={routes} />}
         count={
           pendingOnDevices && pendingOnDevices > 0
             ? `${totalRecords.toLocaleString()} retained records · ${totalStreams} streams · ${connectionsCountLabel} · +${pendingOnDevices.toLocaleString()} pending on devices`
@@ -340,6 +337,35 @@ export function RecordsListView({
           </DataList>
         </Section>
       ) : null}
+    </>
+  );
+}
+
+/**
+ * Records-index header actions.
+ *
+ * The persistent "Add connection" action is the always-visible discoverability
+ * fix: the detailed `AddConnectionGuidance` callout only renders in the empty /
+ * no-data sections, so an owner who already has connections previously had no
+ * visible path to add another. It is gated on `interactive` so the sandbox —
+ * which cannot create connections — never shows a dead button. It points at the
+ * same proven device-enrollment entry point the callout uses.
+ */
+function RecordsHeaderActions({ interactive, routes }: { interactive: boolean; routes: Routes }) {
+  return (
+    <>
+      {interactive ? (
+        <Link
+          className={buttonVariants({ variant: "default", size: "sm" })}
+          data-testid="add-connection-action"
+          href={routes.section.deviceExporters}
+        >
+          Add connection
+        </Link>
+      ) : null}
+      <Link className={buttonVariants({ variant: "outline", size: "sm" })} href={routes.section.explore}>
+        Open in Explore →
+      </Link>
     </>
   );
 }
@@ -510,7 +536,19 @@ function VersionChurnNotice({ rows }: { rows: RefRecordVersionStatsRow[] }) {
             <tbody className="pdpp-caption divide-y divide-border/60">
               {drilldownRows.map((row) => (
                 <tr key={row.key}>
-                  <td className="py-2 pr-3 text-foreground">{row.label}</td>
+                  <td className="py-2 pr-3 text-foreground">
+                    {row.connectorInstanceId ? (
+                      <Link
+                        className="underline-offset-2 hover:underline"
+                        href={`/dashboard/records/${encodeURIComponent(row.connectorInstanceId)}`}
+                        title={`Open ${row.label}`}
+                      >
+                        {row.label}
+                      </Link>
+                    ) : (
+                      row.label
+                    )}
+                  </td>
                   <td className="py-2 pr-3">
                     <ChurnRiskBadge risk={row.risk} title={row.reasons ?? undefined} />
                   </td>
@@ -534,9 +572,16 @@ function VersionChurnNotice({ rows }: { rows: RefRecordVersionStatsRow[] }) {
                     {row.lastHistoryAt ? <Timestamp value={row.lastHistoryAt} /> : "—"}
                   </td>
                   <td className="max-w-[28rem] py-2 pl-3">
-                    <code className="block whitespace-normal rounded border border-border/70 bg-background px-2 py-1 font-mono text-[0.68rem] text-foreground leading-relaxed">
-                      {row.dryRunCommand}
-                    </code>
+                    <div className="flex items-start gap-1.5">
+                      <code className="block min-w-0 flex-1 whitespace-normal rounded border border-border/70 bg-background px-2 py-1 font-mono text-[0.68rem] text-foreground leading-relaxed">
+                        {row.dryRunCommand}
+                      </code>
+                      <CopyButton
+                        ariaLabel={`Copy dry-run command for ${row.label}`}
+                        className="mt-0.5"
+                        value={row.dryRunCommand}
+                      />
+                    </div>
                   </td>
                 </tr>
               ))}

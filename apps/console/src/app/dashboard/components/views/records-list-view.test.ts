@@ -160,6 +160,59 @@ test("version-churn copy frames churn as retained history, not data loss", async
   assert.match(src, CHURN_HISTORY_NOT_LOSS);
 });
 
+// ─── Churn drilldown rows are themselves actionable ───────────────────────
+//
+// Expanding the disclosure is only half the journey. Each drilldown row must
+// (a) link the connector/stream label to the owning connection's detail page
+// so the operator can act on it, and (b) offer a one-gesture copy of the
+// dry-run command rather than forcing a manual selection of a wrapping <code>.
+
+const CHURN_ROW_LINKS_CONNECTION =
+  /href=\{`\/dashboard\/records\/\$\{encodeURIComponent\(row\.connectorInstanceId\)\}`\}/;
+const CHURN_COMMAND_HAS_COPY_BUTTON = /<CopyButton\s+ariaLabel=\{`Copy dry-run command for \$\{row\.label\}`\}/;
+const IMPORTS_COPY_BUTTON = /import \{ CopyButton \} from "@pdpp\/operator-ui\/components\/copy-button"/;
+
+test("churn drilldown rows link the stream label to the owning connection detail", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.match(src, CHURN_ROW_LINKS_CONNECTION);
+});
+
+test("churn dry-run command offers a one-gesture copy affordance", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.match(src, IMPORTS_COPY_BUTTON);
+  assert.match(src, CHURN_COMMAND_HAS_COPY_BUTTON);
+});
+
+// ─── Persistent Add-connection discoverability ────────────────────────────
+//
+// The detailed add-connection guidance only renders in the empty / no-data
+// sections, so an owner who already has connections had no visible path to add
+// another (the "add a second Amazon" complaint). A persistent header action
+// must always be present in the interactive list, pointing at the proven
+// device-enrollment entry point. It is gated on `interactive` so the sandbox
+// (which cannot create connections) does not show a dead button.
+
+const ADD_CONNECTION_HEADER_ACTION = /data-testid="add-connection-action"/;
+const ADD_CONNECTION_HEADER_GATED_INTERACTIVE =
+  /\{interactive \? \(\s*<Link[\s\S]*?data-testid="add-connection-action"/;
+const ADD_CONNECTION_HEADER_TARGETS_ENROLLMENT =
+  /data-testid="add-connection-action"\s+href=\{routes\.section\.deviceExporters\}/;
+
+test("records list exposes a persistent Add-connection header action", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.match(src, ADD_CONNECTION_HEADER_ACTION);
+});
+
+test("persistent Add-connection action is gated on interactive (no dead button in sandbox)", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.match(src, ADD_CONNECTION_HEADER_GATED_INTERACTIVE);
+});
+
+test("persistent Add-connection action targets the device-enrollment entry point", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.match(src, ADD_CONNECTION_HEADER_TARGETS_ENROLLMENT);
+});
+
 // ─── Honest add-connection entry point + copy ─────────────────────────────
 //
 // The owner-agent typed connection-intent route now exists, but it is

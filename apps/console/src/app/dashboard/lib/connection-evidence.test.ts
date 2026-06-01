@@ -9,6 +9,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  deriveConnectionNextStep,
   deriveConnectionStatusDisplay,
   formatCoverageAxis,
   formatDominantCondition,
@@ -712,4 +713,164 @@ test("deriveConnectionStatusDisplay: unknown projection lists unknown reasons in
   });
   assert.equal(out.label, "Unknown");
   assert.equal(out.title.includes("schedule_unavailable"), true);
+});
+
+// ─── deriveConnectionNextStep ─────────────────────────────────────────────
+//
+// The "what can I do next" guidance for states the structured next_action
+// doesn't already cover. It must never duplicate a structured CTA, never
+// invent a remote action the dashboard can't perform, and only suggest
+// "Sync now" when the connector supports an owner-triggered pull.
+
+const OPEN_CONNECTION_RE = /open the connection/i;
+const COOLING_OFF_NEXT_ATTEMPT_RE = /2026-05-19T13:00:00Z/;
+const COVERAGE_RE = /coverage/i;
+const SYNC_NOW_RE = /sync now/i;
+const COLLECTOR_RE = /collector/i;
+const HOST_RE = /host/i;
+
+test("next-step guidance is suppressed when a structured next_action already renders", () => {
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: true,
+    health: snapshot({
+      state: "needs_attention",
+      axes: { coverage: "complete", freshness: "stale", attention: "open", outbox: "idle" },
+    }),
+    supportsOwnerSync: true,
+  });
+  assert.equal(out, null);
+});
+
+test("next-step guidance is null for healthy / idle / unknown without staleness", () => {
+  for (const state of ["healthy", "idle", "unknown"] as const) {
+    const out = deriveConnectionNextStep({
+      hasDominantCondition: false,
+      hasStructuredNextAction: false,
+      health: snapshot({ state }),
+      supportsOwnerSync: true,
+    });
+    assert.equal(out, null, `expected null for ${state}`);
+  }
+});
+
+test("blocked guidance points the owner at the connection detail, danger tone", () => {
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: snapshot({ state: "blocked" }),
+    supportsOwnerSync: true,
+  });
+  assert.ok(out);
+  assert.equal(out?.tone, "danger");
+  assert.match(out?.label ?? "", OPEN_CONNECTION_RE);
+});
+
+test("blocked / needs_attention generic guidance is suppressed when a dominant condition already explains it", () => {
+  for (const state of ["blocked", "needs_attention"] as const) {
+    const out = deriveConnectionNextStep({
+      hasDominantCondition: true,
+      hasStructuredNextAction: false,
+      health: snapshot({ state }),
+      supportsOwnerSync: true,
+    });
+    assert.equal(out, null, `expected null for ${state} when a dominant condition is shown`);
+  }
+});
+
+test("action-bearing guidance still fires even when a dominant condition is present", () => {
+  // A stalled outbox carries a concrete host step the condition message does
+  // not, so it is NOT suppressed by a dominant-condition notice.
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: true,
+    hasStructuredNextAction: false,
+    health: snapshot({
+      state: "degraded",
+      axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "stalled" },
+    }),
+    supportsOwnerSync: true,
+  });
+  assert.ok(out);
+  assert.match(out?.label ?? "", HOST_RE);
+});
+
+test("cooling_off guidance names the next attempt time when known", () => {
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: snapshot({ state: "cooling_off", next_attempt_at: "2026-05-19T13:00:00Z" }),
+    supportsOwnerSync: true,
+  });
+  assert.ok(out);
+  assert.equal(out?.tone, "warning");
+  assert.match(out?.detail ?? "", COOLING_OFF_NEXT_ATTEMPT_RE);
+});
+
+test("degraded+partial coverage routes to a coverage review, not a sync", () => {
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: snapshot({
+      state: "degraded",
+      axes: { coverage: "gaps", freshness: "fresh", attention: "none", outbox: "idle" },
+    }),
+    supportsOwnerSync: true,
+  });
+  assert.ok(out);
+  assert.match(out?.label ?? "", COVERAGE_RE);
+  assert.doesNotMatch(out?.label ?? "", SYNC_NOW_RE);
+});
+
+test("stale freshness suggests Sync now only when owner sync is supported", () => {
+  const supported = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: snapshot({
+      state: "degraded",
+      axes: { coverage: "complete", freshness: "stale", attention: "none", outbox: "idle" },
+    }),
+    supportsOwnerSync: true,
+  });
+  assert.match(supported?.label ?? "", SYNC_NOW_RE);
+
+  const pushMode = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: snapshot({
+      state: "degraded",
+      axes: { coverage: "complete", freshness: "stale", attention: "none", outbox: "idle" },
+    }),
+    supportsOwnerSync: false,
+  });
+  assert.doesNotMatch(pushMode?.label ?? "", SYNC_NOW_RE);
+  assert.match(pushMode?.label ?? "", COLLECTOR_RE);
+});
+
+test("a stalled outbox always routes to the host, never a remote button", () => {
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: snapshot({
+      state: "degraded",
+      axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "stalled" },
+    }),
+    supportsOwnerSync: true,
+  });
+  assert.ok(out);
+  assert.equal(out?.tone, "danger");
+  assert.match(out?.label ?? "", HOST_RE);
+});
+
+test("an otherwise-healthy but stale connection still gets a nudge", () => {
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: snapshot({
+      state: "healthy",
+      axes: { coverage: "complete", freshness: "stale", attention: "none", outbox: "idle" },
+    }),
+    supportsOwnerSync: true,
+  });
+  assert.ok(out);
+  assert.match(out?.label ?? "", SYNC_NOW_RE);
 });

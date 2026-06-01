@@ -9,11 +9,13 @@ import { Timestamp } from "@/components/ui/timestamp.tsx";
 import {
   type AxisChip,
   type ConnectionStatusDisplay,
+  deriveConnectionNextStep,
   deriveConnectionStatusDisplay,
   type EvidenceTone,
   formatDominantCondition,
   formatLastDurableProgress,
   formatProjectionFreshness,
+  type NextStepGuidance,
   resolveRecordCountDisplay,
   summarizeAxisChips,
 } from "../lib/connection-evidence.ts";
@@ -163,6 +165,17 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
   const axisChips = summarizeAxisChips(connectionHealth?.axes);
   const projectionFreshness = formatProjectionFreshness(connectionHealth);
   const dominantCondition = formatDominantCondition(connectionHealth);
+  // Per-state "what next" guidance for non-green states the structured
+  // next_action doesn't already cover. Suppressed when a structured CTA is
+  // present (one next step per row) or when a dominant-condition notice already
+  // explains a blocked / needs_attention row. Push-mode local-collector
+  // connections (those with device progress) are never told to "Sync now".
+  const nextStep = deriveConnectionNextStep({
+    hasDominantCondition: dominantCondition !== null,
+    hasStructuredNextAction: nextAction !== null,
+    health: connectionHealth,
+    supportsOwnerSync: !overview.localDeviceProgress,
+  });
   const durableProgress = formatLastDurableProgress({
     hasError: Boolean(overview.error),
     lastRun,
@@ -238,6 +251,7 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
         dominantCondition={dominantCondition}
         durableProgress={durableProgress}
         nextAction={nextAction}
+        nextStep={nextStep}
         projectionFreshness={projectionFreshness}
         toast={toast}
       />
@@ -310,6 +324,7 @@ function ConnectorRowEvidence({
   dominantCondition,
   durableProgress,
   nextAction,
+  nextStep,
   projectionFreshness,
   toast,
 }: {
@@ -318,6 +333,7 @@ function ConnectorRowEvidence({
   dominantCondition: ReturnType<typeof formatDominantCondition>;
   durableProgress: ReturnType<typeof formatLastDurableProgress>;
   nextAction: ReturnType<typeof formatNextAction>;
+  nextStep: NextStepGuidance | null;
   projectionFreshness: ReturnType<typeof formatProjectionFreshness>;
   toast: ToastState;
 }) {
@@ -352,6 +368,7 @@ function ConnectorRowEvidence({
 
       {dominantCondition ? <DominantConditionNotice condition={dominantCondition} /> : null}
       {nextAction ? <NextActionPill detailHref={detailHref} formatted={nextAction} /> : null}
+      {nextStep ? <NextStepGuidanceRow detailHref={detailHref} guidance={nextStep} /> : null}
       <ConnectorRowToast toast={toast} />
     </>
   );
@@ -898,6 +915,40 @@ function NextActionPill({
         </span>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Per-state "what next" guidance row.
+ *
+ * Rendered only when the spine did NOT supply a structured `next_action` for a
+ * non-green state, so it never competes with `NextActionPill`. The whole row is
+ * a link to the connection detail page — the always-safe target where the
+ * structured action surface (Sync now, rename, diagnostics, host remediation)
+ * lives. We never link to a raw `action_target`. The tone mirrors the derived
+ * severity so a blocked/stalled connection reads danger and a stale/degraded
+ * one reads warning.
+ */
+function NextStepGuidanceRow({ detailHref, guidance }: { detailHref: string; guidance: NextStepGuidance }) {
+  const danger = guidance.tone === "danger";
+  const accent = danger
+    ? "border-l-destructive bg-destructive/5"
+    : "border-l-[color:var(--warning)] bg-[color:var(--warning)]/5";
+  const marker = danger ? "bg-destructive" : "bg-[color:var(--warning)]";
+  const labelColor = danger ? "text-destructive" : "text-foreground";
+  return (
+    <Link
+      className={`mx-3 mb-2 flex flex-wrap items-baseline gap-x-2 gap-y-1 border-l-2 px-3 py-2 underline-offset-2 hover:underline ${accent}`}
+      data-next-step-tone={guidance.tone}
+      data-testid="next-step-guidance"
+      href={detailHref}
+    >
+      <span className="pdpp-caption inline-flex items-center gap-1.5">
+        <span aria-hidden className={`inline-block h-2 w-2 rotate-45 ${marker}`} />
+        <span className={`font-medium ${labelColor}`}>{guidance.label}</span>
+      </span>
+      <span className="pdpp-caption text-muted-foreground">{guidance.detail}</span>
+    </Link>
   );
 }
 
