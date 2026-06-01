@@ -479,10 +479,53 @@ export interface OutboxStallRemediation {
    * Null when the trigger was the outbox axis alone (no matching condition).
    */
   reason: string | null;
+  /**
+   * Count-backed scale of the stuck work, when the connection summary
+   * carries a rollup of the device-reported outbox diagnostics. `null` when
+   * no counts are available, so the panel never renders a misleading "0
+   * records" or implies precision the reference did not provide.
+   */
+  scale: string | null;
+}
+
+/**
+ * Render the device-reported outbox count rollup as one short operator line,
+ * e.g. "12 pending · 2 dead-letter · 1 stale lease". Only the
+ * decision-relevant, non-zero categories are shown so a healthy-but-counted
+ * rollup does not read as alarming. Returns `null` when the rollup is absent
+ * or carries no positive counts.
+ */
+function formatOutboxCountScale(counts: RefLocalDeviceProgress["outbox_counts"] | null | undefined): string | null {
+  if (!counts) {
+    return null;
+  }
+  const parts: string[] = [];
+  const pending = counts.pending ?? 0;
+  const retrying = counts.retrying ?? 0;
+  const staleLeases = counts.stale_leases ?? 0;
+  const deadLetter = counts.dead_letter ?? 0;
+  const backlog = counts.backlog_open ?? 0;
+  if (pending > 0) {
+    parts.push(`${pending.toLocaleString()} pending`);
+  }
+  if (retrying > 0) {
+    parts.push(`${retrying.toLocaleString()} retrying`);
+  }
+  if (staleLeases > 0) {
+    parts.push(`${staleLeases.toLocaleString()} stale lease${staleLeases === 1 ? "" : "s"}`);
+  }
+  if (deadLetter > 0) {
+    parts.push(`${deadLetter.toLocaleString()} dead-letter`);
+  }
+  if (backlog > 0) {
+    parts.push(`${backlog.toLocaleString()} backlog`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 export function summarizeOutboxStallRemediation(
-  snapshot: RefConnectionHealthSnapshot | null | undefined
+  snapshot: RefConnectionHealthSnapshot | null | undefined,
+  localDeviceProgress?: RefLocalDeviceProgress | null
 ): OutboxStallRemediation | null {
   if (!snapshot) {
     return null;
@@ -501,6 +544,10 @@ export function summarizeOutboxStallRemediation(
   return {
     label,
     reason: backlogCondition ? humanizeReason(backlogCondition.reason) : null,
+    // Count-backed scale is only ever attached to the stalled-remediation
+    // path. Healthy / idle / active / unknown outboxes return `null` above, so
+    // counts never appear on a quiet connection.
+    scale: formatOutboxCountScale(localDeviceProgress?.outbox_counts),
   };
 }
 

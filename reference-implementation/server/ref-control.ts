@@ -24,6 +24,8 @@ import {
   type FreshnessAxis,
   type NextAction,
   type OutboxAxis,
+  type OutboxDiagnosticCounts,
+  rollupOutboxDiagnosticCounts,
 } from "../runtime/connection-health.ts";
 import { getConnectorManifest } from "./auth.js";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
@@ -271,6 +273,19 @@ export interface LocalDeviceProgress {
   readonly last_heartbeat_at: string | null;
   readonly last_heartbeat_status: string | null;
   readonly last_ingest_at: string | null;
+  /**
+   * Connection-level rollup of the per-source outbox diagnostics the
+   * device reports on its heartbeats (pending, retrying, stale leases,
+   * dead letters, backlog, leased, succeeded, total, and an optional
+   * earliest-pending timestamp). Summed across this connection's trusted
+   * source instances; `null` when no trusted source reported counts.
+   *
+   * Owner-only diagnostics. Carries only non-negative integers and an
+   * optional ISO timestamp — never a filesystem path, queue name, device
+   * token, hostname, or record payload. `records_pending` is the legacy
+   * single-number summary; `outbox_counts.pending` is its breakdown peer.
+   */
+  readonly outbox_counts: OutboxDiagnosticCounts | null;
   readonly records_pending: number | null;
   readonly source_count: number;
 }
@@ -1184,6 +1199,7 @@ interface HeartbeatRow {
   readonly lastHeartbeatAt: string | null;
   readonly lastHeartbeatStatus: string | null;
   readonly lastIngestAt: string | null;
+  readonly outboxDiagnostics: OutboxDiagnosticCounts | null;
   readonly recordsPending: number | null;
   readonly sourceInstanceId: string;
   readonly sourceStatus: string;
@@ -1379,6 +1395,12 @@ export function projectLocalDeviceProgress(heartbeats: readonly HeartbeatRow[]):
     last_heartbeat_at: lastHeartbeatAt,
     last_heartbeat_status: lastHeartbeatStatus,
     last_ingest_at: lastIngestAt,
+    // Roll up the per-source outbox diagnostics across the same trusted
+    // rows we already use for `records_pending`, so the connection summary
+    // can show the pending / dead-letter / stale-lease breakdown a stalled
+    // remediation needs. Revoked / inactive rows are filtered out above, so
+    // counts never leak from an untrusted device.
+    outbox_counts: rollupOutboxDiagnosticCounts(trusted.map((row) => row.outboxDiagnostics)),
     records_pending: sawPending ? recordsPending : null,
     source_count: trusted.length,
   };

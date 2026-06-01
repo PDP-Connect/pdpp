@@ -60,6 +60,9 @@ const OUTBOX_REMEDIATION_COPY_BUTTON = /CopyButton/;
 const OUTBOX_REMEDIATION_NO_BASE_URL = /diagnostics-outbox-remediation-command[\s\S]{0,400}--base-url/;
 const OUTBOX_REMEDIATION_NO_DEVICE_TOKEN = /diagnostics-outbox-remediation-command[\s\S]{0,400}--device-token/;
 const PAGE_PASSES_CONNECTION_ID = /connectionId=\{connectorInstanceId \?\? connectionId\}/;
+const OUTBOX_REMEDIATION_SCALE_TESTID = /data-testid="diagnostics-outbox-remediation-scale"/;
+const OUTBOX_REMEDIATION_PASSES_PROGRESS = /summarizeOutboxStallRemediation\(connectionHealth, localDeviceProgress\)/;
+const PAGE_PASSES_LOCAL_DEVICE_PROGRESS = /localDeviceProgress=\{overview\.localDeviceProgress \?\? null\}/;
 const NEVER_INGESTED_COPY = /never ingested/;
 const NO_LAST_SUCCESS_TESTID = /data-testid="diagnostics-no-last-success"/;
 // The filter has been split across multiple lines so the connector_instance_id
@@ -156,6 +159,20 @@ test("connection-diagnostics remediation command carries no base-url, token, or 
 test("connector detail page passes the connection identity to diagnostics for command scoping", async () => {
   const page = await readFile(PAGE_FILE, "utf8");
   assert.match(page, PAGE_PASSES_CONNECTION_ID);
+});
+
+test("connection-diagnostics renders a count-backed scale line gated on the stalled remediation", async () => {
+  // The count rollup must be sourced from local_device_progress via the
+  // remediation helper and rendered only inside the stalled-remediation panel,
+  // so a quiet connection never shows counts.
+  const src = await readFile(DIAG_FILE, "utf8");
+  assert.match(src, OUTBOX_REMEDIATION_SCALE_TESTID);
+  assert.match(src, OUTBOX_REMEDIATION_PASSES_PROGRESS);
+});
+
+test("connector detail page threads local-device progress into diagnostics for count-backed scale", async () => {
+  const page = await readFile(PAGE_FILE, "utf8");
+  assert.match(page, PAGE_PASSES_LOCAL_DEVICE_PROGRESS);
 });
 
 test("connection-diagnostics renders an explicit no-last-success line when projection has no last_success_at", async () => {

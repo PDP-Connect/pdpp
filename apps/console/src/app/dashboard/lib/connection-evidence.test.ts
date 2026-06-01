@@ -431,6 +431,73 @@ test("summarizeOutboxStallRemediation ignores a clear_backlog remediation on a r
   assert.equal(remediation, null);
 });
 
+test("summarizeOutboxStallRemediation: scale is null when no count rollup is available", () => {
+  const remediation = summarizeOutboxStallRemediation(
+    snapshot({
+      axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "stalled" },
+      conditions: [clearBacklogCondition()],
+    })
+  );
+  assert.equal(remediation?.scale, null);
+});
+
+test("summarizeOutboxStallRemediation: surfaces a count-backed scale from outbox_counts on a stall", () => {
+  const remediation = summarizeOutboxStallRemediation(
+    snapshot({
+      axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "stalled" },
+      conditions: [clearBacklogCondition()],
+    }),
+    {
+      last_heartbeat_at: "2026-05-19T11:55:00Z",
+      last_heartbeat_status: "blocked",
+      last_ingest_at: null,
+      outbox_counts: { pending: 12, dead_letter: 2, stale_leases: 1, total: 15 },
+      records_pending: 12,
+      source_count: 1,
+    }
+  );
+  assert.equal(remediation?.scale, "12 pending · 1 stale lease · 2 dead-letter");
+});
+
+test("summarizeOutboxStallRemediation: scale omits zero categories so it never reads as alarming noise", () => {
+  const remediation = summarizeOutboxStallRemediation(
+    snapshot({
+      axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "stalled" },
+    }),
+    {
+      last_heartbeat_at: "2026-05-19T11:55:00Z",
+      last_heartbeat_status: "blocked",
+      last_ingest_at: null,
+      outbox_counts: { pending: 0, dead_letter: 3, stale_leases: 0, total: 3 },
+      records_pending: 0,
+      source_count: 1,
+    }
+  );
+  assert.equal(remediation?.scale, "3 dead-letter");
+});
+
+test("summarizeOutboxStallRemediation: counts never attach to a quiet (non-stalled) connection", () => {
+  // Even with a populated rollup, an idle/active/unknown outbox returns null —
+  // so the count-backed scale can never appear on a healthy connection.
+  for (const outbox of ["idle", "active", "unknown"] as const) {
+    assert.equal(
+      summarizeOutboxStallRemediation(
+        snapshot({ axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox } }),
+        {
+          last_heartbeat_at: "2026-05-19T11:55:00Z",
+          last_heartbeat_status: "healthy",
+          last_ingest_at: "2026-05-19T11:55:00Z",
+          outbox_counts: { pending: 5, dead_letter: 1 },
+          records_pending: 5,
+          source_count: 1,
+        }
+      ),
+      null,
+      `expected no remediation (and thus no counts) for outbox=${outbox}`
+    );
+  }
+});
+
 function baseSchedule(overrides: Partial<RefSchedule> = {}): RefSchedule {
   return {
     active_run_id: null,

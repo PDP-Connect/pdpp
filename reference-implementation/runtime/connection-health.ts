@@ -267,6 +267,72 @@ export function deriveOutboxStateFromDiagnostics(diagnostics: OutboxDiagnosticCo
   return "drained";
 }
 
+type OutboxDiagnosticCountField =
+  | "backlog_open"
+  | "dead_letter"
+  | "leased"
+  | "pending"
+  | "retrying"
+  | "stale_leases"
+  | "succeeded"
+  | "total";
+
+const OUTBOX_DIAGNOSTIC_COUNT_FIELDS: readonly OutboxDiagnosticCountField[] = [
+  "backlog_open",
+  "dead_letter",
+  "leased",
+  "pending",
+  "retrying",
+  "stale_leases",
+  "succeeded",
+  "total",
+];
+
+/**
+ * Roll up several source instances' `OutboxDiagnosticCounts` into one
+ * connection-level summary. Pure — no I/O, no clock reads.
+ *
+ * The numeric count fields are summed; `oldest_pending_at` takes the
+ * earliest non-null timestamp so the connection reports the longest-waiting
+ * record across its sources. A non-finite or negative count is ignored
+ * (treated as absent) rather than poisoning the sum — the store already
+ * normalizes counts, but this keeps the helper safe for any caller.
+ *
+ * Returns `null` when no input carries any numeric count, so a connection
+ * with only empty/absent diagnostics surfaces no count rollup rather than a
+ * misleading all-zero object.
+ */
+export function rollupOutboxDiagnosticCounts(
+  items: readonly (OutboxDiagnosticCounts | null | undefined)[]
+): OutboxDiagnosticCounts | null {
+  const sums = new Map<OutboxDiagnosticCountField, number>();
+  let oldestPendingAt: string | null = null;
+  for (const item of items) {
+    if (!item) {
+      continue;
+    }
+    for (const field of OUTBOX_DIAGNOSTIC_COUNT_FIELDS) {
+      const value = item[field];
+      if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+        continue;
+      }
+      sums.set(field, (sums.get(field) ?? 0) + value);
+    }
+    if (
+      typeof item.oldest_pending_at === "string" &&
+      item.oldest_pending_at.length > 0 &&
+      (oldestPendingAt === null || item.oldest_pending_at < oldestPendingAt)
+    ) {
+      oldestPendingAt = item.oldest_pending_at;
+    }
+  }
+  if (sums.size === 0 && oldestPendingAt === null) {
+    return null;
+  }
+  const result: OutboxDiagnosticCounts = Object.fromEntries(sums);
+  return oldestPendingAt === null ? result : { ...result, oldest_pending_at: oldestPendingAt };
+}
+
 /**
  * Remote-surface axis: rolls up the most-urgent browser-surface lease and
  * surface health for a connection.

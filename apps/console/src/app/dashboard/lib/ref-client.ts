@@ -249,6 +249,14 @@ export interface RefLocalDeviceProgress {
   last_heartbeat_at: string | null;
   last_heartbeat_status: string | null;
   last_ingest_at: string | null;
+  /**
+   * Connection-level rollup of the per-source outbox diagnostics the
+   * device reports on heartbeats, summed across this connection's trusted
+   * sources. `null` (or absent) when no trusted source reported counts.
+   * Mirrors `LocalDeviceProgress.outbox_counts` in `ref-control.ts`. Carries
+   * only non-negative integers and an optional ISO timestamp.
+   */
+  outbox_counts?: DeviceSourceInstanceOutboxDiagnostics | null;
   records_pending: number | null;
   source_count: number;
 }

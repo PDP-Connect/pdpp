@@ -316,6 +316,7 @@ function ConnectorPageView({ model }: { model: ConnectorPageModel }) {
       <ConnectionDiagnostics
         connectionHealth={connectionHealth}
         connectionId={connectorInstanceId ?? connectionId}
+        localDeviceProgress={overview.localDeviceProgress ?? null}
         schedule={schedule}
         scheduleError={scheduleError}
         sourceInstances={sourceInstances}

@@ -39,6 +39,7 @@ function hbRow(overrides = {}) {
     lastHeartbeatStatus: 'healthy',
     lastIngestAt: FRESH,
     recordsPending: 0,
+    outboxDiagnostics: null,
     updatedAt: FRESH,
     ...overrides,
   };
@@ -702,6 +703,48 @@ test('projectLocalDeviceProgress: surfaces most-recent trusted heartbeat / inges
   assert.equal(out?.last_ingest_at, FRESH);
   assert.equal(out?.records_pending, 4);
   assert.equal(out?.source_count, 2);
+});
+
+test('projectLocalDeviceProgress: outbox_counts is null when no trusted source reports counts', () => {
+  const out = projectLocalDeviceProgress([hbRow({ recordsPending: 0, outboxDiagnostics: null })]);
+  assert.equal(out?.outbox_counts, null);
+});
+
+test('projectLocalDeviceProgress: rolls up outbox_counts across trusted sources', () => {
+  const out = projectLocalDeviceProgress([
+    hbRow({
+      sourceInstanceId: 'src_a',
+      recordsPending: 5,
+      outboxDiagnostics: { pending: 5, dead_letter: 1, oldest_pending_at: '2026-05-19T11:00:00.000Z' },
+    }),
+    hbRow({
+      sourceInstanceId: 'src_b',
+      deviceId: 'dev_b',
+      recordsPending: 2,
+      outboxDiagnostics: { pending: 2, stale_leases: 3, oldest_pending_at: '2026-05-19T10:00:00.000Z' },
+    }),
+  ]);
+  assert.equal(out?.outbox_counts?.pending, 7);
+  assert.equal(out?.outbox_counts?.dead_letter, 1);
+  assert.equal(out?.outbox_counts?.stale_leases, 3);
+  assert.equal(out?.outbox_counts?.oldest_pending_at, '2026-05-19T10:00:00.000Z');
+});
+
+test('projectLocalDeviceProgress: outbox_counts excludes revoked / inactive rows', () => {
+  // A revoked device with a scary backlog must not leak its counts into the
+  // connection summary; only the trusted source's counts roll up.
+  const out = projectLocalDeviceProgress([
+    hbRow({ sourceInstanceId: 'src_ok', recordsPending: 1, outboxDiagnostics: { pending: 1 } }),
+    hbRow({
+      sourceInstanceId: 'src_revoked',
+      deviceId: 'dev_revoked',
+      deviceStatus: 'revoked',
+      deviceRevokedAt: FRESH,
+      outboxDiagnostics: { pending: 999, dead_letter: 42 },
+    }),
+  ]);
+  assert.equal(out?.source_count, 1);
+  assert.deepEqual(out?.outbox_counts, { pending: 1 });
 });
 
 test('projectLocalDeviceProgress: scoped rows (single connector_instance_id) do not leak from another instance', () => {

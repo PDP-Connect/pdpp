@@ -6,6 +6,7 @@ import {
   computeConnectionHealth,
   deriveOutboxAxisFromHeartbeat,
   deriveOutboxStateFromDiagnostics,
+  rollupOutboxDiagnosticCounts,
 } from '../runtime/connection-health.ts';
 import { BLOCKED_PROMOTION_THRESHOLD } from '../runtime/connection-health-policy.ts';
 
@@ -684,6 +685,45 @@ test('outbox state: granular diagnostics use terminal-first precedence', () => {
   assert.equal(deriveOutboxStateFromDiagnostics({ retrying: 1, pending: 1 }), 'retrying');
   assert.equal(deriveOutboxStateFromDiagnostics({ stale_leases: 1, retrying: 1 }), 'stale');
   assert.equal(deriveOutboxStateFromDiagnostics({ dead_letter: 1, stale_leases: 1 }), 'dead_letter');
+});
+
+// ─── outbox diagnostic count rollup ──────────────────────────────────────
+
+test('rollupOutboxDiagnosticCounts: null when no input carries a count', () => {
+  assert.equal(rollupOutboxDiagnosticCounts([]), null);
+  assert.equal(rollupOutboxDiagnosticCounts([null, undefined]), null);
+  assert.equal(rollupOutboxDiagnosticCounts([{}, {}]), null);
+});
+
+test('rollupOutboxDiagnosticCounts: sums count fields across sources', () => {
+  const r = rollupOutboxDiagnosticCounts([
+    { pending: 3, dead_letter: 1, total: 10 },
+    { pending: 4, stale_leases: 2, total: 5 },
+    null,
+  ]);
+  assert.deepEqual(r, { pending: 7, dead_letter: 1, total: 15, stale_leases: 2 });
+});
+
+test('rollupOutboxDiagnosticCounts: keeps the earliest oldest_pending_at', () => {
+  const r = rollupOutboxDiagnosticCounts([
+    { pending: 1, oldest_pending_at: '2026-05-19T11:00:00.000Z' },
+    { pending: 1, oldest_pending_at: '2026-05-19T10:00:00.000Z' },
+  ]);
+  assert.equal(r.pending, 2);
+  assert.equal(r.oldest_pending_at, '2026-05-19T10:00:00.000Z');
+});
+
+test('rollupOutboxDiagnosticCounts: ignores negative / non-finite counts', () => {
+  const r = rollupOutboxDiagnosticCounts([
+    { pending: 2 },
+    { pending: -5, dead_letter: Number.NaN, retrying: Number.POSITIVE_INFINITY },
+  ]);
+  assert.deepEqual(r, { pending: 2 });
+});
+
+test('rollupOutboxDiagnosticCounts: surfaces oldest_pending_at even with no numeric counts', () => {
+  const r = rollupOutboxDiagnosticCounts([{ oldest_pending_at: '2026-05-19T09:00:00.000Z' }]);
+  assert.deepEqual(r, { oldest_pending_at: '2026-05-19T09:00:00.000Z' });
 });
 
 // ─── next_action CTA derivation ──────────────────────────────────────────

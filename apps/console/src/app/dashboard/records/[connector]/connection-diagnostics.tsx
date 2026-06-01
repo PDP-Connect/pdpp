@@ -12,7 +12,12 @@ import {
   summarizeOutboxStallRemediation,
   summarizeSchedule,
 } from "../../lib/connection-evidence.ts";
-import type { DeviceSourceInstance, RefConnectionHealthSnapshot, RefSchedule } from "../../lib/ref-client.ts";
+import type {
+  DeviceSourceInstance,
+  RefConnectionHealthSnapshot,
+  RefLocalDeviceProgress,
+  RefSchedule,
+} from "../../lib/ref-client.ts";
 
 /**
  * Server-rendered diagnostics block for the connector detail page.
@@ -30,6 +35,12 @@ export interface ConnectionDiagnosticsProps {
    * null for legacy single-instance rows; the command then runs unscoped.
    */
   connectionId: string | null;
+  /**
+   * Connection-summary local-device progress, including the count-backed
+   * `outbox_counts` rollup. Used to show the scale of stuck work in the
+   * stalled-outbox remediation. `null` for scheduler-managed connections.
+   */
+  localDeviceProgress: RefLocalDeviceProgress | null;
   schedule: RefSchedule | null;
   /** Optional load-error message for the schedule fetch. */
   scheduleError: string | null;
@@ -42,6 +53,7 @@ export interface ConnectionDiagnosticsProps {
 export function ConnectionDiagnostics({
   connectionHealth,
   connectionId,
+  localDeviceProgress,
   schedule,
   scheduleError,
   sourceInstances,
@@ -61,7 +73,11 @@ export function ConnectionDiagnostics({
 
         <div className="flex flex-col gap-5 px-3 py-4">
           <DiagnosticsBlock title="Projected state">
-            <ProjectedStateDiagnostics connectionHealth={connectionHealth} connectionId={connectionId} />
+            <ProjectedStateDiagnostics
+              connectionHealth={connectionHealth}
+              connectionId={connectionId}
+              localDeviceProgress={localDeviceProgress}
+            />
           </DiagnosticsBlock>
 
           <DiagnosticsBlock title="Schedule & backoff">
@@ -80,9 +96,11 @@ export function ConnectionDiagnostics({
 function ProjectedStateDiagnostics({
   connectionHealth,
   connectionId,
+  localDeviceProgress,
 }: {
   connectionHealth: RefConnectionHealthSnapshot | null;
   connectionId: string | null;
+  localDeviceProgress: RefLocalDeviceProgress | null;
 }) {
   if (!connectionHealth) {
     return (
@@ -99,7 +117,7 @@ function ProjectedStateDiagnostics({
   const projection = formatProjectionFreshness(connectionHealth);
   const axisChips = summarizeAxisChips(connectionHealth.axes);
   const outbox = summarizeOutboxForRow(connectionHealth);
-  const outboxRemediation = summarizeOutboxStallRemediation(connectionHealth);
+  const outboxRemediation = summarizeOutboxStallRemediation(connectionHealth, localDeviceProgress);
   const dominantCondition = formatDominantCondition(connectionHealth);
   const conditionById = new Map((connectionHealth.conditions ?? []).map((condition) => [condition.id, condition]));
   const visibleConditions = (connectionHealth.supporting_condition_ids ?? [])
@@ -428,6 +446,14 @@ function OutboxStallRemediationPanel({
         Retryable outbound work on the local collector host is not draining. The dashboard cannot clear it remotely —
         run this on the host that holds the data:
       </p>
+      {remediation.scale ? (
+        <p
+          className="pdpp-caption text-muted-foreground tabular-nums"
+          data-testid="diagnostics-outbox-remediation-scale"
+        >
+          Stuck on the device: {remediation.scale}.
+        </p>
+      ) : null}
       <div className="flex min-w-0 items-center gap-2 border border-border/70 bg-muted/30 px-3 py-2">
         <code
           className="pdpp-caption min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-foreground"
