@@ -368,6 +368,13 @@ test('owner-agent initiating an API/network-only connector (gmail) gets a typed 
     // advertise it: no real provider-connect URL or owner-mediated capture route
     // exists, so emitting open_url would be a faked success the criteria forbid.
     assert.notEqual(body.next_step.kind, 'open_url');
+    // The published contract RESERVES `complete_credential_capture` for the
+    // static-secret owner-connect primitive (gmail/github), but the runtime
+    // `api_network` branch must NOT emit it until that primitive ships with
+    // committed proof (add-static-secret-owner-connect-primitive design Decision 4
+    // and proof-before-flip gate). Reserving the enum value does not advertise the
+    // flow; the structural next_step.kind stays `unsupported`.
+    assert.notEqual(body.next_step.kind, 'complete_credential_capture');
   });
 });
 
@@ -521,4 +528,36 @@ test('owner-agent intent contract reserves enroll_browser_collector without emit
   );
   assert.ok(nextStepEnum.includes('enroll_local_collector'), 'the emitted local-collector kind stays reserved');
   assert.ok(nextStepEnum.includes('unsupported'), 'unsupported stays the honest browser-bound default');
+});
+
+// The published contract reserves `complete_credential_capture` as a next-step kind
+// BEFORE any route emits it. Per add-static-secret-owner-connect-primitive design
+// Decision 4, this is the kind the `api_network` branch (gmail/github) will emit
+// once the static-secret owner-connect primitive ships with committed proof; it
+// directs the OWNER — never the agent — to supply the provider static secret through
+// an owner-trusted local surface. Reserving the value keeps the post-proof
+// `api_network` flip a single reviewable unit (flip the branch + its tests) instead
+// of a flip PLUS a contract widening. This pins the reservation against the generated
+// OpenAPI so a future regen/edit can't silently drop it. It is the contract complement
+// of the runtime guard above (the gmail intent test asserts the live branch stays
+// `unsupported` and does NOT yet emit `complete_credential_capture`): reserved in the
+// contract, not emitted at runtime.
+test('owner-agent intent contract reserves complete_credential_capture without emitting it', () => {
+  const openapi = JSON.parse(
+    readFileSync(new URL('../openapi/reference-full.openapi.json', import.meta.url), 'utf8'),
+  );
+  const intentResponseSchema =
+    openapi.paths?.['/v1/owner/connections/intents']?.post?.responses?.['201']?.content?.[
+      'application/json'
+    ]?.schema;
+  assert.ok(intentResponseSchema, 'intent route must document a 201 JSON response schema');
+  const nextStepEnum = intentResponseSchema.properties?.next_step?.properties?.kind?.enum;
+  assert.ok(Array.isArray(nextStepEnum), 'next_step.kind must be a closed enum in the contract');
+  // Reserved-then-emitted: the value is in the contract enum so the post-proof flip is
+  // not a contract break, alongside the other reserved-but-unemitted kinds.
+  assert.ok(
+    nextStepEnum.includes('complete_credential_capture'),
+    'contract must reserve complete_credential_capture for the post-proof api_network flip',
+  );
+  assert.ok(nextStepEnum.includes('unsupported'), 'unsupported stays the honest api_network default');
 });

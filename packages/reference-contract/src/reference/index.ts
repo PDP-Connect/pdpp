@@ -466,16 +466,22 @@ const OwnerConnectionIntentRequestSchema = {
 // agent branches on. The reference build emits `enroll_local_collector` for
 // proven local-collector connectors and `unsupported` for browser-bound,
 // API/network-only, and unknown connectors; `open_url`, `complete_browser_assistance`,
-// `upload_file`, and `enroll_browser_collector` are reserved for future primitives
-// so a later lane can emit them without a contract break. `enroll_browser_collector`
-// in particular is the kind the `browser_bound` branch will emit once the
-// `add-browser-collector-enrollment-primitive` live proof gate is satisfied
-// (design Decision 3); reserving it here keeps the post-proof flip a single
-// reviewable unit rather than a flip plus a contract widening. Reserving the value
-// does NOT advertise the flow — no route emits it until the proof lands, and
-// `owner-connection-intent.test.js` pins that the runtime `browser_bound` branch
-// stays `unsupported`. Secret material (enrollment codes excepted — they are
-// single-use, owner-scoped, and short-lived) is never carried here.
+// `upload_file`, `enroll_browser_collector`, and `complete_credential_capture` are
+// reserved for future primitives so a later lane can emit them without a contract
+// break. `enroll_browser_collector` is the kind the `browser_bound` branch will
+// emit once the `add-browser-collector-enrollment-primitive` live proof gate is
+// satisfied (design Decision 3). `complete_credential_capture` is the kind the
+// `api_network` branch will emit for static-secret connectors (gmail/github) once
+// the `add-static-secret-owner-connect-primitive` proof gate is satisfied (that
+// change's design Decision 4): it directs the OWNER — never the agent — to supply
+// the provider static secret (app password / PAT) through an owner-trusted local
+// surface; the agent only ever observes the typed step and the resulting
+// `connection_id`. Reserving these values does NOT advertise the flow — no route
+// emits them until each proof lands, and `owner-connection-intent.test.js` pins
+// that the runtime `browser_bound` and `api_network` branches stay `unsupported`.
+// Secret material (enrollment codes excepted — they are single-use, owner-scoped,
+// and short-lived) is never carried here; in particular `complete_credential_capture`
+// never carries the provider secret.
 const OwnerConnectionIntentNextStepSchema = {
   type: "object",
   additionalProperties: true,
@@ -488,6 +494,7 @@ const OwnerConnectionIntentNextStepSchema = {
         "upload_file",
         "enroll_local_collector",
         "enroll_browser_collector",
+        "complete_credential_capture",
         "unsupported",
       ],
     },

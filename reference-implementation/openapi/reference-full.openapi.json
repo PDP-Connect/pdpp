@@ -15736,6 +15736,7 @@
                             "upload_file",
                             "enroll_local_collector",
                             "enroll_browser_collector",
+                            "complete_credential_capture",
                             "unsupported"
                           ]
                         },
