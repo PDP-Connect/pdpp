@@ -311,6 +311,65 @@ test('picker carries the source-first validation guards and an inline error bann
   assert.match(html, /event\.preventDefault\(\)/, 'invalid submits are blocked client-side, not posted raw');
 });
 
+// ── Acceptance criterion 6: SLVP owner-facing copy ───────────────────────────
+// The picker's behavior was already correct on `main`; the remaining UAT gap was
+// comprehension — the copy read like a technical demo and explained the model
+// twice. These assertions pin the polished owner-facing copy so the source =
+// its-streams model, the "no streams checked = not shared" rule, and the honest
+// retention caveat survive future refactors of the pure render helper.
+
+test('picker copy states the source-is-its-streams model in owner-facing language', async () => {
+  const html = await renderPicker();
+
+  // The model statement: selecting a source means selecting its streams, so a
+  // "parent selected, zero streams" state has no meaning the owner can create.
+  assert.match(html, /A source is its streams/i, 'copy names the source = its-streams model');
+  assert.match(
+    html,
+    /A source with no streams checked is not shared/i,
+    'copy states that an unchecked source is simply not shared (no orphan-parent state)',
+  );
+  assert.match(
+    html,
+    /Check one stream to share just that stream/i,
+    'copy makes single-stream grants discoverable',
+  );
+
+  // Retention honesty: a calm, separate caveat — not a security pitch, not a
+  // promise of an owner-narrowable retention knob.
+  assert.match(
+    html,
+    /does not set a time limit on data the app keeps/i,
+    'copy is honest that the page sets no machine-readable retention bound',
+  );
+  assert.equal(html.includes('retention limit'), false, 'copy avoids the jargon "retention limit"');
+
+  // No technical-demo phrasing or registry leakage in the *visible prose*. The
+  // connector id legitimately rides inside machine-only carriers (the opaque
+  // `data-source-key` hook and base64url form `value="..."` payloads), so we
+  // inspect rendered text nodes only — the content between `>` and `<`.
+  const textNodes = [...html.matchAll(/>([^<]+)</g)].map((m) => m[1]);
+  for (const text of textNodes) {
+    assert.equal(text.includes('registry.pdpp.org'), false, 'copy never leaks a registry URL as visible text');
+    assert.equal(/\bcin_[a-z0-9]/i.test(text), false, 'copy never leaks a cin_ id as visible text');
+  }
+});
+
+test('picker does not explain the selection model in two competing paragraphs', async () => {
+  const html = await renderPicker();
+  // The page lede orients ("Pick the streams…"); the risk paragraph carries the
+  // model detail. Guard against re-introducing the old duplicate lede sentence
+  // that restated stream selection a second time.
+  assert.equal(
+    html.includes('Select streams from the sources this app may use'),
+    false,
+    'the lede must not duplicate the model explanation carried by the risk copy',
+  );
+  // Exactly one owner-facing "Share only what this app needs" model paragraph.
+  const modelParagraphs = [...html.matchAll(/Share only what this app needs/g)];
+  assert.equal(modelParagraphs.length, 1, 'the model is stated once, not repeated');
+});
+
 // ── Empty-state: no sources registered ───────────────────────────────────────
 
 test('empty connector set renders a calm owner message with no form controls', async () => {

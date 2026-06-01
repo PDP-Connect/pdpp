@@ -1419,10 +1419,10 @@ test('hosted MCP picker renders collapsed source summaries with per-stream contr
 
     // Owner-facing copy should make the stream-derived source model
     // clear without registry URLs or demo-only phrasing.
-    assert.match(html, /pick the specific streams/i, 'picker copy should explain stream narrowing');
+    assert.match(html, /A source is its streams/i, 'picker copy should explain the source-is-its-streams model');
     assert.match(
       html,
-      /A source is shared only when at least one of its streams is checked/i,
+      /A source with no streams checked is not shared/i,
       'picker copy should explain derived source state',
     );
     assert.match(
@@ -1432,8 +1432,8 @@ test('hosted MCP picker renders collapsed source summaries with per-stream contr
     );
     assert.match(
       html,
-      /Check one to share just that stream/i,
-      'per-source copy should make single-stream grants discoverable',
+      /Check one stream to share just that stream/i,
+      'picker copy should make single-stream grants discoverable',
     );
     assert.match(html, /sourceBox\.checked = selected/, 'picker JS should derive source checked state from streams');
     assert.match(html, /sourceBox\.indeterminate = partiallySelected/, 'picker JS should expose subset stream grants');
@@ -1920,8 +1920,8 @@ test('hosted MCP picker renders an access-mode radio with continuous default and
     );
     assert.match(
       html,
-      /does not set a retention limit/i,
-      'picker should tell the owner that this page does not set the app retention limit',
+      /does not set a time limit on data the app keeps/i,
+      'picker should tell the owner that this page does not set a retention/time limit for data the app keeps',
     );
   } finally {
     await closeServer(server);

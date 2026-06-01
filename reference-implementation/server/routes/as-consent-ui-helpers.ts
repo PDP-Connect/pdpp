@@ -773,7 +773,7 @@ export async function renderHostedMcpSourceSelection(
               </label>
             </summary>
             <div class="hosted-ui-option-stream-controls">
-              <p class="hosted-ui-option-streams-help">Each stream you check is granted on its own. Check one to share just that stream, or use the buttons below to share the whole source.</p>
+              <p class="hosted-ui-option-streams-help">Each stream you check is granted on its own. Use the buttons below to share or clear this whole source at once.</p>
               <div class="hosted-ui-actions hosted-ui-stream-actions" aria-label="Stream controls for ${ui.escapeHtml(row.connectorTypeLabel)}">
                 <button type="button" class="hosted-ui-button" data-hosted-mcp-select-streams>Select every stream</button>
                 <button type="button" class="hosted-ui-button" data-hosted-mcp-clear-streams>Clear this source</button>
@@ -791,7 +791,8 @@ export async function renderHostedMcpSourceSelection(
     : "";
 
   const riskCopy = rows.length
-    ? `<p class="pdpp-body"><strong>Share only what this app needs.</strong> Pick the specific streams it may read — you can grant a single stream or a whole source. A source is shared only when at least one of its streams is checked, and you can revoke any approved source later. This page does not set a retention limit for data the app keeps after reading from your server; review the app's own terms before approving.</p>`
+    ? `<p class="pdpp-body"><strong>Share only what this app needs.</strong> A source is its streams: check the streams you want to share, and that source is included. Check one stream to share just that stream, or use the per-source buttons to share all of it. A source with no streams checked is not shared, and you can revoke any source you approve here later.</p>
+            <p class="pdpp-body hosted-ui-retention-note">This page does not set a time limit on data the app keeps after reading it from your server. Review the app's own terms before approving.</p>`
     : "";
 
   const validationError = typeof opts.validationError === "string" ? opts.validationError.trim() : "";
@@ -1028,7 +1029,7 @@ export async function renderHostedMcpSourceSelection(
       ui.renderPageIntro({
         eyebrow: "Data access request",
         title: "Choose what this app can read",
-        lede: "Select streams from the sources this app may use. Anything you leave unchecked stays private, and you can revoke approved access later.",
+        lede: "Pick the streams this app may read. Anything you leave unchecked stays private.",
       }),
       ui.renderSurface({
         surface: "human",
