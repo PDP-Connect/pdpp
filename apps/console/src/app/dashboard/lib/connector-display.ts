@@ -60,6 +60,27 @@ export function formatConnectorNameForDisplay(input: ConnectorDisplayInput): str
   return formatConnectorKeyForDisplay(input.connectorId);
 }
 
+/**
+ * True when a connection has no owner-meaningful `display_name` — i.e. the
+ * stored label degrades to the bare connector type, a registry URL, a
+ * `local-device:` binding, or a `legacy` placeholder. Callers use this to
+ * surface a "label needed" affordance and to decide whether a rename input
+ * should pre-fill (owner-set) or start blank (fallback).
+ *
+ * `displayName` is the stored `connector.display_name`; `connectorId` is the
+ * connector type. When `displayNameCandidate(displayName)` returns null the
+ * label is a fallback. A stored label that merely equals the connector type
+ * name (e.g. "Gmail" for the `gmail` connector) is also a fallback, because
+ * it carries no per-connection meaning.
+ */
+export function isFallbackConnectionLabel(input: ConnectorDisplayInput): boolean {
+  const stored = displayNameCandidate(input.displayName);
+  if (!stored) {
+    return true;
+  }
+  return stored === formatConnectorKeyForDisplay(input.connectorId);
+}
+
 export function formatSourceForDisplay(source: SourceDisplayInput | null | undefined): string {
   if (!source) {
     return "source -";

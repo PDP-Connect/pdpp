@@ -1,5 +1,6 @@
 "use server";
 
+import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireDashboardAccess } from "../../lib/dashboard-access.ts";
 import {
@@ -13,7 +14,12 @@ import {
   runConnectorNow,
   saveConnectionSchedule,
   saveConnectorSchedule,
+  setConnectionDisplayName,
 } from "../../lib/operator-runs.ts";
+
+// The store caps `display_name` at 200 chars; mirror that here so the
+// operator gets a clear message instead of a backend 400.
+const MAX_DISPLAY_NAME_LENGTH = 200;
 
 function asString(value: FormDataEntryValue | null): string {
   return typeof value === "string" ? value.trim() : "";
@@ -53,6 +59,41 @@ export async function runConnectorNowAction(formData: FormData) {
     error = errorMessage(err);
   }
   redirect(connectorHref(routeId, message, error));
+}
+
+export type RenameConnectionResult = { ok: true; display_name: string } | { ok: false; message: string };
+
+/**
+ * Owner-rename a connection's `display_name`. Rename always targets a
+ * concrete connection instance (`connection_id`), never a connector type —
+ * a type-scoped rename is meaningless when multiple connections share a
+ * connector. Returns a discriminated result so the client island can render
+ * an inline toast and refresh in place (matching `runConnectorNowAction`),
+ * rather than redirecting and losing the message.
+ */
+export async function renameConnectionAction(
+  connectionId: string | null,
+  displayName: string
+): Promise<RenameConnectionResult> {
+  await requireDashboardAccess(connectorHref(connectionId ?? ""));
+  const trimmed = displayName.trim();
+  if (!connectionId) {
+    return { ok: false, message: "This connector has no addressable connection to rename yet." };
+  }
+  if (!trimmed) {
+    return { ok: false, message: "Enter a label before saving." };
+  }
+  if (trimmed.length > MAX_DISPLAY_NAME_LENGTH) {
+    return { ok: false, message: `Label is too long (max ${MAX_DISPLAY_NAME_LENGTH} characters).` };
+  }
+  try {
+    await setConnectionDisplayName(connectionId, trimmed);
+    revalidatePath("/dashboard/records");
+    revalidatePath(`/dashboard/records/${encodeURIComponent(connectionId)}`);
+    return { ok: true, display_name: trimmed };
+  } catch (err) {
+    return { ok: false, message: errorMessage(err) };
+  }
 }
 
 export async function saveConnectorScheduleAction(formData: FormData) {

@@ -130,6 +130,26 @@ async function postScheduleMutationAt(path: string, fallback: string) {
   return body;
 }
 
+/**
+ * Owner-set the connection's `display_name` via the owner-authenticated
+ * `PATCH /_ref/connections/:connectorInstanceId` route. The route is gated
+ * by `requireOwnerSession`; grant-scoped clients cannot reach it. The stable
+ * selector remains the `connection_id` / `connector_instance_id` we PATCH —
+ * the label is a human-facing alias, never a routing key.
+ */
+export async function setConnectionDisplayName(connectionId: string, displayName: string) {
+  const response = await fetchAs(connectionControlPath(connectionId, ""), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: asJson({ display_name: displayName }),
+  });
+  const body = await readBody(response);
+  if (!response.ok) {
+    throw new Error(describeError(body, `rename failed (${response.status})`));
+  }
+  return body;
+}
+
 export function runConnectorNow(connectorId: string) {
   return runNowAt(connectorControlPath(connectorId, "/run"));
 }

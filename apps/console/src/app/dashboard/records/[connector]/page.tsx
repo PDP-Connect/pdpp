@@ -4,7 +4,11 @@ import { buttonVariants } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { DataList, PageHeader, Section, StatusBadge } from "../../components/primitives.tsx";
 import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
-import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "../../lib/connector-display.ts";
+import {
+  formatConnectorKeyForDisplay,
+  formatConnectorNameForDisplay,
+  isFallbackConnectionLabel,
+} from "../../lib/connector-display.ts";
 import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import {
   type DeviceSourceInstance,
@@ -26,6 +30,7 @@ import {
 } from "../../lib/rs-client.ts";
 import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } from "../connection-route.ts";
 import { ConnectionDiagnostics } from "./connection-diagnostics.tsx";
+import { RenameConnection } from "./rename-connection.tsx";
 import { SyncNowButton } from "./sync-now-button.tsx";
 
 export const dynamic = "force-dynamic";
@@ -35,6 +40,12 @@ const RECENT_RUNS_LIMIT = 10;
 interface ConnectorPageModel {
   connectionHealth: RefConnectionHealthSnapshot | null;
   connectionId: string;
+  /**
+   * The owner-set `display_name` to seed the rename field, or "" when the
+   * current label is a fallback (bare connector type / registry URL) so the
+   * operator starts blank instead of re-typing a meaningless default.
+   */
+  connectionLabelSeed: string;
   connectorId: string;
   connectorInstanceId: string | null;
   deviceLabels: string[];
@@ -153,12 +164,23 @@ async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageMod
     streamCount: streams.length,
     totalRecords,
   });
+  // Seed the rename field with the owner-set label only. A fallback label
+  // (bare connector type / registry URL) seeds blank so the operator names
+  // the connection from scratch rather than editing a meaningless default.
+  const connectionLabelSeed = isFallbackConnectionLabel({
+    connectorId,
+    displayName: summary.display_name,
+    name: summary.connector_display_name,
+  })
+    ? ""
+    : (summary.display_name ?? "");
 
   return {
     connectionHealth: summary.connection_health ?? null,
     connectionId,
     connectorId,
     connectorInstanceId,
+    connectionLabelSeed,
     deviceLabels,
     displayName,
     headerCount,
@@ -211,6 +233,7 @@ function ConnectorPageView({ model }: { model: ConnectorPageModel }) {
     connectionId,
     connectorId,
     connectorInstanceId,
+    connectionLabelSeed,
     deviceLabels,
     displayName,
     headerCount,
@@ -224,6 +247,9 @@ function ConnectorPageView({ model }: { model: ConnectorPageModel }) {
     streams,
   } = model;
   const running = overview.isRunning;
+  // Stable rename selector: prefer the explicit instance id, fall back to the
+  // connection id. Both address the same connection on the backend route.
+  const renameSelector = connectorInstanceId ?? connectionId;
 
   return (
     <DashboardShell active="records">
@@ -249,6 +275,11 @@ function ConnectorPageView({ model }: { model: ConnectorPageModel }) {
               connectorId={connectorId}
               displayName={displayName}
               initialRunning={running}
+            />
+            <RenameConnection
+              connectionId={renameSelector}
+              currentLabel={connectionLabelSeed}
+              typeName={formatConnectorKeyForDisplay(connectorId)}
             />
           </>
         }

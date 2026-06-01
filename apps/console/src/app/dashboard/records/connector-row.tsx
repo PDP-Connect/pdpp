@@ -16,7 +16,7 @@ import {
   resolveRecordCountDisplay,
   summarizeAxisChips,
 } from "../lib/connection-evidence.ts";
-import { formatConnectorNameForDisplay } from "../lib/connector-display.ts";
+import { formatConnectorNameForDisplay, isFallbackConnectionLabel } from "../lib/connector-display.ts";
 import { formatNextAction } from "../lib/next-action.ts";
 import type { ConnectorOverview, ConnectorRunRef } from "../lib/rs-client.ts";
 import { connectorHasPartialCoverageHint, normalizeKnownGaps } from "../lib/run-gaps.ts";
@@ -148,6 +148,15 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
     displayName: connectorDisplayName,
     name: connector.name,
   });
+  // A connection whose stored label degrades to the bare connector type or a
+  // registry URL is "label needed" — surface a gentle prompt linking to the
+  // detail page where the rename control lives. The stable `connection_id`
+  // stays the routing key; the label is a human alias only.
+  const labelNeeded = isFallbackConnectionLabel({
+    connectorId: connector.connector_id,
+    displayName: connector.display_name,
+    name: connector.name,
+  });
   const displayedStreamCount = streamCount ?? streams.length;
   const nextAction = formatNextAction(connectionHealth?.next_action ?? null);
   const recordCount = resolveRecordCountDisplay(overview);
@@ -175,6 +184,16 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
             <span className="pdpp-body font-medium text-foreground group-hover:underline">{displayName}</span>
             <span className="pdpp-caption truncate text-muted-foreground">{typeName}</span>
           </Link>
+          {labelNeeded ? (
+            <Link
+              className="pdpp-caption mt-0.5 inline-flex w-fit items-center gap-1 text-muted-foreground/80 underline-offset-2 hover:text-foreground hover:underline"
+              data-testid="label-needed-hint"
+              href={detailHref}
+              title="This connection uses a fallback label. Open the connection to give it an owner-meaningful name."
+            >
+              Label needed — rename
+            </Link>
+          ) : null}
         </div>
 
         <ConnectorStats
