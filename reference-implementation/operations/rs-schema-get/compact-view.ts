@@ -14,7 +14,7 @@
  *     (`granted_connections[].{connection_id, display_name}`),
  *   - field names + declared types,
  *   - a single terse, agent-usable capability flag string per field
- *     (e.g. `type=string,granted=true,exact,range=gte|lt,agg=count_distinct`),
+ *     (e.g. `t=string,eq,r=gte|lt,a=count_distinct`),
  *   - expandable relation summaries,
  *   - the envelope shape (`object: "schema"`, `bearer`, `connectors[]`).
  *
@@ -23,12 +23,10 @@
  * stays opt-in via the default (omitted) view; no existing client loses fields
  * by default.
  *
- * The capability-flag vocabulary mirrors the MCP server's compact `schema`
- * projection (`packages/mcp-server/src/tools.js`) so the two surfaces speak the
- * same terse flag language to agents. This module is the REST-side, typed port
- * of that vocabulary; it consumes the RS operation's flat envelope
- * (`{ object, bearer, connectors }`) rather than the `{ data: ... }`-wrapped
- * body the package MCP client sees.
+ * The capability-flag vocabulary is deliberately abbreviated on the compact
+ * REST path: `t` (declared type), `g=false` (only when a field is not granted),
+ * `eq`, `r`, `lex`, `sem`, and `a`. This keeps the projection small enough for
+ * real owner grants while preserving every capability bit an agent needs.
  *
  * Boundary rules (same as `rs-schema-get/index.ts`): this module is pure — it
  * SHALL NOT import Fastify, Next, SQLite, Postgres, a raw SQL handle, a generic
@@ -66,11 +64,22 @@ interface SchemaResponse {
   [extra: string]: unknown;
 }
 
-// Stream-metadata keys preserved verbatim in the compact projection. Identity,
-// addressing, and connection fields pass through; the heavy `schema`,
-// `views`, `relationships`, and `query` blobs are intentionally absent.
+// Stream-metadata keys preserved verbatim in the compact projection. Identity
+// and addressing fields pass through; the heavy `schema`, `views`,
+// `relationships`, `query`, per-stream `object` marker, and freshness telemetry
+// are intentionally absent. Freshness is available from list/health surfaces;
+// schema(stream) is the token-efficient field/capability discovery step.
+//
+// `granted_connections` is intentionally NOT in this list: it is handled
+// separately by the connector-level dedup below. The native RS attaches the
+// SAME `granted_connections` array to every stream of a connector (it is
+// computed once per connector and only narrowed when a per-stream grant pins a
+// connection). Passing it through verbatim per stream multiplied the
+// connection list by the stream count — the dominant driver of the live
+// owner-grant budget miss (a 19-connection grant repeated its ~2 KB connection
+// list on every stream). The lift keeps the identity an agent needs while
+// paying for it once per connector.
 const STREAM_PASSTHROUGH_KEYS = [
-  "object",
   "name",
   "connector_key",
   "connector_id",
@@ -84,8 +93,6 @@ const STREAM_PASSTHROUGH_KEYS = [
   "primary_key",
   "cursor_field",
   "source",
-  "granted_connections",
-  "freshness",
 ] as const;
 
 // Expand-capability keys preserved verbatim per relation.
@@ -153,9 +160,9 @@ function addRangeCapabilityFlag(flags: string[], capability: unknown): void {
   const operators =
     Array.isArray(cap.operators) && cap.operators.length > 0 ? cap.operators.join("|") : null;
   if (cap.usable === true) {
-    flags.push(operators ? `range=${inlineValue(operators)}` : "range");
+    flags.push(operators ? `r=${inlineValue(operators)}` : "r");
   } else if (cap.declared === true && cap.usable === false) {
-    flags.push(`range=unusable${reasonSuffix(cap.reason)}`);
+    flags.push(`r=unusable${reasonSuffix(cap.reason)}`);
   }
 }
 
@@ -165,28 +172,30 @@ function addAggregationCapabilityFlags(flags: string[], aggregation: unknown): v
     .filter(([, capability]) => isObject(capability) && (capability as CapabilityFlag).usable === true)
     .map(([name]) => name);
   if (usable.length > 0) {
-    flags.push(`agg=${inlineValue(usable.join("|"))}`);
+    flags.push(`a=${inlineValue(usable.join("|"))}`);
   }
 }
 
 /**
  * Collapse a single field-capability object to a terse flag string carrying
- * the declared type, grant flag, and every usable capability an agent needs to
- * build filter / sort / expand / fields / count / aggregate arguments.
+ * the declared type, non-default grant flag, and every usable capability an
+ * agent needs to build filter / sort / expand / fields / count / aggregate
+ * arguments. `granted=true` is the common case on owner-agent schema output, so
+ * it is omitted; `g=false` is emitted only when the field is not granted.
  */
 export function formatFieldCapabilityFlags(capabilities: unknown): string {
   if (!isObject(capabilities)) return "declared";
   const cap = capabilities as FieldCapability;
   const flags: string[] = [];
   const type = firstString(typeof cap.type === "string" ? cap.type : undefined, schemaTypeOf(cap.schema));
-  if (type) flags.push(`type=${inlineValue(type)}`);
-  if (typeof cap.granted === "boolean") {
-    flags.push(`granted=${cap.granted}`);
+  if (type) flags.push(`t=${inlineValue(type)}`);
+  if (cap.granted === false) {
+    flags.push("g=false");
   }
-  addCapabilityFlag(flags, "exact", cap.exact_filter);
+  addCapabilityFlag(flags, "eq", cap.exact_filter);
   addRangeCapabilityFlag(flags, cap.range_filter);
-  addCapabilityFlag(flags, "lexical", cap.lexical_search);
-  addCapabilityFlag(flags, "semantic", cap.semantic_search);
+  addCapabilityFlag(flags, "lex", cap.lexical_search);
+  addCapabilityFlag(flags, "sem", cap.semantic_search);
   addAggregationCapabilityFlags(flags, cap.aggregation);
   return flags.length > 0 ? flags.join(",") : "declared";
 }
@@ -219,11 +228,83 @@ function compactExpandCapabilities(expandCapabilities: unknown): unknown {
   });
 }
 
-function compactStream(entry: unknown): unknown {
+/**
+ * Stable comparison key for a `granted_connections` array, used only to decide
+ * whether a stream's connection set equals the connector-level shared set.
+ * Order-insensitive (sorted by connection_id) so two streams that list the same
+ * connections in a different order still dedup; the original array is preserved
+ * verbatim wherever it is actually emitted.
+ */
+function grantedConnectionsKey(value: unknown): string {
+  if (!Array.isArray(value)) return "";
+  const entries = value.map((entry) => {
+    if (!isObject(entry)) return JSON.stringify(entry);
+    const id = typeof entry.connection_id === "string" ? entry.connection_id : "";
+    const label = typeof entry.display_name === "string" ? entry.display_name : "";
+    const alias = typeof entry.connector_instance_id === "string" ? entry.connector_instance_id : "";
+    return JSON.stringify([id, label, alias]);
+  });
+  entries.sort();
+  return entries.join("\n");
+}
+
+/**
+ * Pick the connection set to lift to the connector level: the most frequent
+ * non-empty `granted_connections` array across the connector's streams. Most
+ * connectors attach one identical set to every stream, so the mode is that set;
+ * choosing the mode also minimizes the per-stream overrides that must remain
+ * when a few streams pin a different connection subset.
+ */
+function pickSharedGrantedConnections(streams: unknown[]): {
+  shared: unknown[] | null;
+  sharedKey: string;
+} {
+  const byKey = new Map<string, { value: unknown[]; count: number }>();
+  for (const stream of streams) {
+    if (!isObject(stream) || !Array.isArray(stream.granted_connections)) continue;
+    if (stream.granted_connections.length === 0) continue;
+    const key = grantedConnectionsKey(stream.granted_connections);
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      byKey.set(key, { value: stream.granted_connections, count: 1 });
+    }
+  }
+  let bestKey = "";
+  let best: { value: unknown[]; count: number } | null = null;
+  for (const [key, candidate] of byKey) {
+    if (!best || candidate.count > best.count) {
+      best = candidate;
+      bestKey = key;
+    }
+  }
+  return { shared: best ? best.value : null, sharedKey: best ? bestKey : "" };
+}
+
+function compactStream(entry: unknown, hasShared: boolean, sharedKey: string): unknown {
   if (!isObject(entry)) return entry;
   const out: Record<string, unknown> = {};
   for (const key of STREAM_PASSTHROUGH_KEYS) {
     if (entry[key] !== undefined) out[key] = entry[key];
+  }
+  // Keep `granted_connections` per stream ONLY when it diverges from the
+  // connector-level shared set (a per-stream grant that pins a connection
+  // subset, or a stream the connector-level set does not cover). Streams that
+  // carry the shared set drop it and inherit the connector-level array; agents
+  // read connector-level by default and per-stream when present.
+  //
+  // When no connector-level set was lifted (`hasShared` false), every stream's
+  // `granted_connections` is preserved verbatim — including an empty array,
+  // which is meaningful (a granted stream with no active connection) and must
+  // not be silently dropped.
+  if (entry.granted_connections !== undefined) {
+    const streamKey = Array.isArray(entry.granted_connections)
+      ? grantedConnectionsKey(entry.granted_connections)
+      : null;
+    if (!hasShared || streamKey === null || streamKey !== sharedKey) {
+      out.granted_connections = entry.granted_connections;
+    }
   }
   if (entry.field_capabilities !== undefined) {
     out.field_capabilities = compactFieldCapabilities(entry.field_capabilities);
@@ -234,12 +315,26 @@ function compactStream(entry: unknown): unknown {
   return out;
 }
 
+/**
+ * Compact a connector item, lifting the connection set shared by its streams to
+ * `connector.granted_connections` so the (often large) list is paid for once
+ * per connector instead of once per stream. Streams whose set matches the lift
+ * drop their copy; divergent streams keep theirs. When no stream carries a
+ * connection set (e.g. provider_native), nothing is lifted and streams are
+ * unchanged on that axis.
+ */
 function compactConnector(connector: ConnectorSchemaItem): ConnectorSchemaItem {
   const streams = Array.isArray(connector.streams) ? connector.streams : [];
-  return {
+  const { shared, sharedKey } = pickSharedGrantedConnections(streams);
+  const hasShared = shared !== null;
+  const out: ConnectorSchemaItem = {
     ...connector,
-    streams: streams.map((stream) => compactStream(stream)) as ConnectorSchemaItem["streams"],
+    streams: streams.map((stream) => compactStream(stream, hasShared, sharedKey)) as ConnectorSchemaItem["streams"],
   };
+  if (shared) {
+    out.granted_connections = shared;
+  }
+  return out;
 }
 
 function streamNameOf(entry: unknown): string | undefined {
@@ -275,11 +370,20 @@ export interface CompactSchemaOptions {
  * Project the canonical `rs.schema.get` response into its compact view.
  *
  * Additive and identity-preserving: the envelope shape, bearer block,
- * connector grouping, stream identity, per-connection `granted_connections`,
+ * connector grouping, stream identity, per-connection connection identity,
  * field names, declared types, and terse capability flags all survive. A
  * top-level `detail: "compact"` marker is added so callers can detect the
  * projection without diffing. When `stream` is supplied the document is first
  * scoped to that stream (the cheap `schema(stream)` discovery middle step).
+ *
+ * `granted_connections` is de-duplicated to the connector level: the set shared
+ * by a connector's streams is emitted once as `connector.granted_connections`,
+ * and per-stream copies survive only where a stream's set diverges (a grant
+ * that pins a connection subset for that stream). This is what keeps a
+ * many-connection grant under budget — the connection list scales with the
+ * connector's connection count, not connection count times stream count. An
+ * agent resolving a `connection_id` reads the connector-level set by default
+ * and the per-stream override when one is present.
  */
 export function projectSchemaCompactView(
   response: SchemaResponse,

@@ -25,13 +25,14 @@ body any existing client receives.
   schema document that preserves stream identity, per-connection identity
   (`granted_connections[].{connection_id, display_name}`, deprecated
   `connector_instance_id` alias where present), field names, declared types, and
-  a single terse capability-flag string per field (declared type, grant, and
-  usable filter/search/aggregation flags — the same vocabulary the MCP compact
-  projection and the `content[]` summary advertise, e.g.
-  `type=string,granted=true,exact,range=gte|lte,agg=count_distinct`). It drops
+  a single terse capability-flag string per field (declared type, non-default
+  grant state, and usable filter/search/aggregation flags, e.g.
+  `t=string,eq,r=gte|lte,a=count_distinct`). It drops
   the raw per-stream/per-field JSON Schema blobs and the verbose capability
   sub-objects. The envelope shape (`object: "schema"`, `bearer`, `connectors[]`)
-  is preserved and a top-level `detail: "compact"` marker is added.
+  is preserved and a top-level `detail: "compact"` marker is added. Shared
+  `granted_connections` are lifted to the connector level so a many-connection
+  grant does not repeat the same connection list on every stream.
 - `GET /v1/schema?view=compact&stream=<name>` narrows the document to a single
   stream so an agent can run the cheap middle step `schema(stream)` of
   `list_streams -> schema(stream) -> query_records`.
@@ -56,8 +57,8 @@ body any existing client receives.
 - Additive change: existing consumers that omit `view` SHALL continue to receive
   the exhaustive body unchanged. The compact view is a strict opt-in.
 - No change to the MCP `schema` compaction (that is the orthogonal presentation
-  layer in `packages/mcp-server`); the REST flag vocabulary is intentionally the
-  same so the two surfaces speak one terse capability language to agents.
+  layer in `packages/mcp-server`). The REST compact aliases preserve the same
+  capability bits while meeting the tighter live REST byte budget.
 - No change to the public `@pdpp/reference-contract` request/response schemas,
   OpenAPI, or generated artifacts: the compact view is a route-level projection
   of the existing response shape, not a new field on the contract envelope.

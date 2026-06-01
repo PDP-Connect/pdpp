@@ -57,11 +57,19 @@ The compact projection is a pure transform of the operation's already-produced
 - Preserves the envelope shape: `object`, `bearer`, `connectors[]`, per-connector
   `connector_id` / `source` / `stream_count`.
 - Per stream, preserves identity and addressing keys (`name`, `primary_key`,
-  `cursor_field`, `source`), connection identity (`granted_connections`,
-  `connection_id` / `connector_instance_id` / `display_name` where the entry
-  carries them at stream level), and `freshness`.
+  `cursor_field`, `source`). It omits route-unneeded stream telemetry such as
+  the per-stream `object` marker and freshness timestamps; freshness belongs on
+  list/health surfaces, while `schema(stream)` is the token-efficient
+  field/capability discovery step.
+- De-duplicates connection identity to the connector level: the
+  `granted_connections` set shared across a connector's streams is emitted once
+  as `connector.granted_connections`; per-stream copies survive only where a
+  stream's set diverges (a grant pinning a connection subset). Connection
+  identity (`connection_id` / `connector_instance_id` / `display_name`) is
+  unchanged in shape — only its placement moves from per-stream to per-connector
+  for the common case. See "Connection identity de-duplication" below.
 - Collapses each `field_capabilities.<field>` to a terse flag string carrying
-  the declared type, grant flag, and every usable capability flag
+  the declared type, non-default grant flag, and every usable capability flag
   (exact/range/lexical/semantic/aggregation), dropping the raw per-field JSON
   Schema blob and the verbose `{declared, usable}` sub-objects.
 - Compacts `expand_capabilities` to the relation summary fields an agent needs.
@@ -70,13 +78,49 @@ The compact projection is a pure transform of the operation's already-produced
 - Adds a top-level `detail: "compact"` marker so callers can detect the
   projection without diffing.
 
-The flag-string grammar (`key=value` segments joined by `,`; bare flag names for
-usable boolean capabilities; `range=<ops>` and `agg=<names>` for the
-multi-valued ones) is the same vocabulary the MCP server emits, ported to a
-typed RS module (`operations/rs-schema-get/compact-view.ts`). Sharing the
-grammar — rather than the code — keeps the boundary clean: the RS module
-consumes the operation's flat envelope, while the MCP module consumes the
-`{ data: ... }`-wrapped body the package client sees.
+The flag-string grammar uses explicit REST compact aliases: `t=<type>`, `g=false`
+only for ungranted fields (`granted=true` is implicit), `eq`, `r=<ops>`, `lex`,
+`sem`, and `a=<names>`. The aliases preserve the same logical capability bits as
+the MCP compact projection, but avoid repeating verbose positive defaults across
+hundreds of fields. The module lives in
+`operations/rs-schema-get/compact-view.ts` and consumes the operation's flat
+envelope.
+
+### Connection identity de-duplication
+
+Live evidence (Codex, 2026-06-01) showed the first cut did not meet its budget
+at real scale: the deployed owner grant returned `view=compact` at 93,785 bytes
+and `view=compact&stream=messages` at 7,626 bytes — both over the 60,000 / 6,000
+budgets. The original synthetic fixture seeded a single connection, so it never
+exercised the dominant driver.
+
+Root cause: the native `rs.schema.get` host (`buildConnectorSchemaItem`)
+computes the connector's connection list once and attaches the SAME
+`granted_connections` array to every stream (narrowing only when a per-stream
+grant pins a connection). The compact projection passed that array through per
+stream, so the list was repeated once per stream — O(connections × streams). A
+19-connection grant carries a ~2 KB connection list; across a dozen-plus streams
+that is the bulk of the body.
+
+Fix: lift the shared set to `connector.granted_connections` and drop the
+per-stream copy on streams that carry it. The cost becomes O(connections +
+streams) instead of O(connections × streams). Streams whose set diverges keep
+their own array, so a pinned-connection grant loses no per-stream truth. The
+shared set is chosen as the mode of the streams' connection sets (compared
+order-insensitively by `connection_id`), which minimizes the per-stream
+overrides that must remain. An agent reconstructs a stream's connection set as
+"the stream's own `granted_connections` if present, else the connector-level
+set" — the same identity, paid for once.
+
+This lift alone was not enough for the live owner grant: after applying it to the
+real deployed full schema, `view=compact` still measured 83,853 bytes and
+`view=compact&stream=messages` measured 7,597 bytes. The remaining driver was
+repeated verbose field flags (`type=...`, `granted=true`, `exact`, `range=...`)
+across 1,107 fields. The accepted compact path therefore also omits
+`granted=true`, abbreviates the capability flags, and drops freshness telemetry
+from the schema view. Applied to the same live full schema, the projected body is
+52,219 bytes for all streams and 5,453 bytes for `stream=messages`, under the
+60,000 / 6,000 budgets without losing connection identity or capability bits.
 
 ### Placement and boundary
 
@@ -129,5 +173,16 @@ token win, and the byte-budget tests lock the behavior structurally.
   per-stream budget and remains usable.
 - An unknown `stream` scope returns an empty connector set, not an error.
 - The compact per-field cost stays bounded as field count grows.
-- Evidence (this fixture: 6 streams x 30 fields, ~1.2 KB/field JSON Schema):
-  full body ~693 KB, compact ~10 KB (~69x reduction), per-stream compact ~1.9 KB.
+- `granted_connections` is de-duplicated to the connector level: the shared set
+  is emitted once on the connector and omitted from streams that carry it; a
+  divergent per-stream set is retained.
+- At real scale (a grant with ≥19 connections across multiple streams), the
+  all-stream and single-stream compact views stay under their budgets, and the
+  hypothetical per-stream-duplicated body (the pre-fix shape) is materially
+  larger — a non-vacuous regression guard.
+- Evidence (single-connection fixture: 6 streams x 30 fields, ~1.2 KB/field JSON
+  Schema): full body ~693 KB, compact ~10 KB (~69x reduction), per-stream compact
+  ~1.9 KB.
+- Evidence (real-scale fixture: 12 streams x 30 fields x 19 connections): the
+  connector-level lift drops all-stream compact from ~40 KB (per-stream-
+  duplicated) to ~20 KB; both all-stream and single-stream stay under budget.

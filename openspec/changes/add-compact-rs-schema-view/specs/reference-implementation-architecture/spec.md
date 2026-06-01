@@ -22,10 +22,38 @@ grant evaluation, visibility, connection identity, or the deprecated
 
 - **WHEN** a caller requests `GET /v1/schema?view=compact`
 - **THEN** the response SHALL preserve the envelope shape (`object: "schema"`, `bearer`, `connectors[]`) and carry a top-level `detail: "compact"` marker
-- **AND** each stream SHALL preserve its stream identity (`name`) and per-connection identity (`granted_connections[].{connection_id, display_name}`, and the deprecated `connector_instance_id` alias where the stream entry exposes it)
-- **AND** each field of `field_capabilities` SHALL be projected to a single terse capability-flag string carrying its declared type, grant flag, and usable filter/search/aggregation flags
+- **AND** each stream SHALL preserve its stream identity (`name`)
+- **AND** the per-connection identity (`granted_connections[].{connection_id, display_name}`, and the deprecated `connector_instance_id` alias where exposed) for every granted connection SHALL remain resolvable for each stream, whether carried at the connector level or as a per-stream override (see the connection de-duplication scenario)
+- **AND** each field of `field_capabilities` SHALL be projected to a single terse capability-flag string carrying its declared type, non-default grant flag, and usable filter/search/aggregation flags
 - **AND** the response SHALL NOT include the raw per-stream JSON Schema or the raw per-field JSON Schema
+- **AND** the response MAY omit route-unneeded telemetry such as per-stream object markers and freshness timestamps when that telemetry is available from list or health surfaces
 - **AND** the projected body SHALL be materially smaller than the full body for a schema document carrying verbose per-field JSON Schema
+
+#### Scenario: Connection identity is de-duplicated to the connector level
+
+The native `rs.schema.get` body attaches the same `granted_connections` array to
+every stream of a connector. Repeating that array per stream caused a real
+owner grant with many connections to exceed the compact byte budget (a
+19-connection grant repeated its connection list once per stream). The compact
+view SHALL de-duplicate it without losing per-stream connection truth.
+
+- **WHEN** the compact view projects a connector whose streams share an identical `granted_connections` set
+- **THEN** the shared set SHALL be emitted once as the connector-level `granted_connections`, and the per-stream `granted_connections` SHALL be omitted on streams that carry the shared set
+- **AND** a stream whose `granted_connections` diverges from the shared set (e.g. a grant pinning a connection subset for that stream) SHALL retain its own `granted_connections`
+- **AND** the connection set an agent resolves for any stream SHALL equal the stream's own `granted_connections` when present, otherwise the connector-level `granted_connections`
+- **AND** the compact all-stream and single-stream views SHALL stay under their documented byte budgets for a grant with at least 19 connections across multiple streams
+
+#### Scenario: Compact field flags omit default-positive noise
+
+The compact view is meant for agent discovery under tight token budgets. It
+SHALL NOT repeat verbose positive defaults for every field when a shorter form
+preserves the same information.
+
+- **WHEN** the compact view projects a granted field
+- **THEN** the field flag string SHALL carry the declared type using the compact `t=<type>` spelling
+- **AND** `granted=true` SHALL be implicit and omitted
+- **AND** an ungranted field SHALL instead carry an explicit `g=false` flag
+- **AND** usable capabilities SHALL use compact spellings for exact, range, lexical, semantic, and aggregation capability bits
 
 #### Scenario: Compact view scoped to a single stream
 

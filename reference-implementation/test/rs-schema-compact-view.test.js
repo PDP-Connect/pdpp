@@ -40,7 +40,32 @@ import { createSqliteConnectorInstanceStore } from '../server/stores/connector-i
 // size so legitimate growth does not flap the test, while still being many
 // times smaller than the full body for this fixture.
 const COMPACT_SCHEMA_BYTE_BUDGET = 60_000; // full grant, all streams, compact view
-const STREAM_COMPACT_SCHEMA_BYTE_BUDGET = 6_000; // one stream, compact view
+const STREAM_COMPACT_SCHEMA_BYTE_BUDGET = 6_000; // one stream, compact view (single connection)
+
+// Real-scale budget for a many-connection grant. Codex live-smoked the deployed
+// owner grant (2026-06-01) and measured `view=compact` at 93,785 bytes and
+// `view=compact&stream=messages` at 7,626 bytes — both over the budgets above.
+// The root cause was per-stream duplication of `granted_connections`: the RS
+// attaches the SAME connection list to every stream of a connector, so a
+// 19-connection grant repeated its ~2 KB connection list once per stream. The
+// compact projection now lifts that shared list to the connector level, so the
+// all-stream view scales with connection count, not connection count times
+// stream count.
+//
+// The single-stream budget is necessarily larger than the single-connection
+// 6 KB above: a 19-connection grant carries ~2 KB of irreducible per-connection
+// identity (a `connection_id` + `display_name` per connection) that an agent
+// needs to address reads against a specific connection. That identity cost is
+// the same whether the agent reads one stream or all of them, so the
+// single-stream multi-connection budget is set against the connection list plus
+// one wide stream's flags rather than the single-connection baseline.
+const COMPACT_SCHEMA_MULTI_CONNECTION_BUDGET = 60_000; // 19 connections, all streams
+const STREAM_COMPACT_MULTI_CONNECTION_BUDGET = 6_000; // 19 connections, one wide stream
+
+// Real-scale fixture shape: enough connections + streams + fields to model the
+// live owner-grant miss and prove the de-dup, not just the single-connection
+// fixture above.
+const REAL_SCALE_CONNECTION_COUNT = 19;
 
 // Size of the verbose per-field JSON Schema blob attached to every field — the
 // dominant size driver the compact projection drops.
@@ -168,6 +193,21 @@ function allStreams(body) {
   );
 }
 
+// Resolve the connection set an agent sees for a stream: the per-stream
+// `granted_connections` override when the stream carries one, else the
+// connector-level set the compact projection lifts the shared list to. Mirrors
+// how a client reconstructs connection identity from the compact body.
+function effectiveGrantedConnections(body, streamName) {
+  for (const connector of body.connectors || []) {
+    const stream = (connector.streams || []).find((s) => s.name === streamName);
+    if (!stream) continue;
+    if (Array.isArray(stream.granted_connections)) return stream.granted_connections;
+    if (Array.isArray(connector.granted_connections)) return connector.granted_connections;
+    return [];
+  }
+  return [];
+}
+
 test('the fixture is large enough to model the verbose-schema problem', async () => {
   await withHttpHarness(async ({ rsUrl, ownerToken }) => {
     const { status, body } = await fetchJson(schemaUrl(rsUrl), {
@@ -241,14 +281,15 @@ test('view=compact drops per-field JSON Schema but keeps flags + connection iden
     // Compact grade: each field is a terse flag string, not the verbose object.
     assert.equal(typeof field, 'string', 'compact field must be a terse flag string');
     assert.doesNotMatch(field, /description/, 'compact must drop per-field JSON Schema blob');
-    assert.match(field, /type=string/, 'compact flag string must keep declared type');
-    assert.match(field, /granted=true/, 'compact flag string must keep grant flag');
-    assert.match(field, /(^|,)exact(,|$)/, 'compact flag string must keep usable capability flags');
+    assert.match(field, /t=string/, 'compact flag string must keep declared type');
+    assert.doesNotMatch(field, /granted=true/, 'compact omits default granted=true noise');
+    assert.doesNotMatch(field, /g=false/, 'compact only carries grant flags for ungranted fields');
+    assert.match(field, /(^|,)eq(,|$)/, 'compact flag string must keep usable capability flags');
 
     // received_at advertises a usable range filter (manifest range_filters).
     assert.match(
       stream.field_capabilities.received_at,
-      /range=/,
+      /r=/,
       'compact flag string must keep usable range operators',
     );
 
@@ -282,7 +323,7 @@ test('view=compact&stream=<name> scopes to one stream under a tight budget', asy
       assert.equal(connector.stream_count, connector.streams.length);
     }
     // Still usable: capability flags survive on the scoped stream.
-    assert.match(streams[0].field_capabilities.field_0, /type=string/);
+    assert.match(streams[0].field_capabilities.field_0, /t=string/);
 
     const bytes = byteLength(body);
     assert.ok(
@@ -344,11 +385,15 @@ test('view=compact preserves multi-connection identity on granted_connections', 
       assert.equal(body.detail, 'compact');
 
       const stream = allStreams(body).find((s) => s.name === 'stream_0');
-      assert.ok(Array.isArray(stream.granted_connections), 'granted_connections survives compaction');
-      assert.equal(stream.granted_connections.length, 2, 'both connections enumerated');
-      const ids = stream.granted_connections.map((g) => g.connection_id).sort();
+      // Identity is lifted to the connector level when the stream carries the
+      // shared connection set; an agent resolves it via the connector-level
+      // array (or a per-stream override when one is present).
+      const granted = effectiveGrantedConnections(body, 'stream_0');
+      assert.ok(Array.isArray(granted), 'granted_connections survives compaction');
+      assert.equal(granted.length, 2, 'both connections enumerated');
+      const ids = granted.map((g) => g.connection_id).sort();
       assert.deepEqual(ids, ['cin_compact_a', 'cin_compact_b']);
-      const labels = stream.granted_connections.map((g) => g.display_name).sort();
+      const labels = granted.map((g) => g.display_name).sort();
       assert.deepEqual(labels, ['Account A', 'Account B']);
       // Compaction still dropped the heavy per-field JSON Schema.
       assert.equal(typeof stream.field_capabilities.field_0, 'string');
@@ -389,5 +434,213 @@ test('compact projection scales: doubling field count does not blow the budget',
   assert.ok(
     perFieldGrowth < 200,
     `compact per-field cost must stay small (got ~${Math.round(perFieldGrowth)} bytes/field)`,
+  );
+});
+
+// Seed N connections under the fixture connector so the owner schema advertises
+// a many-connection grant — the live shape that blew the budget. Each
+// connection carries a realistic-length display name (the per-connection
+// identity cost an agent needs to address reads).
+async function seedManyConnections(count) {
+  for (let i = 0; i < count; i += 1) {
+    const id = `cin_acct_${String(i).padStart(2, '0')}`;
+    // A label as long as a real account display name ("work — alex@example.com").
+    await seedConnection(id, `Account ${i} — alex.example.user.${i}@example.com`, `user${i}@example.com`);
+  }
+}
+
+// Recompute what the pre-fix body would have weighed: re-attach the lifted
+// connector-level `granted_connections` onto every stream that inherits it.
+// This is the duplication the connector-level lift removes; the test uses it to
+// prove the saving is real (non-vacuous) rather than measuring an already-small
+// body and calling the budget met.
+function bytesWithPerStreamDuplication(body) {
+  const reduplicated = {
+    ...body,
+    connectors: (body.connectors || []).map((connector) => {
+      const shared = Array.isArray(connector.granted_connections)
+        ? connector.granted_connections
+        : null;
+      const { granted_connections: _lifted, ...connectorRest } = connector;
+      return {
+        ...connectorRest,
+        streams: (connector.streams || []).map((stream) => {
+          if (Array.isArray(stream.granted_connections)) return stream;
+          return shared ? { ...stream, granted_connections: shared } : stream;
+        }),
+      };
+    }),
+  };
+  return byteLength(reduplicated);
+}
+
+test('view=compact de-dups granted_connections to the connector level at 19-connection scale', async () => {
+  await withHttpHarness(
+    async ({ rsUrl, ownerToken }) => {
+      await seedManyConnections(REAL_SCALE_CONNECTION_COUNT);
+
+      const { status, body } = await fetchJson(schemaUrl(rsUrl, { view: 'compact' }), {
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      });
+      assert.equal(status, 200);
+      assert.equal(body.detail, 'compact');
+
+      const connector = body.connectors[0];
+      // The shared connection list is lifted ONCE to the connector level...
+      assert.ok(
+        Array.isArray(connector.granted_connections),
+        'connector-level granted_connections is present',
+      );
+      assert.equal(
+        connector.granted_connections.length,
+        REAL_SCALE_CONNECTION_COUNT,
+        'connector-level list enumerates every connection',
+      );
+      // ...and the per-stream copies are gone (every stream inherits it).
+      const streams = connector.streams;
+      assert.ok(streams.length >= 6, 'fixture has multiple streams');
+      for (const stream of streams) {
+        assert.equal(
+          stream.granted_connections,
+          undefined,
+          `stream ${stream.name} must not repeat the shared connection list`,
+        );
+      }
+
+      // The all-stream compact body stays under budget at real scale.
+      const compactBytes = byteLength(body);
+      assert.ok(
+        compactBytes < COMPACT_SCHEMA_MULTI_CONNECTION_BUDGET,
+        `19-connection compact schema must stay under ${COMPACT_SCHEMA_MULTI_CONNECTION_BUDGET} bytes (got ${compactBytes})`,
+      );
+
+      // Non-vacuous: the body WITHOUT the lift (per-stream duplication, the
+      // pre-fix shape Codex live-smoked at 93,785 bytes) must be materially
+      // larger — proving the saving is real and that a regression which
+      // re-duplicates the list would blow the budget.
+      const duplicatedBytes = bytesWithPerStreamDuplication(body);
+      assert.ok(
+        duplicatedBytes > compactBytes + 10_000,
+        `per-stream duplication must cost far more (dedup ${compactBytes} vs duplicated ${duplicatedBytes})`,
+      );
+
+      // Identity is fully reconstructable per stream from the lifted set.
+      const granted = effectiveGrantedConnections(body, streams[0].name);
+      assert.equal(granted.length, REAL_SCALE_CONNECTION_COUNT, 'every connection resolvable per stream');
+      for (const entry of granted) {
+        assert.equal(typeof entry.connection_id, 'string');
+        assert.ok(entry.connection_id.length > 0);
+        assert.ok('display_name' in entry);
+      }
+    },
+    { manifest: makeLargeManifest({ streamCount: 12, fieldsPerStream: 30 }) },
+  );
+});
+
+test('view=compact&stream=<name> stays under budget at 19-connection scale', async () => {
+  await withHttpHarness(
+    async ({ rsUrl, ownerToken }) => {
+      await seedManyConnections(REAL_SCALE_CONNECTION_COUNT);
+
+      const { status, body } = await fetchJson(
+        schemaUrl(rsUrl, { view: 'compact', stream: 'stream_0' }),
+        { headers: { Authorization: `Bearer ${ownerToken}` } },
+      );
+      assert.equal(status, 200);
+      assert.equal(body.detail, 'compact');
+
+      const streams = allStreams(body);
+      assert.equal(streams.length, 1, 'scope keeps exactly one stream');
+      assert.equal(streams[0].name, 'stream_0');
+
+      // Even scoped to one stream, the 19-connection identity is carried once at
+      // the connector level (not inline on the stream).
+      assert.equal(
+        streams[0].granted_connections,
+        undefined,
+        'scoped stream does not inline the shared connection list',
+      );
+      const granted = effectiveGrantedConnections(body, 'stream_0');
+      assert.equal(granted.length, REAL_SCALE_CONNECTION_COUNT, 'all connections resolvable on the scoped stream');
+
+      const bytes = byteLength(body);
+      assert.ok(
+        bytes < STREAM_COMPACT_MULTI_CONNECTION_BUDGET,
+        `19-connection per-stream compact must stay under ${STREAM_COMPACT_MULTI_CONNECTION_BUDGET} bytes (got ${bytes})`,
+      );
+    },
+    { manifest: makeLargeManifest({ streamCount: 12, fieldsPerStream: 30 }) },
+  );
+});
+
+test('view=compact keeps a divergent per-stream connection subset (pinned grant)', async () => {
+  // When a stream's connection set differs from the connector-shared set, the
+  // compact projection must NOT drop it — the per-stream override survives so an
+  // agent still sees the pinned subset for that stream. Modeled here by injecting
+  // a divergent stream into the projection input directly (the route's grant
+  // pinning produces the same shape).
+  const { projectSchemaCompactView } = await import('../operations/rs-schema-get/compact-view.ts');
+  const shared = [
+    { connection_id: 'cin_a', display_name: 'A' },
+    { connection_id: 'cin_b', display_name: 'B' },
+  ];
+  const response = {
+    object: 'schema',
+    bearer: { token_kind: 'owner', scope: 'owner' },
+    connectors: [
+      {
+        object: 'connector',
+        connector_id: 'fixture',
+        source: { kind: 'connector', id: 'fixture' },
+        stream_count: 2,
+        streams: [
+          { object: 'stream_metadata', name: 'shared_stream', granted_connections: shared, field_capabilities: {} },
+          {
+            object: 'stream_metadata',
+            name: 'pinned_stream',
+            granted_connections: [{ connection_id: 'cin_a', display_name: 'A' }],
+            field_capabilities: {},
+          },
+        ],
+      },
+    ],
+  };
+  const projected = projectSchemaCompactView(response);
+  const connector = projected.connectors[0];
+  assert.deepEqual(connector.granted_connections, shared, 'shared set lifted to connector level');
+  const sharedStream = connector.streams.find((s) => s.name === 'shared_stream');
+  const pinnedStream = connector.streams.find((s) => s.name === 'pinned_stream');
+  assert.equal(sharedStream.granted_connections, undefined, 'shared stream inherits connector-level set');
+  assert.deepEqual(
+    pinnedStream.granted_connections,
+    [{ connection_id: 'cin_a', display_name: 'A' }],
+    'divergent (pinned) stream keeps its own subset',
+  );
+});
+
+test('compact field flags use aliases and keep only non-default grant state', async () => {
+  const { formatFieldCapabilityFlags } = await import('../operations/rs-schema-get/compact-view.ts');
+  assert.equal(
+    formatFieldCapabilityFlags({
+      type: 'string',
+      granted: true,
+      exact_filter: { declared: true, usable: true },
+      range_filter: { declared: true, usable: true, operators: ['gte', 'lt'] },
+      lexical_search: { declared: true, usable: true },
+      semantic_search: { declared: true, usable: true },
+      aggregation: {
+        count: { declared: true, usable: true },
+        sum: { declared: true, usable: false, reason: 'not_numeric' },
+      },
+    }),
+    't=string,eq,r=gte|lt,lex,sem,a=count',
+  );
+  assert.equal(
+    formatFieldCapabilityFlags({
+      type: 'string',
+      granted: false,
+      exact_filter: { declared: true, usable: false, reason: 'not_granted' },
+    }),
+    't=string,g=false,eq=unusable:not_granted',
   );
 });
