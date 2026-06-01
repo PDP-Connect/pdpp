@@ -3,7 +3,7 @@
  *
  * These functions are framework-free: they take dataset rows and a small set
  * of options, and return plain JSON shapes. Both demo route handlers under
- * `apps/web/src/app/sandbox/v1/**` and `_ref/**` and demo dashboard pages
+ * `apps/site/src/app/sandbox/v1/**` and `_ref/**` and demo dashboard pages
  * call into the same builders so the rendered surface and the HTTP API stay
  * lockstepped.
  *

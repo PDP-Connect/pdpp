@@ -1,4 +1,4 @@
-// Pins the proxy-layer dashboard auth gate added to apps/web/src/proxy.ts.
+// Pins the proxy-layer dashboard auth gate added to apps/console/src/proxy.ts.
 //
 // Before this gate existed, hitting `/dashboard` without an owner session
 // could surface a raw 401 from the dashboard data layer (the layout/page
@@ -13,12 +13,12 @@
 //   3. The redirect carries X-Robots-Tag: noindex, nofollow
 // The production standalone server defaults the operator console to redirecting
 // unauthenticated dashboard navigations even when the password is only held
-// by the AS. Local-dev opt-out policy is covered by apps/web's pure proxy
+// by the AS. Local-dev opt-out policy is covered by apps/console's pure proxy
 // policy tests; this integration test pins the production BFF behavior.
 //
 // The test uses the same composed-origin spawn pattern as
-// `composed-origin.test.js` because the proxy is owned by the web process
-// while the authoritative dashboard DAL gate is owned by the AS.
+// `composed-origin.test.js` because the proxy is owned by the operator-console
+// process while the authoritative dashboard DAL gate is owned by the AS.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -33,13 +33,13 @@ import { startServer } from '../server/index.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
 const REPO_ROOT = join(REFERENCE_IMPL_DIR, '..');
-const WEB_DIR = join(REPO_ROOT, 'apps/web');
-const WEB_BUILD_ID_PATH = join(WEB_DIR, '.next/BUILD_ID');
-const WEB_PRERENDER_MANIFEST_PATH = join(WEB_DIR, '.next/prerender-manifest.json');
-const WEB_STANDALONE_SERVER_PATH = join(WEB_DIR, '.next/standalone/apps/web/server.js');
+const CONSOLE_DIR = join(REPO_ROOT, 'apps/console');
+const CONSOLE_BUILD_ID_PATH = join(CONSOLE_DIR, '.next/BUILD_ID');
+const CONSOLE_PRERENDER_MANIFEST_PATH = join(CONSOLE_DIR, '.next/prerender-manifest.json');
+const CONSOLE_STANDALONE_SERVER_PATH = join(CONSOLE_DIR, '.next/standalone/apps/console/server.js');
 const OWNER_PASSWORD = 'pdpp-owner-dev-password';
 
-let webBuildPromise = null;
+let consoleBuildPromise = null;
 
 async function closeServer(server) {
   server.asServer.closeAllConnections();
@@ -98,16 +98,16 @@ function runCommand(command, args, opts = {}) {
   });
 }
 
-async function ensureWebBuild() {
-  if (!webBuildPromise) {
-    webBuildPromise = (async () => {
+async function ensureConsoleBuild() {
+  if (!consoleBuildPromise) {
+    consoleBuildPromise = (async () => {
       try {
-        await assertCompleteWebBuild();
+        await assertCompleteConsoleBuild();
         return;
       } catch {}
 
       try {
-        await runCommand('pnpm', ['--dir', 'apps/web', 'build'], {
+        await runCommand('pnpm', ['--dir', 'apps/console', 'build'], {
           cwd: REPO_ROOT,
           env: {
             ...process.env,
@@ -119,21 +119,21 @@ async function ensureWebBuild() {
           error instanceof Error &&
           error.message.includes('Another next build process is already running')
         ) {
-          await waitForExistingWebBuild();
+          await waitForExistingConsoleBuild();
           return;
         }
         throw error;
       }
     })();
   }
-  await webBuildPromise;
+  await consoleBuildPromise;
 }
 
-async function waitForExistingWebBuild(timeoutMs = 120000) {
+async function waitForExistingConsoleBuild(timeoutMs = 120000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      await assertCompleteWebBuild();
+      await assertCompleteConsoleBuild();
       return;
     } catch {}
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -141,10 +141,10 @@ async function waitForExistingWebBuild(timeoutMs = 120000) {
   throw new Error('Timed out waiting for another next build process to finish');
 }
 
-async function assertCompleteWebBuild() {
-  await access(WEB_BUILD_ID_PATH);
-  await access(WEB_PRERENDER_MANIFEST_PATH);
-  await access(WEB_STANDALONE_SERVER_PATH);
+async function assertCompleteConsoleBuild() {
+  await access(CONSOLE_BUILD_ID_PATH);
+  await access(CONSOLE_PRERENDER_MANIFEST_PATH);
+  await access(CONSOLE_STANDALONE_SERVER_PATH);
 }
 
 async function allocatePort() {
@@ -215,9 +215,9 @@ async function startWebServer({ webOrigin, asUrl, rsUrl, ownerPassword }) {
 
   const child = spawn(
     process.execPath,
-    [WEB_STANDALONE_SERVER_PATH],
+    [CONSOLE_STANDALONE_SERVER_PATH],
     {
-      cwd: dirname(WEB_STANDALONE_SERVER_PATH),
+      cwd: dirname(CONSOLE_STANDALONE_SERVER_PATH),
       env: childEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
     },
@@ -270,7 +270,7 @@ async function stopChildProcess(child) {
 }
 
 test('proxy redirects unauthenticated /dashboard hits to /owner/login when owner-auth is enabled', async (t) => {
-  await ensureWebBuild();
+  await ensureConsoleBuild();
   const webPort = await allocatePort();
   const webOrigin = `http://127.0.0.1:${webPort}`;
 

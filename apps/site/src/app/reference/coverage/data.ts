@@ -34,19 +34,19 @@ export interface CoverageRow {
   tested: CoverageState;
 }
 
-const repoRoot = process.cwd().endsWith("apps/web") ? resolve(process.cwd(), "..", "..") : process.cwd();
+const repoRoot = process.cwd().endsWith("apps/site") ? resolve(process.cwd(), "..", "..") : process.cwd();
 const rootRelative = (sourcePath: string) => resolve(repoRoot, sourcePath);
 
 const docs = (slug: string, label: string): CoverageEvidence => ({
   label,
   href: `/docs/${slug}`,
-  sourcePath: `apps/web/content/docs/${slug}.md`,
+  sourcePath: `apps/site/content/docs/${slug}.md`,
 });
 
 const referenceDocs = (slug: string, label: string): CoverageEvidence => ({
   label,
   href: `/docs/${slug}`,
-  sourcePath: `apps/web/content/docs/${slug}.md`,
+  sourcePath: `apps/site/content/docs/${slug}.md`,
 });
 
 const referenceTest = (file: string, label: string): CoverageEvidence => ({
@@ -82,7 +82,7 @@ export const coverageRows = [
       referenceTest("pdpp.test.js", "Reference end-to-end tests"),
       webRoute(
         "/docs/reference-implementation-examples",
-        "apps/web/content/docs/reference-implementation-examples.md",
+        "apps/site/content/docs/reference-implementation-examples.md",
         "Examples"
       ),
     ],
@@ -247,13 +247,13 @@ export const coverageRows = [
     evidence: [
       webRoute(
         "/sandbox/walkthrough",
-        "apps/web/src/app/sandbox/walkthrough/page.tsx",
+        "apps/site/src/app/sandbox/walkthrough/page.tsx",
         "Functional sandbox walkthrough"
       ),
       {
         label: "Sandbox state reducer tests",
-        href: "https://github.com/vana-com/pdpp/blob/main/apps/web/src/app/sandbox/walkthrough/state.test.ts",
-        sourcePath: "apps/web/src/app/sandbox/walkthrough/state.test.ts",
+        href: "https://github.com/vana-com/pdpp/blob/main/apps/site/src/app/sandbox/walkthrough/state.test.ts",
+        sourcePath: "apps/site/src/app/sandbox/walkthrough/state.test.ts",
       },
     ],
     notes:
@@ -269,16 +269,16 @@ export const coverageRows = [
     demonstrated: "yes",
     status: "implemented",
     evidence: [
-      webRoute("/sandbox", "apps/web/src/app/sandbox/page.tsx", "Demo overview"),
-      webRoute("/sandbox/records", "apps/web/src/app/sandbox/records/page.tsx", "Records browser"),
-      webRoute("/sandbox/grants", "apps/web/src/app/sandbox/grants/page.tsx", "Grants list"),
-      webRoute("/sandbox/runs", "apps/web/src/app/sandbox/runs/page.tsx", "Runs list"),
-      webRoute("/sandbox/traces", "apps/web/src/app/sandbox/traces/page.tsx", "Traces list"),
-      webRoute("/sandbox/deployment", "apps/web/src/app/sandbox/deployment/page.tsx", "Deployment / capabilities"),
+      webRoute("/sandbox", "apps/site/src/app/sandbox/page.tsx", "Demo overview"),
+      webRoute("/sandbox/records", "apps/site/src/app/sandbox/records/page.tsx", "Records browser"),
+      webRoute("/sandbox/grants", "apps/site/src/app/sandbox/grants/page.tsx", "Grants list"),
+      webRoute("/sandbox/runs", "apps/site/src/app/sandbox/runs/page.tsx", "Runs list"),
+      webRoute("/sandbox/traces", "apps/site/src/app/sandbox/traces/page.tsx", "Traces list"),
+      webRoute("/sandbox/deployment", "apps/site/src/app/sandbox/deployment/page.tsx", "Deployment / capabilities"),
       {
         label: "Demo dataset and builder tests",
-        href: "https://github.com/vana-com/pdpp/blob/main/apps/web/src/app/sandbox/_demo",
-        sourcePath: "apps/web/src/app/sandbox/_demo",
+        href: "https://github.com/vana-com/pdpp/blob/main/apps/site/src/app/sandbox/_demo",
+        sourcePath: "apps/site/src/app/sandbox/_demo",
       },
     ],
     notes:
@@ -294,29 +294,33 @@ export const coverageRows = [
     demonstrated: "yes",
     status: "implemented",
     evidence: [
-      webRoute("/sandbox/v1/schema", "apps/web/src/app/sandbox/v1/schema/route.ts", "GET /sandbox/v1/schema"),
-      webRoute("/sandbox/v1/streams", "apps/web/src/app/sandbox/v1/streams/route.ts", "GET /sandbox/v1/streams"),
+      webRoute("/sandbox/v1/schema", "apps/site/src/app/sandbox/v1/schema/route.ts", "GET /sandbox/v1/schema"),
+      webRoute("/sandbox/v1/streams", "apps/site/src/app/sandbox/v1/streams/route.ts", "GET /sandbox/v1/streams"),
       webRoute(
         "/sandbox/v1/streams/pay_statements/records",
-        "apps/web/src/app/sandbox/v1/streams/[stream]/records/route.ts",
+        "apps/site/src/app/sandbox/v1/streams/[stream]/records/route.ts",
         "GET /sandbox/v1/streams/:stream/records"
       ),
-      webRoute("/sandbox/v1/search?q=payroll", "apps/web/src/app/sandbox/v1/search/route.ts", "GET /sandbox/v1/search"),
+      webRoute(
+        "/sandbox/v1/search?q=payroll",
+        "apps/site/src/app/sandbox/v1/search/route.ts",
+        "GET /sandbox/v1/search"
+      ),
       webRoute(
         "/sandbox/_ref/grants/grant_sb_quill_paystmt/timeline",
-        "apps/web/src/app/sandbox/ref/grants/[grantId]/timeline/route.ts",
+        "apps/site/src/app/sandbox/ref/grants/[grantId]/timeline/route.ts",
         "GET /sandbox/_ref/grants/:id/timeline"
       ),
       webRoute(
         "/sandbox/.well-known/oauth-authorization-server",
-        "apps/web/src/app/sandbox/well-known/oauth-authorization-server/route.ts",
+        "apps/site/src/app/sandbox/well-known/oauth-authorization-server/route.ts",
         "GET /sandbox/.well-known/oauth-authorization-server"
       ),
-      webRoute("/sandbox/api-examples", "apps/web/src/app/sandbox/api-examples/page.tsx", "Copyable API examples"),
+      webRoute("/sandbox/api-examples", "apps/site/src/app/sandbox/api-examples/page.tsx", "Copyable API examples"),
       {
         label: "Route handler and builder tests",
-        href: "https://github.com/vana-com/pdpp/blob/main/apps/web/src/app/sandbox/_demo/routes.test.ts",
-        sourcePath: "apps/web/src/app/sandbox/_demo/routes.test.ts",
+        href: "https://github.com/vana-com/pdpp/blob/main/apps/site/src/app/sandbox/_demo/routes.test.ts",
+        sourcePath: "apps/site/src/app/sandbox/_demo/routes.test.ts",
       },
     ],
     notes:

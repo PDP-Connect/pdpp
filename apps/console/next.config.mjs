@@ -74,7 +74,7 @@ const nextConfig = {
       },
       // Top-level /explore alias for the operator Explore canvas.
       // The console app is the Docker/reference-server surface, so this must
-      // live here as well as in apps/web.
+      // live here as well as in apps/site.
       {
         source: '/explore',
         destination: '/dashboard/explore',

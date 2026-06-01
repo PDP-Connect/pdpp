@@ -8,7 +8,7 @@
  *
  * The live `DashboardDataSource` is not exercised here — it requires a
  * running reference server and owner session — but the type-level
- * binding in `apps/web/src/app/dashboard/lib/data-source.ts` proves the
+ * binding in `apps/console/src/app/dashboard/lib/data-source.ts` proves the
  * surfaces are interchangeable.
  */
 

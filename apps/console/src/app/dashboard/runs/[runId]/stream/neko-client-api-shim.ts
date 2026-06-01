@@ -40,7 +40,7 @@ export function createNekoClientApi(opts?: { getTextarea?: () => HTMLTextAreaEle
     async start(container: HTMLElement, config: unknown): Promise<void> {
       mountedContainer = container;
       // The dashboard always passes a fully-typed NekoClientConfig; the
-      // adapter's `unknown` is just to avoid leaking apps/web types into
+      // adapter's `unknown` is just to avoid leaking apps/console types into
       // the package.
       await startNeko(container, config as NekoClientConfig);
     },

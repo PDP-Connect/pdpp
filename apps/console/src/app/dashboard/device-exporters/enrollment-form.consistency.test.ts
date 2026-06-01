@@ -1,7 +1,7 @@
 /**
  * Asserts that the device-exporters enrollment form surfaces the canonical
  * `@pdpp/local-collector@beta` enroll / run invocations via the shared
- * helpers in apps/web/src/lib/pdpp-cli-command.ts, and exposes stable test
+ * helpers in apps/console/src/lib/pdpp-cli-command.ts, and exposes stable test
  * hooks for the rendered commands. The operator-readiness runbook in
  * docs/operator/local-collector-runbook.md depends on this surface; if it
  * drifts, the runbook drifts with it.
@@ -20,7 +20,7 @@ function read(relPath: string): Promise<string> {
   return readFile(fileURLToPath(new URL(relPath, ROOT)), "utf8");
 }
 
-const FORM_PATH = "apps/web/src/app/dashboard/device-exporters/enrollment-form.tsx";
+const FORM_PATH = "apps/console/src/app/dashboard/device-exporters/enrollment-form.tsx";
 
 const COLLECTOR_ENROLL_HELPER = /pdppLocalCollectorEnrollCommand/;
 const COLLECTOR_RUN_HELPER = /pdppLocalCollectorRunCommand/;

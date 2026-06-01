@@ -109,7 +109,7 @@ test("llms index points trusted owner agents at the canonical onboarding surface
 
 test("reference docs and web copy use the CLI package-info source of truth", () => {
   const expectedCommand = createPdppCliCommand("<provider-url>");
-  const files = ["apps/web/content/docs/reference-implementation.md", "reference-implementation/README.md"];
+  const files = ["apps/site/content/docs/reference-implementation.md", "reference-implementation/README.md"];
 
   for (const file of files) {
     const contents = readFileSync(path.join(REPO_ROOT, file), "utf8");
@@ -117,7 +117,7 @@ test("reference docs and web copy use the CLI package-info source of truth", () 
   }
 
   const card = readFileSync(
-    path.join(REPO_ROOT, "apps/web/src/app/dashboard/components/connect-agent-card.tsx"),
+    path.join(REPO_ROOT, "apps/site/src/app/dashboard/components/connect-agent-card.tsx"),
     "utf8"
   );
   assert.match(card, PDPP_CLI_CONNECT_COMMAND_SYMBOL);

@@ -106,7 +106,7 @@ export interface RawArtifact {
 }
 
 function openSpecGitMetadataPath(repoRoot: string): string {
-  return path.join(repoRoot, "apps/web/.generated/openspec-git-metadata.json");
+  return path.join(repoRoot, "apps/site/.generated/openspec-git-metadata.json");
 }
 
 function loadOpenSpecGitMetadataManifest(repoRoot: string): Promise<OpenSpecGitMetadataManifest | null> {

@@ -38,7 +38,7 @@ export default async function Page({ params }: DocsPageProps) {
           <div className="pdpp-docs-actions">
             <LLMCopyButton markdownUrl={markdownUrl} />
             <ViewOptions
-              githubUrl={`https://github.com/vana-com/pdpp/blob/main/apps/web/content/docs/${githubPath}`}
+              githubUrl={`https://github.com/vana-com/pdpp/blob/main/apps/site/content/docs/${githubPath}`}
               markdownUrl={markdownUrl}
             />
           </div>

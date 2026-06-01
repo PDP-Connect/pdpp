@@ -13,13 +13,3 @@ test("console exposes bare hosted-UI proxy routes", () => {
     );
   }
 });
-
-test("web exposes the same bare hosted-UI proxy routes", () => {
-  for (const route of ROOT_PROXY_ROUTES) {
-    assert.equal(
-      existsSync(`apps/web/src/app/${route}/route.ts`),
-      true,
-      `apps/web must expose /${route}; keep hosted-UI root routes in sync`
-    );
-  }
-});

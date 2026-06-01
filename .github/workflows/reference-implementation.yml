@@ -4,6 +4,12 @@ name: reference-implementation
 # This catches regressions before release/docker-image workflows and keeps the
 # load-bearing reference implementation under the same review discipline as the
 # connector and package workspaces.
+#
+# The apps/console/** trigger is here because two integration tests in the
+# reference suite (composed-origin.test.js, dashboard-proxy-redirect.test.js)
+# build apps/console and spawn its standalone server to exercise the
+# dashboard/BFF/proxy. They were retargeted from apps/web in the split-site
+# web-retirement work; the trigger moved with them.
 
 on:
   push:
@@ -13,7 +19,7 @@ on:
       - "package.json"
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
-      - "apps/web/**"
+      - "apps/console/**"
       - "packages/reference-contract/**"
       - "reference-implementation/**"
   pull_request:
@@ -22,7 +28,7 @@ on:
       - "package.json"
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
-      - "apps/web/**"
+      - "apps/console/**"
       - "packages/reference-contract/**"
       - "reference-implementation/**"
   workflow_dispatch: {}

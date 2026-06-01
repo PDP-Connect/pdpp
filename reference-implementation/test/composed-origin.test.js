@@ -14,16 +14,16 @@ import { canonicalConnectorKey } from '../server/connector-key.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
 const REPO_ROOT = join(REFERENCE_IMPL_DIR, '..');
-const WEB_DIR = join(REPO_ROOT, 'apps/web');
-const WEB_BUILD_ID_PATH = join(WEB_DIR, '.next/BUILD_ID');
-const WEB_PRERENDER_MANIFEST_PATH = join(WEB_DIR, '.next/prerender-manifest.json');
-const WEB_STANDALONE_SERVER_PATH = join(WEB_DIR, '.next/standalone/apps/web/server.js');
+const CONSOLE_DIR = join(REPO_ROOT, 'apps/console');
+const CONSOLE_BUILD_ID_PATH = join(CONSOLE_DIR, '.next/BUILD_ID');
+const CONSOLE_PRERENDER_MANIFEST_PATH = join(CONSOLE_DIR, '.next/prerender-manifest.json');
+const CONSOLE_STANDALONE_SERVER_PATH = join(CONSOLE_DIR, '.next/standalone/apps/console/server.js');
 const OWNER_PASSWORD = 'pdpp-owner-dev-password';
 const SPOTIFY_CONNECTOR_ID = 'https://registry.pdpp.org/connectors/spotify';
 const SPOTIFY_CONNECTOR_KEY = canonicalConnectorKey(SPOTIFY_CONNECTOR_ID);
 const CLAUDE_CODE_CONNECTOR_ID = 'https://registry.pdpp.org/connectors/claude-code';
 
-let webBuildPromise = null;
+let consoleBuildPromise = null;
 
 async function closeServer(server) {
   server.asServer.closeAllConnections();
@@ -82,16 +82,16 @@ function runCommand(command, args, opts = {}) {
   });
 }
 
-async function ensureWebBuild() {
-  if (!webBuildPromise) {
-    webBuildPromise = (async () => {
+async function ensureConsoleBuild() {
+  if (!consoleBuildPromise) {
+    consoleBuildPromise = (async () => {
       try {
-        await assertCompleteWebBuild();
+        await assertCompleteConsoleBuild();
         return;
       } catch {}
 
       try {
-        await runCommand('pnpm', ['--dir', 'apps/web', 'build'], {
+        await runCommand('pnpm', ['--dir', 'apps/console', 'build'], {
           cwd: REPO_ROOT,
           env: {
             ...process.env,
@@ -103,21 +103,21 @@ async function ensureWebBuild() {
           error instanceof Error &&
           error.message.includes('Another next build process is already running')
         ) {
-          await waitForExistingWebBuild();
+          await waitForExistingConsoleBuild();
           return;
         }
         throw error;
       }
     })();
   }
-  await webBuildPromise;
+  await consoleBuildPromise;
 }
 
-async function waitForExistingWebBuild(timeoutMs = 120000) {
+async function waitForExistingConsoleBuild(timeoutMs = 120000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      await assertCompleteWebBuild();
+      await assertCompleteConsoleBuild();
       return;
     } catch {}
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -125,10 +125,10 @@ async function waitForExistingWebBuild(timeoutMs = 120000) {
   throw new Error('Timed out waiting for another next build process to finish');
 }
 
-async function assertCompleteWebBuild() {
-  await access(WEB_BUILD_ID_PATH);
-  await access(WEB_PRERENDER_MANIFEST_PATH);
-  await access(WEB_STANDALONE_SERVER_PATH);
+async function assertCompleteConsoleBuild() {
+  await access(CONSOLE_BUILD_ID_PATH);
+  await access(CONSOLE_PRERENDER_MANIFEST_PATH);
+  await access(CONSOLE_STANDALONE_SERVER_PATH);
 }
 
 async function allocatePort() {
@@ -202,9 +202,9 @@ async function startWebServer({ webOrigin, asUrl, rsUrl }) {
   const host = webUrl.hostname;
   const child = spawn(
     process.execPath,
-    [WEB_STANDALONE_SERVER_PATH],
+    [CONSOLE_STANDALONE_SERVER_PATH],
     {
-      cwd: dirname(WEB_STANDALONE_SERVER_PATH),
+      cwd: dirname(CONSOLE_STANDALONE_SERVER_PATH),
       env: {
         ...process.env,
         NEXT_TELEMETRY_DISABLED: '1',
@@ -421,7 +421,7 @@ test('composed controller runs ingest against the internal RS, not the public br
 });
 
 test('composed browser origin carries metadata, owner session, dashboard, device flow, and consent end to end', async () => {
-  await ensureWebBuild();
+  await ensureConsoleBuild();
   const webPort = await allocatePort();
   const webOrigin = `http://127.0.0.1:${webPort}`;
   const spotifyManifest = JSON.parse(

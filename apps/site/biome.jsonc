@@ -58,7 +58,7 @@
       // Exit condition: remove this override once Biome's resolver handles
       // standard package exports, subpath exports, and workspace-package
       // subpath exports without false positives. Re-run
-      // `pnpm --dir apps/web check` to confirm; if the rule stays clean,
+      // `pnpm --dir apps/site check` to confirm; if the rule stays clean,
       // drop this entire `overrides` block.
       //
       // Scoped to src/** only — config files and the rest of the tree
