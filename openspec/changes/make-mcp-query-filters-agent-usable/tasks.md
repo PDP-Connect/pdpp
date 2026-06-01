@@ -64,6 +64,9 @@
       backend, detects partial historical indexes by exact indexable-text row
       counts, evaluates active owner-visible connector instances for unpinned
       manifests, and restores searchable rows without re-ingest.
+- [x] 4.15 Startup manifest reconciliation persists manifest fixes without
+      blocking AS/RS listen on large retrieval index rebuilds; the existing
+      post-listen startup backfill handles index repair.
 
 ## 5. Docs + discovery guidance
 

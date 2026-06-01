@@ -57,6 +57,9 @@ answer must also appear in the `content[]` text.
 - Reference lexical backfill reads and writes the active storage backend and,
   for unpinned manifests, evaluates active owner-visible connector instances
   rather than only the default synthetic instance.
+- Startup manifest reconciliation persists manifest fixes without blocking AS/RS
+  listen on full retrieval index rebuilds; index repair runs through the
+  post-listen startup backfill path.
 - `connection_id` and the deprecated `connector_instance_id` alias continue to
   forward unchanged. REST filtering semantics are unchanged.
 
@@ -66,8 +69,8 @@ answer must also appear in the `content[]` text.
 - Affected code: `packages/mcp-server/src/tools.js` (input schema + filter
   translation + aggregate text), `packages/mcp-server/test/typed-filter.test.js`
   (new), `reference-implementation/server/package-rs-client.js`,
-  `reference-implementation/server/search.js`, Postgres storage helpers, package
-  docs.
+  `reference-implementation/server/search.js`, manifest reconciliation,
+  Postgres storage helpers, package docs.
 - No RS contract change. No PDPP Core or REST filtering semantics change.
 - The typed filter object is a superset of the prior contract for the common
   case (object/typed inputs newly work); the only removed behavior is the silent

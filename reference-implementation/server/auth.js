@@ -2548,7 +2548,7 @@ function validateConnectorManifest(manifest = {}, code = 'invalid_request', opts
 /**
  * Register or update a connector manifest
  */
-export async function registerConnector(manifest) {
+export async function registerConnector(manifest, options = {}) {
   validateConnectorManifest(manifest);
   const { connectorId, storedManifest } = normalizeConnectorManifestForStorage(manifest);
   if (isPostgresStorageBackend()) {
@@ -2564,6 +2564,11 @@ export async function registerConnector(manifest) {
       JSON.stringify(storedManifest),
     ]);
   }
+
+  if (options.backfillRetrievalIndexes === false) {
+    return connectorId;
+  }
+
   // Lexical retrieval index drift-detect + backfill. Handles three cases
   // the write-path maintenance (search.js#lexicalIndexUpsert) cannot:
   //   1. A connector is registered for the first time on a DB that already

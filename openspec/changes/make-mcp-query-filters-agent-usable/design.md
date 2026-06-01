@@ -116,6 +116,12 @@ partially populated historical index is rebuilt instead of being treated as
 backfill evaluates the active owner-visible bindings for that connector instead
 of only checking the default synthetic instance.
 
+Startup manifest reconciliation persists shipped manifest fixes before AS/RS
+listen, but defers retrieval index rebuild work to the existing post-listen
+startup backfill. This preserves self-healing without letting a large owner
+corpus fail the container health window before the resource server can answer
+health checks.
+
 ## Risks / Trade-offs
 
 - A client that previously sent a bare non-bracket string filter and (silently)
@@ -155,3 +161,5 @@ of only checking the default synthetic instance.
 - Postgres lexical backfill detects and rebuilds partial historical indexes
   using exact indexable-text counts for active owner-visible connector
   instances.
+- Startup manifest reconciliation does not block AS/RS listening on full
+  retrieval index rebuilds.

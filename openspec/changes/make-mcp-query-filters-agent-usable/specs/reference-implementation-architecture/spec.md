@@ -36,3 +36,12 @@ treat an arbitrary non-zero in-band index count as complete.
   rebuild it
 - **AND** it SHALL NOT accept the partial index merely because at least one index
   row exists
+
+#### Scenario: Startup manifest reconciliation does not block health
+
+- **WHEN** startup manifest reconciliation updates first-party connector
+  manifests before AS/RS listen
+- **THEN** it SHALL NOT synchronously run full retrieval index rebuilds for those
+  manifests before the servers listen
+- **AND** retrieval index repair SHALL run through the post-listen startup
+  backfill path

@@ -41,7 +41,10 @@ import { deleteAllRecordsForConnector } from "./records.js";
 // migrates, we re-declare the narrow shape this module relies on so
 // the reconciliation code stays type-checked end to end.
 type GetConnectorManifest = (connectorId: string) => Promise<unknown>;
-type RegisterConnector = (manifest: PolyfillManifest) => Promise<unknown>;
+type RegisterConnector = (
+  manifest: PolyfillManifest,
+  options?: { backfillRetrievalIndexes?: boolean }
+) => Promise<unknown>;
 type DeleteAllRecordsForConnector = (connectorId: string) => Promise<{ deletedCount: number; streams: string[] }>;
 
 const getConnectorManifestTyped: GetConnectorManifest = getConnectorManifest as GetConnectorManifest;
@@ -298,7 +301,7 @@ async function applyShippedManifest(
   log: ReconcileLog
 ): Promise<{ ok: boolean }> {
   try {
-    await registerConnectorTyped(shipped);
+    await registerConnectorTyped(shipped, { backfillRetrievalIndexes: false });
     log(`[manifest-reconcile] updated ${connectorId} from ${entryName}`);
     return { ok: true };
   } catch (err) {
