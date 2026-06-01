@@ -365,8 +365,10 @@ test('owner-agent initiating an API/network-only connector (gmail) gets a typed 
       'reason must explicitly state no current connector is OAuth-backed',
     );
     // The reason names the eventual next-step kind but the route must NOT yet
-    // advertise it: no real provider-connect URL or owner-mediated capture route
-    // exists, so emitting open_url would be a faked success the criteria forbid.
+    // advertise it: no real provider-connect URL exists, and the owner-session
+    // capture route for existing connections is not yet end-to-end proof that a
+    // new owner-agent intent can create an API/network connection. Emitting
+    // open_url would be a faked success the criteria forbid.
     assert.notEqual(body.next_step.kind, 'open_url');
     // The published contract RESERVES `complete_credential_capture` for the
     // static-secret owner-connect primitive (gmail/github), but the runtime

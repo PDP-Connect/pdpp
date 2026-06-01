@@ -89,10 +89,10 @@ the next lane, and each handles a real provider secret).
 
 **Non-Goals:**
 
-- Do not implement the credential store, the capture surface, or connection-scoped
-  injection in this lane. Each handles a real provider static secret and is out of
-  scope for an agent-mediated lane that forbids half-built provider-secret
-  surfaces.
+- Do not flip the owner-agent `api_network` intent branch until end-to-end proof
+  lands. Implementation tranches may add the store, capture surface, and
+  connection-scoped injection only when each tranche preserves the invariant that
+  provider static secrets stay owner-mediated and never agent-readable.
 - Do not wire Gmail/GitHub to `open_url`. They are not OAuth-backed; there is no
   authorization URL to open. `open_url` becomes emittable only if a genuinely
   OAuth-backed connector is added later (with a provider OAuth app whose secrets
@@ -153,9 +153,10 @@ exposes only:
 
 This is the same trust shape the diagnostics and revoke packets used ("build on the
 owner-session surface, then share the non-secret projection under the owner
-bearer"), with one difference made explicit in Decision 5: there is no existing
-owner-session capture route to build on, so the capture surface itself is new work
-in the implementation lane, not a projection of an existing route.
+bearer"). As of the owner-session capture tranche, the reference has a
+connection-scoped `/_ref` route for existing connections; the owner-agent intent
+branch still waits for the end-to-end proof in Decision 6 before it advertises
+`complete_credential_capture`.
 
 ### 3. The intent does not create a connection; the row materializes on capture + first ingest
 
@@ -298,18 +299,18 @@ never a separate resurrection path.
 
 ## Migration Plan
 
-This change is design + one safe contract reservation; the migration below is the
-implementation lane's plan, recorded so the next slice has a concrete start.
+This change began as design + one safe contract reservation. The migration below
+tracks the implementation status without weakening the proof-before-flip gate.
 
 1. (this lane) Reserve `complete_credential_capture` in the intent next-step enum,
    regenerate contract artifacts, and pin the `api_network` branch to
    `unsupported` in `owner-connection-intent.test.js`.
-2. Build the per-connection encrypted credential store (Decision 1) with the
+2. Done: build the per-connection encrypted credential store (Decision 1) with the
    no-leakage read contract and rotation/revoke/delete semantics (Decision 7).
-3. Build the owner-mediated capture surface (Decision 2) — local stdin and/or
-   owner-session — that writes to the store and never exposes the secret to the
-   agent.
-4. Implement connection-scoped subprocess injection (Decision 5) in
+3. Done for existing connections: build the owner-mediated owner-session capture
+   surface (Decision 2) that writes to the store and never exposes the secret to
+   the agent.
+4. Done: implement connection-scoped subprocess injection (Decision 5) in
    `collector-runner.ts`, replacing process-global env for static-secret
    connectors.
 5. Land the end-to-end proof test + two-mailbox proof (Decision 6).
@@ -323,11 +324,10 @@ delete rules.
 
 ## Open Questions
 
-- Should the owner-session capture surface and the local-stdin capture surface both
-  ship, or is one sufficient for the first proof? Leaning local-stdin first
-  (Decision 2) because it reuses the connector's existing `credentials`
-  `INTERACTION` and needs no new authenticated HTML surface; revisit if owners want
-  a browser capture path.
+- Should the local-stdin capture surface also ship, or is the owner-session
+  capture route sufficient for the first proof? The owner-session route now covers
+  existing connections; local-stdin remains a possible companion because it reuses
+  the connector's existing `credentials` `INTERACTION`.
 - Does GitHub's PAT (broad repo scope) or Gmail's app-password warrant a
   per-connector capture warning or scope hint at capture time? Flagged for the
   implementation lane; out of scope here.
@@ -354,6 +354,6 @@ delete rules.
 - [x] A proof precondition is specified before any route flips `api_network` off
       `unsupported`, including the no-secret-leakage, no-row-before-capture,
       two-account, and revoke/delete-durability gates.
-- [ ] Implementation: credential store, capture surface, connection-scoped
-      injection, end-to-end proof, and the intent-branch flip — deferred to the
-      implementation lane (out of scope here).
+- [ ] Implementation: credential store, owner-session capture surface,
+      connection-scoped injection, and synthetic no-leakage/lifecycle tests have
+      landed; the live end-to-end proof and intent-branch flip remain deferred.

@@ -60,19 +60,12 @@ pinned to stay `unsupported` until a future lane lands the primitive with proof.
 
 ## Impact
 
-- OpenSpec design + a single safe contract reservation in this lane. No credential
-  store, capture surface, or injection path is implemented here.
-- Code touched in this lane: `packages/reference-contract/src/reference/index.ts`
-  (reserve the enum value), the regenerated contract artifacts
-  (`reference-implementation/openapi/*.json`,
-  `reference-implementation/docs/generated/*.md`), and
-  `reference-implementation/test/owner-connection-intent.test.js` (pin
-  reserved-but-not-emitted).
-- Future implementation areas (out of scope here, each handling a real provider
-  secret): a per-connection credential store, an owner-session/local capture
-  surface, connection-scoped injection in `packages/polyfill-connectors/src/collector-runner.ts`,
-  and the `api_network` intent-branch flip in
-  `reference-implementation/server/routes/owner-connection-intent.ts`.
+- Current implementation includes the enum reservation, per-connection encrypted
+  credential store, connection-scoped injection seam, and an owner-session
+  capture route for existing connections.
+- Remaining implementation area: the live end-to-end proof for intent → owner
+  capture → first ingest → addressable `connection_id`, followed by the
+  `api_network` intent-branch/catalog flip in the same reviewable unit.
 - Downstream: `add-owner-agent-control-surface`'s deferred "API/network connection
   initiation" packet is the upstream that named this gap; this change is its
   promotion. The catalog flip from `unsupported` stays gated on the proof here.

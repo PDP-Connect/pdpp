@@ -72,6 +72,10 @@ import {
   makeConnectorInstanceSourceBindingKey,
   resolveOwnerConnectorInstanceNamespace,
 } from './stores/connector-instance-store.js';
+import {
+  createPostgresConnectorInstanceCredentialStore,
+  createSqliteConnectorInstanceCredentialStore,
+} from './stores/connector-instance-credential-store.js';
 import { postgresPersistContentAddressedBlob } from './postgres-records.js';
 import { createConsentStore } from './stores/consent-store.js';
 import { createOwnerDeviceAuthStore } from './stores/owner-device-auth-store.js';
@@ -374,6 +378,7 @@ import {
   mountRefConnectorScheduleUpsert,
   mountRefConnectorsList,
 } from './routes/ref-connectors.ts';
+import { mountRefStaticSecretCredentialCapture } from './routes/ref-static-secret-credentials.ts';
 import { mountRsBlobRead, mountRsReadQueries } from './routes/rs-read.ts';
 import { mountOwnerConnectionRename, mountOwnerConnectionsList } from './routes/owner-connections.ts';
 import { mountOwnerConnectionSchedule } from './routes/owner-connection-schedule.ts';
@@ -1211,6 +1216,12 @@ function createRequestConnectorInstanceStore() {
   return isPostgresStorageBackend()
     ? createPostgresConnectorInstanceStore()
     : createSqliteConnectorInstanceStore();
+}
+
+function createRequestConnectorInstanceCredentialStore() {
+  return isPostgresStorageBackend()
+    ? createPostgresConnectorInstanceCredentialStore()
+    : createSqliteConnectorInstanceCredentialStore();
 }
 
 async function resolveOwnerConnectorNamespace(req, connectorId, options = {}) {
@@ -3161,6 +3172,18 @@ function buildAsApp(opts = {}) {
   mountRefConnectionDetail(app, refConnectorsContext);
   mountRefConnectorInstanceDetail(app, refConnectorsContext);
   mountRefConnectionSetDisplayName(app, refConnectorsContext);
+  mountRefStaticSecretCredentialCapture(app, {
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    handleError,
+    pdppError,
+    createRequestConnectorInstanceCredentialStore,
+    resolveOwnerConnectorNamespace,
+    getOwnerSubjectId,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    setReferenceTraceId,
+  });
 
   mountRefDeployment(app, refAdminContext);
 

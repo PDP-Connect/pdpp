@@ -58,12 +58,16 @@
       `server/queries/connector-instance-credentials/`. AES-256-GCM under
       `PDPP_CREDENTIAL_ENCRYPTION_KEY`, fail-closed when unconfigured; reads
       project only kind/status/fingerprint/timestamps. 15 tests.)
-- [ ] Build the owner-mediated capture surface (local stdin `credentials`
+- [x] Build the owner-mediated capture surface (local stdin `credentials`
       interaction and/or owner-session route) that writes to the store and never
       exposes the secret to the agent.
-      (DEFERRED — needs a real owner-supplied provider secret; out of scope for
-      this no-human-secret lane. The store's `capture()` write path is the seam a
-      capture surface calls.)
+      (`POST /_ref/connections/:connectorInstanceId/static-secret-credential`
+      is owner-session-only, resolves the connection under the owner subject,
+      accepts the static secret only in the request body, writes through the
+      encrypted store's `capture()` seam, emits non-secret audit evidence, and
+      returns only metadata plus a run-next-step. Owner-agent bearers without the
+      owner-session cookie fail closed; the route is for existing connections and
+      does not flip `api_network` intent support.)
 - [x] Implement connection-scoped subprocess injection in
       `packages/polyfill-connectors`, replacing process-global env for
       static-secret connectors.
@@ -83,10 +87,11 @@
 - [ ] Land the end-to-end proof: intent → owner-mediated capture → first ingest →
       addressable labeled `connection_id`, with audit asserting no secret leak and
       two mailboxes producing two `connection_id`s; plus revoke/delete durability.
-      (PARTIAL — revoke/delete durability, two-mailbox distinctness, and
-      no-leakage are proven at the store/seam/injection level with synthetic
-      secrets. The intent → owner-capture → first-ingest LIVE leg requires a real
-      provider secret and is deferred to a lane that can supply one.)
+      (PARTIAL — owner-session capture, revoke/delete durability, two-mailbox
+      distinctness, and no-leakage are proven at the route/store/seam/injection
+      level with synthetic secrets. The intent → owner-capture → first-ingest
+      LIVE leg still requires a real provider secret and is deferred to a lane
+      that can supply one.)
 - [ ] Flip the `api_network` intent branch to return
       `complete_credential_capture` and flip the catalog `initiate_connection`
       descriptor — only after the proof lands, in the same reviewable unit.
@@ -106,8 +111,12 @@ Reproducible from the worktree root:
 4. `node --test reference-implementation/test/owner-connection-intent.test.js`
    passes, including the new assertion that the gmail `api_network` case stays
    `unsupported` and is not `complete_credential_capture`.
-5. `git diff --check` reports no whitespace errors.
-6. The design names: the per-connection encrypted credential store (instance-scoped,
+5. `node --test reference-implementation/test/static-secret-owner-capture-route.test.js`
+   passes, proving owner-session capture fail-closed behavior, no secret in the
+   response/audit, per-connection scoping, rotation, owner scoping, and
+   owner-agent bearer rejection.
+6. `git diff --check` reports no whitespace errors.
+7. The design names: the per-connection encrypted credential store (instance-scoped,
    never returned), owner-mediated capture (agent never sees the secret),
    connection-scoped injection (two mailboxes → two `connection_id`s),
    `complete_credential_capture` justified against the contract, distinct
