@@ -309,9 +309,10 @@ test("feedDescription distinguishes hybrid from lexical for search lenses", () =
   assert.equal(feedDescription("time_range", true), feedDescription("time_range", false));
 });
 
-test("feedCountLabel formats counts with locale separators", () => {
+test("feedCountLabel formats counts with locale separators and singular grammar", () => {
   assert.equal(feedCountLabel(0, false, false), "0 records");
-  assert.equal(feedCountLabel(1, false, false), "1 records");
+  assert.equal(feedCountLabel(1, false, false), "1 record");
+  assert.equal(feedCountLabel(1, true, false), "1 match");
   assert.equal(feedCountLabel(50, false, true), "50+ records");
   assert.equal(feedCountLabel(12, true, false), "12 matches");
   assert.equal(feedCountLabel(7, true, true), "7+ matches");

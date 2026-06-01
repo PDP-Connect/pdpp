@@ -81,6 +81,8 @@ const MS_PER_DAY = 86_400_000;
 interface ExplorerFilterItem {
   label: string;
   value: string;
+  /** Link to the same view with just this one filter dropped. */
+  removeHref: string;
 }
 
 export function RecordsExplorerView({ data, routes }: { data: RecordsExplorerData; routes: Routes }) {
@@ -156,6 +158,7 @@ export function RecordsExplorerView({ data, routes }: { data: RecordsExplorerDat
 function buildExplorerFilterItems({
   connections,
   query,
+  routes,
   selectedConnectionIds,
   selectedStreams,
   since,
@@ -163,6 +166,7 @@ function buildExplorerFilterItems({
 }: {
   connections: ExplorerConnectionFacet[];
   query: string;
+  routes: Routes;
   selectedConnectionIds: string[];
   selectedStreams: string[];
   since: string;
@@ -183,16 +187,53 @@ function buildExplorerFilterItems({
             connectorId: conn?.connectorId ?? id,
             displayName: conn?.displayName,
           }),
+      // Drop just this connection, preserving query, the other connections,
+      // streams, and the date window.
+      removeHref: buildExplorerHref(routes, {
+        query,
+        connectionIds: selectedConnectionIds.filter((c) => c !== id),
+        streams: selectedStreams,
+        since,
+        until,
+      }),
     });
   }
   for (const stream of selectedStreams) {
-    filterItems.push({ label: "stream", value: stream });
+    filterItems.push({
+      label: "stream",
+      value: stream,
+      removeHref: buildExplorerHref(routes, {
+        query,
+        connectionIds: selectedConnectionIds,
+        streams: selectedStreams.filter((s) => s !== stream),
+        since,
+        until,
+      }),
+    });
   }
   if (since) {
-    filterItems.push({ label: "since", value: since });
+    filterItems.push({
+      label: "since",
+      value: since,
+      removeHref: buildExplorerHref(routes, {
+        query,
+        connectionIds: selectedConnectionIds,
+        streams: selectedStreams,
+        until,
+      }),
+    });
   }
   if (until) {
-    filterItems.push({ label: "until", value: until });
+    filterItems.push({
+      label: "until",
+      value: until,
+      removeHref: buildExplorerHref(routes, {
+        query,
+        connectionIds: selectedConnectionIds,
+        streams: selectedStreams,
+        since,
+      }),
+    });
   }
   return filterItems;
 }
@@ -231,6 +272,7 @@ function ExplorerMain({
   const filterItems = buildExplorerFilterItems({
     connections,
     query,
+    routes,
     selectedConnectionIds,
     selectedStreams,
     since,

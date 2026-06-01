@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildBlobAffordance, buildPeekFields, exactWindowSummaryText } from "./explorer-utils.ts";
+import { buildBlobAffordance, buildPeekFields, exactWindowSummaryText, feedCountLabel } from "./explorer-utils.ts";
 
 test("buildPeekFields represents ungranted metadata fields as withheld", () => {
   const fields = buildPeekFields({ id: "rec_1", summary: "sensitive note", title: "Visible title" }, [
@@ -42,6 +42,19 @@ test("buildBlobAffordance links only granted declared blob fields", () => {
   );
 
   assert.equal(buildBlobAffordance({ blob_ref: { blob_id: "blob_1" } }, [{ name: "blob_ref", granted: true }]), null);
+});
+
+test("feedCountLabel uses singular nouns only for an exact, non-truncated count of one", () => {
+  // Plural for zero and many.
+  assert.equal(feedCountLabel(0, false, false), "0 records");
+  assert.equal(feedCountLabel(50, false, false), "50 records");
+  assert.equal(feedCountLabel(12, true, false), "12 matches");
+  // Singular for exactly one.
+  assert.equal(feedCountLabel(1, false, false), "1 record");
+  assert.equal(feedCountLabel(1, true, false), "1 match");
+  // Truncation forces plural even at one — "1+ records", never "1+ record".
+  assert.equal(feedCountLabel(1, false, true), "1+ records");
+  assert.equal(feedCountLabel(7, true, true), "7+ matches");
 });
 
 test("exactWindowSummaryText is explicit about exact loaded-stream scope", () => {

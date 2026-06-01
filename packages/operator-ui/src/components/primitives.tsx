@@ -338,7 +338,14 @@ export function FilterSummary({
   items,
   resetHref,
 }: {
-  items: Array<{ label: string; value: string }>;
+  /**
+   * Active filter chips. When an item carries `removeHref`, the chip renders a
+   * dismiss control that links to the same view with just that one filter
+   * dropped, so a multi-filter selection can be narrowed one chip at a time
+   * instead of only "clear all". Items without `removeHref` stay display-only,
+   * which keeps every existing caller backward compatible.
+   */
+  items: Array<{ label: string; value: string; removeHref?: string }>;
   resetHref?: string;
 }) {
   if (items.length === 0) {
@@ -349,11 +356,22 @@ export function FilterSummary({
       <span className="text-muted-foreground">Active</span>
       {items.map((item) => (
         <span
-          className="inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-background px-2 py-0.5"
+          className={`inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-background py-0.5 pl-2 ${
+            item.removeHref ? "pr-1" : "pr-2"
+          }`}
           key={`${item.label}:${item.value}`}
         >
           <span className="text-muted-foreground">{item.label}</span>
           <span className="font-medium text-foreground">{item.value}</span>
+          {item.removeHref ? (
+            <Link
+              aria-label={`Remove ${item.label} filter ${item.value}`}
+              className="-mr-0.5 inline-flex size-4 items-center justify-center rounded-full text-muted-foreground leading-none hover:bg-muted hover:text-foreground"
+              href={item.removeHref}
+            >
+              ×
+            </Link>
+          ) : null}
         </span>
       ))}
       {resetHref ? (
