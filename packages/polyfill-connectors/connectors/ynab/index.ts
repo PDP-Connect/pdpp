@@ -310,9 +310,9 @@ export function rewindOneMonth(monthIso: string): string {
  *     unbounded forward churn this gate removes (~273 versions/budget in the
  *     2026-05-26 churn report).
  *
- * Every remaining field — name, currency locale, date format, `first_month`,
- * `deleted` — is a real budget-summary source fact, so a genuine edit to any
- * of them still re-emits the budget. This matches the design-note rule
+ * Every remaining field — name, currency locale, date format, and
+ * `first_month` — is a real budget-summary source fact, so a genuine edit to
+ * any of them still re-emits the budget. This matches the design-note rule
  * "exclude volatile collection-time fields from durable record identity
  * unless those fields are source facts"
  * (design-notes/record-version-churn-and-noop-semantics-2026-05-26.md).
