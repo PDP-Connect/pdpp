@@ -287,6 +287,18 @@ test('owner-agent initiating a browser-bound connector (Amazon) gets a typed uns
     assert.equal(body.next_step.kind, 'unsupported');
     assert.match(body.next_step.reason, /browser/i);
     assert.match(body.next_step.reason, /browser_collector|primitive/i);
+    // Honesty: the reason must point at the owner-run procedure that works today
+    // (the runbook), not loop the owner back to a dashboard that lists Amazon as
+    // unsupported. It must also state that the primitive ships and only committed
+    // live proof is pending — not imply the whole primitive is missing.
+    assert.match(body.next_step.reason, /browser-collector-proof-runbook\.md/);
+    assert.match(body.next_step.reason, /already ships|proof/i);
+    // The reason names the eventual next-step kind but the route must NOT yet
+    // advertise it as the actual next step. Per the spec proof gate
+    // (add-browser-collector-enrollment-primitive design Decision 3/4), the flip
+    // to `enroll_browser_collector` lands with the committed live proof, not via
+    // copy. The structural next_step.kind stays `unsupported`.
+    assert.notEqual(body.next_step.kind, 'enroll_browser_collector');
 
     const audit = findIntentAuditEvent(resp);
     assert.equal(audit.status, 'succeeded');

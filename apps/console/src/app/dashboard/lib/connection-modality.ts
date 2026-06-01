@@ -13,10 +13,15 @@
  *
  * The proven console creation primitive is local-collector device enrollment via
  * the cookie-authed `POST /_ref/device-exporters/enrollment-codes` route
- * (surfaced at `/dashboard/device-exporters`). That path is proven only for the
- * filesystem-class collectors `claude_code` and `codex`. Everything else
- * (browser-bound like Amazon, API/network like GitHub/Gmail) is honestly
- * unsupported from the console today.
+ * (surfaced at `/dashboard/device-exporters`). That path is proven one-click for
+ * the filesystem-class collectors `claude_code` and `codex`. Browser-bound
+ * sources (Amazon, Chase, ChatGPT) share the same enrollment route — it accepts
+ * them and enrolls a `browser_collector` instance — but the console deliberately
+ * does NOT advertise a one-click flow for them until committed proof shows a real
+ * logged-in browser session ingesting end-to-end. Those modalities therefore
+ * stay in the unsupported list, with a `runbookPath` pointing at the owner-run
+ * procedure that works today. API/network sources (GitHub/Gmail) have no owner
+ * connect route at all and remain flatly unsupported from the console.
  *
  * Keep this list and the backend classifier in lockstep. The backend classifies
  * from a connector manifest's `runtime_requirements.bindings`; the console has no
@@ -84,6 +89,15 @@ export interface UnsupportedAddModality {
   modality: Exclude<ConnectionAddModality, "local_collector">;
   /** Plain-language dashboard copy explaining why the flow is unavailable. */
   ownerFacingReason: string;
+  /**
+   * Optional repo doc path with the owner-run procedure that *does* work today,
+   * for a modality whose primitive ships but whose one-click flow is gated on
+   * committed proof. Rendered inline as a `code` path (matching the console's
+   * existing `docs/operator/*` references), never as an "Add connection" button —
+   * pointing at the documented manual path is honest discoverability, not an
+   * advertised next step the reference has not yet proven.
+   */
+  runbookPath?: string;
 }
 
 /**
@@ -99,9 +113,10 @@ export const UNSUPPORTED_ADD_MODALITIES: readonly UnsupportedAddModality[] = [
     label: "Browser-bound sources",
     examples: ["Amazon", "Chase", "ChatGPT"],
     missingPrimitive:
-      "a browser-collector enrollment primitive (a browser_collector source kind, binding-aware enrollment, and committed proof that a local collector drives the browser connector end-to-end)",
+      "the browser-collector enrollment primitive (browser_collector source kind + binding-aware enrollment) already ships; what remains is committed proof that a local collector drives the browser connector end-to-end with a real logged-in session — until that lands, no one-click flow is advertised",
     ownerFacingReason:
-      "needs a local browser enrollment flow, so PDPP can confirm the owner completes provider login locally before any data is ingested",
+      "the enrollment path exists, but the console does not yet offer a one-click flow: a browser-bound connection needs a real, owner-logged-in browser session running locally, which you complete yourself with the local collector",
+    runbookPath: "docs/operator/browser-collector-proof-runbook.md",
   },
   {
     modality: "api_network",

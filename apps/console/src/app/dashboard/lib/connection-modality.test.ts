@@ -25,6 +25,9 @@ const COLLECTOR_RUN_CONNECTORS_LITERAL_RE = /COLLECTOR_RUN_CONNECTORS\s*=\s*\[([
 const SURROUNDING_QUOTES_RE = /^["']|["']$/g;
 const BROWSER_COLLECTOR_PRIMITIVE_RE = /browser-collector/;
 const API_NETWORK_PRIMITIVE_RE = /implicitly on first ingest|API-connect/;
+const PRIMITIVE_SHIPS_RE = /already ships|exists/i;
+const PROOF_PENDING_RE = /proof/i;
+const RUNBOOK_DOC_HEADING_RE = /Browser-Collector Proof Runbook/;
 
 test("supported local-collector set is exactly claude_code and codex", () => {
   assert.deepEqual([...SUPPORTED_LOCAL_COLLECTOR_CONNECTORS], ["claude_code", "codex"]);
@@ -90,6 +93,52 @@ test("browser-bound modality keeps Amazon as the acceptance exemplar", () => {
     "Amazon must remain the named browser-bound exemplar (matches the backend intent fixture)"
   );
   assert.match(browserBound.missingPrimitive, BROWSER_COLLECTOR_PRIMITIVE_RE);
+});
+
+test("browser-bound copy is honest that the primitive ships and only live proof is pending", () => {
+  // Guard against the copy silently reverting to over-stating the gap. The
+  // `browser_collector` source kind + binding-aware enrollment already shipped
+  // (see add-browser-collector-enrollment-primitive §3.1–3.3 + the green
+  // device-exporter route tests); the enrollment route already enrolls a second
+  // Amazon account as a distinct browser_collector instance. The ONLY remaining
+  // gap is committed proof of a real logged-in browser session ingesting. The
+  // copy must say the primitive ships and name proof — not imply the whole
+  // primitive is missing.
+  const browserBound = UNSUPPORTED_ADD_MODALITIES.find((entry) => entry.modality === "browser_bound");
+  assert.ok(browserBound);
+  assert.match(browserBound.missingPrimitive, PRIMITIVE_SHIPS_RE);
+  assert.match(browserBound.missingPrimitive, PROOF_PENDING_RE);
+});
+
+test("browser-bound modality points at the owner-run runbook that works today", () => {
+  // The intent route and the console used to send the owner in a loop
+  // ("add from the dashboard" <-> "not supported from the console"). The console
+  // must point at the documented manual path that actually works today instead.
+  const browserBound = UNSUPPORTED_ADD_MODALITIES.find((entry) => entry.modality === "browser_bound");
+  assert.ok(browserBound);
+  assert.equal(browserBound.runbookPath, "docs/operator/browser-collector-proof-runbook.md");
+});
+
+test("the browser-bound runbook path resolves to a committed doc", async () => {
+  const browserBound = UNSUPPORTED_ADD_MODALITIES.find((entry) => entry.modality === "browser_bound");
+  assert.ok(browserBound?.runbookPath, "browser_bound must carry a runbookPath");
+  // This test file lives at apps/console/src/app/dashboard/lib/; the repo root is
+  // six segments up (lib → dashboard → app → src → console → apps → root).
+  // Resolve the runbook path against it and confirm the doc the copy points at is
+  // real, not a dangling reference.
+  const repoRoot = new URL("../../../../../../", import.meta.url);
+  const runbookUrl = new URL(browserBound.runbookPath, repoRoot);
+  const contents = await readFile(fileURLToPath(runbookUrl), "utf8");
+  assert.match(contents, RUNBOOK_DOC_HEADING_RE);
+});
+
+test("api/network modality stays flatly unsupported with no runbook path", () => {
+  // API/network sources have no owner connect route at all, so they must NOT
+  // carry a runbookPath — only modalities whose primitive ships but whose
+  // one-click flow is proof-gated get one.
+  const apiNetwork = UNSUPPORTED_ADD_MODALITIES.find((entry) => entry.modality === "api_network");
+  assert.ok(apiNetwork);
+  assert.equal(apiNetwork.runbookPath, undefined);
 });
 
 test("api/network modality names the implicit-on-ingest gap", () => {

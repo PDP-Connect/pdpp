@@ -77,7 +77,11 @@ export type ConnectorIntentModality = "local_collector" | "browser_bound" | "api
 //   - a `filesystem` binding  → `local_collector` (claude-code, codex). The
 //     reference is proven to enroll and run these via the device-exporter path.
 //   - a `browser` binding      → `browser_bound` (amazon, chase, chatgpt). The
-//     reference has no proven browser-collector enrollment primitive.
+//     `browser_collector` enrollment primitive ships (the enrollment route
+//     enrolls these as `browser_collector` instances), but committed proof of a
+//     real logged-in browser session ingesting end-to-end is still pending, so
+//     the intent route does not yet advertise a one-click next step (the flip
+//     lands with the proof; see `unsupportedReason`).
 //   - `network` only            → `api_network` (github, gmail). The reference
 //     has no standalone owner-agent API-connect route.
 //   - a `null` manifest         → `unknown` (connector not registered/known).
@@ -424,7 +428,7 @@ export function mountOwnerConnectionIntent(app: AppLike, ctx: MountOwnerConnecti
 // browser-collector enrollment or standalone API-connect route.
 export function unsupportedReason(modality: ConnectorIntentModality): string {
   if (modality === "browser_bound") {
-    return "This connector is browser-bound. The reference has no proven browser-collector enrollment primitive: a `browser_collector` source kind (distinct from `local_device`), binding-aware enrollment gating, and committed proof that a local collector runs the browser connector end-to-end and ingests. Until that ships, add this connection from the dashboard.";
+    return "This connector is browser-bound. The `browser_collector` enrollment primitive (a `browser_collector` source kind distinct from `local_device`, plus binding-aware enrollment) already ships: the owner-authed enrollment-code route accepts this connector and enrolls a second account as a distinct `browser_collector` instance. What is not yet committed is end-to-end proof that a real owner-logged-in browser session ingests through that path, so this route stays `unsupported` and does not advertise a one-click next step. To add the connection today, follow the owner-run procedure in `docs/operator/browser-collector-proof-runbook.md` (mint an enrollment code for this connector, then run the monorepo local collector against your logged-in session). The one-click owner-agent next step lands together with the committed live proof.";
   }
   if (modality === "api_network") {
     return "This connector is API/network-only. The reference has no standalone owner-agent API-connect route; an API connection materializes implicitly on first ingest. Until a typed API-connect primitive ships, add this connection from the dashboard.";

@@ -191,6 +191,11 @@ const ADD_CONNECTION_RENDERS_UNSUPPORTED = /UNSUPPORTED_ADD_MODALITIES\.map\(/;
 const ADD_CONNECTION_DEEP_LINKS_PRESELECTED =
   /\$\{deviceExportersHref\}\?connector=\$\{encodeURIComponent\(connectorId\)\}/;
 const ADD_CONNECTION_NAMES_NOT_SUPPORTED_YET = /Not supported from the console yet/;
+// An unsupported modality that carries a `runbookPath` (browser-bound) must
+// surface that documented owner-run path inline, so the owner is pointed at the
+// real manual flow instead of a dead end. The intent route and the console used
+// to send the owner in a loop; this closes it.
+const ADD_CONNECTION_SURFACES_RUNBOOK_PATH = /entry\.runbookPath \?[\s\S]*?\{entry\.runbookPath\}/;
 // The PageHeader must not promise that every connection supports Sync now.
 const NO_BLANKET_SYNC_NOW_PROMISE = /Click Sync now to pull fresh data/;
 const QUALIFIED_SYNC_NOW = /Where a connector supports an owner-triggered pull, Sync now refetches it/;
@@ -219,6 +224,9 @@ test("add-connection entry point sources its taxonomy from the shared module", a
   // Unsupported modalities are named honestly, not hidden behind a generic
   // "not supported" line.
   assert.match(src, ADD_CONNECTION_NAMES_NOT_SUPPORTED_YET);
+  // Where a documented owner-run path exists today (browser-bound), the entry
+  // surfaces it instead of dead-ending the owner.
+  assert.match(src, ADD_CONNECTION_SURFACES_RUNBOOK_PATH);
 });
 
 test("page header no longer promises every connection supports Sync now", async () => {

@@ -355,11 +355,14 @@ export function RecordsListView({
  * `/dashboard/device-exporters` (`POST /_ref/device-exporters/enrollment-codes`).
  *
  * This entry point gives owners a *real path*, not a dead button: the connectors
- * the reference can create from here (`claude_code`, `codex`) deep-link into the
- * enrollment form pre-selected; the connectors it cannot create yet (browser-
- * bound like Amazon, API/network like GitHub/Gmail) are listed honestly with a
- * plain-language reason and a technical primitive in the tooltip — never an
- * implied "Add connection" or "Sync now" that would silently fail.
+ * the reference can create one-click from here (`claude_code`, `codex`) deep-link
+ * into the enrollment form pre-selected; the connectors it does not offer a
+ * one-click flow for yet (browser-bound like Amazon, API/network like
+ * GitHub/Gmail) are listed honestly with a plain-language reason and a technical
+ * primitive in the tooltip — never an implied "Add connection" or "Sync now" that
+ * would silently fail. Where a documented owner-run procedure exists today
+ * (browser-bound connectors carry a `runbookPath`), the entry surfaces that path
+ * so the owner is pointed at the real manual flow instead of a dead end.
  *
  * The supported set and the unsupported reasons come from the shared
  * `connection-modality` module, which is the cookie-session sibling of the
@@ -407,6 +410,19 @@ function AddConnectionGuidance({ deviceExportersHref }: { deviceExportersHref: s
                 <span className="text-foreground">{entry.label}</span>{" "}
                 <span className="text-muted-foreground">({entry.examples.join(", ")})</span> — {entry.ownerFacingReason}
                 {"."}
+                {entry.runbookPath ? (
+                  <>
+                    {" "}
+                    To add one today, follow{" "}
+                    <code
+                      className="pdpp-eyebrow font-mono text-foreground"
+                      data-testid={`runbook-path-${entry.modality}`}
+                    >
+                      {entry.runbookPath}
+                    </code>
+                    {"."}
+                  </>
+                ) : null}
               </li>
             ))}
           </ul>
