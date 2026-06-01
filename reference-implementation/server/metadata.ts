@@ -617,7 +617,7 @@ const OWNER_AGENT_CONTROL_ACTION_CATALOG: readonly OwnerAgentControlActionDescri
     method: null,
     urlTemplate: null,
     reason:
-      "Connection delete is not implemented as an owner-agent control route in this build. The connector-instance store has no delete primitive (only status/label mutation), and no browser owner-session route deletes a connection either, so there is no existing semantic to share. A connection-scoped delete needs a defined cascade contract (records, dataset, spine, device source-instance rows) before any route.",
+      "Connection delete is not implemented as an owner-agent control route in this build. The connector-instance store has no delete primitive (only status/label mutation), and no browser owner-session route deletes a connection either, so there is no existing semantic to share. The connection-scoped delete cascade is now specified (records/record-changes/version-counter/blobs/search indices/attention/schedule/active-run erased per connection_id; device source-instance back-reference cleared; audit spine, sibling connections, and disclosure grants preserved; transactional, run-active-refusing, and non-resurrecting for default-account connections) in the add-owner-connection-delete-contract change. The route and store primitive ship in a later lane gated on that contract's acceptance-test matrix; until then this action stays unsupported.",
   },
   {
     family: "revoke_connection",
