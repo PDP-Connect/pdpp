@@ -295,14 +295,22 @@ export function RecordsListView({
         <HealthStat label="Stale" tone={staleCount > 0 ? "warning" : "neutral"} value={staleCount.toLocaleString()} />
       </section>
 
+      {/*
+       * Always-visible on the live list: the honest add-connection guidance is
+       * the only surface that names what can be added today (claude_code/codex,
+       * one-click) versus what is owner-run-gated (browser-bound like Amazon →
+       * runbook path). Rendering it once here — not only inside the empty-state
+       * branches — means an owner whose console is already fully populated (no
+       * empty-state callout shows) is no longer silently dropped past it by the
+       * persistent "Add connection" header button, which deep-links straight to
+       * the device-exporters form that only offers the local-collector set. That
+       * dead-end was the owner-reported "no obvious way to add a second Amazon".
+       */}
+      {interactive ? <AddConnectionGuidance deviceExportersHref={routes.section.deviceExporters} /> : null}
+
       <Section title={`Connections (${primaryConnections.length})`}>
         {primaryConnections.length === 0 ? (
-          <>
-            <EmptyState hint={primaryEmptyHint} title="No data ingested yet" />
-            {interactive && empty.length === 0 ? (
-              <AddConnectionGuidance deviceExportersHref={routes.section.deviceExporters} />
-            ) : null}
-          </>
+          <EmptyState hint={primaryEmptyHint} title="No data ingested yet" />
         ) : (
           <DataList>
             {sorted.map((o) =>
@@ -325,7 +333,6 @@ export function RecordsListView({
           }
           title={`No data yet (${empty.length})`}
         >
-          {interactive ? <AddConnectionGuidance deviceExportersHref={routes.section.deviceExporters} /> : null}
           <DataList>
             {empty.map((o) =>
               interactive ? (
@@ -344,12 +351,14 @@ export function RecordsListView({
 /**
  * Records-index header actions.
  *
- * The persistent "Add connection" action is the always-visible discoverability
- * fix: the detailed `AddConnectionGuidance` callout only renders in the empty /
- * no-data sections, so an owner who already has connections previously had no
- * visible path to add another. It is gated on `interactive` so the sandbox —
- * which cannot create connections — never shows a dead button. It points at the
- * same proven device-enrollment entry point the callout uses.
+ * The persistent "Add connection" action is the always-visible header entry: it
+ * deep-links to the proven device-enrollment form, which can only complete the
+ * local-collector set (claude_code/codex). On its own that silently dead-ends an
+ * owner who wants a browser-bound source (Amazon), so the live list also renders
+ * the detailed `AddConnectionGuidance` callout unconditionally (above the
+ * Connections section) — it names the supported one-click set and points
+ * browser-bound sources at their runbook. The button is gated on `interactive`
+ * so the sandbox — which cannot create connections — never shows a dead button.
  */
 function RecordsHeaderActions({ interactive, routes }: { interactive: boolean; routes: Routes }) {
   return (

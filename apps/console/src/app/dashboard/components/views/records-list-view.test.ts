@@ -250,10 +250,19 @@ test("persistent Add-connection action targets the device-enrollment entry point
 // local-collector-only "No data yet" wording.
 
 const ADD_CONNECTION_GUIDANCE_DEF = /function AddConnectionGuidance\(/;
-// The guidance is rendered (live only) — once in the no-data section and once
-// in the zero-connections empty state — and points at device enrollment.
+// The guidance is rendered (live only) and points at device enrollment.
 const ADD_CONNECTION_GUIDANCE_RENDERED =
   /<AddConnectionGuidance deviceExportersHref=\{routes\.section\.deviceExporters\}/;
+// The honest guidance must render UNCONDITIONALLY on the live list — gated only
+// on `interactive`, immediately before the Connections section — not buried
+// inside an empty-state branch. A fully-populated console (no empty-state
+// callout) would otherwise show only the header "Add connection" button, which
+// deep-links straight to the local-collector-only enrollment form and silently
+// dead-ends an owner who wants a browser-bound source (the reported "no obvious
+// way to add a second Amazon"). This invariant fails if the guidance regresses
+// to rendering only when `primaryConnections.length === 0` / `empty.length > 0`.
+const ADD_CONNECTION_GUIDANCE_ALWAYS_VISIBLE =
+  /\{interactive \? <AddConnectionGuidance deviceExportersHref=\{routes\.section\.deviceExporters\} \/> : null\}\s*\n\s*<Section title=\{`Connections/;
 // The supported set and unsupported reasons must come from the shared module,
 // not be re-hardcoded in the view (single source of truth with the backend).
 const ADD_CONNECTION_USES_SHARED_MODALITY = /from "\.\.\/\.\.\/lib\/connection-modality\.ts"/;
@@ -284,6 +293,18 @@ test("view exposes a real add-connection entry point, not a dead Add button", as
   // Supported connectors deep-link into the enrollment form pre-selected — a
   // real path, not just prose.
   assert.match(src, ADD_CONNECTION_DEEP_LINKS_PRESELECTED);
+});
+
+test("honest add-connection guidance is always visible on the live list (no populated-console dead-end)", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  // Rendered once, unconditionally for interactive, directly above the
+  // Connections section — so an owner whose console is fully populated still
+  // sees the supported-vs-runbook-gated breakdown instead of being silently
+  // dropped past it by the header "Add connection" button.
+  assert.match(src, ADD_CONNECTION_GUIDANCE_ALWAYS_VISIBLE);
+  // And it is not duplicated: the hoisted render is the only occurrence.
+  const renders = src.match(/<AddConnectionGuidance /g) ?? [];
+  assert.equal(renders.length, 1, "AddConnectionGuidance must render exactly once (hoisted, not per-branch)");
 });
 
 test("add-connection entry point sources its taxonomy from the shared module", async () => {
