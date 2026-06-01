@@ -204,6 +204,42 @@ function validateNekoBaseUrl(baseUrl) {
   };
 }
 
+function validateNekoCdpHttpUrl(cdpHttpUrl) {
+  if (typeof cdpHttpUrl !== 'string' || cdpHttpUrl.length === 0) {
+    throw new RunTargetError('run_target_invalid_url', 'cdp_http_url must be a non-empty URL when provided');
+  }
+  let parsed;
+  try {
+    parsed = new URL(cdpHttpUrl);
+  } catch {
+    throw new RunTargetError('run_target_invalid_url', 'cdp_http_url is not a valid URL');
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new RunTargetError(
+      'run_target_invalid_url',
+      `cdp_http_url scheme must be http: or https:, got ${parsed.protocol}`,
+    );
+  }
+  if (parsed.username || parsed.password) {
+    throw new RunTargetError(
+      'run_target_invalid_url',
+      'cdp_http_url must not include credentials',
+    );
+  }
+  if (parsed.search || parsed.hash) {
+    throw new RunTargetError(
+      'run_target_invalid_url',
+      'cdp_http_url must not include query or fragment',
+    );
+  }
+  const href = parsed.href.endsWith('/') ? parsed.href : `${parsed.href}/`;
+  return {
+    cdpHttpUrl: href,
+    host: parsed.hostname,
+    port: parsed.port || (parsed.protocol === 'https:' ? '443' : '80'),
+  };
+}
+
 /**
  * Coerce an optional metadata field to a trimmed string or undefined.
  * The metadata fields (`pageUrl`, `pageTitle`, `reason`) are forward-
@@ -288,6 +324,16 @@ function normalizeTargetDescriptor(input, { isNekoDescriptorApproved } = {}) {
           : input.baseUrl;
     const { baseUrl: normalizedBaseUrl, host, port } = validateNekoBaseUrl(baseUrl);
     const descriptor = { backend: 'neko', base_url: normalizedBaseUrl };
+    const cdpHttpUrlRaw =
+      source.cdp_http_url ?? source.cdpHttpUrl ?? input.cdp_http_url ?? input.cdpHttpUrl;
+    let cdpHost = null;
+    let cdpPort = null;
+    if (cdpHttpUrlRaw !== undefined && cdpHttpUrlRaw !== null && cdpHttpUrlRaw !== '') {
+      const normalizedCdp = validateNekoCdpHttpUrl(cdpHttpUrlRaw);
+      descriptor.cdp_http_url = normalizedCdp.cdpHttpUrl;
+      cdpHost = normalizedCdp.host;
+      cdpPort = normalizedCdp.port;
+    }
     const startUrl = optionalString(
       source.start_url ?? source.startUrl ?? input.start_url ?? input.startUrl,
     );
@@ -307,11 +353,13 @@ function normalizeTargetDescriptor(input, { isNekoDescriptorApproved } = {}) {
     const auth = normalizeAuthMetadata(source.auth ?? input.auth);
     if (auth !== undefined) descriptor.auth = auth;
     if (
-      !NEKO_PRIVATE_HOSTS.has(host) &&
+      (!NEKO_PRIVATE_HOSTS.has(host) || (cdpHost !== null && !NEKO_PRIVATE_HOSTS.has(cdpHost))) &&
       (typeof isNekoDescriptorApproved !== 'function' ||
         isNekoDescriptorApproved(descriptor, {
           host,
           port,
+          cdpHost,
+          cdpPort,
           runId: input.runId,
           interactionId: input.interactionId,
         }) !== true)
@@ -403,6 +451,8 @@ export function createRunTargetRegistry({
     backend,
     baseUrl,
     base_url,
+    cdpHttpUrl,
+    cdp_http_url,
     startUrl,
     start_url,
     auth,
@@ -427,6 +477,8 @@ export function createRunTargetRegistry({
       ws_url,
       baseUrl,
       base_url,
+      cdpHttpUrl,
+      cdp_http_url,
       startUrl,
       start_url,
       auth,
@@ -720,6 +772,8 @@ export function createRunTargetRegistry({
           backend: body.backend,
           baseUrl: body.baseUrl,
           base_url: body.base_url,
+          cdpHttpUrl: body.cdpHttpUrl,
+          cdp_http_url: body.cdp_http_url,
           startUrl,
           start_url: body.start_url,
           auth: body.auth,

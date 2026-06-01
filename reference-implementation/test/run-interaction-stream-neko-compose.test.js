@@ -28,8 +28,14 @@ test('n.eko compose overlay uses service DNS instead of reference network namesp
   assert.doesNotMatch(overlay, /network_mode:\s*["']?service:reference/);
   assert.match(overlay, /PDPP_NEKO_BASE_URL:\s*\$\{PDPP_NEKO_BASE_URL-http:\/\/neko:8080\/neko\}/);
   assert.match(overlay, /PDPP_NEKO_PROXY_ALLOWED_HOSTS:\s*\$\{PDPP_NEKO_PROXY_ALLOWED_HOSTS:-neko:8080\}/);
+  assert.match(overlay, /PDPP_STREAM_PLAYGROUND_NEKO_CDP_HTTP_URL:\s*\$\{PDPP_STREAM_PLAYGROUND_NEKO_CDP_HTTP_URL:-http:\/\/neko:9223\}/);
   assert.match(overlay, /PDPP_NEKO_CDP_HTTP_URL:\s*\$\{PDPP_NEKO_CDP_HTTP_URL-http:\/\/neko:9223\}/);
-  assert.match(overlay, /NEKO_USERNAME:\s*\$\{NEKO_USERNAME:-operator\}/);
+  assert.match(overlay, /NEKO_CONTROL_USERNAME:\s*\$\{NEKO_CONTROL_USERNAME:-admin\}/);
+  assert.match(overlay, /NEKO_CONTROL_PASSWORD:\s*\$\{NEKO_CONTROL_PASSWORD:-\}/);
+  assert.match(overlay, /NEKO_MEMBER_PROVIDER:\s*\$\{NEKO_MEMBER_PROVIDER:-multiuser\}/);
+  assert.match(overlay, /NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD:\s*\$\{NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD:-\}/);
+  assert.match(overlay, /NEKO_MEMBER_MULTIUSER_USER_PASSWORD:\s*\$\{NEKO_MEMBER_MULTIUSER_USER_PASSWORD:-\}/);
+  assert.match(overlay, /NEKO_USERNAME:\s*\$\{NEKO_USERNAME:-user\}/);
   assert.match(overlay, /NEKO_PASSWORD:\s*\$\{NEKO_PASSWORD:-neko\}/);
   assert.match(
     overlay,
@@ -47,7 +53,15 @@ test('n.eko compose overlay uses service DNS instead of reference network namesp
 
   assert.match(envExample, /PDPP_NEKO_BASE_URL=http:\/\/neko:8080\/neko/);
   assert.match(envExample, /PDPP_NEKO_PROXY_ALLOWED_HOSTS=neko:8080/);
+  assert.match(envExample, /PDPP_STREAM_PLAYGROUND_NEKO_CDP_HTTP_URL=http:\/\/neko:9223/);
   assert.match(envExample, /PDPP_NEKO_CDP_HTTP_URL=http:\/\/neko:9223/);
+  assert.match(envExample, /NEKO_CONTROL_USERNAME=admin/);
+  assert.match(envExample, /NEKO_CONTROL_PASSWORD=\n/);
+  assert.match(envExample, /NEKO_USERNAME=user/);
+  assert.match(envExample, /NEKO_PASSWORD=neko/);
+  assert.match(envExample, /NEKO_MEMBER_PROVIDER=multiuser/);
+  assert.match(envExample, /NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD=\n/);
+  assert.match(envExample, /NEKO_MEMBER_MULTIUSER_USER_PASSWORD=\n/);
   assert.match(envExample, new RegExp(`PDPP_NEKO_MANAGED_CONNECTORS=${MANAGED_CONNECTOR_IDS.join(',')}`));
   assert.match(envExample, /PDPP_NEKO_SURFACE_MODE=dynamic/);
   assert.match(envExample, /PDPP_NEKO_SURFACE_CAP=3/);

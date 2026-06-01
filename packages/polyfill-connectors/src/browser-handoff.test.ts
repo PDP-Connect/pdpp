@@ -31,6 +31,7 @@ import {
   BROWSER_SURFACE_ID_ENV,
   BROWSER_SURFACE_LEASE_ID_ENV,
   BROWSER_SURFACE_PROFILE_KEY_ENV,
+  BROWSER_SURFACE_REMOTE_CDP_URL_ENV,
   BROWSER_SURFACE_REQUIRED_ENV,
   BROWSER_SURFACE_STREAM_BASE_URL_ENV,
   manualAction,
@@ -193,7 +194,7 @@ function envWithManagedNekoSurface(): NodeJS.ProcessEnv {
     [BROWSER_SURFACE_PROFILE_KEY_ENV]: "chatgpt:owner",
     [BROWSER_SURFACE_ID_ENV]: "surface_static_1",
     [BROWSER_SURFACE_STREAM_BASE_URL_ENV]: "http://neko:8080/neko",
-    PDPP_BROWSER_SURFACE_REMOTE_CDP_URL: "http://neko:9223",
+    [BROWSER_SURFACE_REMOTE_CDP_URL_ENV]: "http://neko:9223",
   };
 }
 
@@ -378,7 +379,7 @@ test("prepareBrowserInteractionTarget can register an existing otp interaction i
   assert.equal(args.descriptor?.interaction_id, "int_existing_otp");
 });
 
-test("prepareManualAction registers managed n.eko descriptor from lease env without exposing CDP details", async () => {
+test("prepareManualAction registers managed n.eko descriptor with lease-scoped CDP details", async () => {
   const env = envWithManagedNekoSurface();
   const page = makeMockPage({
     url: "https://example.test/login",
@@ -420,6 +421,7 @@ test("prepareManualAction registers managed n.eko descriptor from lease env with
   assert.deepEqual(args.descriptor, {
     backend: "neko",
     base_url: "http://neko:8080/neko",
+    cdp_http_url: "http://neko:9223",
     interaction_id: result.interactionId,
     lease_id: "lease_neko_123",
     profile_key: "chatgpt:owner",
@@ -429,7 +431,6 @@ test("prepareManualAction registers managed n.eko descriptor from lease env with
   assert.equal(args.pageUrl, "https://example.test/login");
   assert.equal(args.pageTitle, "Sign in");
   assert.equal(args.reason, "manual_action");
-  assert.equal(JSON.stringify(args).includes("9223"), false, "raw CDP URL must not be registered");
   assert.equal(JSON.stringify(args).includes("REMOTE_CDP"), false, "CDP env key must not be registered");
 });
 
@@ -465,7 +466,7 @@ test("prepareManualAction does not fall back to CDP registration when managed n.
     [BROWSER_SURFACE_REQUIRED_ENV]: "neko",
     [BROWSER_SURFACE_LEASE_ID_ENV]: "lease_neko_123",
     [BROWSER_SURFACE_PROFILE_KEY_ENV]: "chatgpt:owner",
-    PDPP_BROWSER_SURFACE_REMOTE_CDP_URL: "http://neko:9223",
+    [BROWSER_SURFACE_REMOTE_CDP_URL_ENV]: "http://neko:9223",
   };
   let registerCalled = false;
   let resolveWsUrlCalled = false;

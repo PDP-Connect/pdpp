@@ -31,7 +31,7 @@ function assertNoRawBackendAuthority(value) {
   assert.equal(/ws:\/\/|wss:\/\//i.test(serialized), false);
   assert.equal(/https?:\/\/(?:127\.0\.0\.1|localhost|neko)(?::\d+)?/i.test(serialized), false);
   assert.equal(/\/json\/version|\/devtools\/browser/i.test(serialized), false);
-  assert.equal(/base_url|cdpWsUrl|cdpHttpUrl|webSocketDebuggerUrl/i.test(serialized), false);
+  assert.equal(/base_url|cdp_http_url|cdpWsUrl|cdpHttpUrl|webSocketDebuggerUrl/i.test(serialized), false);
   assert.equal(/docker\.sock|allocatorCredentials/i.test(serialized), false);
 }
 
@@ -210,6 +210,25 @@ test('register accepts the private Docker Compose n.eko service host', () => {
   registry.shutdown();
 });
 
+test('register preserves private Docker n.eko CDP HTTP URL on descriptors', () => {
+  const registry = createRunTargetRegistry({ sweepIntervalMs: 0 });
+  registry.register({
+    runId: 'run_neko_docker_cdp',
+    interactionId: 'int_a',
+    backend: 'neko',
+    base_url: VALID_NEKO_DOCKER_BASE_URL,
+    cdp_http_url: 'http://neko:9223',
+    deviceId: 'dev_1',
+  });
+
+  assert.deepEqual(registry.get({ runId: 'run_neko_docker_cdp', interactionId: 'int_a' }), {
+    backend: 'neko',
+    base_url: VALID_NEKO_DOCKER_BASE_URL,
+    cdp_http_url: 'http://neko:9223/',
+  });
+  registry.shutdown();
+});
+
 test('cross-interaction isolation: registering for (run, intA) does not surface for (run, intB)', () => {
   const registry = createRunTargetRegistry({ sweepIntervalMs: 0 });
   registry.register({
@@ -368,6 +387,23 @@ test('register rejects neko descriptors with non-loopback base_url', () => {
   registry.shutdown();
 });
 
+test('register rejects unapproved non-private n.eko CDP HTTP URL', () => {
+  const registry = createRunTargetRegistry({ sweepIntervalMs: 0 });
+  assert.throws(
+    () =>
+      registry.register({
+        runId: 'run_a',
+        interactionId: 'int_a',
+        backend: 'neko',
+        base_url: VALID_NEKO_DOCKER_BASE_URL,
+        cdp_http_url: 'http://example.com:9223/',
+        deviceId: 'dev_1',
+      }),
+    (err) => err.code === 'run_target_non_loopback',
+  );
+  registry.shutdown();
+});
+
 test('register accepts dynamic managed n.eko descriptor approved by lease metadata', () => {
   const approved = [];
   const registry = createRunTargetRegistry({
@@ -381,7 +417,10 @@ test('register accepts dynamic managed n.eko descriptor approved by lease metada
         descriptor.lease_id === 'lease_1' &&
         descriptor.profile_key === 'profile_1' &&
         descriptor.interaction_id === 'int_a' &&
-        descriptor.base_url === 'http://10.88.0.4:6080/neko'
+        descriptor.base_url === 'http://10.88.0.4:6080/neko' &&
+        descriptor.cdp_http_url === 'http://10.88.0.4:9223/cdp/' &&
+        context.cdpHost === '10.88.0.4' &&
+        context.cdpPort === '9223'
       );
     },
   });
@@ -390,13 +429,14 @@ test('register accepts dynamic managed n.eko descriptor approved by lease metada
     runId: 'run_dynamic_1',
     interactionId: 'int_a',
     backend: 'neko',
-    base_url: 'http://10.88.0.4:6080/neko/',
-    descriptor: {
-      backend: 'neko',
       base_url: 'http://10.88.0.4:6080/neko/',
-      surface_id: 'surf_1',
-      lease_id: 'lease_1',
-      profile_key: 'profile_1',
+      descriptor: {
+        backend: 'neko',
+        base_url: 'http://10.88.0.4:6080/neko/',
+        cdp_http_url: 'http://10.88.0.4:9223/cdp',
+        surface_id: 'surf_1',
+        lease_id: 'lease_1',
+        profile_key: 'profile_1',
       interaction_id: 'int_a',
     },
     deviceId: 'dev_1',
@@ -405,6 +445,7 @@ test('register accepts dynamic managed n.eko descriptor approved by lease metada
   assert.deepEqual(registry.get({ runId: 'run_dynamic_1', interactionId: 'int_a' }), {
     backend: 'neko',
     base_url: 'http://10.88.0.4:6080/neko',
+    cdp_http_url: 'http://10.88.0.4:9223/cdp/',
     lease_id: 'lease_1',
     profile_key: 'profile_1',
     surface_id: 'surf_1',

@@ -4569,6 +4569,7 @@ export function isManagedNekoSurfaceApproved(target, { runId, interactionId, bro
   const leaseId = typeof target.lease_id === 'string' ? target.lease_id : null;
   const profileKey = typeof target.profile_key === 'string' ? target.profile_key : null;
   const baseUrl = normalizedUrlWithoutTrailingSlash(target.base_url || target.origin);
+  const cdpUrl = normalizedUrlWithoutTrailingSlash(target.cdp_http_url || target.cdpHttpUrl);
   if (!surfaceId || !leaseId || !profileKey || !baseUrl) return false;
 
   const lease = typeof browserSurfaceLeaseManager.getLease === 'function'
@@ -4589,6 +4590,7 @@ export function isManagedNekoSurfaceApproved(target, { runId, interactionId, bro
       typeof target.interaction_id === 'string' ? target.interaction_id : null;
     if (targetInteractionId !== interactionId) return false;
   }
+  if (cdpUrl && normalizedUrlWithoutTrailingSlash(surface.cdp_url) !== cdpUrl) return false;
   return normalizedUrlWithoutTrailingSlash(surface.stream_base_url) === baseUrl;
 }
 

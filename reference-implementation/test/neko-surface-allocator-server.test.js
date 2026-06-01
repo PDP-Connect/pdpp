@@ -98,6 +98,10 @@ test("parses env-driven HTTP listen config and allocator defaults", () => {
     PDPP_NEKO_PROFILE_STORAGE_ROOT: "/srv/pdpp/neko-profiles",
     PDPP_NEKO_ALLOCATOR_PORT: "7331",
     NEKO_DESKTOP_SCREEN: "1440x900@30",
+    NEKO_MEMBER_PROVIDER: "multiuser",
+    NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD: "admin-pass",
+    NEKO_MEMBER_MULTIUSER_USER_PASSWORD: "user-pass",
+    NEKO_PASSWORD_ADMIN: "admin-pass",
   });
 
   assert.equal(options.image, "pdpp-neko:local");
@@ -110,6 +114,10 @@ test("parses env-driven HTTP listen config and allocator defaults", () => {
   assert.equal(options.streamBaseUrlTemplate, "http://{container_name}:8080/neko");
   assert.equal(options.cdpBaseUrlTemplate, "http://{container_name}:9223/");
   assert.equal(options.extraEnv.NEKO_DESKTOP_SCREEN, "1440x900@30");
+  assert.equal(options.extraEnv.NEKO_MEMBER_PROVIDER, "multiuser");
+  assert.equal(options.extraEnv.NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD, "admin-pass");
+  assert.equal(options.extraEnv.NEKO_MEMBER_MULTIUSER_USER_PASSWORD, "user-pass");
+  assert.equal(options.extraEnv.NEKO_PASSWORD_ADMIN, "admin-pass");
 });
 
 test("compose dynamic allocator command and stream template match reference image layout", async () => {

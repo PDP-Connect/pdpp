@@ -270,6 +270,40 @@ test('n.eko adapter logs in with an empty body for noauth n.eko providers', asyn
   await companion.stop();
 });
 
+test('n.eko adapter prefers control/admin credentials from env over viewer credentials', async () => {
+  const fetchImpl = makeFetch([
+    {
+      method: 'POST',
+      url: 'https://neko.test/api/login',
+      response: makeResponse({ headers: { 'set-cookie': 'NEKO_SESSION=admin-session; Path=/; HttpOnly' } }),
+    },
+    {
+      method: 'GET',
+      url: 'https://neko.test/api/room/screen/cast.jpg',
+      response: makeResponse({ body: 'jpeg-admin' }),
+    },
+  ]);
+  const companion = createNekoCompanion({
+    origin: 'https://neko.test',
+    env: {
+      NEKO_USERNAME: 'operator',
+      NEKO_PASSWORD: 'viewer-pass',
+      NEKO_CONTROL_USERNAME: 'admin',
+      NEKO_CONTROL_PASSWORD: 'admin-pass',
+    },
+    fetchImpl,
+    sleep: makeAbortableSleep(),
+  });
+
+  await companion.start();
+  await waitFor(() => fetchImpl.calls.length === 2);
+
+  const login = fetchImpl.calls.find((call) => call.url.endsWith('/api/login'));
+  assert.deepEqual(JSON.parse(login.init.body), { username: 'admin', password: 'admin-pass' });
+
+  await companion.stop();
+});
+
 test('n.eko adapter frame metadata follows the applied desktop screen preset', async () => {
   const jpeg = 'jpeg-frame-desktop';
   const fetchImpl = makeFetch([
@@ -1539,6 +1573,79 @@ test('n.eko resolver-backed factory defers target lookup until start', async () 
   assert.equal(resolved, true);
 
   await companion.stop();
+});
+
+test('n.eko resolver-backed factory applies nested n.eko defaults', async () => {
+  const fetchImpl = makeFetch([
+    {
+      method: 'POST',
+      url: 'https://neko.test/api/login',
+      response: makeResponse({ json: { token: 'token-nested' } }),
+    },
+    {
+      method: 'GET',
+      url: 'https://neko.test/api/room/screen/configurations',
+      response: makeResponse({ json: [{ width: 400, height: 844, rate: 30 }] }),
+    },
+    {
+      method: 'POST',
+      url: 'https://neko.test/api/room/screen',
+      response: makeResponse({ json: { width: 400, height: 844, rate: 30 } }),
+    },
+    {
+      method: 'GET',
+      url: 'http://127.0.0.1:9222/json',
+      response: makeResponse({
+        json: [
+          {
+            id: 'page-1',
+            type: 'page',
+            url: 'data:text/html,<body></body>',
+            webSocketDebuggerUrl: 'ws://localhost:9222/devtools/page/page-1',
+          },
+        ],
+      }),
+    },
+    {
+      method: 'GET',
+      url: 'http://127.0.0.1:9222/json/version',
+      response: makeResponse({
+        json: { webSocketDebuggerUrl: 'ws://localhost:9222/devtools/browser/browser-1' },
+      }),
+    },
+    {
+      method: 'GET',
+      url: 'https://neko.test/api/room/screen/cast.jpg',
+      response: makeResponse({ body: 'jpeg' }),
+    },
+  ]);
+  const fakeWs = makeFakeWebSocketCtor((method) => {
+    if (method === 'Browser.getWindowForTarget') return { windowId: 7 };
+    if (method === 'Target.attachToTarget') return { sessionId: 'session-page-1' };
+    return {};
+  });
+  const factory = createDefaultStreamingCompanionFactory({
+    resolveTargetForInteraction() {
+      return { backend: 'neko', base_url: 'https://neko.test' };
+    },
+    fetchImpl,
+    sleep: makeAbortableSleep(),
+    WebSocketCtor: fakeWs.WebSocketCtor,
+    neko: {
+      cdpHttpUrl: 'http://127.0.0.1:9222',
+      screenConfigurationsEndpoint: '/api/room/screen/configurations',
+      screenEndpoint: '/api/room/screen',
+    },
+  });
+
+  const companion = factory({ run_id: 'run_1', interaction_id: 'int_1', browser_session_id: 'bs' });
+  await companion.start({ width: 390, height: 844, deviceScaleFactor: 3, mobile: true, hasTouch: true });
+  await companion.stop();
+
+  assert.ok(fetchImpl.calls.some((call) => call.url === 'https://neko.test/api/room/screen/configurations'));
+  assert.ok(fetchImpl.calls.some((call) => call.url === 'http://127.0.0.1:9222/json'));
+  const screenPost = fetchImpl.calls.find((call) => call.url === 'https://neko.test/api/room/screen');
+  assert.deepEqual(JSON.parse(screenPost.init.body), { width: 400, height: 844, rate: 30 });
 });
 
 test('multi-backend streaming factory selects n.eko descriptors and exposes proxy target', async () => {

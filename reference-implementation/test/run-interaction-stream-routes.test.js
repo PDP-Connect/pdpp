@@ -99,7 +99,7 @@ function assertNoRawBackendAuthority(value) {
   assert.equal(/ws:\/\/|wss:\/\//i.test(serialized), false);
   assert.equal(/https?:\/\/(?:127\.0\.0\.1|localhost|neko)(?::\d+)?/i.test(serialized), false);
   assert.equal(/\/json\/version|\/devtools\/browser/i.test(serialized), false);
-  assert.equal(/base_url|cdpWsUrl|cdpHttpUrl|webSocketDebuggerUrl/i.test(serialized), false);
+  assert.equal(/base_url|cdp_http_url|cdpWsUrl|cdpHttpUrl|webSocketDebuggerUrl/i.test(serialized), false);
   assert.equal(/docker\.sock|allocatorCredentials/i.test(serialized), false);
 }
 
@@ -271,6 +271,7 @@ test('managed n.eko approval is lease, surface, profile, run, interaction, readi
 
   const target = {
     origin: 'http://10.88.0.4:6080/_ref/browser-surfaces/surface_dynamic_1',
+    cdp_http_url: 'http://neko:9222',
     surface_id: 'surface_dynamic_1',
     lease_id: 'lease_dynamic_1',
     profile_key: 'profile_dynamic_1',
@@ -290,6 +291,7 @@ test('managed n.eko approval is lease, surface, profile, run, interaction, readi
   assert.equal(isManagedNekoSurfaceApproved({ ...target, surface_id: 'surface_other' }, context), false);
   assert.equal(isManagedNekoSurfaceApproved({ ...target, lease_id: 'lease_other' }, context), false);
   assert.equal(isManagedNekoSurfaceApproved({ ...target, profile_key: 'profile_other' }, context), false);
+  assert.equal(isManagedNekoSurfaceApproved({ ...target, cdp_http_url: 'http://neko:9333' }, context), false);
   assert.equal(isManagedNekoSurfaceApproved({ ...target, origin: 'http://10.88.0.4:6080/neko' }, context), false);
   assert.equal(
     isManagedNekoSurfaceApproved(target, { ...context, runId: 'run_other' }),

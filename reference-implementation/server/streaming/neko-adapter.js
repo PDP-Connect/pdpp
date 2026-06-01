@@ -25,8 +25,12 @@ const VERTICAL_CROP_WEIGHT = 2;
 function readEnv(env = process.env || {}) {
   return {
     origin: env.NEKO_ORIGIN,
-    username: env.NEKO_USERNAME || env.NEKO_USER,
-    password: env.NEKO_PASSWORD,
+    username: env.NEKO_CONTROL_USERNAME || env.NEKO_ADMIN_USERNAME || env.NEKO_USERNAME || env.NEKO_USER,
+    password:
+      env.NEKO_CONTROL_PASSWORD ||
+      env.NEKO_ADMIN_PASSWORD ||
+      env.NEKO_PASSWORD_ADMIN ||
+      env.NEKO_PASSWORD,
     bearerToken: env.NEKO_BEARER_TOKEN || env.NEKO_BEARER || env.NEKO_API_TOKEN,
     browserOwnerMode: env.PDPP_NEKO_BROWSER_OWNER_MODE || env.NEKO_BROWSER_OWNER_MODE,
     screenshotPath: env.NEKO_SCREENSHOT_PATH,
@@ -561,11 +565,11 @@ export function createNekoCompanion(options = {}) {
   const password = choose(options.password, target.password, env.password);
   const cdpHttpUrl = normalizeCdpHttpUrl(
     choose(
-      options.cdpHttpUrl,
       target.cdpHttpUrl,
       target.cdp_http_url,
       target.cdp?.httpUrl,
       target.cdp?.http_url,
+      options.cdpHttpUrl,
       env.cdpHttpUrl,
     ),
   );
@@ -1548,6 +1552,11 @@ function createResolvedNekoCompanion({
 
 export function createDefaultStreamingCompanionFactory(options = {}) {
   const envTarget = readEnv(options.env);
+  const nekoDefaults =
+    options.neko && typeof options.neko === 'object' && !Array.isArray(options.neko)
+      ? options.neko
+      : {};
+  const defaults = { ...options, ...nekoDefaults };
   const resolveTargetForInteraction =
     typeof options.resolveTargetForInteraction === 'function'
       ? options.resolveTargetForInteraction
@@ -1565,7 +1574,7 @@ export function createDefaultStreamingCompanionFactory(options = {}) {
       interaction_id,
       browser_session_id,
       resolveTargetForInteraction,
-      defaults: options,
+      defaults,
     });
   };
 }
