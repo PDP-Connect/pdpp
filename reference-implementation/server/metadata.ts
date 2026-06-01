@@ -573,7 +573,8 @@ const OWNER_AGENT_CONTROL_ACTION_CATALOG: readonly OwnerAgentControlActionDescri
     status: "unsupported",
     method: null,
     urlTemplate: null,
-    reason: "Connection delete is not implemented as an owner-agent control route in this build.",
+    reason:
+      "Connection delete is not implemented as an owner-agent control route in this build. The connector-instance store has no delete primitive (only status/label mutation), and no browser owner-session route deletes a connection either, so there is no existing semantic to share. A connection-scoped delete needs a defined cascade contract (records, dataset, spine, device source-instance rows) before any route.",
   },
   {
     family: "revoke_connection",
@@ -582,7 +583,7 @@ const OWNER_AGENT_CONTROL_ACTION_CATALOG: readonly OwnerAgentControlActionDescri
     method: null,
     urlTemplate: null,
     reason:
-      "Connection credential revoke is not implemented as an owner-agent control route in this build. Device-exporter revoke remains on the browser owner-session surface.",
+      "Connection-scoped credential revoke is not implemented as an owner-agent control route in this build. The only revoke primitive (device-exporter revoke) is device-scoped and cascades to every connection sharing the device, so it cannot be reused for one connection_id. Device-exporter revoke remains on the browser owner-session surface; a connection-scoped revoke primitive must ship before this becomes supported.",
   },
 ];
 
