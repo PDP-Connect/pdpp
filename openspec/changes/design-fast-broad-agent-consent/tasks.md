@@ -20,7 +20,7 @@ Findings consolidated in `design-notes/2026-04-27-prior-art-review.md`.
 
 ## 3. Design Decisions
 
-Open owner decisions are detailed in `design-notes/2026-04-27-prior-art-review.md` "Owner Decisions Still Required" and refined with proposed defaults in `design-notes/2026-04-29-owner-review-synthesis.md`.
+Open owner decisions are detailed in `design-notes/2026-04-27-prior-art-review.md` "Owner Decisions Still Required" and refined with proposed defaults in `design-notes/2026-04-29-owner-review-synthesis.md`. The consolidated owner-consumable view — every decision below, its status, the recommendation, and the exact owner question text for the open ones — is the `## Decision Matrix` section of `design.md`.
 
 - [x] Decide whether issued grants remain source-bounded in all near-term designs. **Decided: yes.** Already normative in `openspec/specs/agent-consent-bundling/spec.md` ("Hosted MCP broad approval SHALL issue source-bounded child grants") and reasserted in this change's delta. Owner steering confirms.
 - [ ] Decide whether the first fast setup primitive is client-authored batch consent (Option B), owner-authored permission sets (Option C), agent roles (Option D), or no change. (Recommendation: B first, then C as the next OpenSpec change. D out of scope.)

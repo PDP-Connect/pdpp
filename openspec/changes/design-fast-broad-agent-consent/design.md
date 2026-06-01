@@ -113,6 +113,40 @@ Prior art validates this shape. RFC 9396 already supports multi-entry staged req
 
 This leaning is not final. It must survive owner review before implementation.
 
+## Decision Matrix
+
+This is the owner-consumable summary of every `tasks.md` §3 decision in one place. It separates what accepted artifacts and prior owner steering already make safe to close (Decided) from genuine owner choices (Owner-gated). For each owner-gated row, the exact question text the owner must answer is below the table. Status here mirrors the checkboxes in `tasks.md`; this table does not introduce new normative requirements (those live in `specs/agent-consent-bundling/spec.md`).
+
+| # | Decision | Status | Recommendation | Where it is / would be captured |
+| --- | --- | --- | --- | --- |
+| D1 | Issued grants stay source-bounded in near-term designs | **Decided: yes** | n/a — already normative | `agent-consent-bundling/spec.md` (source-bounded child grants); owner steering |
+| D2 | AS-side enrichment of `authorization_details` | **Decided: forbidden; AS may narrow only** | n/a | This change's delta ("SHALL NOT silently widen…"); merged `reference-implementation-architecture` no-widen reqs |
+| D3 | Cross-source grant objects | **Decided: off near-term roadmap** | Keep off; permanence is a later owner call | Merged spec ("SHALL NOT issue a single cross-source PDPP grant") |
+| D4 | Consent-level predicate filters (date/resource/category) | **Decided: deferred** | Reopen only as its own change after the query-layer filter grammar settles | Synthesis Q4 / decision #11 |
+| D5 | Where "source-bounded" normativity lives | **Decided: `agent-consent-bundling` capability spec** | `spec-core.md` promotion remains an optional later owner call | Merged capability spec |
+| D6 | Reference-experimental labeling of any first Option B | **Decided: required** | n/a | `agent-consent-bundling/spec.md` ("SHALL label it reference-experimental") |
+| O1 | First fast-setup primitive: B / C / D / none | **Owner-gated** | **B first.** D-out is prior-art-backed and safe; B-vs-nothing is the live owner call | Would gate a follow-up Option B implementation change (§4) |
+| O2 | Both B and C on roadmap, or only B | **Owner-gated** | **Both — B first, C as the next OpenSpec change, not a parallel track** | design.md "Current Leaning"; would be ratified into proposal scope |
+| O3 | Soft cap / warning threshold on `authorization_details[]` entries | **Owner-gated** | **Soft cap 8, warning at 6, no hard cap.** Lower to 5 if the target is the common email/finance/Slack/GitHub/calendar setup | Reference-contract policy in the follow-up B change (not a protocol limit) |
+| O4 | "Approve all" allowed for mixed-source, and disabling conditions | **Owner-gated** | **Hidden whenever (continuous + all streams), (no time bound + sensitive source), or N≥3 sensitive sources;** default presentation requires per-source confirmation | design.md "Current Leaning" step 3; would become a B-change spec scenario |
+| O5 | Which sources are "sensitive" + where the list lives | **Owner-gated** | **Manifest-declared `sensitivity: "standard" \| "sensitive"`** to ship fast; central registry as a later hardening step. Do **not** hardcode a source list | Connector manifest field, defined in the follow-up B change |
+| O6 | Package-level audit + revoke-package affordance | **Owner-gated (B-ceremony surface only)** | Hosted MCP package audit is already decided in merged spec; the **Option B batch-ceremony** package model stays open: package id grouped in timeline + dashboard, per-grant revocation primary, revoke-package as convenience only | Merged spec covers hosted MCP; B-ceremony semantics would be the follow-up change |
+| O7 | Incremental "add a source later" linkage | **Owner-gated** | **New ceremony, new package linked via `parent_package_id`; dashboard renders a cumulative per-client view** (Google `include_granted_scopes` precedent) | Follow-up B change storage + dashboard delta |
+| O8 | Option C permission-set storage + client-registration impact | **Owner-gated (deferred to Option C track)** | **Owner-local storage with optional manifest-declared templates;** decide only when Option C opens | Separate Option C design/implementation change |
+
+### Exact owner questions
+
+These are the questions to put to the owner verbatim. Each is phrased so it can be answered without re-reading the full design track.
+
+- **O1 — First primitive.** "We can make multi-source agent setup fast in one of three ways: (B) the client submits several source requests and you approve them in one review screen; (C) you pre-author reusable permission sets the client asks for by name; (D) long-lived agent roles. Prior art rules out D as a first-class consent primitive. Do you want to start with B, start with C, or ship nothing further right now? (Recommended: B first.)"
+- **O2 — Roadmap.** "Should C (owner-authored permission sets) stay on the roadmap as the change after B, or do you want only B with C dropped? (Recommended: keep both, B first.)"
+- **O3 — Soft cap.** "When a client requests N sources in one batch, at what count should we warn the owner, and at what count should we flag it as unusual? We do not want a hard limit. (Recommended: warn at 6, soft cap at 8; pick 5 if you'd rather flag earlier.)"
+- **O4 — Approve-all gate.** "Should a single 'approve all sources' button ever appear for a mixed-source request, and under which conditions must it be hidden so the owner must confirm each source? (Recommended: hide it whenever the batch combines continuous access with all-streams, pairs no-time-bound with a sensitive source, or includes 3+ sensitive sources.)"
+- **O5 — Sensitivity ownership.** "Which sources count as 'sensitive' for risk warnings, and should that flag be declared by the connector author in its manifest, maintained in a central PDPP registry, or both? (Recommended: manifest-declared `sensitivity` field now, central registry later; do not hardcode a list.)"
+- **O6 — Package audit (B ceremony).** "For the Option B batch ceremony, should the package id group grants in the timeline and dashboard, with per-grant revocation staying primary and a 'revoke package' button offered only as a convenience? (Recommended: yes to grouping, yes to per-grant-primary, revoke-package optional.)"
+- **O7 — Incremental linkage.** "When an agent comes back later to add one more source, should that create a new package linked to the prior one (`parent_package_id`) with the dashboard showing the agent's cumulative access, or should each addition stand alone? (Recommended: linked package + cumulative dashboard view.)"
+- **O8 — Permission-set storage (only when C opens).** "When we build Option C, should permission sets live in your local instance storage, be declarable as manifest templates, or both — and how should a client reference one during registration? (Recommended: owner-local with optional manifest templates; defer until C starts.)"
+
 ## Current-State Audit
 
 Reference PAR behavior remains intentionally one-entry-only:
