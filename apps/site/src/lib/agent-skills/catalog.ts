@@ -4,10 +4,14 @@ import path from "node:path";
 import { resolveRepoRoot } from "@/lib/openspec/filesystem.ts";
 import { pdppCliConnectCommand, pdppCliTokenCompletionUnavailable } from "@/lib/pdpp-cli-command.ts";
 
-const SKILL_NAME = "pdpp-data-access";
-const SKILL_DESCRIPTION =
+const DATA_ACCESS_SKILL_NAME = "pdpp-data-access";
+const DATA_ACCESS_SKILL_DESCRIPTION =
   "Use PDPP data through scoped client grants, project-local token caching, and capability-first querying instead of owner bearer tokens.";
-const SKILL_BASE_REPO_PATH = "docs/agent-skills/pdpp-data-access";
+const DATA_ACCESS_SKILL_BASE_REPO_PATH = "docs/agent-skills/pdpp-data-access";
+const OWNER_AGENT_SKILL_NAME = "pdpp-owner-agent";
+const OWNER_AGENT_SKILL_DESCRIPTION =
+  "Use PDPP as trusted owner-level local automation through browser-mediated owner approval, local credential storage, and token-efficient REST sync.";
+const OWNER_AGENT_SKILL_BASE_REPO_PATH = "docs/agent-skills/pdpp-owner-agent";
 const WELL_KNOWN_BASE_PATH = "/.well-known/skills";
 const LEADING_SLASHES = /^\/+/;
 
@@ -17,7 +21,7 @@ const LEADING_SLASHES = /^\/+/;
 // resource server's protected-resource metadata; the repo-resident skill is
 // the durable narrative guidance. `/llms.txt` points at both rather than
 // inlining them, so a trusted agent never has to guess one universal URL.
-const OWNER_AGENT_SKILL_REPO_PATH = "docs/agent-skills/pdpp-owner-agent/SKILL.md";
+const OWNER_AGENT_SKILL_ROUTE_PATH = `${OWNER_AGENT_SKILL_NAME}/SKILL.md`;
 const PROTECTED_RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource";
 const MCP_ENDPOINT_PATH = "/mcp";
 
@@ -27,33 +31,64 @@ interface AgentSkillFileDefinition {
   readonly routePath: string;
 }
 
-const SKILL_FILES: readonly AgentSkillFileDefinition[] = [
+interface AgentSkillDefinition {
+  readonly canonical_source: "docs/agent-skills";
+  readonly description: string;
+  readonly files: readonly AgentSkillFileDefinition[];
+  readonly name: string;
+  readonly recommended_install: "npx skills add <repo-url> -g when supported; otherwise fetch files from this catalog";
+}
+
+const SKILLS: readonly AgentSkillDefinition[] = [
   {
-    routePath: `${SKILL_NAME}/SKILL.md`,
-    repoRelativePath: `${SKILL_BASE_REPO_PATH}/SKILL.md`,
-    mediaType: "text/markdown; charset=utf-8",
+    name: DATA_ACCESS_SKILL_NAME,
+    description: DATA_ACCESS_SKILL_DESCRIPTION,
+    canonical_source: "docs/agent-skills",
+    recommended_install: "npx skills add <repo-url> -g when supported; otherwise fetch files from this catalog",
+    files: [
+      {
+        routePath: `${DATA_ACCESS_SKILL_NAME}/SKILL.md`,
+        repoRelativePath: `${DATA_ACCESS_SKILL_BASE_REPO_PATH}/SKILL.md`,
+        mediaType: "text/markdown; charset=utf-8",
+      },
+      {
+        routePath: `${DATA_ACCESS_SKILL_NAME}/references/grant-design.md`,
+        repoRelativePath: `${DATA_ACCESS_SKILL_BASE_REPO_PATH}/references/grant-design.md`,
+        mediaType: "text/markdown; charset=utf-8",
+      },
+      {
+        routePath: `${DATA_ACCESS_SKILL_NAME}/references/query-cookbook.md`,
+        repoRelativePath: `${DATA_ACCESS_SKILL_BASE_REPO_PATH}/references/query-cookbook.md`,
+        mediaType: "text/markdown; charset=utf-8",
+      },
+      {
+        routePath: `${DATA_ACCESS_SKILL_NAME}/references/security.md`,
+        repoRelativePath: `${DATA_ACCESS_SKILL_BASE_REPO_PATH}/references/security.md`,
+        mediaType: "text/markdown; charset=utf-8",
+      },
+      {
+        routePath: `${DATA_ACCESS_SKILL_NAME}/references/troubleshooting.md`,
+        repoRelativePath: `${DATA_ACCESS_SKILL_BASE_REPO_PATH}/references/troubleshooting.md`,
+        mediaType: "text/markdown; charset=utf-8",
+      },
+    ],
   },
   {
-    routePath: `${SKILL_NAME}/references/grant-design.md`,
-    repoRelativePath: `${SKILL_BASE_REPO_PATH}/references/grant-design.md`,
-    mediaType: "text/markdown; charset=utf-8",
-  },
-  {
-    routePath: `${SKILL_NAME}/references/query-cookbook.md`,
-    repoRelativePath: `${SKILL_BASE_REPO_PATH}/references/query-cookbook.md`,
-    mediaType: "text/markdown; charset=utf-8",
-  },
-  {
-    routePath: `${SKILL_NAME}/references/security.md`,
-    repoRelativePath: `${SKILL_BASE_REPO_PATH}/references/security.md`,
-    mediaType: "text/markdown; charset=utf-8",
-  },
-  {
-    routePath: `${SKILL_NAME}/references/troubleshooting.md`,
-    repoRelativePath: `${SKILL_BASE_REPO_PATH}/references/troubleshooting.md`,
-    mediaType: "text/markdown; charset=utf-8",
+    name: OWNER_AGENT_SKILL_NAME,
+    description: OWNER_AGENT_SKILL_DESCRIPTION,
+    canonical_source: "docs/agent-skills",
+    recommended_install: "npx skills add <repo-url> -g when supported; otherwise fetch files from this catalog",
+    files: [
+      {
+        routePath: OWNER_AGENT_SKILL_ROUTE_PATH,
+        repoRelativePath: `${OWNER_AGENT_SKILL_BASE_REPO_PATH}/SKILL.md`,
+        mediaType: "text/markdown; charset=utf-8",
+      },
+    ],
   },
 ];
+
+const SKILL_FILES: readonly AgentSkillFileDefinition[] = SKILLS.flatMap((skill) => skill.files);
 
 export interface AgentSkillCatalogFile {
   readonly bytes: number;
@@ -66,16 +101,16 @@ export interface AgentSkillCatalogFile {
 
 export interface AgentSkillCatalog {
   readonly object: "agent_skill_catalog";
-  readonly skills: readonly [
-    {
-      readonly canonical_source: "docs/agent-skills";
-      readonly description: string;
-      readonly files: readonly AgentSkillCatalogFile[];
-      readonly name: typeof SKILL_NAME;
-      readonly recommended_install: "npx skills add <repo-url> -g when supported; otherwise fetch files from this catalog";
-    },
-  ];
+  readonly skills: readonly AgentSkillCatalogSkill[];
   readonly version: "2026-04-26";
+}
+
+export interface AgentSkillCatalogSkill {
+  readonly canonical_source: "docs/agent-skills";
+  readonly description: string;
+  readonly files: readonly AgentSkillCatalogFile[];
+  readonly name: string;
+  readonly recommended_install: "npx skills add <repo-url> -g when supported; otherwise fetch files from this catalog";
 }
 
 function normalizeOrigin(origin: string): string {
@@ -96,32 +131,29 @@ function sha256(buffer: Buffer): string {
 }
 
 export async function buildAgentSkillCatalog(origin: string): Promise<AgentSkillCatalog> {
-  const files = await Promise.all(
-    SKILL_FILES.map(async (file): Promise<AgentSkillCatalogFile> => {
-      const bytes = await readRepoFile(file.repoRelativePath);
-      return {
-        path: file.routePath,
-        repo_path: file.repoRelativePath,
-        media_type: file.mediaType,
-        bytes: bytes.byteLength,
-        sha256: sha256(bytes),
-        url: catalogUrl(origin, file.routePath),
-      };
+  const skills = await Promise.all(
+    SKILLS.map(async (skill): Promise<AgentSkillCatalogSkill> => {
+      const files = await Promise.all(
+        skill.files.map(async (file): Promise<AgentSkillCatalogFile> => {
+          const bytes = await readRepoFile(file.repoRelativePath);
+          return {
+            path: file.routePath,
+            repo_path: file.repoRelativePath,
+            media_type: file.mediaType,
+            bytes: bytes.byteLength,
+            sha256: sha256(bytes),
+            url: catalogUrl(origin, file.routePath),
+          };
+        })
+      );
+      return { ...skill, files };
     })
   );
 
   return {
     object: "agent_skill_catalog",
     version: "2026-04-26",
-    skills: [
-      {
-        name: SKILL_NAME,
-        description: SKILL_DESCRIPTION,
-        canonical_source: "docs/agent-skills",
-        recommended_install: "npx skills add <repo-url> -g when supported; otherwise fetch files from this catalog",
-        files,
-      },
-    ],
+    skills,
   };
 }
 
@@ -144,7 +176,8 @@ export function agentSkillsLLMSIndex(): string {
   return [
     "## Agent Skills",
     "",
-    `- ${SKILL_NAME}: ${WELL_KNOWN_BASE_PATH}/${SKILL_NAME}/SKILL.md`,
+    `- ${DATA_ACCESS_SKILL_NAME}: ${WELL_KNOWN_BASE_PATH}/${DATA_ACCESS_SKILL_NAME}/SKILL.md`,
+    `- ${OWNER_AGENT_SKILL_NAME}: ${WELL_KNOWN_BASE_PATH}/${OWNER_AGENT_SKILL_ROUTE_PATH}`,
     `- Skill catalog: ${WELL_KNOWN_BASE_PATH}/index.json`,
     `- PDPP CLI connect command: \`${pdppCliConnectCommand}\``,
     "",
@@ -168,7 +201,7 @@ export function ownerAgentOnboardingLLMSIndex(): string {
     "Only for a local agent the operator has explicitly authorized to act as themselves (e.g. a local assistant such as Daisy). Routine third-party, coding-agent, and task-scoped assistants are NOT this profile — they use the grant-scoped `pdpp-data-access` skill above.",
     "",
     `- Canonical onboarding metadata: ${PROTECTED_RESOURCE_METADATA_PATH} on an operator deployment that fronts the reference AS/RS — when owner-agent onboarding is enabled, the \`pdpp_owner_agent_onboarding\` advisory block names every surface (owner approval / device authorization, token, schema, streams, query base, introspection, revocation, event subscriptions). The standards/docs site does not front a live AS/RS.`,
-    `- Owner-agent onboarding guidance: ${OWNER_AGENT_SKILL_REPO_PATH}`,
+    `- Owner-agent onboarding guidance: ${WELL_KNOWN_BASE_PATH}/${OWNER_AGENT_SKILL_ROUTE_PATH}`,
     `- Grant-scoped MCP (ordinary external clients, not owner agents): ${MCP_ENDPOINT_PATH} — \`/mcp\` rejects owner bearers by design.`,
     "- REST/CLI owner-agent guidance: use the owner bearer only on owner-supported `/v1/**` REST routes; the `pdpp owner-agent onboard <entrypoint>` CLI runs the browser-mediated flow without printing the bearer.",
     "",

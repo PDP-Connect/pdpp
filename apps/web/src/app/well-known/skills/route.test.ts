@@ -11,6 +11,7 @@ const SKILLS_REWRITE_PAIR =
 
 const APPLICATION_JSON = /^application\/json/;
 const PDPP_SKILL_FRONTMATTER = /name: pdpp-data-access/;
+const OWNER_AGENT_SKILL_FRONTMATTER = /name: pdpp-owner-agent/;
 const TROUBLESHOOTING_HEADING = /# Troubleshooting/;
 const TEXT_MARKDOWN = /^text\/markdown/;
 
@@ -35,9 +36,14 @@ test("agent skill .well-known route serves the catalog with forwarded origin", a
   const body = await jsonOf(response);
   assert.equal(body.object, "agent_skill_catalog");
   const skills = body.skills as Array<{ files: Array<{ url: string }> }>;
-  assert.equal(skills.length, 1);
+  assert.equal(skills.length, 2);
   assert.ok(
     skills[0]?.files.some((file) => file.url === "https://pdpp.dev/.well-known/skills/pdpp-data-access/SKILL.md")
+  );
+  assert.ok(
+    skills.some((skill) =>
+      skill.files.some((file) => file.url === "https://pdpp.dev/.well-known/skills/pdpp-owner-agent/SKILL.md")
+    )
   );
 });
 
@@ -79,6 +85,11 @@ test("agent skill .well-known route serves only allowlisted files", async () => 
   assert.equal(reference.status, 200);
   assert.match(reference.headers.get("content-type") ?? "", TEXT_MARKDOWN);
   assert.match(await reference.text(), TROUBLESHOOTING_HEADING);
+
+  const ownerAgent = await callSkillsRoute(["pdpp-owner-agent", "SKILL.md"]);
+  assert.equal(ownerAgent.status, 200);
+  assert.match(ownerAgent.headers.get("content-type") ?? "", TEXT_MARKDOWN);
+  assert.match(await ownerAgent.text(), OWNER_AGENT_SKILL_FRONTMATTER);
 
   const traversal = await callSkillsRoute(["pdpp-data-access", "..", "..", "package.json"]);
   assert.equal(traversal.status, 404);

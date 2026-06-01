@@ -38,13 +38,13 @@ The reference implementation SHALL publish advisory discovery information for tr
 
 ### Requirement: The agent-readable entrypoint SHALL point trusted owner agents at owner-agent onboarding
 
-The reference public-site/operator deployment SHALL serve a compact agent-readable entrypoint at `/llms.txt` that, in addition to the grant-scoped agent skill, points a trusted local owner agent at the owner-agent onboarding surfaces without requiring it to guess a universal URL. The entrypoint SHALL reference the canonical OAuth protected-resource metadata as the live source of owner-agent onboarding fields, the owner-agent onboarding/device-flow guidance, the grant-scoped MCP boundary, and the owner REST/CLI guidance, and SHALL state that bearer tokens are not to be pasted into chat or terminals.
+The reference public-site/operator deployment SHALL serve a compact agent-readable entrypoint at `/llms.txt` that, in addition to the grant-scoped agent skill, points a trusted local owner agent at the owner-agent onboarding surfaces without requiring it to guess a universal URL. The entrypoint SHALL reference the canonical OAuth protected-resource metadata as the live source of owner-agent onboarding fields, a fetchable owner-agent onboarding/device-flow skill, the grant-scoped MCP boundary, and the owner REST/CLI guidance, and SHALL state that bearer tokens are not to be pasted into chat or terminals.
 
 #### Scenario: Trusted owner agent reads the entrypoint
 
 - **WHEN** a trusted local owner agent fetches `/llms.txt` from a reference deployment
 - **THEN** the response SHALL be compact agent-readable text or markdown
-- **AND** it SHALL point to the canonical OAuth protected-resource metadata, the owner-agent onboarding/device flow, grant-scoped MCP guidance, and owner-agent REST/CLI guidance
+- **AND** it SHALL point to the canonical OAuth protected-resource metadata, a fetchable owner-agent onboarding/device-flow skill, grant-scoped MCP guidance, and owner-agent REST/CLI guidance
 - **AND** it SHALL state that bearer tokens are not to be pasted into chat or terminals
 - **AND** it SHALL distinguish the owner-level local-automation profile from the default grant-scoped agent path
 

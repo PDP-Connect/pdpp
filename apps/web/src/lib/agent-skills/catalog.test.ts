@@ -21,9 +21,10 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 test("agent skill catalog lists the PDPP data access skill and every served file", async () => {
   const catalog = await buildAgentSkillCatalog("https://pdpp.dev/");
   assert.equal(catalog.object, "agent_skill_catalog");
-  assert.equal(catalog.skills.length, 1);
+  assert.equal(catalog.skills.length, 2);
 
-  const [skill] = catalog.skills;
+  const skill = catalog.skills.find((entry) => entry.name === "pdpp-data-access");
+  assert.ok(skill);
   assert.equal(skill.name, "pdpp-data-access");
   assert.equal(skill.canonical_source, "docs/agent-skills");
   assert.deepEqual(
@@ -42,12 +43,24 @@ test("agent skill catalog lists the PDPP data access skill and every served file
     assert.ok(file.bytes > 0);
     assert.match(file.sha256, SHA256_HEX);
   }
+
+  const ownerSkill = catalog.skills.find((entry) => entry.name === "pdpp-owner-agent");
+  assert.ok(ownerSkill);
+  assert.deepEqual(
+    ownerSkill.files.map((file) => file.path),
+    ["pdpp-owner-agent/SKILL.md"]
+  );
+  assert.equal(ownerSkill.files[0]?.url, "https://pdpp.dev/.well-known/skills/pdpp-owner-agent/SKILL.md");
 });
 
 test("readAgentSkillFile serves only explicit skill files", async () => {
   const skill = await readAgentSkillFile("pdpp-data-access/SKILL.md");
   assert.ok(skill);
   assert.match(skill.body.toString("utf8"), SKILL_FRONTMATTER_NAME);
+
+  const ownerSkill = await readAgentSkillFile("pdpp-owner-agent/SKILL.md");
+  assert.ok(ownerSkill);
+  assert.match(ownerSkill.body.toString("utf8"), /name: pdpp-owner-agent/);
 
   assert.equal(await readAgentSkillFile("../package.json"), null);
   assert.equal(await readAgentSkillFile("pdpp-data-access/../../package.json"), null);
@@ -72,7 +85,7 @@ test("llms index points trusted owner agents at the canonical onboarding surface
   // Canonical OAuth protected-resource metadata (the live owner-agent block).
   assert.match(ownerAgentSection, /\/\.well-known\/oauth-protected-resource/);
   // Owner-agent onboarding / device flow guidance.
-  assert.match(ownerAgentSection, /docs\/agent-skills\/pdpp-owner-agent\/SKILL\.md/);
+  assert.match(ownerAgentSection, /\/\.well-known\/skills\/pdpp-owner-agent\/SKILL\.md/);
   // Grant-scoped MCP guidance, framed as the non-owner-agent path.
   assert.match(ownerAgentSection, /\/mcp/);
   assert.match(ownerAgentSection, /rejects owner bearers/);
@@ -85,9 +98,12 @@ test("llms index points trusted owner agents at the canonical onboarding surface
   // The owner-agent section is part of the single agent-readable entrypoint.
   assert.ok(agentSkillsLLMSIndex().includes(ownerAgentSection));
 
-  // The referenced owner-agent guidance file must exist so the pointer cannot
-  // silently rot.
+  // The referenced owner-agent guidance file must be served by the agent-skill
+  // catalog so the pointer cannot silently rot into a repo-local path.
+  const servedOwnerSkill = await readAgentSkillFile("pdpp-owner-agent/SKILL.md");
+  assert.ok(servedOwnerSkill);
   const skill = readFileSync(path.join(REPO_ROOT, "docs/agent-skills/pdpp-owner-agent/SKILL.md"), "utf8");
+  assert.equal(servedOwnerSkill.body.toString("utf8"), skill);
   assert.match(skill, /name: pdpp-owner-agent/);
 });
 
