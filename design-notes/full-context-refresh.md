@@ -126,6 +126,8 @@ Prefer designs that identify the essential nouns, invariants, and ownership boun
 
 This is not a license to over-generalize. The bar is construction quality, not abstraction volume. A new primitive is justified only when it reduces incidental complexity across multiple concrete cases, makes correctness easier to verify, or prevents a class of false-success/failure modes. Otherwise, keep the solution local and honest.
 
+Advertised capabilities need end-to-end conformance gates, not isolated implementation checks. If metadata says a client can use a feature, the schema, generated docs, agent skill, MCP/tool input shape, request builder, REST route, and runtime enforcement should all agree on the same invocation shape. Acceptance checks should include at least one canonical positive case and at least one plausible noncanonical negative case that proves the system errors instead of silently widening the read or falling back to an unfiltered result. This is part of the SLVP construction bar, not a separate audit project.
+
 ## Research Corpus Discipline
 
 Prior-art research that informs OpenSpec or implementation work should leave a durable source artifact, not just a chat summary or worker report. Design notes are not that corpus: they are the intake queue for significant design observations and unresolved questions to revisit when the project shifts from execution mode into slower architecture review.

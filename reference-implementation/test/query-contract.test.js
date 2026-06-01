@@ -1276,6 +1276,29 @@ test('unknown query parameter is rejected (not silently ignored)', async () => {
   });
 });
 
+test('noncanonical range query parameters are rejected loudly', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorId = spotifyManifest.connector_id;
+    const baseUrl = `${rsUrl}/v1/streams/top_artists/records`
+      + `?connector_id=${encodeURIComponent(connectorId)}`;
+    const badParams = [
+      'source_updated_at.gte=2026-01-01T00%3A00%3A00Z',
+      'source_updated_at_gte=2026-01-01T00%3A00%3A00Z',
+      'source_updated_at=gte%3A2026-01-01T00%3A00%3A00Z',
+      'min_source_updated_at=2026-01-01T00%3A00%3A00Z',
+    ];
+
+    for (const param of badParams) {
+      const { status, body } = await fetchJson(`${baseUrl}&${param}`, {
+        headers: { 'Authorization': `Bearer ${ownerToken}` },
+      });
+      assert.equal(status, 400, `${param} must fail instead of widening the read`);
+      assert.equal(body.error.code, 'invalid_request');
+    }
+  });
+});
+
 test('records are sorted by (cursor_field, primary_key) and cursor tokens are logical', async () => {
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
     const ownerToken = await issueOwnerToken(asUrl);
