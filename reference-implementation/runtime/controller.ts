@@ -2905,6 +2905,17 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const runId = options.runId || `run_${Date.now()}`;
     const startedAt = nowIso();
 
+    // Resolve connection-scoped static-secret credentials before acquiring any
+    // managed runtime resources. A resolver throw is fail-closed: the
+    // connection has a credential we cannot use (revoked/deleted), so we refuse
+    // the run before taking a browser lease or falling through to a
+    // process-global secret. A `null` return means no stored credential applies
+    // (non-static-secret connector, or none captured) and the legacy
+    // process-env path is used.
+    const staticSecretEnv = opts.resolveStaticSecretRunEnv
+      ? await opts.resolveStaticSecretRunEnv({ connectorId, connectorInstanceId, ownerSubjectId })
+      : null;
+
     const acquireResult = browserSurfaceLeaseManager?.isManagedConnector(connectorId)
       ? await acquireManagedBrowserSurfaceForRun({
           automationMetadata,
@@ -2921,18 +2932,6 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
     const browserSurfaceLease = acquireResult.lease;
     const browserSurfaceEnv = acquireResult.env;
-
-    // Connection-scoped static-secret injection. When a resolver is wired and
-    // this connection has an active stored credential, recover its env
-    // fragment so the run authenticates with exactly that connection's secret
-    // (two mailboxes → two distinct runs). A resolver throw is fail-closed: the
-    // connection has a credential we cannot use (revoked/deleted), so we refuse
-    // the run rather than fall through to a stale or process-global secret.
-    // A `null` return means no stored credential applies (non-static-secret
-    // connector, or none captured) — the legacy process-env path is used.
-    const staticSecretEnv = opts.resolveStaticSecretRunEnv
-      ? await opts.resolveStaticSecretRunEnv({ connectorId, connectorInstanceId, ownerSubjectId })
-      : null;
 
     const { state, collectionMode } = deriveCollectionState(
       (await getSyncState(connectorId, { connectorInstanceId })) as { state?: unknown } | null

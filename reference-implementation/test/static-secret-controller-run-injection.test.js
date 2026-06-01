@@ -271,3 +271,47 @@ test("a revoked credential fails the run closed (no stale or process-global secr
   // The run was refused before the connector was ever spawned.
   assert.equal(calls.length, 0);
 });
+
+test("a resolver failure occurs before managed browser-surface acquisition", async (t) => {
+  freshDb(t);
+  seedConnectorInstance({ connectorInstanceId: "cin_personal", ownerSubjectId: "owner_1", connectorId: GMAIL_CONNECTOR });
+
+  const calls = [];
+  const managerCalls = [];
+  const controller = createController({
+    browserSurfaceLeaseManager: {
+      isManagedConnector: (connectorId) => {
+        managerCalls.push(connectorId);
+        return true;
+      },
+    },
+    connectorPathResolver: () => "/tmp/connector.ts",
+    logger: { error: () => {}, warn: () => {} },
+    ownerSubjectId: "owner_1",
+    resolveStaticSecretRunEnv: () => {
+      const err = new Error("credential revoked");
+      err.code = "credential_revoked";
+      throw err;
+    },
+    runConnectorImpl: (opts) => {
+      calls.push(opts);
+      return Promise.resolve({ status: "succeeded", records_emitted: 0 });
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      controller.runNow(GMAIL_CONNECTOR, {
+        connectorInstanceId: "cin_personal",
+        manifest: GMAIL_MANIFEST,
+        ownerToken: "owner-token",
+        runId: "run_personal",
+      }),
+    (err) => err && err.code === "credential_revoked",
+  );
+
+  // Static-secret failures are resolved before taking runtime resources, so a
+  // revoked credential cannot leak a browser-surface lease or spawn a child.
+  assert.deepEqual(managerCalls, []);
+  assert.equal(calls.length, 0);
+});
