@@ -9,7 +9,7 @@ services:
       - .:/app
       - pdpp-root-node-modules:/app/node_modules
       - pdpp-reference-node-modules:/app/reference-implementation/node_modules
-      - pdpp-web-node-modules:/app/apps/web/node_modules
+      - pdpp-console-node-modules:/app/apps/console/node_modules
       - pdpp-polyfill-node-modules:/app/packages/polyfill-connectors/node_modules
       - pdpp-brand-node-modules:/app/packages/pdpp-brand/node_modules
       - pdpp-contract-node-modules:/app/packages/reference-contract/node_modules
@@ -17,6 +17,10 @@ services:
       - pdpp-transformers:/var/cache/pdpp/transformers
       - pdpp-home:/root/.pdpp
 
+  # Operator console dev service. Service name kept as `web` to preserve the
+  # docker-compose.yml override contract and the PDPP_WEB_* env vars existing
+  # operators rely on, but it now runs apps/console (the post-split operator
+  # surface) rather than the legacy combined apps/web app.
   web:
     environment:
       NODE_ENV: development
@@ -24,13 +28,13 @@ services:
       PDPP_WEB_ALLOWED_DEV_ORIGINS: ${PDPP_WEB_ALLOWED_DEV_ORIGINS:-}
       WATCHPACK_POLLING: ${WATCHPACK_POLLING:-true}
     command: >
-      sh -lc 'pnpm --dir apps/web openspec:git-metadata && pnpm --dir apps/web exec next dev --webpack --hostname 0.0.0.0 --port 3000'
+      sh -lc 'pnpm --dir apps/console exec next dev --webpack --hostname 0.0.0.0 --port 3000'
     volumes:
       - .:/app
       - pdpp-root-node-modules:/app/node_modules
       - pdpp-reference-node-modules:/app/reference-implementation/node_modules
-      - pdpp-web-node-modules:/app/apps/web/node_modules
-      - pdpp-web-next:/app/apps/web/.next
+      - pdpp-console-node-modules:/app/apps/console/node_modules
+      - pdpp-console-next:/app/apps/console/.next
       - pdpp-polyfill-node-modules:/app/packages/polyfill-connectors/node_modules
       - pdpp-brand-node-modules:/app/packages/pdpp-brand/node_modules
       - pdpp-contract-node-modules:/app/packages/reference-contract/node_modules
@@ -38,8 +42,8 @@ services:
 volumes:
   pdpp-root-node-modules:
   pdpp-reference-node-modules:
-  pdpp-web-node-modules:
-  pdpp-web-next:
+  pdpp-console-node-modules:
+  pdpp-console-next:
   pdpp-polyfill-node-modules:
   pdpp-brand-node-modules:
   pdpp-contract-node-modules:

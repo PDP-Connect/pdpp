@@ -6,7 +6,7 @@ This repository contains three primary layers:
 
 - **Normative PDPP specs** at the repo root in `spec-*.md`
 - **Forkable reference implementation** in [`reference-implementation/`](reference-implementation/README.md)
-- **Docs and illustrated surfaces** in `apps/web/`
+- **Public docs and illustrated surfaces** in `apps/site/`, and the **operator console** in `apps/console/`
 
 ## Repository guide
 
@@ -39,31 +39,45 @@ The reference currently proves one shared substrate with two honest realizations
 
 Legacy docs may call `source.id` a `provider_id` for native providers or a `connector_id` for polyfill connectors.
 
-### Website and docs
+### Website and console
 
-The canonical site lives in `apps/web/`.
+The public site and the operator console are two separate apps after the
+split (`openspec/changes/split-public-site-and-operator-console`).
 
-It renders:
+The **public site** lives in `apps/site/` and is deployable without any
+reference-implementation runtime. It renders:
 
 - `/docs` for protocol docs plus clearly labeled reference notes
 - `/reference` for the public reference-implementation explainer and coverage matrix
 - `/sandbox` for the mock-owner reference dashboard backed by deterministic fictional data
 - `/planning` for OpenSpec project planning artifacts
-- `/dashboard` for a running local or self-hosted reference instance
 - `/design` and `/palette` for local contributor workbench surfaces
 
-The website is a downstream consumer of the reference implementation, not the implementation boundary itself. Hosted or
-public docs should treat `/dashboard` as a live-instance operator surface, not protocol documentation.
+The **operator console** lives in `apps/console/` and is deployed alongside a
+self-hosted reference instance. It renders `/dashboard` for a running local or
+self-hosted reference instance and hosts the BFF/proxy to the AS/RS.
+
+The public site is a downstream consumer of the protocol and reference docs,
+not the implementation boundary itself, and never serves live owner state. The
+operator console is the live-instance operator surface, not protocol
+documentation.
+
+(`apps/web/` is the legacy combined app; it is retained only until the
+apps/web removal tranche — split task 6.4.)
 
 ## Quick start
 
-Run the docs/site:
+Run the default contributor stack (operator console + reference AS/RS):
 
 ```bash
 pnpm dev
 ```
 
-The default dev stack starts the dashboard plus the reference AS/RS. Semantic
+`pnpm dev` boots the reference AS/RS (`:7662` / `:7663`) plus the operator
+console (`apps/console`), the default workflow for work that touches reference
+behavior or the console. For the docs/marketing surface, run `pnpm site:dev`
+(boots `apps/site` only, mock-backed, no AS/RS). To boot reference + console +
+site together for cross-surface link checks, run `pnpm dev:full`. Semantic
 retrieval uses a local Transformers.js embedding model by default; the first
 semantic backfill may download model files into
 `reference-implementation/.cache/transformers` while the servers are already
@@ -175,8 +189,10 @@ pnpm docker:dev
 ```
 
 That uses `docker-compose.dev.yml` to bind-mount the repo, run the reference
-server under Node watch mode, and run the web app with Next dev behind host
-`:3002` by default. The web container still listens on `:3000` internally.
+server under Node watch mode, and run the operator console (`apps/console`) with
+Next dev behind host `:3002` by default. The `web` service (now publishing the
+console app) still listens on `:3000` internally; the service name is retained
+to preserve the existing compose override and `PDPP_WEB_*` env-var contracts.
 Use the default Compose command above or `pnpm docker:smoke` when you want the
 production-style Docker path instead.
 

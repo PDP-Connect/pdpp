@@ -68,7 +68,7 @@ const child = spawn(
     "--filter",
     "pdpp-reference-implementation",
     "--filter",
-    "pdpp-web",
+    "pdpp-console",
     "run",
     "dev",
   ],
