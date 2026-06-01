@@ -10,6 +10,7 @@ import { notFound } from "next/navigation";
 import { buttonVariants } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
+import { derivePrimaryRowAction, type PrimaryRowAction } from "../../lib/connection-evidence.ts";
 import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import {
   type DeviceSourceInstance,
@@ -251,6 +252,17 @@ function ConnectorPageView({ model }: { model: ConnectorPageModel }) {
   // Stable rename selector: prefer the explicit instance id, fall back to the
   // connection id. Both address the same connection on the backend route.
   const renameSelector = connectorInstanceId ?? connectionId;
+  // The detail-page primary action is modality-aware for the same reason the
+  // records row is (`derivePrimaryRowAction`): "Sync now" only starts a real
+  // scheduler pull for owner-syncable connectors. Push-mode (local-collector)
+  // and browser-bound connections cannot be synced from here, so the button is
+  // replaced with an honest, non-clickable next step rather than a dead action
+  // that reaches a failing `runConnectorNowAction`. Same shared classifier as
+  // the row — one source of truth, no scattered string checks.
+  const primaryAction = derivePrimaryRowAction({
+    connectorId,
+    hasLocalDeviceProgress: Boolean(overview.localDeviceProgress),
+  });
 
   return (
     <DashboardShell active="records">
@@ -271,12 +283,16 @@ function ConnectorPageView({ model }: { model: ConnectorPageModel }) {
             >
               All runs →
             </Link>
-            <SyncNowButton
-              connectionId={connectorInstanceId}
-              connectorId={connectorId}
-              displayName={displayName}
-              initialRunning={running}
-            />
+            {primaryAction.kind === "sync" ? (
+              <SyncNowButton
+                connectionId={connectorInstanceId}
+                connectorId={connectorId}
+                displayName={displayName}
+                initialRunning={running}
+              />
+            ) : (
+              <PrimaryActionNotice action={primaryAction} />
+            )}
             <RenameConnection
               connectionId={renameSelector}
               currentLabel={connectionLabelSeed}
@@ -308,9 +324,7 @@ function ConnectorPageView({ model }: { model: ConnectorPageModel }) {
 
       <Section title={`Streams (${streams.length})`}>
         {streams.length === 0 ? (
-          <p className="pdpp-caption text-muted-foreground italic">
-            No records for this connector yet. Click Sync now to pull your first data.
-          </p>
+          <p className="pdpp-caption text-muted-foreground italic">{emptyStreamsHint(primaryAction)}</p>
         ) : (
           <DataList>
             {streams.map((s) => (
@@ -376,6 +390,52 @@ function ConnectorPageView({ model }: { model: ConnectorPageModel }) {
         )}
       </Section>
     </DashboardShell>
+  );
+}
+
+/**
+ * Empty-streams hint, keyed on the same modality as the header action so a
+ * browser-bound / push-mode connection is never told to "Click Sync now" — a
+ * button it does not have. Owner-syncable connections keep the original copy.
+ */
+function emptyStreamsHint(action: PrimaryRowAction): string {
+  if (action.kind === "sync") {
+    return "No records for this connector yet. Click Sync now to pull your first data.";
+  }
+  if (action.kind === "browser_runbook") {
+    return "No records yet. This connection fills in when a local collector drives a real, logged-in browser session — there is no remote sync to start from here.";
+  }
+  return "No records yet. This connection fills in when its local-collector device pushes data — the dashboard cannot start a run.";
+}
+
+/**
+ * Honest non-clickable primary action for a connection that cannot be synced
+ * from the dashboard. Mirrors the records row's `PrimaryRowActionControl`
+ * non-sync branches: push-mode (local-collector) connections show a
+ * "waiting for the local device" status; browser-bound connections point at
+ * the owner-run browser-collector runbook. Inert text, never a `<button>`, so
+ * it can never reach the failing `runConnectorNowAction`.
+ */
+function PrimaryActionNotice({ action }: { action: Exclude<PrimaryRowAction, { kind: "sync" }> }) {
+  if (action.kind === "browser_runbook") {
+    return (
+      <span
+        className="pdpp-caption max-w-[18rem] text-right text-muted-foreground"
+        data-testid="detail-action-browser-runbook"
+        title={action.detail}
+      >
+        {action.label} · <code className="pdpp-eyebrow font-mono text-foreground">{action.runbookPath}</code>
+      </span>
+    );
+  }
+  return (
+    <span
+      className="pdpp-caption max-w-[18rem] text-right text-muted-foreground"
+      data-testid="detail-action-device-wait"
+      title={action.detail}
+    >
+      {action.label}
+    </span>
   );
 }
 
