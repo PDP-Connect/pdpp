@@ -42,7 +42,7 @@
 //     auto-selects the connector's single active connection, or rejects with a
 //     typed `ambiguous_connection` (409) carrying the available `connection_id`
 //     values (+ owner-meaningful labels) and `retry_with: connection_id`.
-//   - a double-revoke is idempotent-by-typed-error: the active-status gate
+//   - a repeat revoke is repeat-safe-by-typed-error: the active-status gate
 //     returns `connector_instance_inactive` (400) for an already-revoked
 //     connection, so a second revoke is a clean typed 4xx, not a crash or a
 //     silent no-op.
@@ -367,7 +367,7 @@ function buildRevokeHandler(
         // verifies the connection belongs to this owner and is active; a
         // foreign or unknown id surfaces as connector_instance_not_found (404),
         // and an already-revoked connection surfaces as
-        // connector_instance_inactive (400) — making a double-revoke a clean
+        // connector_instance_inactive (400), making a repeat revoke a clean
         // typed 4xx. allowDefaultAccount:false so an unmaterialized default
         // account is never created just to revoke it.
         namespace = await ctx.resolveOwnerConnectorNamespace(req, null, {

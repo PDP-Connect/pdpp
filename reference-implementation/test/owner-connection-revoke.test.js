@@ -20,7 +20,7 @@
  *     sibling connection active and collectable;
  *   - the connector-only route auto-selects a single active connection and
  *     rejects two active connections with a typed ambiguous_connection (409);
- *   - a double-revoke is an idempotent typed connector_instance_inactive;
+ *   - a repeat revoke returns a typed connector_instance_inactive;
  *   - foreign/unknown connection ids are 404 (never a cross-owner revoke);
  *   - client grant tokens (403), missing bearers (401), revoked owner-agent
  *     credentials (401), and `/mcp` owner bearers (403) cannot revoke;
@@ -430,7 +430,7 @@ test('owner-agent connector-only revoke rejects two active connections with type
   });
 });
 
-test('owner-agent double-revoke is an idempotent typed connector_instance_inactive', async () => {
+test('owner-agent repeat revoke returns typed connector_instance_inactive', async () => {
   await withServer(async ({ asUrl, rsUrl }) => {
     const manifest = await registerConnector(asUrl, loadReferenceManifest('spotify'));
     const connectorKey = canonicalConnectorKey(manifest.connector_id);

@@ -3769,8 +3769,8 @@ function buildRsApp(opts = {}) {
   // zero-cascade (records, spine, device rows, and sibling connections are
   // untouched) and durable (default-account materialization no longer resurrects
   // a revoked row). Ownership is enforced by the namespace resolver BEFORE the
-  // mutation (foreign connection_id → 404), a double-revoke is an idempotent
-  // typed connector_instance_inactive (400), and the connector-only route
+  // mutation (foreign connection_id → 404), a repeat revoke returns a typed
+  // connector_instance_inactive (400), and the connector-only route
   // auto-selects a single active connection or rejects with a typed
   // `ambiguous_connection` (409). `/mcp` owner-bearer rejection is untouched. See
   // openspec/changes/add-owner-agent-control-surface (tasks 3.1d/6.1d, design
