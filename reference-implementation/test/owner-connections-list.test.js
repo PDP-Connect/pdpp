@@ -24,6 +24,7 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { COLLECTOR_PROTOCOL_VERSION } from '../server/collector-protocol.ts';
 import { startServer } from '../server/index.js';
 import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 import { canonicalConnectorKey } from '../server/connector-key.js';
@@ -376,6 +377,67 @@ test('owner-agent bearer distinguishes two Amazon connections by connection_id',
     assert.equal(personal.label_status, 'owner_set');
     assert.equal(personal.display_name, 'the owner personal');
     assert.equal(shared.label_status, 'fallback');
+  });
+});
+
+// Enroll a connector through the REAL binding-aware device-exporter path
+// (mint code -> enroll), so the resulting instance's `source_kind` is the one
+// the enrollment resolver derived from the manifest, not a seeded value. The
+// enrollment-codes route is owner-session authed and defaults the owner subject
+// to `owner_local` (no session password in the test server), matching the
+// bearer subject issued by `issueOwnerToken`, so the listing resolves to it.
+async function enrollThroughBindingAwarePath(asUrl, { connectorId, localBindingName }) {
+  const codeResp = await fetchJson(`${asUrl}/_ref/device-exporters/enrollment-codes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ connector_id: connectorId, local_binding_name: localBindingName }),
+  });
+  assert.equal(codeResp.status, 201, JSON.stringify(codeResp.body));
+  const enrollResp = await fetchJson(`${asUrl}/_ref/device-exporters/enroll`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-PDPP-Collector-Protocol': COLLECTOR_PROTOCOL_VERSION,
+    },
+    body: JSON.stringify({ enrollment_code: codeResp.body.enrollment_code }),
+  });
+  assert.equal(enrollResp.status, 201, JSON.stringify(enrollResp.body));
+  return enrollResp.body;
+}
+
+// Honesty proof for the browser-collector proof runbook
+// (docs/operator/browser-collector-proof-runbook.md). Step 2 / Step 4 tell the
+// owner to verify the enrolled Amazon connection is recorded as
+// `browser_collector` after the live run. `source_kind` is NOT exposed on the
+// device-exporter `source-instances` JSON, so the runbook directs the owner at
+// the owner-agent listing. This pins that the binding-aware enrollment path
+// surfaces `source_kind: "browser_collector"` end-to-end on
+// `GET /v1/owner/connections`, so the runbook's verification step is real and
+// no owner SQL is required. It does NOT flip Amazon's intent off `unsupported`.
+test('owner-agent bearer sees source_kind=browser_collector for an Amazon connection enrolled through the binding-aware path', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const manifest = await registerConnector(asUrl, loadManifest('amazon'));
+    const connectorKey = canonicalConnectorKey(manifest.connector_id);
+    const enrolled = await enrollThroughBindingAwarePath(asUrl, {
+      connectorId: 'amazon',
+      localBindingName: 'the owner-personal-amazon',
+    });
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connections`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+
+    assert.equal(status, 200);
+    const row = body.data.find((r) => r.connection_id === enrolled.connector_instance_id);
+    assert.ok(row, 'the enrolled Amazon connection must be listed for its owner');
+    assert.equal(row.connector_key, connectorKey);
+    // The runbook's source-kind verification: the owner-agent API honestly
+    // reports browser_collector (not local_device, not account) for a
+    // browser-bound connector enrolled through the real path.
+    assert.equal(row.source_kind, 'browser_collector');
+    assert.notEqual(row.source_kind, 'local_device');
+    assert.equal(row.source_binding?.kind, 'browser_collector');
   });
 });
 

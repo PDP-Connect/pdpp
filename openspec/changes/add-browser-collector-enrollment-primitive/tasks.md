@@ -58,7 +58,21 @@
       into a committed `fixtures/amazon/scrubbed/<runId>/` fixture — which cannot
       be produced honestly in a no-human worktree. The owner-run procedure and
       the exact closing artifact are documented in
-      `docs/operator/browser-collector-proof-runbook.md`.)
+      `docs/operator/browser-collector-proof-runbook.md`.
+      Lane `ri-browser-collector-proof-reduction-v2` further reduced the live
+      gate's surface without faking support: (a) the runbook's source-kind
+      verification step is now backed by a deterministic test
+      (`reference-implementation/test/owner-connections-list.test.js` →
+      "owner-agent bearer sees source_kind=browser_collector …") that enrolls
+      Amazon through the real binding-aware path and asserts
+      `GET /v1/owner/connections` honestly reports `source_kind:
+      browser_collector` — so the owner can verify the source-kind half of the
+      live run through the owner-agent API, with no SQL; (b) the runbook was
+      corrected to be copy-paste executable: it now exports both the distinct
+      `connector_instance_id` (verification filter) and `source_instance_id`
+      (`run --connection-id`) ids the enroll response returns, and the Step 2
+      source-kind check no longer queries `source-instances` — which does NOT
+      carry `source_kind` — but the owner-agent listing that does.)
 - [ ] Flip the `browser_bound` intent branch to return `enroll_browser_collector`
       only after the proof lands; add `add-owner-agent-control-surface` tasks
       5.3 / 8.5 Amazon second-account acceptance coverage.

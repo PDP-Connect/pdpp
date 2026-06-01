@@ -146,35 +146,48 @@ pnpm --dir packages/polyfill-connectors exec tsx bin/local-device-exporter.ts en
 ```
 
 The JSON response carries `device_id`, `device_token`, `connector_instance_id`,
-and `source_instance_id`. The `device_token` is sensitive (device-scoped ingest
-only, but write-capable on this lane). Hold it in env, never commit it:
+and `source_instance_id`. These last two are **distinct ids**: the `run` command
+(Step 3) takes the `source_instance_id` via `--connection-id`, while the
+verification queries below filter on `connector_instance_id`. Export both, plus
+the device credentials. The `device_token` is sensitive (device-scoped ingest
+only, but write-capable on this lane). Hold them in env, never commit them:
 
 ```bash
 export PDPP_LOCAL_DEVICE_ID=dev_...
-export PDPP_LOCAL_DEVICE_TOKEN=dvtk_...   # treat like an API key
-export PDPP_CONNECTION_ID=dsrc_...        # the source_instance_id
+export PDPP_LOCAL_DEVICE_TOKEN=dvtk_...    # treat like an API key
+export PDPP_CONNECTION_ID=dsrc_...         # the source_instance_id (run --connection-id)
+export CONNECTOR_INSTANCE_ID=cin_...        # the connector_instance_id (verification filter)
 ```
 
-Sanity-check the source kind without exposing anything sensitive:
+Sanity-check the source kind without exposing anything sensitive. `source_kind`
+is **not** carried on the device-exporter `source-instances` view; the honest
+owner-reachable surface is the owner-agent listing `GET /v1/owner/connections`,
+which reports `source_kind` per connection. Use an owner **bearer** here (the
+same trusted-owner-agent token an automation would use), not the session cookie:
 
 ```bash
 node --input-type=module <<'NODE'
 const baseUrl = process.env.BASE_URL?.replace(/\/$/, '');
-const cookie = process.env.PDPP_OWNER_SESSION_COOKIE;
+const ownerToken = process.env.PDPP_OWNER_BEARER;
 const connectionId = process.env.CONNECTOR_INSTANCE_ID;
 if (!baseUrl) throw new Error('Set BASE_URL first.');
-if (!cookie) throw new Error('Set PDPP_OWNER_SESSION_COOKIE first.');
+if (!ownerToken) throw new Error('Set PDPP_OWNER_BEARER first (a trusted owner-agent token).');
 if (!connectionId) throw new Error('Set CONNECTOR_INSTANCE_ID first.');
-const url = `${baseUrl}/_ref/device-exporters/source-instances?connector_instance_id=${encodeURIComponent(connectionId)}`;
-const response = await fetch(url, { headers: { Cookie: cookie, Accept: 'application/json' } });
-const data = (await response.json()).data;
-console.log('connector_id:', data[0]?.connector_id);
-console.log('connector_instance_id:', data[0]?.connector_instance_id);
+const response = await fetch(`${baseUrl}/v1/owner/connections`, {
+  headers: { Authorization: `Bearer ${ownerToken}`, Accept: 'application/json' },
+});
+const row = (await response.json()).data.find((r) => r.connection_id === connectionId);
+console.log('connector_id:', row?.connector_id);
+console.log('source_kind:', row?.source_kind);   // expect: browser_collector
 NODE
 ```
 
-(The owner-facing instance row carries `source_kind: browser_collector`; confirm
-via `/dashboard/device-exporters` or the connector-instances diagnostics.)
+A `source_kind: browser_collector` here is the source-kind half of the proof,
+reported honestly through the owner-agent API. (The deterministic test
+`reference-implementation/test/owner-connections-list.test.js` pins that this
+listing surfaces `browser_collector` for a binding-aware Amazon enrollment, so
+this step verifies the live instance, not the plumbing.) The same value is also
+visible at `/dashboard/device-exporters`.
 
 ## Step 3 — Run the Amazon connector with a real session
 
