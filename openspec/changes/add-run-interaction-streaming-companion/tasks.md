@@ -92,7 +92,7 @@
 - [x] 12.5 Define and enforce browser-owner modes: n.eko-owned Chromium for the SLVP, browser-owner/Patchright-compatible Chrome for stealth-sensitive runs, and stealth-gated page-level helpers (`strict`, `balanced`, `assistive`).
 - [x] 12.6 Harden browser chrome suppression: no forced extension pages, no unexpected tab/address chrome, no n.eko room UI, and deterministic target/window selection after rebuild/restart.
 - [x] 12.7 Add automated and manual acceptance coverage for chrome-free display, pointer/touch alignment, local-to-remote paste, mobile keyboard open/dismiss/reopen, resize/orientation, reconnect/app switch, and public `peregrine-dev.vivid.fish` testing.
-- [ ] 12.8 Rebuild/recreate the n.eko Docker overlay and run the full desktop plus real-phone smoke matrix before marking the tranche complete.
+- [ ] 12.8 Rebuild/recreate the n.eko Docker overlay and run the full desktop plus real-phone smoke matrix before marking the tranche complete. No-human checks (OpenSpec, remote-surface + reference streaming units, console types/build, live-CDP smoke) pass via `pnpm stream:no-human-verify`; physical real-phone smoke matrix remains.
 
 ## 13. Viewer Support Library Refactor
 
@@ -100,7 +100,7 @@
 - [x] 13.2 Preserve the explicit stream-frame `ResizeObserver`/viewport listener pipeline because PDPP owns remote-resize policy, not the measurement hook.
 - [x] 13.3 Move fit/contain pointer remapping onto matrix-based transforms and keep deterministic unit coverage for letterbox cases.
 - [x] 13.4 Preserve native n.eko copy/cut/paste chord delivery and document why shortcut libraries are not used inside the streamed surface.
-- [ ] 13.5 Re-run affected checks, rebuild/recreate the n.eko Docker overlay, and run public desktop plus real-phone smoke with debug telemetry.
+- [ ] 13.5 Re-run affected checks, rebuild/recreate the n.eko Docker overlay, and run public desktop plus real-phone smoke with debug telemetry. Affected no-human checks pass via `pnpm stream:no-human-verify` (matrix-transform coordinate/letterbox coverage lives in remote-surface units); public desktop + real-phone smoke with debug telemetry remains.
 
 ## 14. Stream Interaction Control Core
 
@@ -110,7 +110,7 @@
 - [x] 14.4 Add pure n.eko/WebRTC media settle logic that compares requested viewport, n.eko screen status, media intrinsic size, and inbound stats before marking a stream settled.
 - [x] 14.5 Add a replay harness for stream viewer traces so real-device resize, keyboard, clipboard, reconnect, and wide-viewport regressions can be reproduced without manual browser testing.
 - [x] 14.6 Integrate the protocol validators and control-core decisions into `stream-viewer.tsx` without changing the owner-facing UI.
-- [ ] 14.7 Run affected unit checks, OpenSpec validation, Docker n.eko rebuild/recreate, and public desktop plus real-phone smoke with debug telemetry.
+- [ ] 14.7 Run affected unit checks, OpenSpec validation, Docker n.eko rebuild/recreate, and public desktop plus real-phone smoke with debug telemetry. Affected unit checks + OpenSpec validation pass via `pnpm stream:no-human-verify` (protocol validators, viewport/keyboard classification, media-settle, and replay-harness coverage all green in remote-surface units); Docker rebuild/recreate + public desktop + real-phone smoke remains.
 
 ## 15. Mobile Clipboard SLVP
 
@@ -121,7 +121,7 @@
 - [x] 15.5 Rework remote clipboard SSE handling so mobile buffers remote text until a direct owner tap writes to the device clipboard, while desktop remains best-effort seamless.
 - [x] 15.6 Keep n.eko `control.paste` as the primary paste path and gate CDP/page-level clipboard helpers behind non-strict assistive mode.
 - [x] 15.7 Add deterministic tests and replay fixtures for Android Chrome, iOS Safari, mobile Firefox, desktop Chrome, desktop Safari, desktop Firefox, permission denied, multiline/Unicode text, password-like masking, and session cleanup.
-- [ ] 15.8 Re-run affected checks, OpenSpec validation, Docker n.eko rebuild/recreate, and public desktop plus real-phone smoke focused on mobile clipboard. Public desktop and Playwright mobile-emulated smoke passed; physical real-phone smoke remains.
+- [ ] 15.8 Re-run affected checks, OpenSpec validation, Docker n.eko rebuild/recreate, and public desktop plus real-phone smoke focused on mobile clipboard. Affected checks + OpenSpec validation re-run green via `pnpm stream:no-human-verify` (clipboard-policy fixtures for all browser/permission/Unicode cases live in remote-surface units). Public desktop and Playwright mobile-emulated smoke passed previously; physical real-phone smoke remains.
 
 ## 16. Visual Quality Telemetry
 
@@ -136,5 +136,5 @@
 - [x] 17.2 Add mobile keyboard optimistic reacquire on owner gesture with rollback when the remote page does not confirm editable focus.
 - [x] 17.3 Split CSS viewport dimensions from bounded high-DPR n.eko screen/capture dimensions and keep the backend CDP emulation CSS viewport stable.
 - [x] 17.4 Add deterministic coverage for viewport authority, bounded capture target selection, keyboard reacquire wiring, and n.eko CSS-vs-capture backend behavior.
-- [ ] 17.5 Re-run affected checks, rebuild/recreate the n.eko Docker overlay, and run public desktop plus real-phone smoke focused on keyboard reacquire, rotation settle, and visual sharpness. Public raw-CDP desktop and mobile-emulated smokes now pass with clean rotation, visual-quality, and pointer telemetry; physical real-phone smoke remains.
+- [ ] 17.5 Re-run affected checks, rebuild/recreate the n.eko Docker overlay, and run public desktop plus real-phone smoke focused on keyboard reacquire, rotation settle, and visual sharpness. Affected checks re-run green via `pnpm stream:no-human-verify` (viewport-authority, bounded-capture, keyboard-reacquire, and CSS-vs-capture coverage in remote-surface units; live-CDP smoke proves frame/input/resize against real Chromium). Public raw-CDP desktop and mobile-emulated smokes passed previously with clean rotation/visual-quality/pointer telemetry; physical real-phone smoke remains.
 - [x] 17.6 Add an automated owner-surface Docker/public smoke command for the n.eko stream playground that skips without a configured public URL and proves display, remote counter click, remote input, and telemetry capture when enabled.
