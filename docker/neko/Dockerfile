@@ -20,17 +20,31 @@ ARG NEKO_BASE_IMAGE=ghcr.io/m1k1o/neko/chromium:3.0@sha256:13264ee217ecccda06b07
 # lockstep with what the driver expects to see in Browser.getVersion.
 FROM node:24-slim AS patchright-chromium
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates \
+  && apt-get install -y --no-install-recommends ca-certificates curl unzip \
   && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /opt/patchright-browsers /tmp/patchright-install
 WORKDIR /tmp/patchright-install
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/patchright-browsers
+COPY docker/neko/install-patchright-chromium.sh /usr/local/bin/install-patchright-chromium.sh
 # Initialise a throwaway package.json so npm doesn't try to write tracker
 # metadata into the cache mount (which conflicts with --mount=type=cache).
-# `--no-shell` skips the chrome_headless_shell binary we don't need.
+#
+# We deliberately do NOT run `npx patchright install chromium`: its
+# out-of-process extractor (extract-zip/yauzl) hangs indefinitely after the
+# download completes in some sandboxed/overlayfs build environments — the zip
+# arrives intact, the child logs "extracting archive", and the extraction
+# promise never resolves, stalling the Docker build at this stage. The bytes
+# are never the problem (`unzip` of the same archive finishes in seconds), so
+# install-patchright-chromium.sh reproduces the exact on-disk layout a real
+# `patchright install` leaves (chromium-<revision>/chrome-linux64/chrome +
+# INSTALLATION_COMPLETE marker) while extracting with the system `unzip`. The
+# revision/version are read from the patchright-core package just installed, so
+# this stays pinned to patchright@1.59.4 (Chromium 1217, Chrome for Testing
+# 147.0.7727.15) — bumping patchright updates the download automatically.
 RUN echo '{"name":"patchright-installer","private":true,"version":"0.0.0"}' > package.json \
   && npm install --no-save patchright@1.59.4 \
-  && npx patchright install chromium --no-shell
+  && chmod +x /usr/local/bin/install-patchright-chromium.sh \
+  && /usr/local/bin/install-patchright-chromium.sh /tmp/patchright-install
 
 # ─── Stage 2: neko runtime ────────────────────────────────────────────────
 ARG NEKO_BASE_IMAGE
