@@ -115,11 +115,11 @@ function registerCdpManualActionTarget(args) {
         ...(args.reason ? { reason: args.reason } : {}),
     });
 }
-export async function prepareManualAction(args) {
+export async function prepareBrowserInteractionTarget(args) {
     const env = args.env ?? process.env;
     const resolveStreamingRegistration = args.resolveStreamingRegistration ?? resolveStreamingRegistrationFromEnv;
     const resolveWsUrl = args.resolveWsUrl ?? resolveWsUrlForExactPage;
-    const interactionId = generateInteractionId();
+    const interactionId = args.interactionId ?? generateInteractionId();
     const registration = await resolveStreamingRegistration(env);
     if (!registration) {
         return { interactionId, registered: false };
@@ -160,6 +160,9 @@ export async function prepareManualAction(args) {
         return { interactionId, registered: false };
     }
     return { interactionId, registered: true };
+}
+export function prepareManualAction(args) {
+    return prepareBrowserInteractionTarget(args);
 }
 function captureManualActionFixture(args) {
     if (!args.capture) {

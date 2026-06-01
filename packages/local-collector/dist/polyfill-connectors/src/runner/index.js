@@ -1,5 +1,5 @@
 export { COLLECTOR_PROTOCOL_HEADER, COLLECTOR_PROTOCOL_VERSION } from "../collector-protocol.js";
-export { buildCollectorStartMessage, CollectorStateReadError, drainCollectorQueue, enrollCollector, runCollectorConnector, transformRecordsToCollectorEnvelopes, } from "../collector-runner.js";
+export { buildCollectorStartMessage, COLLECTOR_COVERAGE_STATUSES, CollectorStateReadError, drainCollectorQueue, enrollCollector, runCollectorConnector, summarizeCollectorCompleteness, transformRecordsToCollectorEnvelopes, } from "../collector-runner.js";
 export { isMainModule } from "../is-main-module.js";
 export { LOCAL_DEVICE_ENDPOINTS, LocalDeviceClient, LocalDeviceHttpError, } from "../local-device-client.js";
 export { buildLocalDeviceRecordEnvelope, canonicalJson, hashCanonicalJson, } from "../local-device-envelope.js";

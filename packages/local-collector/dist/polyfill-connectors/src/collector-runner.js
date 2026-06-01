@@ -34,6 +34,15 @@ export async function enrollCollector(config) {
         ...(config.deviceLabel ? { deviceLabel: config.deviceLabel } : {}),
     });
 }
+export const COLLECTOR_COVERAGE_STATUSES = [
+    "collected",
+    "inventory_only",
+    "excluded",
+    "deferred",
+    "missing",
+    "unsupported",
+    "unaccounted",
+];
 export class CollectorStateReadError extends Error {
     constructor(message, cause) {
         super(message, { cause });
@@ -144,6 +153,7 @@ export async function runCollectorConnector(config) {
             });
         }
         return {
+            completeness: summarizeCollectorCompleteness(streamResult.coverageByStore),
             done,
             enqueuedBatches: enqueueResult.enqueuedBatches,
             flushedState: checkpointResult.flushedState,
@@ -192,6 +202,7 @@ async function maybeSkipScanForBacklog(input) {
         status: heartbeatStatusForSummary(summaryAfterGap, input.policy),
     });
     return {
+        completeness: null,
         done: null,
         enqueuedBatches: 0,
         flushedState: null,
@@ -225,6 +236,50 @@ async function readPriorStateOrBlock(input) {
         throw new CollectorStateReadError(`failed to read prior state for ${input.config.sourceInstanceId}: ${error instanceof Error ? error.message : String(error)}`, error);
     }
 }
+const COVERAGE_DIAGNOSTICS_STREAM = "coverage_diagnostics";
+function coverageEntryFromRecord(message) {
+    if (message.stream !== COVERAGE_DIAGNOSTICS_STREAM) {
+        return null;
+    }
+    const data = message.data;
+    const dataStore = isRecord(data) && typeof data.store === "string" && data.store ? data.store : null;
+    const keyStore = typeof message.key === "string" && message.key ? message.key : null;
+    const store = dataStore ?? keyStore;
+    if (!store) {
+        return null;
+    }
+    const rawStatus = isRecord(data) && typeof data.status === "string" ? data.status : null;
+    if (!rawStatus) {
+        return null;
+    }
+    const status = COLLECTOR_COVERAGE_STATUSES.includes(rawStatus)
+        ? rawStatus
+        : "unaccounted";
+    return { status, store };
+}
+export function summarizeCollectorCompleteness(coverageByStore) {
+    if (!coverageByStore || coverageByStore.size === 0) {
+        return null;
+    }
+    const countsByStatus = Object.fromEntries(COLLECTOR_COVERAGE_STATUSES.map((status) => [status, 0]));
+    const unaccountedStores = [];
+    const byStore = {};
+    for (const store of [...coverageByStore.keys()].sort()) {
+        const status = coverageByStore.get(store);
+        byStore[store] = status;
+        countsByStatus[status] += 1;
+        if (status === "unaccounted") {
+            unaccountedStores.push(store);
+        }
+    }
+    return {
+        byStore,
+        countsByStatus,
+        fullyAccounted: unaccountedStores.length === 0,
+        storeCount: coverageByStore.size,
+        unaccountedStores,
+    };
+}
 async function streamConnectorIntoOutbox(input) {
     throwIfAborted(input.abortSignal);
     const child = spawnConnector(input.config.connector, {
@@ -242,6 +297,7 @@ async function streamConnectorIntoOutbox(input) {
     let enqueuedBatches = 0;
     let done = null;
     let scanBudgetExceeded = false;
+    let coverageByStore = null;
     const flushPendingBatch = () => {
         if (pendingRecords.length === 0) {
             return;
@@ -288,8 +344,17 @@ async function streamConnectorIntoOutbox(input) {
             scanBudgetExceeded,
         });
     };
+    const recordCoverageIfPresent = (message) => {
+        const entry = coverageEntryFromRecord(message);
+        if (!entry) {
+            return;
+        }
+        coverageByStore ??= new Map();
+        coverageByStore.set(entry.store, entry.status);
+    };
     const handleMessage = (message) => {
         if (message.type === "RECORD") {
+            recordCoverageIfPresent(message);
             pendingRecords.push(message);
             if (pendingRecords.length > bufferHighWaterMark) {
                 bufferHighWaterMark = pendingRecords.length;
@@ -397,6 +462,7 @@ async function streamConnectorIntoOutbox(input) {
     return {
         bufferedState: Object.freeze(scanBudgetExceeded ? {} : { ...bufferedState }),
         bufferHighWaterMark,
+        coverageByStore,
         done: scanBudgetExceeded ? null : done,
         enqueuedBatches,
         recordsQueued,

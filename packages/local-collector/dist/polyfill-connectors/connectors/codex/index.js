@@ -5,6 +5,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface as createFileReader, createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
+import { flushAndExitAfterRuntimeAck } from "../../src/connector-exit.js";
+import { openCarryForwardCursor } from "../../src/fingerprint-cursor.js";
 import { isMainModule } from "../../src/is-main-module.js";
 import { buildLocalSourceInventory, listDirectoryInventory, } from "../../src/local-source-inventory.js";
 import { stringifyForJsonl } from "../../src/safe-emit.js";
@@ -31,13 +33,7 @@ async function waitForEmitDrain() {
     }
 }
 const flushAndExit = (code) => {
-    if (process.stdout.writableLength > 0) {
-        process.stdout.once("drain", () => process.exit(code));
-        setTimeout(() => process.exit(code), 3000).unref();
-    }
-    else {
-        process.exit(code);
-    }
+    flushAndExitAfterRuntimeAck(code);
 };
 const fail = (m, r = false) => {
     emit({
@@ -523,18 +519,16 @@ function makeThreadFingerprint(thread, agg, priorFingerprint) {
         function_call_count: agg?.functionCallCount ?? priorFingerprint?.function_call_count ?? null,
     };
 }
-export function emitSessionsFromMaps({ threadsMap, rolloutAggregates, emitRecord, priorFingerprints, fingerprintSink, }) {
+export function emitSessionsFromMaps({ threadsMap, rolloutAggregates, emitRecord, cursor, }) {
     const emittedSessionIds = new Set();
     for (const [id, t] of threadsMap) {
         emittedSessionIds.add(id);
         const agg = rolloutAggregates.get(id);
-        const prior = priorFingerprints?.get(id);
+        const prior = cursor?.prior(id);
         if (shouldReemitThreadSession(t, agg, prior)) {
             emitRecord("sessions", buildThreadSessionRecord(id, t, agg, prior));
         }
-        if (fingerprintSink) {
-            fingerprintSink.set(id, makeThreadFingerprint(t, agg, prior));
-        }
+        cursor?.note(id, makeThreadFingerprint(t, agg, prior));
     }
     for (const [id, agg] of rolloutAggregates) {
         if (emittedSessionIds.has(id)) {
@@ -630,14 +624,13 @@ async function scanRollouts(args) {
     await waitForEmitDrain();
     return { parsedFiles };
 }
-function emitSessions({ stateDbPath, rolloutAggregates, emitRecord, priorFingerprints, fingerprintSink, }) {
+function emitSessions({ stateDbPath, rolloutAggregates, emitRecord, cursor }) {
     const { map: threadsById } = loadThreadsMap(stateDbPath);
     emitSessionsFromMaps({
         threadsMap: threadsById,
         rolloutAggregates,
         emitRecord,
-        priorFingerprints,
-        fingerprintSink,
+        cursor,
     });
 }
 async function readStartMessage() {
@@ -734,17 +727,13 @@ async function assertRequestedCodexSources(dirs, requested) {
 }
 function emitStateCursors({ requested, newMtimes, nowIso, sessionsSourceMtimeMs, threadFingerprints, }) {
     if (requested.has("sessions")) {
-        const thread_fingerprints = {};
-        for (const [id, fp] of threadFingerprints) {
-            thread_fingerprints[id] = fp;
-        }
         emit({
             type: "STATE",
             stream: "sessions",
             cursor: {
                 fetched_at: nowIso(),
                 source_mtime_ms: sessionsSourceMtimeMs,
-                thread_fingerprints,
+                thread_fingerprints: threadFingerprints.toState(),
             },
         });
     }
@@ -926,8 +915,7 @@ async function main() {
     const scanStartedAtMs = Date.now();
     const sessionsSourceMtimeMs = fileMtimeMs(dirs.stateDbPath);
     let parsedRolloutFiles = 0;
-    const priorThreadFingerprints = readPriorThreadFingerprints(startMsg);
-    const threadFingerprints = new Map(priorThreadFingerprints);
+    const threadFingerprints = openCarryForwardCursor(readPriorThreadFingerprints(startMsg));
     await emitLocalInventoryStreams({ codexHome: dirs.codexHome, requested, emitRecord });
     if (needRollouts) {
         const rolloutScan = await scanRollouts({
@@ -948,8 +936,7 @@ async function main() {
             stateDbPath: dirs.stateDbPath,
             rolloutAggregates,
             emitRecord,
-            priorFingerprints: priorThreadFingerprints,
-            fingerprintSink: threadFingerprints,
+            cursor: threadFingerprints,
         });
         await waitForEmitDrain();
     }

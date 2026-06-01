@@ -2,7 +2,8 @@ import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { resolveAuth } from "./auth.js";
-import { manualAction } from "./browser-handoff.js";
+import { manualAction, prepareBrowserInteractionTarget } from "./browser-handoff.js";
+import { flushAndExitAfterRuntimeAck } from "./connector-exit.js";
 import { createCaptureSession } from "./fixture-capture.js";
 import { emitToStdout } from "./safe-emit.js";
 import { resourceSet } from "./scope-filters.js";
@@ -66,13 +67,7 @@ export function runConnector(config) {
         process.stderr.write(`[capture] ${modeLabel}; writing to ${capture.baseDir}\n`);
     }
     const flushAndExit = (code) => {
-        if (process.stdout.writableLength > 0) {
-            process.stdout.once("drain", () => process.exit(code));
-            setTimeout(() => process.exit(code), 3000).unref();
-        }
-        else {
-            process.exit(code);
-        }
+        flushAndExitAfterRuntimeAck(code);
     };
     let observedCounters = null;
     const emitFailed = (message, retryable = false, records_emitted = observedCounters?.totalEmitted ?? 0) => {
@@ -272,12 +267,6 @@ async function runInBrowser(args) {
     const { browser, name, sendInteraction, assist, completeAssistance, progress, ensureSession, probeSession, collect, baseCtx, } = args;
     const { context: ctx, release } = await acquireBrowser(browser, name);
     const visibility = resolveBrowserRuntimeVisibility(browser, name);
-    const browserSendInteraction = makeBrowserInteractionKeepalive({
-        context: ctx,
-        diagnostics: process.env.PDPP_BROWSER_SURFACE_DIAGNOSTICS === "1",
-        progress,
-        sendInteraction: (req) => sendInteraction(decorateBrowserManualAction(req, visibility)),
-    });
     const { withShutdownRelease } = await import("./shutdown-hook.js");
     const tracer = makeTracer(ctx, name, baseCtx.capture);
     let traceFinalized = false;
@@ -295,6 +284,23 @@ async function runInBrowser(args) {
     let page = null;
     try {
         page = await ctx.newPage();
+        const browserSendInteraction = makeBrowserInteractionKeepalive({
+            context: ctx,
+            diagnostics: process.env.PDPP_BROWSER_SURFACE_DIAGNOSTICS === "1",
+            progress,
+            sendInteraction: async (req) => {
+                const decorated = decorateBrowserManualAction(req, visibility);
+                if (decorated.kind !== "otp") {
+                    return sendInteraction(decorated);
+                }
+                const { interactionId } = await prepareBrowserInteractionTarget({
+                    page: page,
+                    reason: "2fa",
+                    ...(decorated.request_id ? { interactionId: decorated.request_id } : {}),
+                });
+                return sendInteraction({ ...decorated, request_id: interactionId });
+            },
+        });
         await captureBrowserPage(baseCtx.capture, page, "runtime-new-page");
         await closeBrowserContextPagesExcept(ctx, page);
         await establishSession({ ensureSession, probeSession }, {

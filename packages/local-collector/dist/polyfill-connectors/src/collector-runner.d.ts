@@ -44,7 +44,17 @@ export interface CollectorRunConfig {
     runId?: string;
     sourceInstanceId: string;
 }
+export declare const COLLECTOR_COVERAGE_STATUSES: readonly ["collected", "inventory_only", "excluded", "deferred", "missing", "unsupported", "unaccounted"];
+export type CollectorCoverageStatus = (typeof COLLECTOR_COVERAGE_STATUSES)[number];
+export interface CollectorCompletenessSummary {
+    byStore: Readonly<Record<string, CollectorCoverageStatus>>;
+    countsByStatus: Readonly<Record<CollectorCoverageStatus, number>>;
+    fullyAccounted: boolean;
+    storeCount: number;
+    unaccountedStores: readonly string[];
+}
 export interface CollectorRunResult {
+    completeness: CollectorCompletenessSummary | null;
     done: Extract<EmittedMessage, {
         type: "DONE";
     }> | null;
@@ -65,6 +75,7 @@ export declare class CollectorStateReadError extends Error {
     constructor(message: string, cause: unknown);
 }
 export declare function runCollectorConnector(config: CollectorRunConfig): Promise<CollectorRunResult>;
+export declare function summarizeCollectorCompleteness(coverageByStore: Map<string, CollectorCoverageStatus> | null): CollectorCompletenessSummary | null;
 export declare function buildCollectorStartMessage(streams: readonly string[], streamsToBackfill?: readonly string[], priorState?: Readonly<Record<string, unknown>> | null): StartMessage;
 export declare function transformRecordsToCollectorEnvelopes(input: {
     batchId: string;
