@@ -6978,6 +6978,15 @@ The reference implementation SHALL report non-fatal lossiness, compatibility beh
 - **AND** a request whose `limit` is absent, non-positive, or unparseable SHALL fall back to the default page size and SHALL NOT include a `limit_clamped` warning
 - **AND** under multi-connection fan-in the response SHALL include at most one `limit_clamped` warning regardless of how many connections were queried.
 
+#### Scenario: Search-retrieval limit is clamped to the page maximum
+- **WHEN** a direct-REST search read (`/v1/search`, `/v1/search/semantic`, or `/v1/search/hybrid`) receives a `limit` greater than the advertised maximum page size (100, as published in `capabilities.{lexical,semantic,hybrid}_retrieval.max_limit`)
+- **THEN** the response SHALL return at most the maximum page size of hits rather than rejecting the request
+- **AND** the response SHALL include a structured `meta.warnings` entry with the stable code `limit_clamped` and `detail.requested_limit` / `detail.max_limit` values identifying the requested limit and the effective maximum, carried on the same canonical `meta.warnings[]` envelope slot the search operations already use for `deprecated_alias_used` and `source_skipped_not_applicable`
+- **AND** a request whose `limit` is within the maximum (including exactly the maximum) SHALL NOT include a `limit_clamped` warning
+- **AND** a request whose `limit` is absent, non-positive, or unparseable SHALL fall back to the default page size and SHALL NOT include a `limit_clamped` warning
+- **AND** the hybrid mode, which composes lexical and semantic sources under one request, SHALL include at most one `limit_clamped` warning regardless of how many underlying sources were queried
+- **AND** the native REST host SHALL carry the search operation's `meta.warnings` through to the response envelope rather than dropping it at the host boundary, so a direct REST caller observes the `limit_clamped`, `deprecated_alias_used`, and `source_skipped_not_applicable` warnings the operation produced.
+
 ### Requirement: MCP read tools SHALL mirror the canonical public read contract
 The in-repo MCP server and hosted MCP gateway SHALL mirror the canonical public read contract instead of defining a separate read API. MCP tool input schemas SHALL expose the same public arguments as REST, including the same documented bounds, tool output schemas SHALL describe the canonical envelope, `structuredContent` SHALL carry the canonical body, and prose `content[]` SHALL be a concise summary only.
 
@@ -6996,6 +7005,13 @@ The in-repo MCP server and hosted MCP gateway SHALL mirror the canonical public 
 - **THEN** the MCP `query_records` input schema SHALL advertise the maximum as an inclusive bound of 100
 - **AND** the MCP server SHALL reject the over-max `limit` at input validation rather than forwarding it to the RS to be silently clamped
 - **AND** a `limit` within the maximum (including exactly the maximum) SHALL be accepted and forwarded.
+
+#### Scenario: MCP enforces the search limit cap at input validation
+- **WHEN** an MCP client calls `search` with a `limit` greater than the advertised maximum page size (100)
+- **THEN** the MCP `search` input schema SHALL advertise the maximum as an inclusive bound of 100
+- **AND** the MCP server SHALL reject the over-max `limit` at input validation rather than forwarding it to the RS to be silently clamped
+- **AND** a `limit` within the maximum (including exactly the maximum) SHALL be accepted and forwarded
+- **AND** the MCP `search` path SHALL NOT rely on the REST `limit_clamped` warning, because it rejects an over-max `limit` before any clamp occurs.
 
 ### Requirement: The reference's hosted consent-approval HTML SHALL NOT embed a live client bearer
 
