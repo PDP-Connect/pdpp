@@ -148,10 +148,9 @@ export interface UnsupportedAddModality {
  * threaded to the records row, so — exactly as this module already does for the
  * supported local-collector set — it enumerates the class by key. The list is
  * pinned against the committed manifests by `connection-modality.test.ts` so it
- * cannot drift from the real connector bindings. A row whose connector is in this
- * set cannot be owner-synced from the dashboard: a browser-bound connection fills
- * in only when a local collector drives a real logged-in browser session, so the
- * row must point at that setup path, never a dead "Sync now".
+ * cannot drift from the real connector bindings. This list is for setup and
+ * enrollment honesty. Existing connection run controls are governed by the owner
+ * run surface and must not categorically suppress browser-bound run-now actions.
  */
 export const BROWSER_BOUND_CONNECTORS = [
   "amazon",

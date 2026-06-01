@@ -179,10 +179,11 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
     localDeviceProgress: overview.localDeviceProgress ?? null,
     supportsOwnerSync: !overview.localDeviceProgress,
   });
-  // The primary row action is modality-aware: "Sync now" is only an honest
-  // affordance for owner-syncable connectors. Push-mode (local-collector) and
-  // browser-bound connections cannot be synced from a row, so the button is
-  // replaced with an honest, non-clickable next step rather than a dead action.
+  // The primary row action is modality-aware: "Sync now" is honest for existing
+  // owner-runnable connections, including browser-bound runs that may ask for
+  // manual browser assistance after start. Push-mode local-collector connections
+  // still render non-clickable guidance because the dashboard cannot remotely
+  // pull from the operator's device.
   const primaryAction = derivePrimaryRowAction({
     connectorId: connector.connector_id,
     hasLocalDeviceProgress: Boolean(overview.localDeviceProgress),
@@ -272,13 +273,10 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
 /**
  * The honest primary action for the row.
  *
- * Owner-syncable connectors get the clickable `Sync now` button (unchanged
- * happy path). Push-mode local-collector and browser-bound connections cannot
- * be synced from a row, so instead of a dead button they render a compact,
- * non-clickable next step: "waiting for the local device", or a pointer at the
- * browser-collector runbook the empty-state already surfaces. The guidance is
- * inert text (not a `<button>`), so it can never reach the failing
- * `runConnectorNowAction`.
+ * Owner-runnable connectors get the clickable `Sync now` button. Push-mode
+ * local-collector connections render compact, non-clickable guidance because
+ * their data arrives when the paired device pushes it. The guidance is inert
+ * text (not a `<button>`), so it can never reach `runConnectorNowAction`.
  */
 function PrimaryRowActionControl({
   action,
@@ -303,17 +301,6 @@ function PrimaryRowActionControl({
       >
         {running ? "Syncing…" : "Sync now"}
       </Button>
-    );
-  }
-  if (action.kind === "browser_runbook") {
-    return (
-      <span
-        className="pdpp-caption max-w-[16rem] text-right text-muted-foreground"
-        data-testid="row-action-browser-runbook"
-        title={action.detail}
-      >
-        {action.label} · <code className="pdpp-eyebrow font-mono text-foreground">{action.runbookPath}</code>
-      </span>
     );
   }
   return (

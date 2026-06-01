@@ -227,7 +227,7 @@ test("isBrowserBoundConnector narrows only the browser-bound keys", () => {
 test("isBrowserBoundConnector also accepts the registry-URL fallback form", () => {
   // The RS summary canonicalizes first-party ids, but falls back to the raw
   // value when canonicalization fails. A URL-shaped id must still classify as
-  // browser-bound so it cannot resurrect a dead Sync now.
+  // browser-bound for setup/enrollment guidance.
   assert.equal(isBrowserBoundConnector("https://registry.pdpp.org/connectors/amazon"), true);
   assert.equal(isBrowserBoundConnector("https://registry.pdpp.org/connectors/chase/"), true);
   assert.equal(isBrowserBoundConnector("https://registry.pdpp.org/connectors/gmail"), false);

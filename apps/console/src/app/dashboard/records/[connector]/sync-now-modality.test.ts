@@ -9,15 +9,14 @@
  * (`derivePrimaryRowAction`) is exhaustively unit-tested in
  * `connection-evidence.test.ts`; here we pin only that the detail page routes
  * its primary action through that shared classifier and never renders a
- * clickable `SyncNowButton` outside the owner-syncable branch.
+ * clickable `SyncNowButton` outside the owner-runnable branch.
  *
  * Why this matters: the records row was made modality-aware (the "false Sync
  * now" honesty fix), but the connection *detail* page rendered `SyncNowButton`
- * unconditionally - gated only by `running`. For a browser-bound connection
- * (Amazon/Chase/ChatGPT) or a push-mode local-collector connection, that
- * detail-page button reaches the failing `runConnectorNowAction`, so the owner
- * only learns the action is dead after clicking. This suite fails if the
- * detail page regresses to an unconditional Sync now.
+ * unconditionally - gated only by `running`. For a push-mode local-collector
+ * connection, that detail-page button reaches a dead remote-run path, so the
+ * owner only learns the action is invalid after clicking. This suite fails if
+ * the detail page regresses to an unconditional Sync now.
  */
 
 import assert from "node:assert/strict";
@@ -33,7 +32,6 @@ const IMPORTS_SHARED_CLASSIFIER =
 const DERIVES_PRIMARY_ACTION = /const primaryAction = derivePrimaryRowAction\(\{/;
 const SYNC_BRANCH_GUARD = /\{primaryAction\.kind === "sync" \? \(\s*<SyncNowButton/;
 const NON_SYNC_NOTICE = /\) : \(\s*<PrimaryActionNotice action=\{primaryAction\} \/>/;
-const RUNBOOK_NOTICE_TESTID = /data-testid="detail-action-browser-runbook"/;
 const DEVICE_WAIT_NOTICE_TESTID = /data-testid="detail-action-device-wait"/;
 // The "Click Sync now" copy must be gated behind the owner-syncable branch of
 // `emptyStreamsHint`, never shown unconditionally for every connection.
@@ -58,17 +56,16 @@ test("SyncNowButton renders only inside the owner-syncable branch", async () => 
   assert.equal(renders.length, 1, "expected exactly one <SyncNowButton render site");
 });
 
-test("non-syncable connections get an honest non-clickable notice, not a dead button", async () => {
+test("push-mode connections get an honest non-clickable notice, not a dead button", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
   assert.match(src, NON_SYNC_NOTICE);
-  assert.match(src, RUNBOOK_NOTICE_TESTID);
   assert.match(src, DEVICE_WAIT_NOTICE_TESTID);
 });
 
-test("the empty-streams hint no longer tells every connection to click Sync now", async () => {
+test("the empty-streams hint gates Sync now copy on the owner-runnable branch", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
   // The "Click Sync now to pull your first data." copy must be gated behind the
-  // owner-syncable branch so browser-bound / push-mode connections are not told
-  // to click a button they do not have.
+  // owner-runnable branch so push-mode connections are not told to click a
+  // button they do not have.
   assert.match(src, SYNC_HINT_GATED_RE);
 });

@@ -15,7 +15,6 @@
  * without a browser harness.
  */
 
-import { BROWSER_BOUND_RUNBOOK_PATH, isBrowserBoundConnector } from "./connection-modality.ts";
 import type {
   DeviceSourceInstance,
   RefConnectionHealthSnapshot,
@@ -1000,49 +999,26 @@ export function deriveConnectionNextStep(input: {
 /**
  * The honest primary action for a records row.
  *
- * The "Sync now" button starts a scheduler-managed pull. That is only a real
- * affordance for connectors the owner can trigger from the dashboard. Two
- * classes cannot be owner-synced from a row, and rendering a clickable button
- * for them is a false affordance — the click reaches `runConnectorNowAction`,
- * which fails, and the owner only learns the action was dead after clicking:
+ * The "Sync now" button starts an owner-controlled connector run. Existing
+ * browser-bound connections are owner-runnable: if they need browser assistance,
+ * the run timeline surfaces that after start. The class that remains
+ * non-clickable here is push-mode / local-collector connections (those with
+ * `localDeviceProgress`): they fill in when their local-collector device pushes
+ * a batch, and there is no remote pull to start.
  *
- *   - **Push-mode / local-collector** connections (those with `localDeviceProgress`)
- *     fill in when their local-collector device pushes a batch. There is no
- *     remote pull to start; the row should say it is waiting for the device.
- *   - **Browser-bound** connectors (Amazon, Chase, ChatGPT, …) materialize only
- *     when a local collector drives a real logged-in browser session. The
- *     console has no one-click flow for them yet, so the row should point at the
- *     owner-run runbook the empty-state already surfaces — never a dead button.
- *
- * Everything else keeps the clickable `Sync now` (the happy path is unchanged).
+ * Everything else keeps the clickable `Sync now`.
  *
  * Pure and JSX-free so the row stays thin and this is unit-testable without a
- * browser harness. The browser-bound case takes precedence over push-mode: a
- * browser-bound connector with a heartbeat is still set up via the runbook, and
- * the runbook pointer is the more actionable next step.
+ * browser harness.
  */
-export type PrimaryRowAction =
-  | { kind: "sync" }
-  | { kind: "device_wait"; detail: string; label: string }
-  | { kind: "browser_runbook"; detail: string; label: string; runbookPath: string };
+export type PrimaryRowAction = { kind: "sync" } | { kind: "device_wait"; detail: string; label: string };
 
 export function derivePrimaryRowAction(input: {
   connectorId: string | null | undefined;
   /** True when the reference has a push-mode local-device progress row for this connection. */
   hasLocalDeviceProgress: boolean;
 }): PrimaryRowAction {
-  const { connectorId, hasLocalDeviceProgress } = input;
-
-  if (isBrowserBoundConnector(connectorId)) {
-    return {
-      kind: "browser_runbook",
-      label: "Set up the browser collector",
-      detail:
-        "This connection fills in when a local collector drives a real, logged-in browser session — there is no remote sync to start from here. Follow the runbook to set it up.",
-      runbookPath: BROWSER_BOUND_RUNBOOK_PATH,
-    };
-  }
-
+  const { hasLocalDeviceProgress } = input;
   if (hasLocalDeviceProgress) {
     return {
       kind: "device_wait",

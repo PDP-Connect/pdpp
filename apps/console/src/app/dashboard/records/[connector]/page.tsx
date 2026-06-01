@@ -253,12 +253,11 @@ function ConnectorPageView({ model }: { model: ConnectorPageModel }) {
   // connection id. Both address the same connection on the backend route.
   const renameSelector = connectorInstanceId ?? connectionId;
   // The detail-page primary action is modality-aware for the same reason the
-  // records row is (`derivePrimaryRowAction`): "Sync now" only starts a real
-  // scheduler pull for owner-syncable connectors. Push-mode (local-collector)
-  // and browser-bound connections cannot be synced from here, so the button is
-  // replaced with an honest, non-clickable next step rather than a dead action
-  // that reaches a failing `runConnectorNowAction`. Same shared classifier as
-  // the row: one source of truth, no scattered string checks.
+  // records row is (`derivePrimaryRowAction`): existing owner-runnable
+  // connections get Sync now, while push-mode local-collector connections render
+  // non-clickable guidance because the dashboard cannot remotely pull from the
+  // operator's device. Same shared classifier as the row: one source of truth,
+  // no scattered string checks.
   const primaryAction = derivePrimaryRowAction({
     connectorId,
     hasLocalDeviceProgress: Boolean(overview.localDeviceProgress),
@@ -396,15 +395,12 @@ function ConnectorPageView({ model }: { model: ConnectorPageModel }) {
 
 /**
  * Empty-streams hint, keyed on the same modality as the header action so a
- * browser-bound / push-mode connection is never told to "Click Sync now" - a
- * button it does not have. Owner-syncable connections keep the original copy.
+ * push-mode connection is never told to "Click Sync now" - a button it does not
+ * have. Owner-runnable connections keep the original copy.
  */
 function emptyStreamsHint(action: PrimaryRowAction): string {
   if (action.kind === "sync") {
     return "No records for this connector yet. Click Sync now to pull your first data.";
-  }
-  if (action.kind === "browser_runbook") {
-    return "No records yet. This connection fills in when a local collector drives a real, logged-in browser session; there is no remote sync to start from here.";
   }
   return "No records yet. This connection fills in when its local-collector device pushes data; the dashboard cannot start a run.";
 }
@@ -412,23 +408,11 @@ function emptyStreamsHint(action: PrimaryRowAction): string {
 /**
  * Honest non-clickable primary action for a connection that cannot be synced
  * from the dashboard. Mirrors the records row's `PrimaryRowActionControl`
- * non-sync branches: push-mode (local-collector) connections show a
- * "waiting for the local device" status; browser-bound connections point at
- * the owner-run browser-collector runbook. Inert text, never a `<button>`, so
- * it can never reach the failing `runConnectorNowAction`.
+ * non-sync branch: push-mode (local-collector) connections show a "waiting for
+ * the local device" status. Inert text, never a `<button>`, so it can never
+ * reach `runConnectorNowAction`.
  */
 function PrimaryActionNotice({ action }: { action: Exclude<PrimaryRowAction, { kind: "sync" }> }) {
-  if (action.kind === "browser_runbook") {
-    return (
-      <span
-        className="pdpp-caption max-w-[18rem] text-right text-muted-foreground"
-        data-testid="detail-action-browser-runbook"
-        title={action.detail}
-      >
-        {action.label} · <code className="pdpp-eyebrow font-mono text-foreground">{action.runbookPath}</code>
-      </span>
-    );
-  }
   return (
     <span
       className="pdpp-caption max-w-[18rem] text-right text-muted-foreground"

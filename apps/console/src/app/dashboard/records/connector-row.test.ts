@@ -357,20 +357,19 @@ test("connector-row sync action targets the concrete connection when present", a
 
 // ─── modality-aware primary row action (sync honesty) ─────────────────────
 //
-// "Sync now" starts a scheduler-managed pull, which only some connectors can
-// be owner-triggered for. Push-mode (local-device) and browser-bound rows
-// cannot, so the row must render an honest non-clickable next step instead of a
-// dead button. These structural assertions verify the row consumes the shared
+// "Sync now" starts an owner-controlled connector run. Existing browser-bound
+// rows can use it and may surface browser assistance in the run timeline after
+// start. Push-mode local-device rows cannot remote-pull from the dashboard, so
+// they must render an honest non-clickable next step instead of a dead button.
+// These structural assertions verify the row consumes the shared
 // `derivePrimaryRowAction` helper and routes every primary action through the
-// modality-aware control — so the false "Sync now" affordance cannot return.
+// modality-aware control.
 
 const DERIVES_PRIMARY_ACTION = /derivePrimaryRowAction\(\{/;
 const PRIMARY_ACTION_KEYS_CONNECTOR = /connectorId: connector\.connector_id/;
 const PRIMARY_ACTION_KEYS_DEVICE_PROGRESS = /hasLocalDeviceProgress: Boolean\(overview\.localDeviceProgress\)/;
 const RENDERS_PRIMARY_CONTROL = /<PrimaryRowActionControl\s/;
 const SYNC_BUTTON_GATED_ON_SYNC_KIND = /action\.kind === "sync"/;
-const BROWSER_RUNBOOK_SURFACE = /data-testid="row-action-browser-runbook"/;
-const BROWSER_RUNBOOK_RENDERS_PATH = /action\.runbookPath/;
 const DEVICE_WAIT_SURFACE = /data-testid="row-action-device-wait"/;
 
 test("connector-row derives a modality-aware primary action", async () => {
@@ -388,7 +387,7 @@ test("connector-row routes its primary action through PrimaryRowActionControl", 
 test("the Sync now button only renders inside the owner-syncable branch", async () => {
   // The defect was an unconditional <Button>Sync now</Button> gated only by
   // running/isPending. The button must now live inside the `action.kind ===
-  // "sync"` branch so push-mode and browser-bound rows can never render it.
+  // "sync"` branch so push-mode rows can never render it.
   const src = await readFile(ROW_FILE, "utf8");
   const control = src.slice(src.indexOf("function PrimaryRowActionControl"), src.indexOf("function ConnectorStats"));
   assert.match(control, SYNC_BUTTON_GATED_ON_SYNC_KIND);
@@ -398,27 +397,19 @@ test("the Sync now button only renders inside the owner-syncable branch", async 
   assert.ok(guardIndex >= 0 && buttonIndex > guardIndex, "Sync now <Button> must be gated behind the sync-kind branch");
 });
 
-test("connector-row surfaces an honest browser-bound runbook next step (not a dead sync)", async () => {
-  const src = await readFile(ROW_FILE, "utf8");
-  const control = src.slice(src.indexOf("function PrimaryRowActionControl"), src.indexOf("function ConnectorStats"));
-  assert.match(control, BROWSER_RUNBOOK_SURFACE);
-  // The runbook path is rendered from the action, not a clickable run.
-  assert.match(control, BROWSER_RUNBOOK_RENDERS_PATH);
-});
-
 test("connector-row surfaces an honest device-wait next step for push-mode rows", async () => {
   const src = await readFile(ROW_FILE, "utf8");
   const control = src.slice(src.indexOf("function PrimaryRowActionControl"), src.indexOf("function ConnectorStats"));
   assert.match(control, DEVICE_WAIT_SURFACE);
 });
 
-test("the non-sync primary-action surfaces are inert text, never a button or run handler", async () => {
-  // Honesty guard: the device-wait and browser-runbook branches must not carry
-  // an onClick that could reach the failing runConnectorNowAction.
+test("the non-sync primary-action surface is inert text, never a button or run handler", async () => {
+  // Honesty guard: the device-wait branch must not carry an onClick that could
+  // reach runConnectorNowAction.
   const src = await readFile(ROW_FILE, "utf8");
   const control = src.slice(src.indexOf("function PrimaryRowActionControl"), src.indexOf("function ConnectorStats"));
-  // Exactly one Button in the control (the sync branch); the other two branches
-  // are <span> guidance.
+  // Exactly one Button in the control (the sync branch); non-sync guidance is a
+  // <span>.
   const buttonCount = (control.match(/<Button/g) ?? []).length;
   assert.equal(buttonCount, 1, "only the owner-syncable branch may render a Button");
   const onClickCount = (control.match(/onClick=/g) ?? []).length;

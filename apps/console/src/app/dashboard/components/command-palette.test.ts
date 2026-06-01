@@ -17,7 +17,8 @@ const SHELL_IMPORTS_PROVIDER = /import \{ CommandPalette, CommandPaletteProvider
 const SHELL_PROVIDER_WRAP =
   /<CommandPaletteProvider>[\s\S]*<Topbar overviewHref=\{routes\.section\.overview\} \/>[\s\S]*<CommandPalette [\s\S]*<\/CommandPaletteProvider>/;
 const PALETTE_USES_REGISTRY = /import \{[^}]*\blistDashboardCommands\b[^}]*\} from "\.\.\/lib\/actions\.ts"/;
-const EXPLORE_PRIMARY_GROUP_RE =
+const EXPLORE_PRIMARY_GROUP_RE = /label:\s*["']Explore["'][\s\S]*a === ["']explore["'] \|\| a === ["']search["']/;
+const EXPLORE_PRIMARY_GROUPS_RECORDS_RE =
   /label:\s*["']Explore["'][\s\S]*a === ["']explore["'] \|\| a === ["']search["'] \|\| a === ["']records["']/;
 const PRIMARY_JUMP_NAV_RE = /label:\s*["']Jump["']/;
 const PRIMARY_CONNECTIONS_NAV_RE = /\{\s*href:\s*routes\.section\.records,\s*label:\s*["']Connections["']/;
@@ -41,16 +42,13 @@ test("dashboard shell wraps the topbar trigger and palette in the same provider"
   assert.match(src, SHELL_PROVIDER_WRAP);
 });
 
-test("primary shell navigation groups records and artifact jump under Explore", async () => {
+test("primary shell navigation keeps Explore, Jump, and Connections distinct", async () => {
   const src = await readFile(SHELL_FILE, "utf8");
   const primaryNav = buildNavSource(src);
   assert.match(primaryNav, EXPLORE_PRIMARY_GROUP_RE);
+  assert.doesNotMatch(primaryNav, EXPLORE_PRIMARY_GROUPS_RECORDS_RE, "Connections must not be grouped under Explore");
   assert.doesNotMatch(primaryNav, PRIMARY_JUMP_NAV_RE, "Jump belongs in the Explore subnav, not primary navigation");
-  assert.doesNotMatch(
-    primaryNav,
-    PRIMARY_CONNECTIONS_NAV_RE,
-    "Connections belongs in the Explore subnav, not primary navigation"
-  );
+  assert.match(primaryNav, PRIMARY_CONNECTIONS_NAV_RE, "Connections must be primary navigation");
 });
 
 test("command palette sources commands from the actions registry, not a hard-coded list", async () => {

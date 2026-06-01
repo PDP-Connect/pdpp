@@ -48,8 +48,9 @@ function buildNav(routes: Routes, mode: ShellMode): NavItem[] {
     {
       href: routes.section.explore,
       label: "Explore",
-      match: (a) => a === "explore" || a === "search" || a === "records",
+      match: (a) => a === "explore" || a === "search",
     },
+    { href: routes.section.records, label: "Connections", match: (a) => a === "records" },
     { href: routes.section.traces, label: "Traces", match: (a) => a === "traces" },
     { href: routes.section.grants, label: "Grants", match: (a) => a === "grants" },
     { href: routes.section.runs, label: "Runs", match: (a) => a === "runs" },
@@ -148,9 +149,7 @@ function SidebarContent({ active, mode, routes }: { active: DashboardSection; mo
           })}
         </nav>
 
-        {active === "explore" || active === "search" || active === "records" ? (
-          <ExploreSubnav active={active} mode={mode} routes={routes} />
-        ) : null}
+        {active === "explore" || active === "search" ? <ExploreSubnav active={active} routes={routes} /> : null}
         {active === "grants" && mode === "live" ? <GrantsSubnav /> : null}
         {active === "deployment" && mode === "live" ? <DeploymentSubnav routes={routes} /> : null}
       </div>
@@ -160,14 +159,11 @@ function SidebarContent({ active, mode, routes }: { active: DashboardSection; mo
   );
 }
 
-function ExploreSubnav({ active, mode, routes }: { active: DashboardSection; mode: ShellMode; routes: Routes }) {
+function ExploreSubnav({ active, routes }: { active: DashboardSection; routes: Routes }) {
   const items: Array<{ href: string; label: string; section: DashboardSection }> = [
     { href: routes.section.explore, label: "Records feed", section: "explore" },
     { href: routes.section.search, label: "Jump to artifact", section: "search" },
   ];
-  if (mode === "live") {
-    items.push({ href: routes.section.records, label: "Connections", section: "records" });
-  }
   return <SidebarSubnav activeSection={active} items={items} label="Explore workspace" />;
 }
 

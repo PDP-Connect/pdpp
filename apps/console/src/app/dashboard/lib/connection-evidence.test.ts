@@ -1069,12 +1069,10 @@ test("a stalled outbox attaches the scale even when a dominant condition is pres
 
 // ─── derivePrimaryRowAction: the row's modality-aware primary action ───────
 //
-// "Sync now" starts a scheduler-managed pull and is only honest for connectors
-// the owner can trigger from the dashboard. These tests pin that:
-//   - owner-syncable connectors keep the clickable sync action,
-//   - push-mode (local-device progress) connectors get a "wait for the device"
-//     status instead of a dead button,
-//   - browser-bound connectors point at the runbook, never a dead sync.
+// "Sync now" starts an owner-controlled connector run. Existing browser-bound
+// connections are owner-runnable and may surface manual browser assistance after
+// the run starts. Push-mode (local-device progress) connections still get a
+// "wait for the device" status instead of a dead remote-run button.
 
 const DEVICE_WAIT_DETAIL_RE = /local-collector device|local collector/i;
 
@@ -1093,28 +1091,20 @@ test("derivePrimaryRowAction never returns sync for a push-mode local-collector 
   }
 });
 
-test("derivePrimaryRowAction points a browser-bound connector at the runbook, not a sync", () => {
-  const action = derivePrimaryRowAction({ connectorId: "amazon", hasLocalDeviceProgress: false });
-  assert.equal(action.kind, "browser_runbook");
-  assert.notEqual(action.kind, "sync");
-  if (action.kind === "browser_runbook") {
-    assert.equal(action.runbookPath, "docs/operator/browser-collector-proof-runbook.md");
-    assert.ok(action.label.trim().length > 0);
-  }
+test("derivePrimaryRowAction keeps Sync now for an existing browser-bound connection", () => {
+  assert.equal(derivePrimaryRowAction({ connectorId: "chatgpt", hasLocalDeviceProgress: false }).kind, "sync");
+  assert.equal(derivePrimaryRowAction({ connectorId: "amazon", hasLocalDeviceProgress: false }).kind, "sync");
 });
 
-test("derivePrimaryRowAction treats browser-bound as non-syncable even with device progress", () => {
-  // A browser-bound connector with a heartbeat is still set up via the runbook;
-  // the runbook pointer is the more actionable next step, and it is never an
-  // owner-triggerable sync.
+test("derivePrimaryRowAction keeps local-device push mode non-clickable even for a browser-bound key", () => {
   const action = derivePrimaryRowAction({ connectorId: "chase", hasLocalDeviceProgress: true });
-  assert.equal(action.kind, "browser_runbook");
+  assert.equal(action.kind, "device_wait");
 });
 
 test("derivePrimaryRowAction defaults to sync for an unknown connector with no device progress", () => {
   // Unknown/no-data owner-syncable rows: the clickable Sync now IS the honest
-  // next step. The false-affordance suppression only fires for push-mode and
-  // browser-bound modalities.
+  // next step. The false-affordance suppression only fires for push-mode
+  // local-device connections.
   assert.equal(derivePrimaryRowAction({ connectorId: "demo", hasLocalDeviceProgress: false }).kind, "sync");
   assert.equal(derivePrimaryRowAction({ connectorId: null, hasLocalDeviceProgress: false }).kind, "sync");
   assert.equal(derivePrimaryRowAction({ connectorId: undefined, hasLocalDeviceProgress: false }).kind, "sync");
