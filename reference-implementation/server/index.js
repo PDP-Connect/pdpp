@@ -3398,6 +3398,7 @@ function buildOwnerAgentOnboardingMetadata({ origin, resource, issuer }) {
     registration_endpoint: `${as}/oauth/register`,
     revocation_path_template: `${as}/oauth/register/{client_id}`,
     schema_endpoint: `${rs}/v1/schema`,
+    schema_compact_endpoint: `${rs}/v1/schema?view=compact`,
     streams_endpoint: `${rs}/v1/streams`,
     query_base: `${rs}/v1`,
     event_subscriptions_endpoint: `${rs}/v1/event-subscriptions`,

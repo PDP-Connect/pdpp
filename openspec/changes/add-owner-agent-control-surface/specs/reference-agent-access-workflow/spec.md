@@ -26,6 +26,12 @@ Owner-agent onboarding metadata SHALL describe whether the issued credential sup
 - **THEN** the non-secret status output SHALL identify the owner-agent profile or action families granted
 - **AND** it SHALL identify where the agent can discover owner control routes
 
+#### Scenario: Owner agent discovers token-efficient schema
+
+- **WHEN** a trusted local agent reads the owner-agent onboarding metadata
+- **THEN** the metadata SHALL include a `schema_compact_endpoint` for token-efficient schema refreshes
+- **AND** it SHALL continue to include `schema_endpoint` for the exhaustive schema document
+
 #### Scenario: Control action is not granted
 
 - **WHEN** a trusted owner agent attempts a control action outside the granted owner-agent profile

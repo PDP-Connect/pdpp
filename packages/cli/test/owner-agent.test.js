@@ -74,6 +74,7 @@ const ADVISORY_METADATA = {
     revocation_path_template: 'https://ref.test/oauth/register/{client_id}',
     owner_approval_url: 'https://ref.test/dashboard',
     schema_endpoint: 'https://ref.test/v1/schema',
+    schema_compact_endpoint: 'https://ref.test/v1/schema?view=compact',
     streams_endpoint: 'https://ref.test/v1/streams',
     event_subscriptions_endpoint: 'https://ref.test/v1/event-subscriptions',
     mcp_owner_bearer_rejected: true,
@@ -117,6 +118,7 @@ test('discoverOwnerAgentProfile reads the advisory block', async () => {
   assert.equal(profile.tokenEndpoint, 'https://ref.test/oauth/token');
   assert.equal(profile.introspectionEndpoint, 'https://ref.test/introspect');
   assert.equal(profile.revocationPathTemplate, 'https://ref.test/oauth/register/{client_id}');
+  assert.equal(profile.schemaCompactEndpoint, 'https://ref.test/v1/schema?view=compact');
 });
 
 test('discoverOwnerAgentProfile falls back to AS metadata RFC 8628 shape', async () => {
@@ -279,6 +281,9 @@ test('onboard writes credential to 0600 file and never prints the bearer', async
     assert.equal(record.pdpp_token_kind, 'owner');
     assert.equal(record.client_id, 'client-9');
     assert.equal(record.registration_client_uri, 'https://ref.test/oauth/register/client-9');
+    assert.equal(record.schema_endpoint, 'https://ref.test/v1/schema');
+    assert.equal(record.schema_compact_endpoint, 'https://ref.test/v1/schema?view=compact');
+    assert.equal(record.streams_endpoint, 'https://ref.test/v1/streams');
     assert.equal(record.registration_access_token, undefined);
   });
 });

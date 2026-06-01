@@ -71,6 +71,9 @@ export function buildCredentialRecord({
   introspectionEndpoint,
   registrationEndpoint,
   registrationClientUri,
+  schemaCompactEndpoint,
+  schemaEndpoint,
+  streamsEndpoint,
   createdAt,
 }) {
   const tokenType = credential.token_type ?? 'Bearer';
@@ -83,6 +86,9 @@ export function buildCredentialRecord({
     authorization_server: authorizationServer ?? null,
     client_id: clientId ?? null,
     introspection_endpoint: introspectionEndpoint ?? null,
+    schema_endpoint: schemaEndpoint ?? null,
+    schema_compact_endpoint: schemaCompactEndpoint ?? null,
+    streams_endpoint: streamsEndpoint ?? null,
     // RFC 7592 client-delete revocation handle, when the credential was bound
     // to a dynamically registered client. The reference implementation gates
     // DELETE with an owner session, not a registration access token.

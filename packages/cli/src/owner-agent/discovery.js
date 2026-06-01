@@ -141,6 +141,10 @@ function buildProfile({ resource, authorizationServerUrl, onboarding, authorizat
   );
   const approvalUrl = resolveEndpoint(onboarding?.owner_approval_url ?? onboarding?.approval_url, base);
   const schemaEndpoint = resolveEndpoint(onboarding?.schema_endpoint, resource);
+  const schemaCompactEndpoint = resolveEndpoint(
+    onboarding?.schema_compact_endpoint ?? (schemaEndpoint ? `${schemaEndpoint}?view=compact` : null),
+    resource
+  );
   const streamsEndpoint = resolveEndpoint(onboarding?.streams_endpoint, resource);
   const revocationPathTemplate =
     typeof onboarding?.revocation_path_template === 'string' ? onboarding.revocation_path_template : null;
@@ -157,6 +161,7 @@ function buildProfile({ resource, authorizationServerUrl, onboarding, authorizat
     revocationPathTemplate,
     approvalUrl,
     schemaEndpoint,
+    schemaCompactEndpoint,
     streamsEndpoint,
     mcpRejectsOwnerBearer: onboarding?.mcp_owner_bearer_rejected ?? onboarding?.mcp_rejects_owner_bearer ?? true,
   };
@@ -222,6 +227,7 @@ async function getJsonOptional(fetchFn, url) {
  * @property {string|null} revocationPathTemplate
  * @property {string|null} approvalUrl
  * @property {string|null} schemaEndpoint
+ * @property {string|null} schemaCompactEndpoint
  * @property {string|null} streamsEndpoint
  * @property {boolean} mcpRejectsOwnerBearer
  */

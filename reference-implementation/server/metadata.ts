@@ -390,6 +390,11 @@ export interface ProtectedResourceOwnerAgentOnboarding {
   registration_endpoint?: string;
   resource: string;
   revocation_path_template: string;
+  // Token-efficient schema projection for agent discovery. `schema_endpoint`
+  // remains the exhaustive/full schema surface; owner agents should prefer this
+  // URL for metadata-first sync and fetch the full endpoint only when they need
+  // raw JSON Schema blobs.
+  schema_compact_endpoint: string;
   schema_endpoint: string;
   streams_endpoint: string;
   token_endpoint: string;

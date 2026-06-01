@@ -248,6 +248,7 @@ function assertOwnerAgentOnboardingBlock(block, { origin }) {
   assert.equal(block.registration_endpoint, `${origin}/oauth/register`);
   assert.equal(block.revocation_path_template, `${origin}/oauth/register/{client_id}`);
   assert.equal(block.schema_endpoint, `${origin}/v1/schema`);
+  assert.equal(block.schema_compact_endpoint, `${origin}/v1/schema?view=compact`);
   assert.equal(block.streams_endpoint, `${origin}/v1/streams`);
   assert.equal(block.query_base, `${origin}/v1`);
   assert.equal(block.event_subscriptions_endpoint, `${origin}/v1/event-subscriptions`);

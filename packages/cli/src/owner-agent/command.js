@@ -143,6 +143,9 @@ async function runOnboard(argv, { out }, deps) {
     introspectionEndpoint: profile.introspectionEndpoint,
     registrationEndpoint: profile.registrationEndpoint,
     registrationClientUri,
+    schemaEndpoint: profile.schemaEndpoint,
+    schemaCompactEndpoint: profile.schemaCompactEndpoint,
+    streamsEndpoint: profile.streamsEndpoint,
     createdAt: new Date(now()).toISOString(),
   });
 

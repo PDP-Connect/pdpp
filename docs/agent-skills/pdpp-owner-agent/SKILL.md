@@ -58,8 +58,10 @@ connections, not just read data.
   revocation handle, never by value.
 - **Owner credentials are REST/control-plane credentials.** Use them only on the
   owner-bearer-supported `/v1/**` REST routes. Do not attempt to use them over `/mcp`.
-- **Drive every request from discovered metadata and `/v1/schema`.** Do not invent
-  endpoints, streams, fields, or filters from memory.
+- **Drive every request from discovered metadata and schema.** Prefer the
+  discovered `schema_compact_endpoint` for token-efficient metadata refreshes,
+  use `schema_endpoint` only when you need exhaustive JSON Schema, and do not
+  invent endpoints, streams, fields, or filters from memory.
 - **Be incremental.** "All current and future data" is only practical if you store
   cursors and sync deltas. A full rescan on every question is not token-efficient and is
   not the owner-agent pattern. See §4 and `references/sync.md`.
@@ -85,8 +87,8 @@ curl -fsS "$ENTRYPOINT/" | jq '.pdpp_owner_agent_onboarding'
 The advisory block, when present, names every surface you need by field, so you never guess
 a route: `resource` (RS origin) and `authorization_server` (AS issuer); the
 `device_authorization_endpoint`, `owner_approval_url`, and `token_endpoint` for browser
-approval; `schema_endpoint`, `streams_endpoint`, and `query_base` for reads;
-`introspection_endpoint` and `revocation_path_template` for lifecycle; and
+approval; `schema_compact_endpoint`, `schema_endpoint`, `streams_endpoint`, and
+`query_base` for reads; `introspection_endpoint` and `revocation_path_template` for lifecycle; and
 `event_subscriptions_endpoint` for push delivery. `mcp_owner_bearer_rejected: true` states
 that `/mcp` is not the owner-agent transport.
 
@@ -143,7 +145,9 @@ id, expiry, and revocation handle — never the bearer.
 This is the heart of the owner-agent profile. Do not rescan everything to answer each
 question. See `references/sync.md` for the full reference; the shape is:
 
-1. **Metadata first.** Fetch `/v1/schema`, then enumerate `/v1/streams` and cache the
+1. **Metadata first.** Fetch `schema_compact_endpoint` (or
+   `/v1/schema?view=compact` when the endpoint is absent), then enumerate
+   `/v1/streams` and cache the
    catalog before any record read. `/v1/streams` returns a list envelope
    (`{ "object": "list", "has_more": ..., "data": [...] }`); the stream entries are under
    **`data`**, not a top-level `streams` key. Build all queries off that response.
@@ -157,7 +161,7 @@ question. See `references/sync.md` for the full reference; the shape is:
    with `changes_since=beginning`), declared filters, and pagination over rescanning all
    records. Records also arrive under `data`; persist the returned `next_changes_since`
    cursor per stream/connection.
-5. **Periodic metadata refresh.** Re-fetch schema and stream metadata on a cadence so
+5. **Periodic metadata refresh.** Re-fetch compact schema and stream metadata on a cadence so
    newly added streams and connections become visible without guessing.
 6. **Blobs by reference.** Fetch attachment bytes only when needed, by following
    `blob_ref.fetch_url` — never construct blob URLs.

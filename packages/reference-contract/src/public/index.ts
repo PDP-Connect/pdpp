@@ -667,6 +667,10 @@ const ProtectedResourceOwnerAgentOnboardingSchema = {
     revocation_path_template: NonEmptyStringSchema,
     // RS discovery + ongoing-sync surfaces.
     schema_endpoint: UriSchema,
+    // Token-efficient schema view for agent discovery. The full schema remains
+    // available at `schema_endpoint`; owner agents should prefer this compact
+    // URL for routine metadata refreshes.
+    schema_compact_endpoint: UriSchema,
     streams_endpoint: UriSchema,
     query_base: UriSchema,
     event_subscriptions_endpoint: UriSchema,
@@ -689,6 +693,7 @@ const ProtectedResourceOwnerAgentOnboardingSchema = {
     "introspection_endpoint",
     "revocation_path_template",
     "schema_endpoint",
+    "schema_compact_endpoint",
     "streams_endpoint",
     "query_base",
     "mcp_owner_bearer_rejected",

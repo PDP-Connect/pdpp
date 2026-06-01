@@ -151,6 +151,10 @@
                           "type": "string",
                           "format": "uri"
                         },
+                        "schema_compact_endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
                         "streams_endpoint": {
                           "type": "string",
                           "format": "uri"
@@ -252,6 +256,7 @@
                         "introspection_endpoint",
                         "revocation_path_template",
                         "schema_endpoint",
+                        "schema_compact_endpoint",
                         "streams_endpoint",
                         "query_base",
                         "mcp_owner_bearer_rejected",
@@ -639,6 +644,10 @@
                           "type": "string",
                           "format": "uri"
                         },
+                        "schema_compact_endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
                         "streams_endpoint": {
                           "type": "string",
                           "format": "uri"
@@ -740,6 +749,7 @@
                         "introspection_endpoint",
                         "revocation_path_template",
                         "schema_endpoint",
+                        "schema_compact_endpoint",
                         "streams_endpoint",
                         "query_base",
                         "mcp_owner_bearer_rejected",
@@ -1257,6 +1267,10 @@
                           "type": "string",
                           "format": "uri"
                         },
+                        "schema_compact_endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
                         "streams_endpoint": {
                           "type": "string",
                           "format": "uri"
@@ -1358,6 +1372,7 @@
                         "introspection_endpoint",
                         "revocation_path_template",
                         "schema_endpoint",
+                        "schema_compact_endpoint",
                         "streams_endpoint",
                         "query_base",
                         "mcp_owner_bearer_rejected",

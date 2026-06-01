@@ -230,6 +230,7 @@ test('owner-agent CLI smoke discovers metadata, writes Daisy credential, reads R
       assert.equal(metadata.body.pdpp_owner_agent_onboarding.authorization_server, asUrl);
       assert.equal(metadata.body.pdpp_owner_agent_onboarding.resource, rsUrl);
       assert.equal(metadata.body.pdpp_owner_agent_onboarding.schema_endpoint, `${rsUrl}/v1/schema`);
+      assert.equal(metadata.body.pdpp_owner_agent_onboarding.schema_compact_endpoint, `${rsUrl}/v1/schema?view=compact`);
 
       const credentialPath = join(home, 'applications/daisy/.pi/agent/pdpp-owner-agent.json');
       const onboarding = capture();
@@ -259,6 +260,9 @@ test('owner-agent CLI smoke discovers metadata, writes Daisy credential, reads R
       assert.equal(credential.pdpp_token_kind, 'owner');
       assert.equal(credential.resource, rsUrl);
       assert.equal(credential.authorization_server, asUrl);
+      assert.equal(credential.schema_endpoint, `${rsUrl}/v1/schema`);
+      assert.equal(credential.schema_compact_endpoint, `${rsUrl}/v1/schema?view=compact`);
+      assert.equal(credential.streams_endpoint, `${rsUrl}/v1/streams`);
       assert.equal(credential.registration_client_uri, `${asUrl}/oauth/register/${credential.client_id}`);
       assert.equal(credential.credential.access_token, credential.access_token);
       assert.ok(credential.access_token, 'credential should include the owner access token for the local agent');
@@ -287,8 +291,9 @@ test('owner-agent CLI smoke discovers metadata, writes Daisy credential, reads R
       assert.doesNotMatch(control.stderr, new RegExp(credential.access_token));
 
       const authHeaders = { Authorization: `Bearer ${credential.access_token}` };
-      const schema = await fetchJson(`${rsUrl}/v1/schema`, { headers: authHeaders });
+      const schema = await fetchJson(`${rsUrl}/v1/schema?view=compact`, { headers: authHeaders });
       assert.equal(schema.status, 200);
+      assert.equal(schema.body.detail, 'compact');
 
       const streams = await fetchJson(`${rsUrl}/v1/streams`, { headers: authHeaders });
       assert.equal(streams.status, 200);

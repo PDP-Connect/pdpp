@@ -57,8 +57,8 @@ NODE
 - `owner_mediated` — the operation exists but only on the browser owner-session
   surface today (no family is in this state in the current build, but the status
   is reserved). Tell the operator; do not fabricate a route.
-- `unsupported` — no route in this build (for example per-connection
-  `inspect_diagnostics`). The `reason` names why. Do not retry.
+- `unsupported` — no route in this build, or a route is intentionally gated on a
+  proof-before-flip primitive. The `reason` names why. Do not retry.
 
 ## Listing and labeling connection instances
 

@@ -15,8 +15,9 @@ query shapes; this file covers the owner-agent sync strategy that sits on top of
 
 A correct owner-agent never answers a question by scanning every record. The pattern is:
 
-1. **Metadata first.** `/v1/schema` → connectors, streams, fields, capability flags.
-   Then `/v1/streams` → the streams and connections currently visible, returned as a list
+1. **Metadata first.** `schema_compact_endpoint` (or
+   `/v1/schema?view=compact`) → connectors, streams, fields, connection identity,
+   and terse capability flags. Then `/v1/streams` → the streams and connections currently visible, returned as a list
    envelope with entries under **`data`** (not a top-level `streams` key). Build every query
    off this response, not from memory.
 2. **Stable identity.** Use `connection_id` to attribute records and key your local sync
@@ -31,17 +32,18 @@ A correct owner-agent never answers a question by scanning every record. The pat
 
 | Lever | What it saves | How |
 | --- | --- | --- |
-| Metadata-first | avoids reading data you can't interpret | `/v1/schema`, `/v1/streams` before record reads |
+| Metadata-first | avoids reading data you can't interpret | `schema_compact_endpoint`, `/v1/streams` before record reads |
 | Stable `connection_id` | avoids re-attributing / re-scanning per source | key cursors by `(stream, connection_id)` |
 | `changes_since` cursors | avoids re-reading unchanged records | `?changes_since=<cursor>`; bootstrap `=beginning` |
 | Pagination cursors | bounds each call, enables resume | follow the declared next-page cursor |
-| Declared filters | server-side narrowing | only filters `/v1/schema` advertises for the stream |
+| Declared filters | server-side narrowing | only filters compact schema advertises for the stream |
 | Field projection | smaller payloads | request only fields you need |
 | Blob references | defers large bytes | follow `blob_ref.fetch_url` only when needed |
 | Event subscriptions | low-latency push, no poll loop | only with a durable HTTPS receiver (below) |
 
-Do not invent filters, fields, or endpoints. If `/v1/schema` does not advertise a
-capability, do not use it; trust the schema.
+Use the full `schema_endpoint` only when you need exhaustive per-field JSON Schema
+blobs; routine sync should use the compact endpoint. Do not invent filters, fields, or
+endpoints. If schema does not advertise a capability, do not use it; trust the schema.
 
 ## Local sync state
 
@@ -86,7 +88,7 @@ Most local owner agents — including a laptop-resident Daisy with no public cal
 - Use cursor polling: periodically run the incremental sync from stored cursors.
 - Back off when nothing changes (e.g. widen the interval up to a cap), and tighten it after
   a burst of changes.
-- Refresh schema/stream metadata on a slower cadence than record polling.
+- Refresh compact schema/stream metadata on a slower cadence than record polling.
 - **Do not** point a subscription at an unreachable local endpoint "just in case." A
   subscription the server cannot deliver to is worse than honest polling: it churns
   delivery failures and may auto-disable.
@@ -121,7 +123,7 @@ Records arrive in the canonical list envelope: rows under **`data`**, with `has_
   expired. Stop; surface non-secret status; do not loop. Re-onboarding is an operator
   decision.
 - `unsupported_capability` → you used a lever the schema did not advertise. Re-read
-  `/v1/schema` and drop the lever.
+  compact schema and drop the lever.
 - A subscription transitions to `disabled_failure` → your receiver was unreachable. Switch
   to polling; do not recreate the subscription against the same unreachable endpoint.
 - A subscription transitions to `disabled_revoked` → the underlying authority was revoked;

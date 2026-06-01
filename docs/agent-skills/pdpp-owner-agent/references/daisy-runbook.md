@@ -43,6 +43,7 @@ Expect a block whose fields name every surface you need, so you never guess a ro
 | `owner_approval_url` | the `/device` page you relay to the operator (Step 2) |
 | `token_endpoint` | poll here for the issued credential (Step 2) |
 | `schema_endpoint` | `/v1/schema` (Step 4) |
+| `schema_compact_endpoint` | `/v1/schema?view=compact` for token-efficient schema reads (Step 4) |
 | `streams_endpoint` | `/v1/streams` (Step 4) |
 | `query_base` | base for `/v1/streams/{stream}/records` (Step 5) |
 | `introspection_endpoint` | check credential validity (Step 7) |
@@ -100,12 +101,14 @@ The approved flow writes the owner credential to:
 `~/applications/daisy/.pi/agent/pdpp-owner-agent.json`
 
 The file is JSON, mode `0600`, and contains the bearer as `access_token`. Verify by
-reading it at call time and hitting schema — without echoing the token:
+reading it at call time and hitting compact schema — without echoing the token:
 
 ```bash
 TOKEN="$(jq -r '.access_token' "$HOME/applications/daisy/.pi/agent/pdpp-owner-agent.json")"
-curl -fsS "$RS_URL/v1/schema" -H "Authorization: Bearer $TOKEN" | jq '.connectors[].name'
+SCHEMA_URL="$(jq -r '.schema_compact_endpoint // (.resource + "/v1/schema?view=compact")' "$HOME/applications/daisy/.pi/agent/pdpp-owner-agent.json")"
+curl -fsS "$SCHEMA_URL" -H "Authorization: Bearer $TOKEN" | jq '.connectors[].name'
 unset TOKEN
+unset SCHEMA_URL
 ```
 
 Report success as non-secret metadata only: token kind (`owner`), subject/client id,
@@ -122,7 +125,9 @@ unset TOKEN
 
 ## Step 4 — Initial sync (metadata first, bounded)
 
-1. Fetch `/v1/schema`; record the connectors, streams, fields, and capability flags.
+1. Fetch `schema_compact_endpoint`; record the connectors, streams, fields, connection
+   identity, and terse capability flags. Fetch `schema_endpoint` only when you need the
+   exhaustive per-field JSON Schema blobs.
 2. Enumerate streams and connections. `/v1/streams` returns a list envelope —
    `{ "object": "list", "has_more": ..., "data": [...] }`. The stream entries are under
    **`data`**, not a top-level `streams` key. Parse `data` and cache the catalog locally so
@@ -164,9 +169,9 @@ Records come back in the same list envelope: rows under **`data`**, with `has_mo
 
 - Bootstrap a brand-new stream with `changes_since=beginning`.
 - Page with `next_cursor` while `has_more` is true; request only the fields you need and
-  apply only filters `/v1/schema` advertises for the stream.
+  apply only filters compact schema advertises for the stream.
 - Persist `next_changes_since` per `(stream, connection_id)` after each successful page.
-- Periodically re-fetch `/v1/schema` and `/v1/streams` so newly added streams and
+- Periodically re-fetch compact schema and `/v1/streams` so newly added streams and
   connections appear without guessing — that is how "future data" stays in view.
 
 ## Step 5b — Managing connections (control plane)
@@ -234,7 +239,7 @@ A concise, copy-pasteable first-run prompt for the public reference deployment a
 > bearer; confirm with non-secret status only (token kind, subject, expiry).
 >
 > From then on, read the credential from that file at call time without printing it. Pull
-> `/v1/schema` and `/v1/streams` (the stream catalog is under `data`), cache it, and use
+> `schema_compact_endpoint` and `/v1/streams` (the stream catalog is under `data`), cache it, and use
 > the stable `connection_id` to scope reads. Query records at
 > `/v1/streams/{stream}/records` with `data` rows, `next_cursor` for pagination, and
 > `changes_since` (bootstrap `beginning`, then store `next_changes_since`) for deltas. Keep
