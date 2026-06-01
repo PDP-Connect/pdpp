@@ -33,6 +33,13 @@
   - [x] unknown stream scope yields an empty connector set, not an error;
   - [x] compact per-field cost stays bounded as field count grows.
 
+## 4.1 MCP Compact Parity Follow-up
+
+- [x] Add an `mcp-adapter` requirement delta requiring MCP `schema` compact/default output to align with `GET /v1/schema?view=compact` semantics while preserving `detail: "full"`.
+- [x] Make the MCP `schema` compact/default path request `GET /v1/schema?view=compact` (and `stream=<name>` when scoped) before falling back to local projection.
+- [x] Narrow the MCP local fallback to the same compact semantics as REST: compact flag aliases (`t`, `g=false`, `eq`, `r`, `lex`, `sem`, `a`) and connector-level shared `granted_connections` de-duplication.
+- [x] Add tests proving MCP preserves the REST compact projection verbatim when supported and that the legacy full-schema fallback matches `projectSchemaCompactView`.
+
 ## 5. Validation
 
 - [x] `pnpm --dir reference-implementation run typecheck`

@@ -260,6 +260,21 @@ export function buildTools({ rs, providerUrl }) {
       handler: async (args) => {
         const stream = args?.stream ? requireSafeName(args.stream, 'stream') : null;
         const detail = args?.detail === 'full' ? 'full' : 'compact';
+        if (detail === 'compact') {
+          const compactResponse = await rs.getJson('/v1/schema', {
+            query: { view: 'compact', ...(stream ? { stream } : {}) },
+          });
+          if (compactResponse.ok) {
+            return toSchemaToolResult(compactResponse, providerUrl, {
+              detail,
+              stream,
+              alreadyCompact: isCompactSchemaBody(compactResponse.body),
+            });
+          }
+          if (!shouldFallbackFromCompactSchemaRequest(compactResponse)) {
+            return toSchemaToolResult(compactResponse, providerUrl, { detail, stream });
+          }
+        }
         const response = await rs.getJson('/v1/schema');
         return toSchemaToolResult(response, providerUrl, { detail, stream });
       },
@@ -735,21 +750,31 @@ function toToolResult(response, providerUrl, label = 'response', options = {}) {
 // When `stream` is supplied, both the summary and the structured payload are
 // scoped to that single stream so an agent can fetch one stream's capabilities
 // without pulling the whole document.
-function toSchemaToolResult(response, providerUrl, { detail = 'compact', stream = null } = {}) {
+function toSchemaToolResult(response, providerUrl, { detail = 'compact', stream = null, alreadyCompact = false } = {}) {
   if (!response.ok) {
     return errorToolResult(response, providerUrl);
   }
-  const scopedBody = stream ? scopeSchemaBodyToStream(response.body, stream) : response.body;
-  const data = detail === 'full' ? scopedBody : compactSchemaDocument(scopedBody);
+  const scopedBody = stream && !alreadyCompact ? scopeSchemaBodyToStream(response.body, stream) : response.body;
+  const data = detail === 'full' || alreadyCompact ? scopedBody : compactSchemaDocument(scopedBody);
   return {
     content: [
       {
         type: 'text',
-        text: summarizeSchemaDiscovery(scopedBody, 'PDPP schema'),
+        text: summarizeSchemaDiscovery(data, 'PDPP schema'),
       },
     ],
     structuredContent: { data, provider_url: providerUrl, request_id: response.requestId },
   };
+}
+
+function isCompactSchemaBody(body) {
+  return unwrapSchemaBody(body)?.detail === 'compact';
+}
+
+function shouldFallbackFromCompactSchemaRequest(response) {
+  if (response.ok) return false;
+  const code = response.error?.code ?? response.error?.type ?? '';
+  return response.status === 400 && ['bad_request', 'invalid_request', 'unsupported_query'].includes(code);
 }
 
 // Narrow a schema document to a single stream, preserving the envelope shape
@@ -842,9 +867,12 @@ function stripSchemaStreamArrays(schema) {
 function compactSchemaConnector(connector) {
   if (!connector || typeof connector !== 'object') return connector;
   const streams = Array.isArray(connector.streams) ? connector.streams : [];
+  const { shared, sharedKey } = pickSharedGrantedConnections(streams);
+  const hasShared = shared !== null;
   return {
     ...connector,
-    streams: streams.map((entry) => compactSchemaStream(entry)),
+    ...(shared ? { granted_connections: shared } : {}),
+    streams: streams.map((entry) => compactSchemaStream(entry, { hasShared, sharedKey })),
   };
 }
 
@@ -852,11 +880,10 @@ function compactSchemaConnector(connector) {
 // identity/metadata fields pass through verbatim; `field_capabilities` and
 // `expand_capabilities` are compacted; everything else is dropped to keep the
 // payload bounded.
-function compactSchemaStream(entry) {
+function compactSchemaStream(entry, { hasShared = false, sharedKey = '' } = {}) {
   if (!entry || typeof entry !== 'object') return entry;
   const out = {};
   const passthrough = [
-    'object',
     'name',
     'stream',
     'stream_name',
@@ -869,11 +896,20 @@ function compactSchemaStream(entry) {
     'connector_instance_id',
     'record_count',
     'granted',
+    'primary_key',
+    'cursor_field',
     'source',
-    'granted_connections',
   ];
   for (const key of passthrough) {
     if (entry[key] !== undefined) out[key] = entry[key];
+  }
+  if (entry.granted_connections !== undefined) {
+    const streamKey = Array.isArray(entry.granted_connections)
+      ? grantedConnectionsKey(entry.granted_connections)
+      : null;
+    if (!hasShared || streamKey === null || streamKey !== sharedKey) {
+      out.granted_connections = entry.granted_connections;
+    }
   }
   if (entry.field_capabilities !== undefined) {
     out.field_capabilities = compactFieldCapabilities(entry.field_capabilities);
@@ -886,7 +922,7 @@ function compactSchemaStream(entry) {
 
 // Compact a `field_capabilities` map. Each field collapses to the same terse,
 // agent-usable capability flag string the `content[]` summary already
-// advertises (e.g. `type=string,granted=true,exact,range=gte|lt,agg=group_by_time`).
+// advertises (e.g. `t=string,eq,r=gte|lt,a=group_by_time`).
 // Two size drivers are removed at the compact grade: the per-field JSON Schema
 // blob and the five verbose `{declared, usable}` capability sub-objects per
 // field. The flag string preserves every usable capability an agent needs to
@@ -912,11 +948,60 @@ function compactExpandCapabilities(expandCapabilities) {
   return expandCapabilities.map((relation) => {
     if (!relation || typeof relation !== 'object') return relation;
     const out = {};
-    for (const key of ['relation', 'name', 'target_stream', 'cardinality', 'max_limit', 'default_limit']) {
+    for (const key of [
+      'name',
+      'relation',
+      'stream',
+      'target_stream',
+      'cardinality',
+      'granted',
+      'usable',
+      'foreign_key',
+      'max_limit',
+      'default_limit',
+      'reason',
+    ]) {
       if (relation[key] !== undefined) out[key] = relation[key];
     }
     return Object.keys(out).length > 0 ? out : relation;
   });
+}
+
+function grantedConnectionsKey(value) {
+  if (!Array.isArray(value)) return '';
+  const entries = value.map((entry) => {
+    if (!entry || typeof entry !== 'object') return JSON.stringify(entry);
+    const id = typeof entry.connection_id === 'string' ? entry.connection_id : '';
+    const label = typeof entry.display_name === 'string' ? entry.display_name : '';
+    const alias = typeof entry.connector_instance_id === 'string' ? entry.connector_instance_id : '';
+    return JSON.stringify([id, label, alias]);
+  });
+  entries.sort();
+  return entries.join('\n');
+}
+
+function pickSharedGrantedConnections(streams) {
+  const byKey = new Map();
+  for (const stream of streams) {
+    if (!stream || typeof stream !== 'object' || !Array.isArray(stream.granted_connections)) continue;
+    if (stream.granted_connections.length === 0) continue;
+    const key = grantedConnectionsKey(stream.granted_connections);
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      byKey.set(key, { value: stream.granted_connections, count: 1 });
+    }
+  }
+  let bestKey = '';
+  let best = null;
+  for (const [key, candidate] of byKey) {
+    if (!best || candidate.count > best.count) {
+      best = candidate;
+      bestKey = key;
+    }
+  }
+  return { shared: best ? best.value : null, sharedKey: best ? bestKey : '' };
 }
 
 function toSearchToolResult(response, providerUrl) {
@@ -1178,7 +1263,7 @@ function formatSchemaStreamSummary(stream, connector, { includeFieldDetail = tru
   const name = streamName(stream) || 'unknown';
   const connectorKey = connectorKeyFor(stream, connector);
   const displayName = displayNameFor(stream, connector);
-  const connections = grantedConnectionsFor(stream);
+  const connections = grantedConnectionsFor(stream, connector);
   const parts = [
     `stream name=${formatScalar(name)}`,
     `connector_key=${formatScalar(connectorKey)}`,
@@ -1227,10 +1312,14 @@ function displayNameFor(stream, connector) {
   );
 }
 
-function grantedConnectionsFor(stream) {
+function grantedConnectionsFor(stream, connector) {
   const explicit = Array.isArray(stream?.granted_connections) ? stream.granted_connections : [];
   if (explicit.length > 0) {
     return explicit.filter((connection) => connection && typeof connection === 'object');
+  }
+  const shared = Array.isArray(connector?.granted_connections) ? connector.granted_connections : [];
+  if (shared.length > 0) {
+    return shared.filter((connection) => connection && typeof connection === 'object');
   }
 
   const source = objectValue(stream?.source);
@@ -1291,18 +1380,20 @@ function fieldCapabilityEntries(fieldCapabilities) {
 }
 
 function formatFieldCapabilityFlags(capabilities) {
+  if (typeof capabilities === 'string' && capabilities.length > 0) return capabilities;
   if (!capabilities || typeof capabilities !== 'object') return 'declared';
+  if (typeof capabilities.flags === 'string' && capabilities.flags.length > 0) return capabilities.flags;
   const flags = [];
   const schema = objectValue(capabilities.schema);
   const type = firstString(capabilities.type, schemaType(schema));
-  if (type) flags.push(`type=${formatInlineValue(type)}`);
-  if (typeof capabilities.granted === 'boolean') {
-    flags.push(`granted=${capabilities.granted}`);
+  if (type) flags.push(`t=${formatInlineValue(type)}`);
+  if (capabilities.granted === false) {
+    flags.push('g=false');
   }
-  addCapabilityFlag(flags, 'exact', capabilities.exact_filter);
+  addCapabilityFlag(flags, 'eq', capabilities.exact_filter);
   addRangeCapabilityFlag(flags, capabilities.range_filter);
-  addCapabilityFlag(flags, 'lexical', capabilities.lexical_search);
-  addCapabilityFlag(flags, 'semantic', capabilities.semantic_search);
+  addCapabilityFlag(flags, 'lex', capabilities.lexical_search);
+  addCapabilityFlag(flags, 'sem', capabilities.semantic_search);
   addAggregationCapabilityFlags(flags, capabilities.aggregation);
   return flags.length > 0 ? flags.join(',') : 'declared';
 }
@@ -1322,9 +1413,9 @@ function addRangeCapabilityFlag(flags, capability) {
     ? capability.operators.join('|')
     : null;
   if (capability.usable === true) {
-    flags.push(operators ? `range=${formatInlineValue(operators)}` : 'range');
+    flags.push(operators ? `r=${formatInlineValue(operators)}` : 'r');
   } else if (capability.declared === true && capability.usable === false) {
-    flags.push(`range=unusable${reasonSuffix(capability.reason)}`);
+    flags.push(`r=unusable${reasonSuffix(capability.reason)}`);
   }
 }
 
@@ -1334,7 +1425,7 @@ function addAggregationCapabilityFlags(flags, aggregation) {
     .filter(([, capability]) => capability && typeof capability === 'object' && capability.usable === true)
     .map(([name]) => name);
   if (usable.length > 0) {
-    flags.push(`agg=${formatInlineValue(usable.join('|'))}`);
+    flags.push(`a=${formatInlineValue(usable.join('|'))}`);
   }
 }
 

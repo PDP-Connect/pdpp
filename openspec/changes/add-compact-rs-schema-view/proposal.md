@@ -39,6 +39,10 @@ body any existing client receives.
 - Full detail remains opt-in/current: any other (or omitted) `view` value serves
   the current full body. No existing client loses fields by default. Compact is
   NOT the REST default in this tranche.
+- The MCP `schema` tool's compact/default path uses the REST compact view when
+  the RS supports it (`GET /v1/schema?view=compact`, plus `stream=<name>` when
+  scoped). If an older RS ignores or rejects the selector, MCP falls back to a
+  local projection that is parity-tested against the REST compact semantics.
 - Add enforceable byte-budget / structural acceptance tests modeled on the MCP
   schema compact tests, driving the real `/v1/schema` route from a registered
   manifest fixture (no live external data required).
@@ -51,14 +55,15 @@ body any existing client receives.
   route gains an additive, opt-in compact projection selected by `view=compact`,
   optionally scoped to one stream by `stream=<name>`, with the full body
   preserved by default.
+- `mcp-adapter`: the MCP `schema` tool's compact/default output is aligned with
+  the REST compact projection semantics and budget.
 
 ## Impact
 
 - Additive change: existing consumers that omit `view` SHALL continue to receive
   the exhaustive body unchanged. The compact view is a strict opt-in.
-- No change to the MCP `schema` compaction (that is the orthogonal presentation
-  layer in `packages/mcp-server`). The REST compact aliases preserve the same
-  capability bits while meeting the tighter live REST byte budget.
+- MCP `schema` compact output now converges on the REST compact view. Existing
+  `detail: "full"` behavior remains the exhaustive verbatim escape hatch.
 - No change to the public `@pdpp/reference-contract` request/response schemas,
   OpenAPI, or generated artifacts: the compact view is a route-level projection
   of the existing response shape, not a new field on the contract envelope.

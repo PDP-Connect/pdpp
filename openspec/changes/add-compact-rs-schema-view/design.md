@@ -21,12 +21,13 @@ additive opt-in view.
 - Keep the full body the default; no existing client loses fields.
 - Reuse the MCP compact flag vocabulary so REST and MCP agents read the same
   terse capability language.
+- Make the MCP compact/default `schema` tool consume the REST compact view when
+  available, with a parity-tested local fallback for older RS implementations.
 - Add enforceable byte-budget acceptance checks that do not require live data.
 
 ## Non-Goals
 
 - Do NOT make compact the REST default in this tranche.
-- Do NOT change the MCP `schema` compaction (orthogonal layer; already landed).
 - Do NOT change `@pdpp/reference-contract` request/response schemas, OpenAPI, or
   generated artifacts. The compact view is a route-level down-projection of the
   existing response, not a new contract field.
@@ -132,6 +133,30 @@ reading `view` / `stream`, calling the projection, and recording the requested
 view + scoped counts on the `disclosure.served` instrumentation. Visibility,
 grant scope, and the full body remain operation-owned and untouched.
 
+### MCP parity follow-up
+
+The MCP `schema` tool originally compacted the full `GET /v1/schema` response in
+`packages/mcp-server/src/tools.js`. Once the REST compact view existed, that
+duplicated projection became a divergence risk: REST uses the compact flag
+aliases (`t`, `g=false`, `eq`, `r`, `lex`, `sem`, `a`) and connector-level
+`granted_connections` de-duplication, while MCP still had its earlier
+presentation (`type=...`, `granted=true`, `exact`, `range=...`, `agg=...`) and
+per-stream connection-list repetition.
+
+The MCP compact/default path now first requests `GET /v1/schema?view=compact`,
+adding `stream=<name>` when the tool call is scoped. When the RS returns a body
+marked `detail: "compact"`, MCP returns that compact body in
+`structuredContent.data` instead of re-projecting it. `detail: "full"` continues
+to fetch the exhaustive `GET /v1/schema` body and preserves the existing
+single-stream client-side scope behavior.
+
+For compatibility with older resource servers that ignore or reject
+`view=compact`, MCP keeps a local fallback projection. That fallback is narrowed
+to the same compact semantics as the REST projection and is parity-tested
+against `projectSchemaCompactView` on the representative large schema fixture.
+The fallback is not a second contract; it is a compatibility shim so the MCP
+package does not regress to multi-MB output when connected to a pre-compact RS.
+
 ### Why a route-level projection, not a contract field
 
 The compact body is a lossy view of the same response, not new data. Threading a
@@ -173,6 +198,10 @@ token win, and the byte-budget tests lock the behavior structurally.
   per-stream budget and remains usable.
 - An unknown `stream` scope returns an empty connector set, not an error.
 - The compact per-field cost stays bounded as field count grows.
+- MCP `schema` compact/default requests `GET /v1/schema?view=compact` and
+  preserves the REST compact projection verbatim when the RS supports it.
+- MCP's local fallback for older RS implementations matches the REST compact
+  projection semantics and stays under the same package/per-stream byte budgets.
 - `granted_connections` is de-duplicated to the connector level: the shared set
   is emitted once on the connector and omitted from streams that carry it; a
   divergent per-stream set is retained.

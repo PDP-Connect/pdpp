@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import 'tsx';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { createPdppMcpServer } from '../src/server.js';
+
+const { projectSchemaCompactView } = await import(
+  '../../../reference-implementation/operations/rs-schema-get/compact-view.ts'
+);
 
 // Token-efficiency acceptance checks for the `schema` MCP tool.
 //
@@ -168,20 +173,22 @@ test('default schema drops per-field JSON Schema blobs but keeps capability flag
   const { client, server } = await connectClient(fetch);
 
   const result = await client.callTool({ name: 'schema', arguments: {} });
-  const stream = result.structuredContent.data.data.connectors[0].streams[0];
+  const connector = result.structuredContent.data.data.connectors[0];
+  const stream = connector.streams[0];
   const field = stream.field_capabilities.field_0;
 
   // Compact grade: each field is a terse flag string, not the verbose object.
   assert.equal(typeof field, 'string', 'compact schema field must be a terse flag string');
   assert.doesNotMatch(field, /description/, 'compact schema must drop per-field JSON Schema blob');
-  assert.match(field, /type=string/, 'compact flag string must keep declared field type');
-  assert.match(field, /granted=true/, 'compact flag string must keep grant flag');
-  assert.match(field, /(^|,)exact(,|$)/, 'compact flag string must keep usable capability flags');
+  assert.match(field, /t=string/, 'compact flag string must keep declared field type');
+  assert.doesNotMatch(field, /granted=true/, 'compact flag string must omit the default positive grant flag');
+  assert.match(field, /(^|,)eq(,|$)/, 'compact flag string must keep usable capability flags');
   assert.deepEqual(
-    stream.granted_connections,
+    connector.granted_connections,
     [{ connection_id: 'conn_0', display_name: 'Connection 0' }],
-    'compact schema must preserve connection identity',
+    'compact schema must preserve shared connection identity at connector level',
   );
+  assert.equal(stream.granted_connections, undefined, 'compact schema must not repeat shared connection identity per stream');
   assert.equal(stream.connection_id, 'conn_0', 'compact schema must keep connection_id');
   assert.equal(
     stream.connector_instance_id,
@@ -189,6 +196,63 @@ test('default schema drops per-field JSON Schema blobs but keeps capability flag
     'compact schema must keep deprecated connector_instance_id alias',
   );
   assert.equal(result.structuredContent.data.data.detail, 'compact');
+
+  await client.close();
+  await server.close();
+});
+
+test('default schema requests the REST compact view when the RS supports it', async () => {
+  const { schemaBody } = makeLargeSchemaFetch();
+  const requested = [];
+  const fetch = async (urlInput) => {
+    const url = new URL(urlInput.toString());
+    requested.push(`${url.pathname}${url.search}`);
+    if (url.pathname === '/v1/schema' && url.searchParams.get('view') === 'compact') {
+      const stream = url.searchParams.get('stream');
+      return new Response(
+        JSON.stringify({
+          data: projectSchemaCompactView(schemaBody.data, { stream }),
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }
+    return new Response(JSON.stringify(schemaBody), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  const { client, server } = await connectClient(fetch);
+
+  const result = await client.callTool({ name: 'schema', arguments: { stream: 'stream_1_2' } });
+  assert.equal(result.isError, undefined);
+
+  assert.deepEqual(
+    requested,
+    ['/v1/schema?view=compact&stream=stream_1_2'],
+    'compact MCP schema must delegate to the REST compact projection instead of fetching the full body first',
+  );
+  assert.deepEqual(
+    result.structuredContent.data.data,
+    projectSchemaCompactView(schemaBody.data, { stream: 'stream_1_2' }),
+    'MCP compact output must preserve the REST compact projection verbatim',
+  );
+
+  await client.close();
+  await server.close();
+});
+
+test('legacy full-schema fallback matches the REST compact projection semantics', async () => {
+  const { fetch, schemaBody } = makeLargeSchemaFetch();
+  const { client, server } = await connectClient(fetch);
+
+  const result = await client.callTool({ name: 'schema', arguments: {} });
+  assert.equal(result.isError, undefined);
+
+  assert.deepEqual(
+    result.structuredContent.data.data,
+    projectSchemaCompactView(schemaBody.data),
+    'MCP local fallback must stay in parity with the REST compact projection',
+  );
 
   await client.close();
   await server.close();
@@ -214,7 +278,7 @@ test('per-stream schema is usable and compact (the discovery middle step)', asyn
   assert.equal(connectors[0].streams[0].name, 'stream_1_2');
   assert.equal(result.structuredContent.data.data.stream_count, 1);
   // Still usable: capability flags survive on the scoped stream.
-  assert.match(connectors[0].streams[0].field_capabilities.field_0, /type=string/);
+  assert.match(connectors[0].streams[0].field_capabilities.field_0, /t=string/);
 
   await client.close();
   await server.close();

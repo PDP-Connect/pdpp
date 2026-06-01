@@ -301,20 +301,22 @@ test('discovery tools include parseable stream and schema facts in text content'
   // string (type, grant, usable filter/search/aggregation flags) — the raw
   // per-field JSON Schema and verbose {declared,usable} sub-objects are dropped.
   // Connection identity and connector metadata survive.
-  const compactStream = schemaResult.structuredContent.data.data.connectors[0].streams[0];
+  const compactConnector = schemaResult.structuredContent.data.data.connectors[0];
+  const compactStream = compactConnector.streams[0];
   assert.equal(typeof compactStream.field_capabilities.id, 'string', 'compact schema field is a terse flag string');
-  assert.match(compactStream.field_capabilities.id, /type=string/, 'compact flag string keeps declared field type');
-  assert.match(compactStream.field_capabilities.id, /(^|,)exact(,|$)/, 'compact flag string keeps usable capability flags');
+  assert.match(compactStream.field_capabilities.id, /t=string/, 'compact flag string keeps declared field type');
+  assert.match(compactStream.field_capabilities.id, /(^|,)eq(,|$)/, 'compact flag string keeps usable capability flags');
   assert.match(
     compactStream.field_capabilities.created_at,
-    /range=gte\|lt/,
+    /r=gte\|lt/,
     'compact flag string keeps usable range operators',
   );
   assert.deepEqual(
-    compactStream.granted_connections,
+    compactConnector.granted_connections,
     [{ connection_id: 'conn_work', display_name: 'Work Claude' }],
-    'compact schema must preserve connection identity',
+    'compact schema must preserve shared connection identity at connector level',
   );
+  assert.equal(compactStream.granted_connections, undefined, 'compact schema must not repeat shared connection identity per stream');
   assert.equal(schemaResult.structuredContent.data.data.detail, 'compact');
   const schemaText = schemaResult.content[0].text;
   assert.match(schemaText, /PDPP schema: connectors=1 streams=1/);
@@ -322,8 +324,8 @@ test('discovery tools include parseable stream and schema facts in text content'
   assert.match(schemaText, /connector_key="claude-code"/);
   assert.match(schemaText, /display_name="Claude Code"/);
   assert.match(schemaText, /connections=\{connection_id:conn_work,display_name:Work_Claude\}/);
-  assert.match(schemaText, /id\[type=string,granted=true,exact\]/);
-  assert.match(schemaText, /created_at\[type=timestamp,granted=true,range=gte\|lt,agg=group_by_time\]/);
+  assert.match(schemaText, /id\[t=string,eq\]/);
+  assert.match(schemaText, /created_at\[t=timestamp,r=gte\|lt,a=group_by_time\]/);
   assert.doesNotMatch(schemaText, /See structuredContent\.data/);
 
   const streamsResult = await client.callTool({ name: 'list_streams', arguments: {} });
@@ -514,7 +516,7 @@ test('invalid_token surfaces as isError without retry under broader credentials'
   assert.equal(result.structuredContent.http_status, 401);
 
   // No retry: exactly one call, with the wrong token, no fallback retry on the same path.
-  const schemaCalls = calls.filter((entry) => entry.url.endsWith('/v1/schema'));
+  const schemaCalls = calls.filter((entry) => new URL(entry.url).pathname === '/v1/schema');
   assert.equal(schemaCalls.length, 1);
   assert.equal(schemaCalls[0].auth, 'Bearer wrong-token');
 
