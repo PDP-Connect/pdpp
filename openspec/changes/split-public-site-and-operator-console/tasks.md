@@ -18,7 +18,7 @@
 - [x] 3.2 In `apps/console`, remove public-site routes: `/`, `/docs/**`, `/reference/**`, `/llms*`, `/planning/**`, `/design`, `/palette`. Keep `/dashboard/**` and the API/BFF surface.
 - [x] 3.3 Verify `apps/web/src/proxy.ts` was moved (not copied) to `apps/console/src/proxy.ts` and prune any public-site matchers in a second commit. (Public-site matchers and sandbox/docs branches pruned in Tranche C; the eventual move-not-copy completes when apps/web → apps/site lands.)
 - [ ] 3.4 Confirm `/dashboard/**` renders end-to-end against a locally running `reference-implementation`. Owner-session gating and CSRF behavior SHALL be byte-identical to `apps/web`. (Build/typegen verified in CI; full live owner-session smoke deferred to owner-run validation.)
-- [x] 3.5 Run `pnpm --dir apps/console run types:check`, `pnpm --dir apps/console run check`, and `pnpm --dir apps/console run build`. (types:check + build pass. `check` mirrors apps/web's pre-existing formatting failures — not newly introduced.)
+- [x] 3.5 Run `pnpm --dir apps/console run types:check`, `pnpm --dir apps/console run check`, and `pnpm --dir apps/console run build`. (Owner re-verified after the public-site split landed: `types:check` passes when run sequentially, `check` passes clean across 223 files with no fixes, and `build` passes. A concurrent owner run of `types:check` and `build` against the same `.next/types` directory produced missing-generated-file errors; rerunning sequentially proved that was harness interference, not a console defect.)
 
 ## 4. Trim `apps/web` into `apps/site` (public surface only)
 
@@ -48,7 +48,7 @@
 - [x] 7.1 Run `openspec validate split-public-site-and-operator-console --strict`.
 - [x] 7.2 Run `openspec validate --all --strict`.
 - [x] 7.3 Run `pnpm --dir apps/site run types:check`, `check`, and `build`. (Re-verified in repair tranche v2 after restoring `shell.tsx`, eliminating the live owner-token cluster, and pruning `imapflow`: `types:check` → pass; `check` (ultracite) → pass, 184 files, no fixes; `build` → pass with no reference-implementation running. `node --test apps/site/scripts/sandbox-route-parity.test.mjs` → 8/8 pass against the fresh build. The prior "189 files / pass" line was recorded against the non-building parked scaffold and did not reflect a green `types:check`.)
-- [ ] 7.4 Run `pnpm --dir apps/console run types:check`, `check`, and `build`.
+- [x] 7.4 Run `pnpm --dir apps/console run types:check`, `check`, and `build`. (`types:check`, `check`, and `build` are green on `main` after the split-site public tranche. Live console smoke against a running `reference-implementation` remains separately tracked in 3.4 and 7.8.)
 - [ ] 7.5 Run targeted `reference-implementation` tests for the new content-negotiated root handlers: `pnpm --dir reference-implementation run verify` plus any new `node --test` files added in task 5.
 - [ ] 7.6 Smoke `curl -H 'Accept: application/json' http://localhost:7662/` (and the RS port) and verify byte-identical existing discovery JSON.
 - [ ] 7.7 Smoke `curl -H 'Accept: text/html' http://localhost:7662/` (and the RS port) and verify the operator landing page.
