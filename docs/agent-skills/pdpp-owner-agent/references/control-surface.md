@@ -32,14 +32,22 @@ families, and each configured connection's `connection_id`, connector, and
 label/label-needed state. The bearer is sent as an `Authorization` header and is
 never printed.
 
-The same two surfaces are available directly when you need the raw JSON:
+The same surfaces are available directly when you need raw JSON. Prefer a small
+local script over `curl -H "Authorization: Bearer …"` so the bearer does not land
+in shell traces or process listings:
 
 ```bash
-TOKEN="$(jq -r '.access_token' "$HOME/applications/daisy/.pi/agent/pdpp-owner-agent.json")"
-# Capability document — the single source of truth for what this build supports:
-curl -fsS "$RS_URL/v1/owner/control" -H "Authorization: Bearer $TOKEN" \
-  | jq '.actions[] | {family, status, method, url}'
-unset TOKEN
+node --input-type=module <<'NODE'
+const credentialPath = `${process.env.HOME}/applications/daisy/.pi/agent/pdpp-owner-agent.json`;
+const { readFile } = await import('node:fs/promises');
+const credential = JSON.parse(await readFile(credentialPath, 'utf8'));
+const rsUrl = process.env.RS_URL ?? credential.resource;
+const response = await fetch(`${rsUrl.replace(/\/$/, '')}/v1/owner/control`, {
+  headers: { Authorization: `Bearer ${credential.access_token}`, Accept: 'application/json' },
+});
+const body = await response.json();
+console.log(JSON.stringify(body.actions.map(({ family, status, method, url }) => ({ family, status, method, url })), null, 2));
+NODE
 ```
 
 `actions[].status` is the branch point:
@@ -58,10 +66,23 @@ Amazon". Always operate on the instance by its stable `connection_id`, never on
 the connector type.
 
 ```bash
-TOKEN="$(jq -r '.access_token' "$HOME/applications/daisy/.pi/agent/pdpp-owner-agent.json")"
-curl -fsS "$RS_URL/v1/owner/connections" -H "Authorization: Bearer $TOKEN" \
-  | jq '.data[] | {connection_id, connector_id, display_name, label_status, status}'
-unset TOKEN
+node --input-type=module <<'NODE'
+const credentialPath = `${process.env.HOME}/applications/daisy/.pi/agent/pdpp-owner-agent.json`;
+const { readFile } = await import('node:fs/promises');
+const credential = JSON.parse(await readFile(credentialPath, 'utf8'));
+const rsUrl = process.env.RS_URL ?? credential.resource;
+const response = await fetch(`${rsUrl.replace(/\/$/, '')}/v1/owner/connections`, {
+  headers: { Authorization: `Bearer ${credential.access_token}`, Accept: 'application/json' },
+});
+const body = await response.json();
+console.log(JSON.stringify(body.data.map(({ connection_id, connector_id, display_name, label_status, status }) => ({
+  connection_id,
+  connector_id,
+  display_name,
+  label_status,
+  status,
+})), null, 2));
+NODE
 ```
 
 Each row carries:
@@ -80,11 +101,29 @@ Each row carries:
 name. Give it an owner-meaningful label with the `rename_connection` action:
 
 ```bash
-TOKEN="$(jq -r '.access_token' "$HOME/applications/daisy/.pi/agent/pdpp-owner-agent.json")"
-curl -fsS -X PATCH "$RS_URL/v1/owner/connections/<connection_id>" \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"display_name": "the owner personal"}' | jq '{connection_id, display_name, label_status}'
-unset TOKEN
+node --input-type=module <<'NODE'
+const connectionId = process.env.PDPP_CONNECTION_ID;
+if (!connectionId) throw new Error('Set PDPP_CONNECTION_ID first.');
+const credentialPath = `${process.env.HOME}/applications/daisy/.pi/agent/pdpp-owner-agent.json`;
+const { readFile } = await import('node:fs/promises');
+const credential = JSON.parse(await readFile(credentialPath, 'utf8'));
+const rsUrl = (process.env.RS_URL ?? credential.resource).replace(/\/$/, '');
+const response = await fetch(`${rsUrl}/v1/owner/connections/${encodeURIComponent(connectionId)}`, {
+  method: 'PATCH',
+  headers: {
+    Authorization: `Bearer ${credential.access_token}`,
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({ display_name: process.env.PDPP_CONNECTION_LABEL ?? 'the owner personal' }),
+});
+const body = await response.json();
+console.log(JSON.stringify({
+  connection_id: body.connection_id,
+  display_name: body.display_name,
+  label_status: body.label_status,
+}, null, 2));
+NODE
 ```
 
 After a rename the row reports `label_status: owner_set`, and a public/read
@@ -100,12 +139,33 @@ typed `next_step`; it never marks a connection active and never performs the
 provider step for you.
 
 ```bash
-TOKEN="$(jq -r '.access_token' "$HOME/applications/daisy/.pi/agent/pdpp-owner-agent.json")"
-curl -fsS -X POST "$RS_URL/v1/owner/connections/intents" \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"connector_id": "<connector>", "display_name": "Shared Amazon"}' \
-  | jq '{connector_modality, connection_active, next_step: .next_step.kind, reason: .next_step.reason}'
-unset TOKEN
+node --input-type=module <<'NODE'
+const connectorId = process.env.PDPP_CONNECTOR_ID;
+if (!connectorId) throw new Error('Set PDPP_CONNECTOR_ID first.');
+const credentialPath = `${process.env.HOME}/applications/daisy/.pi/agent/pdpp-owner-agent.json`;
+const { readFile } = await import('node:fs/promises');
+const credential = JSON.parse(await readFile(credentialPath, 'utf8'));
+const rsUrl = (process.env.RS_URL ?? credential.resource).replace(/\/$/, '');
+const response = await fetch(`${rsUrl}/v1/owner/connections/intents`, {
+  method: 'POST',
+  headers: {
+    Authorization: `Bearer ${credential.access_token}`,
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    connector_id: connectorId,
+    display_name: process.env.PDPP_CONNECTION_LABEL ?? 'Shared Amazon',
+  }),
+});
+const body = await response.json();
+console.log(JSON.stringify({
+  connector_modality: body.connector_modality,
+  connection_active: body.connection_active,
+  next_step: body.next_step?.kind,
+  reason: body.next_step?.reason,
+}, null, 2));
+NODE
 ```
 
 `connection_active` is always `false` on an intent. Branch on `next_step.kind`:
