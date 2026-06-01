@@ -78,7 +78,13 @@ export function isFallbackConnectionLabel(input: ConnectorDisplayInput): boolean
   if (!stored) {
     return true;
   }
-  return stored === formatConnectorKeyForDisplay(input.connectorId);
+  const normalizedStored = fallbackLabelKey(stored);
+  const connectorCandidates = [
+    formatConnectorKeyForDisplay(input.connectorId),
+    displayNameCandidate(input.name),
+    normalizeText(input.connectorId),
+  ].filter((value): value is string => Boolean(value));
+  return connectorCandidates.some((candidate) => fallbackLabelKey(candidate) === normalizedStored);
 }
 
 export function formatSourceForDisplay(source: SourceDisplayInput | null | undefined): string {
@@ -144,6 +150,10 @@ function isLegacyConnectorLabel(value: string): boolean {
 
 function normalizeText(value: string | null | undefined): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function fallbackLabelKey(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
 function decodePathPart(value: string | undefined): string | null {

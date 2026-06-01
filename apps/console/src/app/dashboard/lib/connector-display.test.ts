@@ -40,9 +40,12 @@ test("a legacy placeholder display name is a fallback", () => {
 });
 
 test("a label equal to the connector type name is a fallback", () => {
-  // "gmail" formats to the connector key; a stored label identical to the
-  // type carries no per-connection meaning, so it still needs a real name.
+  // Labels identical to the type carry no per-connection meaning, regardless
+  // of casing or display formatting, so they still need a real name.
   assert.equal(isFallbackConnectionLabel({ connectorId: "gmail", displayName: "gmail" }), true);
+  assert.equal(isFallbackConnectionLabel({ connectorId: "gmail", displayName: "Gmail" }), true);
+  assert.equal(isFallbackConnectionLabel({ connectorId: "amazon", displayName: "Amazon", name: "Amazon" }), true);
+  assert.equal(isFallbackConnectionLabel({ connectorId: "claude_code", displayName: "Claude Code" }), true);
 });
 
 test("an owner-meaningful label is not a fallback", () => {
