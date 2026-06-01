@@ -13,7 +13,7 @@ supports four command namespaces:
   stores scoped client credentials in the project-local `.pdpp/` cache without
   asking for an owner bearer token.
 
-- **`pdpp owner-agent <onboard|status|revoke>`** — trusted owner-agent
+- **`pdpp owner-agent <onboard|status|control|revoke>`** — trusted owner-agent
   onboarding for a local agent that acts as the operator (for example Daisy).
   This is owner-level local automation, deliberately separate from the default
   grant-scoped `pdpp connect` path; ordinary agents should not use it.
@@ -26,10 +26,17 @@ supports four command namespaces:
   path `~/applications/daisy/.pi/agent/pdpp-owner-agent.json`; otherwise the
   credential defaults to `~/.pdpp/owner-agents/<host>.json` and stores the
   bearer as top-level `access_token` for local agents. `status` introspects the
-  stored credential. `revoke` deletes its dynamically registered client via the
-  owner-session-gated RFC 7592 dashboard path; run `pdpp ref login
-  <authorization-server>` first or provide `PDPP_OWNER_SESSION_COOKIE`.
-  Owner-agent bearers are REST/control-plane credentials; `/mcp` rejects them.
+  stored credential. `control` lists the non-secret owner-agent control
+  capabilities (`GET /v1/owner/control`) and configured connection instances
+  (`GET /v1/owner/connections`) — each connection's `connection_id`, connector,
+  and label/label-needed state — so a trusted agent can discover what it can do
+  and what is configured without printing the bearer. `revoke` deletes its
+  dynamically registered client via the owner-session-gated RFC 7592 dashboard
+  path; run `pdpp ref login <authorization-server>` first or provide
+  `PDPP_OWNER_SESSION_COOKIE`. Owner-agent bearers are REST/control-plane
+  credentials; `/mcp` rejects them. Routine chat-hosted and task-scoped agents
+  should use the grant-scoped `pdpp connect` / MCP path instead, not an owner
+  bearer.
 
 - **`pdpp collector <advertise|enroll|run>`** — operator surface for the
   local collector runner. Pairs a host the operator controls (Claude Code or

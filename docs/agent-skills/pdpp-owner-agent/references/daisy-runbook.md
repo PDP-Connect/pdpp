@@ -169,6 +169,34 @@ Records come back in the same list envelope: rows under **`data`**, with `has_mo
 - Periodically re-fetch `/v1/schema` and `/v1/streams` so newly added streams and
   connections appear without guessing — that is how "future data" stays in view.
 
+## Step 5b — Managing connections (control plane)
+
+Reading data is Steps 4–5. When the operator asks you to *manage* connections — see what
+is configured, label an instance, or add a new account — use the owner-bearer control
+plane at `/v1/owner/*`. The full reference is `references/control-surface.md`; the
+one-shot, non-secret entrypoint is:
+
+```bash
+pdpp owner-agent control --credential-file "$HOME/applications/daisy/.pi/agent/pdpp-owner-agent.json"
+```
+
+It prints the supported control actions (each with a typed `status`) and every configured
+connection's `connection_id`, connector, and label/label-needed state — never the bearer.
+From there:
+
+- **Discover, don't guess.** `GET /v1/owner/control` is the source of truth for what this
+  build supports. Branch on each action's `status`; `owner_mediated`/`unsupported` actions
+  are named with a reason, so you never probe a 404.
+- **Address instances by `connection_id`.** `GET /v1/owner/connections` lists instances,
+  not just templates. A `label_status: fallback` row is label-needed; set an
+  owner-meaningful name with `rename_connection`
+  (`PATCH /v1/owner/connections/{connection_id}`), e.g. `the owner personal` vs `Shared Amazon`.
+- **New connections are typed intents.** `POST /v1/owner/connections/intents` returns a
+  typed `next_step` and never marks a connection active. `enroll_local_collector` hands a
+  single-use `enrollment_code` to the operator's local collector (never print it);
+  `unsupported` names the missing primitive and is the honest stopping point — including
+  the Amazon second-account case today. You never perform the provider step yourself.
+
 ## Step 6 — Staying current: poll or subscribe
 
 Decide once, per `sync.md`:

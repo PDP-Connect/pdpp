@@ -43,6 +43,7 @@ test('npm package contents stay narrowly allowlisted', () => {
     ...(files.includes('src/connect/flow.js') ? ['src/connect/flow.js'] : []),
     'src/index.js',
     'src/owner-agent/command.js',
+    'src/owner-agent/control.js',
     'src/owner-agent/credential-store.js',
     'src/owner-agent/device-flow.js',
     'src/owner-agent/discovery.js',

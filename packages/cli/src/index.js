@@ -28,6 +28,7 @@ Agent access:
 Trusted owner agent (owner-level local automation, not the default agent path):
   ${PDPP_CLI_BIN_NAME} owner-agent onboard <entrypoint-url> [--credential-file <path>] [--client-id <id>] [--client-name <name>]
   ${PDPP_CLI_BIN_NAME} owner-agent status [--credential-file <path>] [--entrypoint <url>]
+  ${PDPP_CLI_BIN_NAME} owner-agent control [--credential-file <path>] [--entrypoint <url>]
   ${PDPP_CLI_BIN_NAME} owner-agent revoke [--credential-file <path>] [--entrypoint <url>] [--cache-root <dir>] [--owner-session <cookie>]
 
 Local collector (pair a host you control with a reference deployment):

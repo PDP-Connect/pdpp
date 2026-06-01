@@ -7,6 +7,12 @@
 //       a local file with 0600 permissions. The bearer is never printed.
 //   status [--credential-file <path>] [--entrypoint <url>]
 //       Introspect the stored credential and print only non-secret status.
+//   control [--credential-file <path>] [--entrypoint <url>]
+//       Discover non-secret owner-agent control capabilities (the
+//       GET /v1/owner/control capability document) and list configured
+//       connection instances (GET /v1/owner/connections) with their
+//       connection_id, connector identity, and label/label-needed state. The
+//       bearer is sent as an Authorization header and never printed.
 //   revoke [--credential-file <path>] [--entrypoint <url>]
 //       Revoke the stored credential via owner-session-gated RFC 7592 client
 //       delete. Uses the cached `pdpp ref login` owner session when present.
@@ -19,6 +25,7 @@ import { parseArgs } from '../ref/args.js';
 import { ownerSessionHeaders } from '../ref/fetch.js';
 
 import { resolveCredentialFile, writeOwnerAgentCredential, buildCredentialRecord } from './credential-store.js';
+import { discoverOwnerAgentControl, formatOwnerAgentControl } from './control.js';
 import { discoverOwnerAgentProfile, normalizeEntrypointUrl } from './discovery.js';
 import { initiateDeviceAuthorization, pollForOwnerAgentToken } from './device-flow.js';
 import { OwnerAgentError } from './errors.js';
@@ -26,13 +33,16 @@ import { introspectOwnerAgentCredential, readCredentialRecord, revokeOwnerAgentC
 
 const USAGE = `Trusted owner-agent onboarding (owner-level local automation):
   pdpp owner-agent onboard <entrypoint-url> [--credential-file <path>] [--client-id <id>] [--client-name <name>]
-  pdpp owner-agent status [--credential-file <path>] [--entrypoint <url>]
-  pdpp owner-agent revoke [--credential-file <path>] [--entrypoint <url>] [--cache-root <dir>] [--owner-session <cookie>]
+  pdpp owner-agent status  [--credential-file <path>] [--entrypoint <url>]
+  pdpp owner-agent control [--credential-file <path>] [--entrypoint <url>]
+  pdpp owner-agent revoke  [--credential-file <path>] [--entrypoint <url>] [--cache-root <dir>] [--owner-session <cookie>]
 
 Notes:
   This is a deliberate local-admin mode, not the default agent path. Ordinary
   agents should use grant-scoped access (pdpp connect). The issued bearer is
   written to a local file with 0600 permissions and is never printed.
+  "control" lists non-secret control capabilities and configured connections
+  (connection_id, connector, label/label-needed); it never prints the bearer.
   Revocation uses the owner-session-gated dashboard/RFC 7592 path; run
   "pdpp ref login <authorization-server>" first if no owner session is cached.
   Daisy's first supported target: ~/applications/daisy/.pi/agent/pdpp-owner-agent.json`;
@@ -53,6 +63,9 @@ export async function runOwnerAgent(argv, io = {}, deps = {}) {
     }
     if (subcommand === 'status') {
       return await runStatus(rest, { out }, deps);
+    }
+    if (subcommand === 'control') {
+      return await runControl(rest, { out }, deps);
     }
     if (subcommand === 'revoke') {
       return await runRevoke(rest, { out }, deps);
@@ -167,6 +180,14 @@ async function runStatus(argv, { out }, deps) {
   if (introspection.client_id) out.write(`client id: ${introspection.client_id}\n`);
   if (introspection.exp) out.write(`expires (epoch): ${introspection.exp}\n`);
   return introspection.active ? 0 : 1;
+}
+
+async function runControl(argv, { out }, deps) {
+  const { record } = await loadRecord(argv, deps);
+  const fetchFn = deps.fetch ?? globalThis.fetch;
+  const { control, connections } = await discoverOwnerAgentControl({ fetchFn, record });
+  out.write(formatOwnerAgentControl({ control, connections }));
+  return 0;
 }
 
 async function runRevoke(argv, { out }, deps) {

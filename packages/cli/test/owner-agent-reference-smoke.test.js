@@ -272,6 +272,20 @@ test('owner-agent CLI smoke discovers metadata, writes Daisy credential, reads R
       assert.match(status.stdout, /token kind: owner/);
       assert.doesNotMatch(status.stdout, new RegExp(credential.access_token));
 
+      // Control discovery: non-secret capability document + connection listing
+      // against the live owner-bearer surface. Proves a trusted owner agent can
+      // discover capabilities and connections without printing the bearer.
+      const control = capture();
+      const controlCode = await runOwnerAgent(['control', '--credential-file', credentialPath], control.io, { fetch });
+      assert.equal(controlCode, 0);
+      assert.match(control.stdout, /Owner-agent control capabilities/);
+      assert.match(control.stdout, /list_connections \[supported\]/);
+      assert.match(control.stdout, /initiate_connection \[supported\]/);
+      assert.match(control.stdout, /\/mcp owner bearer: rejected/i);
+      assert.match(control.stdout, /Configured connections/);
+      assert.doesNotMatch(control.stdout, new RegExp(credential.access_token));
+      assert.doesNotMatch(control.stderr, new RegExp(credential.access_token));
+
       const authHeaders = { Authorization: `Bearer ${credential.access_token}` };
       const schema = await fetchJson(`${rsUrl}/v1/schema`, { headers: authHeaders });
       assert.equal(schema.status, 200);

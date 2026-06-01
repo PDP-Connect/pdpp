@@ -429,6 +429,140 @@ test('status without a stored credential reports not_onboarded', async () => {
   });
 });
 
+// ---- control (capability + connection discovery) ----------------------------
+
+const CONTROL_DOCUMENT = {
+  object: 'owner_agent_control_surface',
+  entrypoint: 'https://ref.test/v1/owner/control',
+  scope: 'reference_implementation',
+  mcp_owner_bearer_rejected: true,
+  actions: [
+    {
+      family: 'list_connections',
+      status: 'supported',
+      method: 'GET',
+      url: 'https://ref.test/v1/owner/connections',
+      reason: 'List configured connection instances.',
+    },
+    {
+      family: 'initiate_connection',
+      status: 'supported',
+      method: 'POST',
+      url: 'https://ref.test/v1/owner/connections/intents',
+      reason: 'Initiate a new connection as a typed, owner-mediated intent.',
+    },
+    {
+      family: 'delete_connection',
+      status: 'unsupported',
+      method: null,
+      url: null,
+      reason: 'Connection delete is not an owner-agent control route in this build.',
+    },
+  ],
+};
+
+function controlFetch({ connections }) {
+  return makeFetch([
+    {
+      method: 'GET',
+      match: '/v1/owner/control',
+      handler: ({ opts }) => {
+        assert.equal(opts.headers?.Authorization, `Bearer ${SECRET}`);
+        return jsonResponse(200, CONTROL_DOCUMENT);
+      },
+    },
+    {
+      method: 'GET',
+      match: '/v1/owner/connections',
+      handler: ({ opts }) => {
+        assert.equal(opts.headers?.Authorization, `Bearer ${SECRET}`);
+        return jsonResponse(200, { object: 'list', data: connections });
+      },
+    },
+  ]);
+}
+
+test('control lists capabilities and connections without printing the bearer', async () => {
+  await withTmpHome(async (home) => {
+    await seedCredential(home);
+    const captured = capture();
+    const fetch = controlFetch({
+      connections: [
+        {
+          object: 'owner_connection',
+          connection_id: 'cin_personal',
+          connector_id: 'amazon',
+          connector_key: 'amazon',
+          display_name: 'the owner personal',
+          label_status: 'owner_set',
+          status: 'active',
+        },
+        {
+          object: 'owner_connection',
+          connection_id: 'cin_shared',
+          connector_id: 'amazon',
+          connector_key: 'amazon',
+          display_name: 'https://registry.pdpp.org/connectors/amazon',
+          label_status: 'fallback',
+          status: 'active',
+        },
+      ],
+    });
+    const code = await runOwnerAgent(['control', '--entrypoint', 'https://ref.test'], captured.io, { fetch, home });
+    assert.equal(code, 0);
+    // capability families surfaced with status
+    assert.match(captured.stdout, /list_connections \[supported\] GET https:\/\/ref\.test\/v1\/owner\/connections/);
+    assert.match(captured.stdout, /initiate_connection \[supported\]/);
+    assert.match(captured.stdout, /delete_connection \[unsupported\]/);
+    // mcp rejection surfaced
+    assert.match(captured.stdout, /\/mcp owner bearer: rejected/i);
+    // both connections + label state
+    assert.match(captured.stdout, /cin_personal\s+connector=amazon/);
+    assert.match(captured.stdout, /"the owner personal" \(owner_set\)/);
+    assert.match(captured.stdout, /cin_shared\s+connector=amazon/);
+    assert.match(captured.stdout, /label-needed/);
+    assert.match(captured.stdout, /rename_connection/);
+    // never the bearer
+    assert.doesNotMatch(captured.stdout, new RegExp(SECRET));
+    assert.doesNotMatch(captured.stderr, new RegExp(SECRET));
+  });
+});
+
+test('control reports zero connections cleanly', async () => {
+  await withTmpHome(async (home) => {
+    await seedCredential(home);
+    const captured = capture();
+    const fetch = controlFetch({ connections: [] });
+    const code = await runOwnerAgent(['control', '--entrypoint', 'https://ref.test'], captured.io, { fetch, home });
+    assert.equal(code, 0);
+    assert.match(captured.stdout, /Configured connections \(0\)/);
+    assert.match(captured.stdout, /none yet/i);
+  });
+});
+
+test('control surfaces an unauthorized (revoked) credential as a bounded error', async () => {
+  await withTmpHome(async (home) => {
+    await seedCredential(home);
+    const captured = capture();
+    const fetch = makeFetch([
+      { method: 'GET', match: '/v1/owner/control', status: 401, body: { error: { code: 'authentication_error' } } },
+    ]);
+    const code = await runOwnerAgent(['control', '--entrypoint', 'https://ref.test'], captured.io, { fetch, home });
+    assert.equal(code, 4);
+    assert.match(captured.stderr, /not authorized/i);
+    assert.doesNotMatch(captured.stderr, new RegExp(SECRET));
+  });
+});
+
+test('control without a stored credential reports not_onboarded', async () => {
+  await withTmpHome(async (home) => {
+    const captured = capture();
+    const code = await runOwnerAgent(['control'], captured.io, { fetch: async () => { throw new Error('nope'); }, home });
+    assert.equal(code, 5);
+    assert.match(captured.stderr, /No owner-agent credential/i);
+  });
+});
+
 // ---- revoke (RFC 7592 client delete) ----------------------------------------
 
 test('revoke deletes the dynamically registered client', async () => {
@@ -504,6 +638,7 @@ test('runCli routes owner-agent and help advertises the profile', async () => {
   const code = await runCli(['owner-agent', '--help'], captured.io);
   assert.equal(code, 0);
   assert.match(captured.stdout, /owner-agent onboard/);
+  assert.match(captured.stdout, /owner-agent control/);
   assert.match(captured.stdout, /not the default/i);
 });
 

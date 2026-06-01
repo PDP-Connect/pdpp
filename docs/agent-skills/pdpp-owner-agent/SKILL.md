@@ -33,10 +33,17 @@ This skill has four jobs:
    permissions, and never echo it.
 4. Maintain a token-efficient local view of all current and future owner data through
    metadata-first discovery, cursors, and incremental sync.
+5. When the operator asks, manage connections through the typed control plane: discover
+   supported actions, list and label connection instances, and initiate new connections as
+   typed, owner-mediated intents — without ever bypassing a provider step.
 
 The companion runbook in `references/daisy-runbook.md` walks the end-to-end flow from
 an entrypoint URL through initial and incremental sync. `references/sync.md` is the
 deeper reference for query shapes, cursors, and the callback-vs-polling decision.
+`references/control-surface.md` covers the owner-agent control plane — discovering
+supported control actions, listing and labeling connection instances, and initiating
+a new connection as a typed intent — for when the operator asks you to *manage*
+connections, not just read data.
 
 ## Hard rules
 
@@ -174,6 +181,37 @@ valid-TLS HTTPS callback receiver:
 See `references/sync.md` for the full callback-vs-polling decision, backoff guidance, and
 the subscription lifecycle.
 
+### 6. Manage connections through the typed control plane
+
+When the operator asks you to *manage* connections — not just read data — use the
+owner-bearer control plane at `/v1/owner/*`. See `references/control-surface.md` for the
+full reference. The shape:
+
+1. **Discover capabilities, never guess routes.** Run
+   `pdpp owner-agent control` (or read `GET /v1/owner/control`). It lists every control
+   action family with a typed `status` (`supported` / `owner_mediated` / `unsupported`)
+   and, for supported families, the method + URL. Branch on `status`; never probe a route
+   the catalog did not mark `supported`.
+2. **List connection instances, not just templates.** `GET /v1/owner/connections` returns
+   each configured instance with its stable `connection_id`, connector identity, and
+   `label_status`. A connector template (`amazon`) is not a connection instance; operate
+   on the instance by `connection_id`.
+3. **Label what needs labeling.** A row with `label_status: fallback` is label-needed —
+   the `display_name` is a storage placeholder, not an owner-chosen name. Surface it as
+   needing a label and set one with `rename_connection`
+   (`PATCH /v1/owner/connections/{connection_id}`) so multi-connection deployments stay
+   addressable by owner-meaningful names like `the owner personal` / `Shared Amazon`.
+4. **Initiate new connections as a typed intent, never a silent login.**
+   `POST /v1/owner/connections/intents` returns a typed `next_step` and never marks a
+   connection active. `enroll_local_collector` hands a single-use `enrollment_code` to the
+   operator's local collector (never print it); `unsupported` names the missing primitive
+   and is the honest stopping point (this is the Amazon second-account case today). You
+   never perform the provider login, upload, or device enrollment step yourself.
+
+Every control mutation is audited server-side by actor kind, client id/name, target
+`connection_id`, and outcome — without logging the bearer. Keep your output non-secret to
+match: capabilities, connection ids, and labels only.
+
 ## Stop conditions
 
 - The `pdpp_owner_agent_onboarding` advisory block is absent → onboarding unavailable.
@@ -183,7 +221,11 @@ the subscription lifecycle.
 - You are about to send the owner bearer to `/mcp` → stop. That is the grant-scoped
   client transport and will reject owner bearers. Use owner-bearer `/v1/*` REST instead.
 - You catch yourself about to print, log, commit, or relay the bearer value → stop. Refer
-  to it by revocation handle only.
+  to it by revocation handle only. The same rule applies to a connection-intent
+  `enrollment_code`, owner-session cookies, and webhook signing secrets (`whsec_`): hand
+  them machine-to-machine, never to chat or logs.
+- A control action's catalog `status` is `owner_mediated` or `unsupported` → do not probe
+  a route or fake the result. Relay the typed reason to the operator and stop.
 - You are not certain you are the authorized local owner agent → stop and use
   `pdpp-data-access` (grant-scoped) instead.
 
