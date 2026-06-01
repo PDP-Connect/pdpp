@@ -334,6 +334,7 @@ function buildRunHandler(
       let namespace: ConnectorNamespace;
       if (selector === "connection_id") {
         const addressed = decodeURIComponent(req.params.connectionId as string);
+        connectionId = addressed;
         // Resolve by connection_id (== connector_instance_id). The resolver
         // verifies the connection belongs to this owner and is active; a
         // foreign or unknown id surfaces as connector_instance_not_found (404).

@@ -134,7 +134,7 @@ export function isPlaceholderConnectionLabel(connector: string, displayName: str
  */
 export function deriveConnectionDisplayName(args: {
   connector: string;
-  displayName?: string | null;
+  displayName?: string | null | undefined;
   /** 1-based position within the connector group. */
   ordinal: number;
   /** Total connections in the same connector group. */

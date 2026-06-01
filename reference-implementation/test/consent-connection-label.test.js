@@ -22,12 +22,12 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {
+const {
   buildConsentCardConnections,
   deriveConnectionDisplayName,
   formatConnectorName,
   isPlaceholderConnectionLabel,
-} from '../../apps/site/src/lib/consent-connection-label.ts';
+} = await import(new URL('../../apps/site/src/lib/consent-connection-label.ts', import.meta.url).href);
 
 // A placeholder / URL / device-binding label MUST be rejected as not
 // owner-meaningful, mirroring the operator console's `isFallbackConnectionLabel`

@@ -334,9 +334,14 @@ test('owner-agent run on an unknown connection_id returns a typed 404', async ()
   await withServer(async ({ asUrl, rsUrl }) => {
     await registerConnector(asUrl, loadReferenceManifest('spotify'));
     const ownerToken = await issueOwnerToken(asUrl);
-    const { status, body } = await postRun(rsUrl, ownerToken, '/v1/owner/connections/cin_missing/run');
+    const { status, body, resp } = await postRun(rsUrl, ownerToken, '/v1/owner/connections/cin_missing/run');
     assert.equal(status, 404);
     assert.equal(body?.error?.code, 'connector_instance_not_found');
+    const audit = findRunAuditEvent(resp);
+    assert.equal(audit.status, 'failed');
+    assert.equal(audit.object_id, 'cin_missing');
+    assert.equal(audit.data?.connection_id, 'cin_missing');
+    assert.equal(audit.data?.error?.code, 'connector_instance_not_found');
   });
 });
 
