@@ -32,6 +32,7 @@ The design note `design-notes/public-site-vs-reference-server-split-2026-05-21.m
 
 - `reference-surface-topology` — codifies the public-site / operator-console split, the deployment topologies (`apps/site` standalone, `apps/console` + reference server, both together), and the operator-friendly bare-AS/RS browser landing page.
 - `reference-implementation-architecture` — replaces "the website is a downstream consumer" wording (which assumed a single `apps/web`) with the two-Next-apps deployable shape, and acknowledges `packages/operator-ui` as the shared component substrate.
+- `reference-implementation-governance` — retargets the root/public spec-publication contract from the legacy `apps/web/content/docs` tree to the public-site `apps/site/content/docs` tree.
 
 ### Added Capabilities
 
@@ -50,5 +51,6 @@ The design note `design-notes/public-site-vs-reference-server-split-2026-05-21.m
 - `docker-compose.yml` — the `web` image becomes the `apps/console` image; an `apps/site` image is published separately for pdpp.dev (not required for self-hosters).
 - `pnpm-workspace.yaml` — `apps/site`, `apps/console`, `packages/operator-ui` enter the workspace; `apps/web` is removed once migration completes.
 - Root `package.json` scripts — `pnpm dev` boots `reference-implementation` + `apps/console`; `pnpm site:dev` boots `apps/site` only; `pnpm dev:full` boots everything.
+- `openspec/specs/reference-implementation-governance/spec.md` — spec-publication governance follows the post-split public docs tree (`apps/site/content/docs`) instead of the legacy combined app tree.
 - No protocol wire-format change. No grant/manifest/schema change. No new external runtime dependency.
 - Sibling change `adopt-turborepo-task-graph` (recommended) lands on top of this split. Optional follow-up `relocate-reference-implementation-to-apps` is deferred.
