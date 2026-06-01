@@ -6,4 +6,5 @@ export const GET = (request: Request, context: Parameters<typeof proxyReferenceC
   proxyReferenceCatchAll(request, "rs", prefix, context);
 export const POST = GET;
 export const PUT = GET;
+export const PATCH = GET;
 export const DELETE = GET;
