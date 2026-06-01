@@ -44,6 +44,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 # deps stage; the public-site (`apps/site`) image is built in a follow-up stage
 # and is not required by the operator's default `docker compose up`.
 COPY apps/console/package.json apps/console/package.json
+COPY packages/operator-ui/package.json packages/operator-ui/package.json
 COPY packages/pdpp-brand/package.json packages/pdpp-brand/package.json
 COPY packages/mcp-server/package.json packages/mcp-server/package.json
 COPY packages/polyfill-connectors/package.json packages/polyfill-connectors/package.json
