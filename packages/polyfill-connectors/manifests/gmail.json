@@ -54,13 +54,15 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_type": "text"
           },
           "from_name": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_type": "person"
           },
           "from_email": {
             "type": [
@@ -85,7 +87,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "x_pdpp_type": "timestamp"
           },
           "received_at": {
             "type": "string",
@@ -134,7 +137,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x_pdpp_type": "text"
           }
         },
         "required": [

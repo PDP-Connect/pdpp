@@ -214,10 +214,12 @@
           "date": {
             "type": "string",
             "format": "date",
+            "x_pdpp_type": "timestamp",
             "description": "Posted date. QFX DTPOSTED."
           },
           "amount": {
             "type": "integer",
+            "x_pdpp_type": "currency",
             "description": "Signed amount in cents. Negative for debits, positive for credits."
           },
           "currency": {
@@ -236,6 +238,7 @@
               "string",
               "null"
             ],
+            "x_pdpp_type": "text",
             "description": "Payee or merchant name. QFX NAME."
           },
           "memo": {
