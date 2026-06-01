@@ -10,7 +10,10 @@ REST client needs to continue the `list_streams -> schema(stream) ->
 query_records` discovery path. The full body SHALL remain the default. The
 compact view SHALL NOT be the default in this capability and SHALL NOT alter
 grant evaluation, visibility, connection identity, or the deprecated
-`connector_instance_id` alias.
+`connector_instance_id` alias. The public route contract and generated OpenAPI
+artifact SHALL document the `view` and `stream` query selectors and SHALL admit
+both full field-capability objects and compact field-capability flag strings on
+the schema response.
 
 #### Scenario: Omitted view preserves the full body
 
@@ -45,4 +48,4 @@ grant evaluation, visibility, connection identity, or the deprecated
 - **WHEN** the compact view is produced
 - **THEN** it SHALL be a pure transform applied to the response the canonical `rs.schema.get` operation already produced, after the operation runs and before envelope finalization
 - **AND** it SHALL NOT recompute visibility, grant scope, or disclosure totals
-- **AND** it SHALL NOT change the `@pdpp/reference-contract` request/response schemas, the OpenAPI document, or generated contract artifacts
+- **AND** the route contract and generated artifacts SHALL describe the compact selector and response marker without making compact the default

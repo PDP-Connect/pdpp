@@ -1121,6 +1121,13 @@ const ConnectorListResponseSchema = {
   required: ["object", "data"],
 };
 
+const CompactFieldCapabilityFlagsSchema = {
+  type: "string",
+  minLength: 1,
+  description:
+    "Compact schema-view capability flags. Comma-separated tokens preserve declared type, grant status, and usable exact/range/lexical/semantic/aggregation capabilities without embedding the full per-field JSON Schema.",
+};
+
 const StreamMetadataResponseSchema = {
   type: "object",
   additionalProperties: true,
@@ -1162,57 +1169,62 @@ const StreamMetadataResponseSchema = {
     field_capabilities: {
       type: "object",
       additionalProperties: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          // Optional declared presentation type sourced from the stream
-          // manifest. Implementations may declare it as a JSON Schema
-          // extension (`schema.properties[field].x_pdpp_type`) or through the
-          // sandbox-shaped field declaration array (`fields[]` or
-          // `schema.fields[]` with `{ name, type, semantic_class }`). Additive
-          // and optional: omitted when the manifest does not declare it, and a
-          // consumer SHALL treat the absence as "not declared". This is a
-          // presentation/dispatch hint only; it is never client-writable or
-          // grantable.
-          type: { type: "string", minLength: 1 },
-          schema: { type: "object", additionalProperties: true },
-          granted: { type: "boolean" },
-          exact_filter: CapabilityFlagSchema,
-          range_filter: {
+        oneOf: [
+          CompactFieldCapabilityFlagsSchema,
+          {
             type: "object",
             additionalProperties: false,
             properties: {
-              declared: { type: "boolean" },
-              usable: { type: "boolean" },
-              operators: { type: "array", items: NonEmptyStringSchema },
-              reason: { type: "string" },
+              // Optional declared presentation type sourced from the stream
+              // manifest. Implementations may declare it as a JSON Schema
+              // extension (`schema.properties[field].x_pdpp_type`) or through
+              // the sandbox-shaped field declaration array (`fields[]` or
+              // `schema.fields[]` with `{ name, type, semantic_class }`).
+              // Additive and optional: omitted when the manifest does not
+              // declare it, and a consumer SHALL treat the absence as "not
+              // declared". This is a presentation/dispatch hint only; it is
+              // never client-writable or grantable.
+              type: { type: "string", minLength: 1 },
+              schema: { type: "object", additionalProperties: true },
+              granted: { type: "boolean" },
+              exact_filter: CapabilityFlagSchema,
+              range_filter: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  declared: { type: "boolean" },
+                  usable: { type: "boolean" },
+                  operators: { type: "array", items: NonEmptyStringSchema },
+                  reason: { type: "string" },
+                },
+                required: ["declared", "usable"],
+              },
+              lexical_search: CapabilityFlagSchema,
+              semantic_search: CapabilityFlagSchema,
+              aggregation: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  sum: CapabilityFlagSchema,
+                  min: CapabilityFlagSchema,
+                  max: CapabilityFlagSchema,
+                  group_by: CapabilityFlagSchema,
+                  group_by_time: CapabilityFlagSchema,
+                  count_distinct: CapabilityFlagSchema,
+                },
+                required: ["sum", "min", "max", "group_by", "group_by_time", "count_distinct"],
+              },
             },
-            required: ["declared", "usable"],
+            required: [
+              "schema",
+              "granted",
+              "exact_filter",
+              "range_filter",
+              "lexical_search",
+              "semantic_search",
+              "aggregation",
+            ],
           },
-          lexical_search: CapabilityFlagSchema,
-          semantic_search: CapabilityFlagSchema,
-          aggregation: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              sum: CapabilityFlagSchema,
-              min: CapabilityFlagSchema,
-              max: CapabilityFlagSchema,
-              group_by: CapabilityFlagSchema,
-              group_by_time: CapabilityFlagSchema,
-              count_distinct: CapabilityFlagSchema,
-            },
-            required: ["sum", "min", "max", "group_by", "group_by_time", "count_distinct"],
-          },
-        },
-        required: [
-          "schema",
-          "granted",
-          "exact_filter",
-          "range_filter",
-          "lexical_search",
-          "semantic_search",
-          "aggregation",
         ],
       },
     },
@@ -1223,7 +1235,9 @@ const StreamMetadataResponseSchema = {
         additionalProperties: false,
         properties: {
           name: NonEmptyStringSchema,
+          relation: NonEmptyStringSchema,
           stream: NonEmptyStringSchema,
+          target_stream: NonEmptyStringSchema,
           cardinality: { type: "string", enum: ["has_one", "has_many"] },
           foreign_key: NonEmptyStringSchema,
           default_limit: { type: "integer", minimum: 1 },
@@ -1251,6 +1265,11 @@ const SchemaResponseSchema = {
   additionalProperties: false,
   properties: {
     object: { const: "schema" },
+    detail: {
+      type: "string",
+      enum: ["compact"],
+      description: "Present only when `GET /v1/schema?view=compact` returned the compact projection.",
+    },
     bearer: {
       type: "object",
       additionalProperties: false,
@@ -1282,6 +1301,30 @@ const SchemaResponseSchema = {
     },
   },
   required: ["object", "bearer", "connectors"],
+};
+
+const SchemaQuerySchema = {
+  type: "object",
+  // Existing schema callers may pass legacy owner polyfill selectors such as
+  // `connector_id`; keep request validation permissive while documenting the
+  // token-efficient selector names agents should prefer.
+  additionalProperties: true,
+  properties: {
+    connector_id: {
+      type: "string",
+      description: "Optional owner-polyfill source hint for runtimes that expose multiple connector templates.",
+    },
+    view: {
+      type: "string",
+      description:
+        "Set `view=compact` to return the token-efficient schema projection. Omitted or any other value returns the full schema body.",
+    },
+    stream: {
+      type: "string",
+      description:
+        "When used with `view=compact`, narrows the schema document to connectors that contribute this stream.",
+    },
+  },
 };
 
 const AuthHeaderSchema = {
@@ -1802,9 +1845,10 @@ export const publicManifests = [
     surface: "public",
     tags: ["records"],
     summary:
-      "Return the caller-visible source/stream capability graph in one shot. Owner tokens see every owner-visible connector; client tokens see only the grant's source and streams. Each stream entry reuses the per-stream metadata shape (schema, query declarations, field capabilities, expand capabilities, freshness).",
+      "Return the caller-visible source/stream capability graph. Use `view=compact` and optional `stream=<name>` for a token-efficient agent discovery step; omitted `view` returns the full schema, query declarations, field capabilities, expand capabilities, and freshness.",
     request: {
       headers: AuthHeaderSchema,
+      query: SchemaQuerySchema,
     },
     responses: {
       200: { schema: SchemaResponseSchema },

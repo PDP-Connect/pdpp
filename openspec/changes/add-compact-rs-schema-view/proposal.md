@@ -41,6 +41,9 @@ body any existing client receives.
 - Add enforceable byte-budget / structural acceptance tests modeled on the MCP
   schema compact tests, driving the real `/v1/schema` route from a registered
   manifest fixture (no live external data required).
+- Update `@pdpp/reference-contract`, generated OpenAPI, and generated route docs
+  so agents can discover `view=compact` / `stream=<name>` and validators can
+  admit the compact response marker plus compact field-capability flag strings.
 
 ## Capabilities
 
@@ -58,9 +61,10 @@ body any existing client receives.
 - No change to the MCP `schema` compaction (that is the orthogonal presentation
   layer in `packages/mcp-server`); the REST flag vocabulary is intentionally the
   same so the two surfaces speak one terse capability language to agents.
-- No change to the public `@pdpp/reference-contract` request/response schemas,
-  OpenAPI, or generated artifacts: the compact view is a route-level projection
-  of the existing response shape, not a new field on the contract envelope.
+- Public contract/doc impact is additive: the `getSchema` query contract names
+  the compact selectors, and the response contract admits both the full
+  field-capability object and the compact flag-string form. Compact is still not
+  the default.
 - No change to grant evaluation, visibility, connection identity, the deprecated
   `connector_instance_id` alias, the scheduler-side `ambiguous_connector_instance`
   behavior, or the record envelope. The compact view is a pure, read-only

@@ -21,6 +21,7 @@
 - [x] Apply the projection after `executeSchemaGet` and before `finalizeCanonicalEnvelope`, only when `view=compact`.
 - [x] Record `requested_view: "compact"` and the scoped connector/stream counts on the `disclosure.served` instrumentation; keep `query_shape: "schema"`.
 - [x] Confirm the full body path is unchanged when `view` is omitted or non-compact.
+- [x] Make the compact selector and compact response marker visible in `@pdpp/reference-contract`, generated OpenAPI, and generated route docs so REST agents can discover it without out-of-band notes.
 
 ## 4. Byte-Budget / Conformance Tests
 
@@ -38,6 +39,8 @@
 - [x] `pnpm --dir reference-implementation run typecheck`
 - [x] `node --test test/rs-schema-compact-view.test.js`
 - [x] Existing schema regression suites green (`rs-schema-get-operation`, `schema-granted-connections`, `schema-capability-truth`, `rs-schema-get-boundary`).
+- [x] `pnpm --dir packages/reference-contract run check:generated`
+- [x] `pnpm --dir packages/reference-contract run test`
 - [x] `git diff --check`
 
 ## Acceptance Checks
@@ -46,4 +49,4 @@
 - [x] `openspec validate --all --strict`
 - [x] `GET /v1/schema` default is byte-equivalent to prior behavior (no field loss).
 - [x] `GET /v1/schema?view=compact` is materially smaller, identity-preserving, and drops raw JSON Schema. Evidence (6 streams x 30 fields fixture): full ~693 KB -> compact ~10 KB (~69x), per-stream compact ~1.9 KB.
-- [x] No `@pdpp/reference-contract` / OpenAPI / generated-artifact change.
+- [x] `@pdpp/reference-contract` / OpenAPI / generated docs advertise `view=compact` and allow the compact response marker + compact field-capability flag strings.

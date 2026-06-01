@@ -27,9 +27,9 @@ additive opt-in view.
 
 - Do NOT make compact the REST default in this tranche.
 - Do NOT change the MCP `schema` compaction (orthogonal layer; already landed).
-- Do NOT change `@pdpp/reference-contract` request/response schemas, OpenAPI, or
-  generated artifacts. The compact view is a route-level down-projection of the
-  existing response, not a new contract field.
+- Do NOT make compact the REST default or change the meaning of the full schema
+  response. The compact view is an additive route-level down-projection of the
+  existing response.
 - Do NOT change grant evaluation, visibility, connection identity, the
   deprecated `connector_instance_id` alias, or the record envelope.
 - Do NOT include raw per-field/per-stream JSON Schema blobs in compact output.
@@ -88,14 +88,15 @@ reading `view` / `stream`, calling the projection, and recording the requested
 view + scoped counts on the `disclosure.served` instrumentation. Visibility,
 grant scope, and the full body remain operation-owned and untouched.
 
-### Why a route-level projection, not a contract field
+### Contract visibility
 
-The compact body is a lossy view of the same response, not new data. Threading a
-`detail` parameter through `@pdpp/reference-contract`, OpenAPI, and the generated
-artifacts would freeze the projection's exact field set onto the durable public
-contract, which is premature: the flag grammar is still co-evolving with the MCP
-surface. A route-level projection keeps the contract stable while delivering the
-token win, and the byte-budget tests lock the behavior structurally.
+The compact body is a lossy view of the same response, not new data, but it is
+still a public, agent-facing route behavior. The route contract therefore
+documents the `view` and `stream` selectors and admits the compact response
+marker plus compact field-capability flag strings. It does not make compact the
+default and does not require consumers to hard-parse every flag segment. The
+byte-budget tests lock the behavior structurally while preserving room for the
+flag grammar to co-evolve with the MCP surface.
 
 ## Alternatives Considered
 
@@ -107,9 +108,11 @@ token win, and the byte-budget tests lock the behavior structurally.
 - **Make compact the default and gate full behind `view=full`.** Rejected:
   would change the body every existing REST client receives with no migration
   path. Compact stays opt-in this tranche.
-- **Add `detail` to the public contract + regenerate artifacts.** Rejected: see
-  "Why a route-level projection" — premature contract freeze of a co-evolving
-  flag grammar.
+- **Keep the compact selector hidden from the public contract.** Rejected:
+  agent-facing affordances should be discoverable by construction. The contract
+  should at least advertise the selector and the response marker; otherwise
+  generated OpenAPI and route docs tell agents only about the expensive full
+  schema.
 - **Compact in the operation instead of the route.** Rejected: the operation is
   the single source of the full, instrumented body; routes own request shaping
   and rendered detail. Keeping the projection at the route mirrors how the
@@ -125,6 +128,9 @@ token win, and the byte-budget tests lock the behavior structurally.
   smaller than the full body, carries `detail: "compact"`, drops the raw
   per-field JSON Schema, and keeps stream identity, `granted_connections`, field
   names, declared types, and usable capability flags.
+- `@pdpp/reference-contract`, generated OpenAPI, and generated route docs
+  advertise `view=compact` / `stream=<name>` and admit the compact response
+  marker + compact field-capability flag strings.
 - `GET /v1/schema?view=compact&stream=<name>` scopes to one stream under a tight
   per-stream budget and remains usable.
 - An unknown `stream` scope returns an empty connector set, not an error.

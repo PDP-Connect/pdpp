@@ -4,7 +4,7 @@ All examples below target the public record-query surface at `/v1/streams/...`. 
 
 ## Discovery (one shot)
 
-`GET /v1/schema` returns every connector and stream visible to the bearer in a single response. Owner tokens (polyfill mode) get every owner-visible connector with no `connector_id` required; client tokens see only the streams in the grant. Each stream entry reuses the per-stream metadata shape, including `schema`, `query` declarations, `field_capabilities`, `expand_capabilities`, and `freshness`.
+`GET /v1/schema` returns every connector and stream visible to the bearer in a single response. Owner tokens (polyfill mode) get every owner-visible connector with no `connector_id` required; client tokens see only the streams in the grant. Use `GET /v1/schema?view=compact` for token-efficient agent discovery, and `GET /v1/schema?view=compact&stream=<name>` for the cheap per-stream schema step before querying records. Omitted `view` returns the full schema, including `schema`, `query` declarations, `field_capabilities`, `expand_capabilities`, and `freshness`.
 
 ```http
 GET /v1/schema
@@ -12,6 +12,15 @@ Authorization: Bearer <owner_or_client_token>
 ```
 
 Use the per-field `field_capabilities[<field>]` flags (`exact_filter`, `range_filter`, `lexical_search`, `semantic_search`, `aggregation`) to learn which filters and aggregations are valid for each field without trial-and-error 400s. Per-stream `query.range_filters` / `query.aggregations` / `query.expand` lists are still emitted for callers that prefer the manifest view.
+
+For agents with limited context budget, prefer the compact schema view:
+
+```http
+GET /v1/schema?view=compact&stream=messages
+Authorization: Bearer <owner_or_client_token>
+```
+
+The compact view keeps stream identity, `granted_connections`, field names, declared types, and terse capability flags while omitting raw per-field JSON Schema blobs.
 
 ## Exact filter
 

@@ -37,6 +37,22 @@ test('getStreamMetadata summary directs LLMs to /v1/schema for field capabilitie
   );
 });
 
+test('getSchema advertises compact token-efficient discovery controls', () => {
+  const operation = findOperation('getSchema');
+  assert.match(
+    operation.summary,
+    /view=compact/,
+    'getSchema.summary must tell agents about compact schema discovery',
+  );
+  assert.match(
+    operation.summary,
+    /stream=<name>/,
+    'getSchema.summary must tell agents about stream-scoped schema discovery',
+  );
+  assert.ok(operation.request?.query?.properties?.view, 'getSchema query must declare view');
+  assert.ok(operation.request?.query?.properties?.stream, 'getSchema query must declare stream');
+});
+
 test('searchRecordsHybrid summary references hybrid_pagination_supported and lexical fallback', () => {
   const operation = findOperation('searchRecordsHybrid');
   assert.match(

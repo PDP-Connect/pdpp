@@ -4681,8 +4681,36 @@
         "tags": [
           "records"
         ],
-        "summary": "Return the caller-visible source/stream capability graph in one shot. Owner tokens see every owner-visible connector; client tokens see only the grant's source and streams. Each stream entry reuses the per-stream metadata shape (schema, query declarations, field capabilities, expand capabilities, freshness).",
-        "parameters": [],
+        "summary": "Return the caller-visible source/stream capability graph. Use `view=compact` and optional `stream=<name>` for a token-efficient agent discovery step; omitted `view` returns the full schema, query declarations, field capabilities, expand capabilities, and freshness.",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "connector_id",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Optional owner-polyfill source hint for runtimes that expose multiple connector templates."
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Set `view=compact` to return the token-efficient schema projection. Omitted or any other value returns the full schema body."
+            }
+          },
+          {
+            "in": "query",
+            "name": "stream",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "When used with `view=compact`, narrows the schema document to connectors that contribute this stream."
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "",
@@ -4694,6 +4722,13 @@
                   "properties": {
                     "object": {
                       "const": "schema"
+                    },
+                    "detail": {
+                      "type": "string",
+                      "enum": [
+                        "compact"
+                      ],
+                      "description": "Present only when `GET /v1/schema?view=compact` returned the compact projection."
                     },
                     "bearer": {
                       "type": "object",
@@ -4847,240 +4882,249 @@
                                 "field_capabilities": {
                                   "type": "object",
                                   "additionalProperties": {
-                                    "type": "object",
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "type": {
+                                    "oneOf": [
+                                      {
                                         "type": "string",
-                                        "minLength": 1
+                                        "minLength": 1,
+                                        "description": "Compact schema-view capability flags. Comma-separated tokens preserve declared type, grant status, and usable exact/range/lexical/semantic/aggregation capabilities without embedding the full per-field JSON Schema."
                                       },
-                                      "schema": {
-                                        "type": "object",
-                                        "additionalProperties": true
-                                      },
-                                      "granted": {
-                                        "type": "boolean"
-                                      },
-                                      "exact_filter": {
+                                      {
                                         "type": "object",
                                         "additionalProperties": false,
                                         "properties": {
-                                          "declared": {
+                                          "type": {
+                                            "type": "string",
+                                            "minLength": 1
+                                          },
+                                          "schema": {
+                                            "type": "object",
+                                            "additionalProperties": true
+                                          },
+                                          "granted": {
                                             "type": "boolean"
                                           },
-                                          "usable": {
-                                            "type": "boolean"
+                                          "exact_filter": {
+                                            "type": "object",
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "declared": {
+                                                "type": "boolean"
+                                              },
+                                              "usable": {
+                                                "type": "boolean"
+                                              },
+                                              "reason": {
+                                                "type": "string"
+                                              }
+                                            },
+                                            "required": [
+                                              "declared",
+                                              "usable"
+                                            ]
                                           },
-                                          "reason": {
-                                            "type": "string"
+                                          "range_filter": {
+                                            "type": "object",
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "declared": {
+                                                "type": "boolean"
+                                              },
+                                              "usable": {
+                                                "type": "boolean"
+                                              },
+                                              "operators": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                }
+                                              },
+                                              "reason": {
+                                                "type": "string"
+                                              }
+                                            },
+                                            "required": [
+                                              "declared",
+                                              "usable"
+                                            ]
+                                          },
+                                          "lexical_search": {
+                                            "type": "object",
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "declared": {
+                                                "type": "boolean"
+                                              },
+                                              "usable": {
+                                                "type": "boolean"
+                                              },
+                                              "reason": {
+                                                "type": "string"
+                                              }
+                                            },
+                                            "required": [
+                                              "declared",
+                                              "usable"
+                                            ]
+                                          },
+                                          "semantic_search": {
+                                            "type": "object",
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "declared": {
+                                                "type": "boolean"
+                                              },
+                                              "usable": {
+                                                "type": "boolean"
+                                              },
+                                              "reason": {
+                                                "type": "string"
+                                              }
+                                            },
+                                            "required": [
+                                              "declared",
+                                              "usable"
+                                            ]
+                                          },
+                                          "aggregation": {
+                                            "type": "object",
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "sum": {
+                                                "type": "object",
+                                                "additionalProperties": false,
+                                                "properties": {
+                                                  "declared": {
+                                                    "type": "boolean"
+                                                  },
+                                                  "usable": {
+                                                    "type": "boolean"
+                                                  },
+                                                  "reason": {
+                                                    "type": "string"
+                                                  }
+                                                },
+                                                "required": [
+                                                  "declared",
+                                                  "usable"
+                                                ]
+                                              },
+                                              "min": {
+                                                "type": "object",
+                                                "additionalProperties": false,
+                                                "properties": {
+                                                  "declared": {
+                                                    "type": "boolean"
+                                                  },
+                                                  "usable": {
+                                                    "type": "boolean"
+                                                  },
+                                                  "reason": {
+                                                    "type": "string"
+                                                  }
+                                                },
+                                                "required": [
+                                                  "declared",
+                                                  "usable"
+                                                ]
+                                              },
+                                              "max": {
+                                                "type": "object",
+                                                "additionalProperties": false,
+                                                "properties": {
+                                                  "declared": {
+                                                    "type": "boolean"
+                                                  },
+                                                  "usable": {
+                                                    "type": "boolean"
+                                                  },
+                                                  "reason": {
+                                                    "type": "string"
+                                                  }
+                                                },
+                                                "required": [
+                                                  "declared",
+                                                  "usable"
+                                                ]
+                                              },
+                                              "group_by": {
+                                                "type": "object",
+                                                "additionalProperties": false,
+                                                "properties": {
+                                                  "declared": {
+                                                    "type": "boolean"
+                                                  },
+                                                  "usable": {
+                                                    "type": "boolean"
+                                                  },
+                                                  "reason": {
+                                                    "type": "string"
+                                                  }
+                                                },
+                                                "required": [
+                                                  "declared",
+                                                  "usable"
+                                                ]
+                                              },
+                                              "group_by_time": {
+                                                "type": "object",
+                                                "additionalProperties": false,
+                                                "properties": {
+                                                  "declared": {
+                                                    "type": "boolean"
+                                                  },
+                                                  "usable": {
+                                                    "type": "boolean"
+                                                  },
+                                                  "reason": {
+                                                    "type": "string"
+                                                  }
+                                                },
+                                                "required": [
+                                                  "declared",
+                                                  "usable"
+                                                ]
+                                              },
+                                              "count_distinct": {
+                                                "type": "object",
+                                                "additionalProperties": false,
+                                                "properties": {
+                                                  "declared": {
+                                                    "type": "boolean"
+                                                  },
+                                                  "usable": {
+                                                    "type": "boolean"
+                                                  },
+                                                  "reason": {
+                                                    "type": "string"
+                                                  }
+                                                },
+                                                "required": [
+                                                  "declared",
+                                                  "usable"
+                                                ]
+                                              }
+                                            },
+                                            "required": [
+                                              "sum",
+                                              "min",
+                                              "max",
+                                              "group_by",
+                                              "group_by_time",
+                                              "count_distinct"
+                                            ]
                                           }
                                         },
                                         "required": [
-                                          "declared",
-                                          "usable"
-                                        ]
-                                      },
-                                      "range_filter": {
-                                        "type": "object",
-                                        "additionalProperties": false,
-                                        "properties": {
-                                          "declared": {
-                                            "type": "boolean"
-                                          },
-                                          "usable": {
-                                            "type": "boolean"
-                                          },
-                                          "operators": {
-                                            "type": "array",
-                                            "items": {
-                                              "type": "string",
-                                              "minLength": 1
-                                            }
-                                          },
-                                          "reason": {
-                                            "type": "string"
-                                          }
-                                        },
-                                        "required": [
-                                          "declared",
-                                          "usable"
-                                        ]
-                                      },
-                                      "lexical_search": {
-                                        "type": "object",
-                                        "additionalProperties": false,
-                                        "properties": {
-                                          "declared": {
-                                            "type": "boolean"
-                                          },
-                                          "usable": {
-                                            "type": "boolean"
-                                          },
-                                          "reason": {
-                                            "type": "string"
-                                          }
-                                        },
-                                        "required": [
-                                          "declared",
-                                          "usable"
-                                        ]
-                                      },
-                                      "semantic_search": {
-                                        "type": "object",
-                                        "additionalProperties": false,
-                                        "properties": {
-                                          "declared": {
-                                            "type": "boolean"
-                                          },
-                                          "usable": {
-                                            "type": "boolean"
-                                          },
-                                          "reason": {
-                                            "type": "string"
-                                          }
-                                        },
-                                        "required": [
-                                          "declared",
-                                          "usable"
-                                        ]
-                                      },
-                                      "aggregation": {
-                                        "type": "object",
-                                        "additionalProperties": false,
-                                        "properties": {
-                                          "sum": {
-                                            "type": "object",
-                                            "additionalProperties": false,
-                                            "properties": {
-                                              "declared": {
-                                                "type": "boolean"
-                                              },
-                                              "usable": {
-                                                "type": "boolean"
-                                              },
-                                              "reason": {
-                                                "type": "string"
-                                              }
-                                            },
-                                            "required": [
-                                              "declared",
-                                              "usable"
-                                            ]
-                                          },
-                                          "min": {
-                                            "type": "object",
-                                            "additionalProperties": false,
-                                            "properties": {
-                                              "declared": {
-                                                "type": "boolean"
-                                              },
-                                              "usable": {
-                                                "type": "boolean"
-                                              },
-                                              "reason": {
-                                                "type": "string"
-                                              }
-                                            },
-                                            "required": [
-                                              "declared",
-                                              "usable"
-                                            ]
-                                          },
-                                          "max": {
-                                            "type": "object",
-                                            "additionalProperties": false,
-                                            "properties": {
-                                              "declared": {
-                                                "type": "boolean"
-                                              },
-                                              "usable": {
-                                                "type": "boolean"
-                                              },
-                                              "reason": {
-                                                "type": "string"
-                                              }
-                                            },
-                                            "required": [
-                                              "declared",
-                                              "usable"
-                                            ]
-                                          },
-                                          "group_by": {
-                                            "type": "object",
-                                            "additionalProperties": false,
-                                            "properties": {
-                                              "declared": {
-                                                "type": "boolean"
-                                              },
-                                              "usable": {
-                                                "type": "boolean"
-                                              },
-                                              "reason": {
-                                                "type": "string"
-                                              }
-                                            },
-                                            "required": [
-                                              "declared",
-                                              "usable"
-                                            ]
-                                          },
-                                          "group_by_time": {
-                                            "type": "object",
-                                            "additionalProperties": false,
-                                            "properties": {
-                                              "declared": {
-                                                "type": "boolean"
-                                              },
-                                              "usable": {
-                                                "type": "boolean"
-                                              },
-                                              "reason": {
-                                                "type": "string"
-                                              }
-                                            },
-                                            "required": [
-                                              "declared",
-                                              "usable"
-                                            ]
-                                          },
-                                          "count_distinct": {
-                                            "type": "object",
-                                            "additionalProperties": false,
-                                            "properties": {
-                                              "declared": {
-                                                "type": "boolean"
-                                              },
-                                              "usable": {
-                                                "type": "boolean"
-                                              },
-                                              "reason": {
-                                                "type": "string"
-                                              }
-                                            },
-                                            "required": [
-                                              "declared",
-                                              "usable"
-                                            ]
-                                          }
-                                        },
-                                        "required": [
-                                          "sum",
-                                          "min",
-                                          "max",
-                                          "group_by",
-                                          "group_by_time",
-                                          "count_distinct"
+                                          "schema",
+                                          "granted",
+                                          "exact_filter",
+                                          "range_filter",
+                                          "lexical_search",
+                                          "semantic_search",
+                                          "aggregation"
                                         ]
                                       }
-                                    },
-                                    "required": [
-                                      "schema",
-                                      "granted",
-                                      "exact_filter",
-                                      "range_filter",
-                                      "lexical_search",
-                                      "semantic_search",
-                                      "aggregation"
                                     ]
                                   }
                                 },
@@ -5094,7 +5138,15 @@
                                         "type": "string",
                                         "minLength": 1
                                       },
+                                      "relation": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
                                       "stream": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "target_stream": {
                                         "type": "string",
                                         "minLength": 1
                                       },
@@ -6219,240 +6271,249 @@
                     "field_capabilities": {
                       "type": "object",
                       "additionalProperties": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "properties": {
-                          "type": {
+                        "oneOf": [
+                          {
                             "type": "string",
-                            "minLength": 1
+                            "minLength": 1,
+                            "description": "Compact schema-view capability flags. Comma-separated tokens preserve declared type, grant status, and usable exact/range/lexical/semantic/aggregation capabilities without embedding the full per-field JSON Schema."
                           },
-                          "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                          },
-                          "granted": {
-                            "type": "boolean"
-                          },
-                          "exact_filter": {
+                          {
                             "type": "object",
                             "additionalProperties": false,
                             "properties": {
-                              "declared": {
+                              "type": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "schema": {
+                                "type": "object",
+                                "additionalProperties": true
+                              },
+                              "granted": {
                                 "type": "boolean"
                               },
-                              "usable": {
-                                "type": "boolean"
+                              "exact_filter": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "declared": {
+                                    "type": "boolean"
+                                  },
+                                  "usable": {
+                                    "type": "boolean"
+                                  },
+                                  "reason": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "declared",
+                                  "usable"
+                                ]
                               },
-                              "reason": {
-                                "type": "string"
+                              "range_filter": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "declared": {
+                                    "type": "boolean"
+                                  },
+                                  "usable": {
+                                    "type": "boolean"
+                                  },
+                                  "operators": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  },
+                                  "reason": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "declared",
+                                  "usable"
+                                ]
+                              },
+                              "lexical_search": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "declared": {
+                                    "type": "boolean"
+                                  },
+                                  "usable": {
+                                    "type": "boolean"
+                                  },
+                                  "reason": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "declared",
+                                  "usable"
+                                ]
+                              },
+                              "semantic_search": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "declared": {
+                                    "type": "boolean"
+                                  },
+                                  "usable": {
+                                    "type": "boolean"
+                                  },
+                                  "reason": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "declared",
+                                  "usable"
+                                ]
+                              },
+                              "aggregation": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "sum": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "declared": {
+                                        "type": "boolean"
+                                      },
+                                      "usable": {
+                                        "type": "boolean"
+                                      },
+                                      "reason": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "declared",
+                                      "usable"
+                                    ]
+                                  },
+                                  "min": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "declared": {
+                                        "type": "boolean"
+                                      },
+                                      "usable": {
+                                        "type": "boolean"
+                                      },
+                                      "reason": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "declared",
+                                      "usable"
+                                    ]
+                                  },
+                                  "max": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "declared": {
+                                        "type": "boolean"
+                                      },
+                                      "usable": {
+                                        "type": "boolean"
+                                      },
+                                      "reason": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "declared",
+                                      "usable"
+                                    ]
+                                  },
+                                  "group_by": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "declared": {
+                                        "type": "boolean"
+                                      },
+                                      "usable": {
+                                        "type": "boolean"
+                                      },
+                                      "reason": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "declared",
+                                      "usable"
+                                    ]
+                                  },
+                                  "group_by_time": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "declared": {
+                                        "type": "boolean"
+                                      },
+                                      "usable": {
+                                        "type": "boolean"
+                                      },
+                                      "reason": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "declared",
+                                      "usable"
+                                    ]
+                                  },
+                                  "count_distinct": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "declared": {
+                                        "type": "boolean"
+                                      },
+                                      "usable": {
+                                        "type": "boolean"
+                                      },
+                                      "reason": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "declared",
+                                      "usable"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "sum",
+                                  "min",
+                                  "max",
+                                  "group_by",
+                                  "group_by_time",
+                                  "count_distinct"
+                                ]
                               }
                             },
                             "required": [
-                              "declared",
-                              "usable"
-                            ]
-                          },
-                          "range_filter": {
-                            "type": "object",
-                            "additionalProperties": false,
-                            "properties": {
-                              "declared": {
-                                "type": "boolean"
-                              },
-                              "usable": {
-                                "type": "boolean"
-                              },
-                              "operators": {
-                                "type": "array",
-                                "items": {
-                                  "type": "string",
-                                  "minLength": 1
-                                }
-                              },
-                              "reason": {
-                                "type": "string"
-                              }
-                            },
-                            "required": [
-                              "declared",
-                              "usable"
-                            ]
-                          },
-                          "lexical_search": {
-                            "type": "object",
-                            "additionalProperties": false,
-                            "properties": {
-                              "declared": {
-                                "type": "boolean"
-                              },
-                              "usable": {
-                                "type": "boolean"
-                              },
-                              "reason": {
-                                "type": "string"
-                              }
-                            },
-                            "required": [
-                              "declared",
-                              "usable"
-                            ]
-                          },
-                          "semantic_search": {
-                            "type": "object",
-                            "additionalProperties": false,
-                            "properties": {
-                              "declared": {
-                                "type": "boolean"
-                              },
-                              "usable": {
-                                "type": "boolean"
-                              },
-                              "reason": {
-                                "type": "string"
-                              }
-                            },
-                            "required": [
-                              "declared",
-                              "usable"
-                            ]
-                          },
-                          "aggregation": {
-                            "type": "object",
-                            "additionalProperties": false,
-                            "properties": {
-                              "sum": {
-                                "type": "object",
-                                "additionalProperties": false,
-                                "properties": {
-                                  "declared": {
-                                    "type": "boolean"
-                                  },
-                                  "usable": {
-                                    "type": "boolean"
-                                  },
-                                  "reason": {
-                                    "type": "string"
-                                  }
-                                },
-                                "required": [
-                                  "declared",
-                                  "usable"
-                                ]
-                              },
-                              "min": {
-                                "type": "object",
-                                "additionalProperties": false,
-                                "properties": {
-                                  "declared": {
-                                    "type": "boolean"
-                                  },
-                                  "usable": {
-                                    "type": "boolean"
-                                  },
-                                  "reason": {
-                                    "type": "string"
-                                  }
-                                },
-                                "required": [
-                                  "declared",
-                                  "usable"
-                                ]
-                              },
-                              "max": {
-                                "type": "object",
-                                "additionalProperties": false,
-                                "properties": {
-                                  "declared": {
-                                    "type": "boolean"
-                                  },
-                                  "usable": {
-                                    "type": "boolean"
-                                  },
-                                  "reason": {
-                                    "type": "string"
-                                  }
-                                },
-                                "required": [
-                                  "declared",
-                                  "usable"
-                                ]
-                              },
-                              "group_by": {
-                                "type": "object",
-                                "additionalProperties": false,
-                                "properties": {
-                                  "declared": {
-                                    "type": "boolean"
-                                  },
-                                  "usable": {
-                                    "type": "boolean"
-                                  },
-                                  "reason": {
-                                    "type": "string"
-                                  }
-                                },
-                                "required": [
-                                  "declared",
-                                  "usable"
-                                ]
-                              },
-                              "group_by_time": {
-                                "type": "object",
-                                "additionalProperties": false,
-                                "properties": {
-                                  "declared": {
-                                    "type": "boolean"
-                                  },
-                                  "usable": {
-                                    "type": "boolean"
-                                  },
-                                  "reason": {
-                                    "type": "string"
-                                  }
-                                },
-                                "required": [
-                                  "declared",
-                                  "usable"
-                                ]
-                              },
-                              "count_distinct": {
-                                "type": "object",
-                                "additionalProperties": false,
-                                "properties": {
-                                  "declared": {
-                                    "type": "boolean"
-                                  },
-                                  "usable": {
-                                    "type": "boolean"
-                                  },
-                                  "reason": {
-                                    "type": "string"
-                                  }
-                                },
-                                "required": [
-                                  "declared",
-                                  "usable"
-                                ]
-                              }
-                            },
-                            "required": [
-                              "sum",
-                              "min",
-                              "max",
-                              "group_by",
-                              "group_by_time",
-                              "count_distinct"
+                              "schema",
+                              "granted",
+                              "exact_filter",
+                              "range_filter",
+                              "lexical_search",
+                              "semantic_search",
+                              "aggregation"
                             ]
                           }
-                        },
-                        "required": [
-                          "schema",
-                          "granted",
-                          "exact_filter",
-                          "range_filter",
-                          "lexical_search",
-                          "semantic_search",
-                          "aggregation"
                         ]
                       }
                     },
@@ -6466,7 +6527,15 @@
                             "type": "string",
                             "minLength": 1
                           },
+                          "relation": {
+                            "type": "string",
+                            "minLength": 1
+                          },
                           "stream": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "target_stream": {
                             "type": "string",
                             "minLength": 1
                           },

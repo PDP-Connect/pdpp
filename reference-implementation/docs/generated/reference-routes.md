@@ -18,7 +18,7 @@ Generated from `packages/reference-contract/src/public/`. Do not edit by hand.
 | **POST** | `/introspect` | `introspectToken` | Inspect token activity and, for active client tokens, the bound grant projection. |
 | **POST** | `/grants/{grantId}/revoke` | `revokeGrant` | Revoke a grant and all tokens minted from it. |
 | **GET** | `/v1/connectors` | `listConnectors` | List connector or source boundaries visible under the bearer token, with stream summaries and coarse capability hints. |
-| **GET** | `/v1/schema` | `getSchema` | Return the caller-visible source/stream capability graph in one shot. Owner tokens see every owner-visible connector; client tokens see only the grant's source and streams. Each stream entry reuses the per-stream metadata shape (schema, query declarations, field capabilities, expand capabilities, freshness). |
+| **GET** | `/v1/schema` | `getSchema` | Return the caller-visible source/stream capability graph. Use `view=compact` and optional `stream=<name>` for a token-efficient agent discovery step; omitted `view` returns the full schema, query declarations, field capabilities, expand capabilities, and freshness. |
 | **GET** | `/v1/streams` | `listStreams` | List streams available under the current grant or owner scope. Returns stream-level totals only; for per-field filter capabilities (exact, range operators, aggregation) call `GET /v1/schema` first and consult `field_capabilities` per stream before issuing `filter[...]` queries on `/v1/streams/{stream}/records`. Multi-connection deployments emit one entry per (stream, connection_id); each entry carries `connection_id` and a `display_name` so callers can attribute and disambiguate. |
 | **GET** | `/v1/streams/{stream}` | `getStreamMetadata` | Return stream metadata including declared query capabilities and advisory freshness. For per-field filter capabilities on this stream (exact, range operators, aggregation), prefer `GET /v1/schema` first and read `field_capabilities` rather than guessing `filter[...]` shapes against the records endpoint. Pass `connection_id` (or the deprecated `connector_instance_id` alias) to restrict to a single connection; omitted, the response aggregates across the connections the grant authorizes. |
 | **GET** | `/v1/streams/{stream}/records` | `listRecords` | List records in a stream under grant enforcement. Supports logical-cursor pagination, exact and declared range filters, declared one-hop expansion, and changes_since. Per-field filter operators, sortable fields, expandable relations, projection, search modes, and count support are advertised by `GET /v1/schema` (`field_capabilities`, `expand_capabilities`); consult it before issuing `filter[...]`, `expand[]`, or `fields=` shapes to avoid 400 errors. Pass `connection_id` to restrict to one connection; the deprecated `connector_instance_id` alias is accepted for compatibility but new clients SHOULD use `connection_id`. |
@@ -252,7 +252,13 @@ List connector or source boundaries visible under the bearer token, with stream 
 
 `GET /v1/schema`
 
-Return the caller-visible source/stream capability graph in one shot. Owner tokens see every owner-visible connector; client tokens see only the grant's source and streams. Each stream entry reuses the per-stream metadata shape (schema, query declarations, field capabilities, expand capabilities, freshness).
+Return the caller-visible source/stream capability graph. Use `view=compact` and optional `stream=<name>` for a token-efficient agent discovery step; omitted `view` returns the full schema, query declarations, field capabilities, expand capabilities, and freshness.
+
+### Query parameters
+
+- `connector_id` — string · Optional owner-polyfill source hint for runtimes that expose multiple connector templates.
+- `view` — string · Set `view=compact` to return the token-efficient schema projection. Omitted or any other value returns the full schema body.
+- `stream` — string · When used with `view=compact`, narrows the schema document to connectors that contribute this stream.
 
 ### Responses
 
