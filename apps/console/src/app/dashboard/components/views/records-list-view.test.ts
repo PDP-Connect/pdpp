@@ -130,8 +130,9 @@ const CHURN_SUMMARY_ELEMENT = /<summary[\s\S]*?Show streams/;
 const CHURN_DELEGATES_TO_PURE_SUMMARY = /summarizeVersionChurn\(rows\)/;
 const CHURN_RENDERS_ALL_ROWS = /buildChurnDrilldownRows\(rows\)[\s\S]*?drilldownRows\.map\(/;
 const CHURN_HAS_TABLE_HEADERS =
-  /Versions \/ record[\s\S]*?Current[\s\S]*?History[\s\S]*?Keys[\s\S]*?Last history write/;
+  /Versions \/ record[\s\S]*?Current[\s\S]*?History[\s\S]*?Keys[\s\S]*?Last history write[\s\S]*?Dry-run command/;
 const CHURN_PER_ROW_RISK_BADGE = /<ChurnRiskBadge risk=\{row\.risk\}/;
+const CHURN_RENDERS_DRY_RUN_COMMAND = /row\.dryRunCommand/;
 // Copy must frame churn as retained history, not current-data loss.
 const CHURN_HISTORY_NOT_LOSS = /not current data loss/;
 
@@ -151,6 +152,7 @@ test("version-churn drilldown surfaces the full operator-readable column set", a
   const src = await readFile(VIEW_FILE, "utf8");
   assert.match(src, CHURN_HAS_TABLE_HEADERS);
   assert.match(src, CHURN_PER_ROW_RISK_BADGE);
+  assert.match(src, CHURN_RENDERS_DRY_RUN_COMMAND);
 });
 
 test("version-churn copy frames churn as retained history, not data loss", async () => {

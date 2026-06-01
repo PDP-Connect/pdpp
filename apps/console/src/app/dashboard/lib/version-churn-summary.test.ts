@@ -7,7 +7,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { RefRecordVersionStatsRow } from "./ref-client.ts";
-import { buildChurnDrilldownRows, churnRowLabel, summarizeVersionChurn } from "./version-churn-summary.ts";
+import {
+  buildChurnDrilldownRows,
+  churnDryRunCommand,
+  churnRowLabel,
+  summarizeVersionChurn,
+} from "./version-churn-summary.ts";
 
 const HIGHEST_SIGNAL_RE = /ynab \/ budgets retains 273\.75 versions per current record\./;
 
@@ -73,6 +78,9 @@ test("buildChurnDrilldownRows surfaces all supplied rows in order", () => {
   assert.equal(built.length, 2);
   assert.equal(built[0]?.label, "ynab / budgets");
   assert.equal(built[0]?.risk, "high");
+  assert.equal(built[0]?.connectorId, "ynab");
+  assert.equal(built[0]?.connectorInstanceId, "cin_ynab_1");
+  assert.equal(built[0]?.stream, "budgets");
   assert.equal(built[1]?.label, "ynab / accounts");
   assert.equal(built[1]?.risk, "watch");
 });
@@ -114,4 +122,24 @@ test("buildChurnDrilldownRows produces a stable, unique key per (connection, str
   ]);
   assert.equal(built[0]?.key, "cin_a:budgets");
   assert.equal(built[1]?.key, "cin_b:budgets");
+});
+
+test("churnDryRunCommand builds the default read-only maintenance command", () => {
+  assert.equal(
+    churnDryRunCommand(row()),
+    "node reference-implementation/scripts/compact-record-history.mjs --connector-instance-id='cin_ynab_1' --stream='budgets' --connector-id='ynab'"
+  );
+});
+
+test("churnDryRunCommand shell-quotes metadata and omits absent connector id", () => {
+  assert.equal(
+    churnDryRunCommand(
+      row({
+        connector_id: null,
+        connector_instance_id: "cin_owner's_box",
+        stream: "raw uploads",
+      })
+    ),
+    "node reference-implementation/scripts/compact-record-history.mjs --connector-instance-id='cin_owner'\\''s_box' --stream='raw uploads'"
+  );
 });

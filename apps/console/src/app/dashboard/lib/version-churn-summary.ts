@@ -62,8 +62,14 @@ export interface ChurnRowCell {
 }
 
 export interface ChurnDrilldownRow {
+  /** Connector type id, when the version-stats source can name it. */
+  connectorId: string | null;
+  /** Concrete owner connection / connector instance that owns this history. */
+  connectorInstanceId: string;
   /** Rows currently live in `records` (deleted = false). */
   current: ChurnRowCell;
+  /** Read-only operational command that reports what compaction would remove. */
+  dryRunCommand: string;
   /** Total rows in `record_changes` for this (connection, stream). */
   history: ChurnRowCell;
   key: string;
@@ -75,6 +81,7 @@ export interface ChurnDrilldownRow {
   /** Risk reasons supplied by the route, joined for a tooltip. */
   reasons: string | null;
   risk: RefRecordVersionRisk;
+  stream: string;
   /** Versions retained per current record — the headline ratio. */
   versionsPerRecord: ChurnRowCell;
 }
@@ -84,6 +91,23 @@ function countCell(value: number | null | undefined): ChurnRowCell {
     return { label: "—", unknown: true };
   }
   return { label: value.toLocaleString() };
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+export function churnDryRunCommand(row: RefRecordVersionStatsRow): string {
+  const args = [
+    "node",
+    "reference-implementation/scripts/compact-record-history.mjs",
+    `--connector-instance-id=${shellQuote(row.connector_instance_id)}`,
+    `--stream=${shellQuote(row.stream)}`,
+  ];
+  if (row.connector_id) {
+    args.push(`--connector-id=${shellQuote(row.connector_id)}`);
+  }
+  return args.join(" ");
 }
 
 /**
@@ -96,9 +120,13 @@ function countCell(value: number | null | undefined): ChurnRowCell {
  */
 export function buildChurnDrilldownRows(rows: readonly RefRecordVersionStatsRow[]): ChurnDrilldownRow[] {
   return rows.map((row) => ({
+    connectorId: row.connector_id,
+    connectorInstanceId: row.connector_instance_id,
     key: `${row.connector_instance_id}:${row.stream}`,
     label: churnRowLabel(row),
     risk: row.risk_level,
+    stream: row.stream,
+    dryRunCommand: churnDryRunCommand(row),
     versionsPerRecord: {
       label: row.versions_per_record.toLocaleString(undefined, { maximumFractionDigits: 2 }),
     },

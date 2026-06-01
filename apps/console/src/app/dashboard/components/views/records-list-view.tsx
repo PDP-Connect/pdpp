@@ -420,8 +420,8 @@ function AddConnectionGuidance({ deviceExportersHref }: { deviceExportersHref: s
  * Actionable version-churn notice. The collapsed summary keeps the
  * highest-signal headline; expanding the disclosure reveals every supplied
  * churn row in an operator-readable table (connector/stream, risk, retained
- * versions per record, current/history/key counts, and last-history
- * evidence).
+ * versions per record, current/history/key counts, last-history evidence, and a
+ * dry-run maintenance command).
  *
  * Built on the native `<details>`/`<summary>` disclosure already used by the
  * connection diagnostics block — no client JS, keyboard-activatable, and
@@ -458,8 +458,8 @@ function VersionChurnNotice({ rows }: { rows: RefRecordVersionStatsRow[] }) {
         <p className="pdpp-caption mb-3 text-muted-foreground">
           These streams retain many historical versions per current record. This is kept{" "}
           <strong className="font-medium text-foreground">change history</strong>, not current data loss — your latest
-          records are intact. High churn usually means a connector re-emits unchanged records; compacting history is a
-          separate, non-destructive maintenance step.
+          records are intact. High churn usually means a connector re-emits unchanged records; compacting history starts
+          with a dry-run maintenance check and is a separate, non-destructive operator step.
         </p>
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-left">
@@ -485,6 +485,9 @@ function VersionChurnNotice({ rows }: { rows: RefRecordVersionStatsRow[] }) {
                 </th>
                 <th className="py-1.5 font-medium" scope="col">
                   Last history write
+                </th>
+                <th className="py-1.5 pl-3 font-medium" scope="col">
+                  Dry-run command
                 </th>
               </tr>
             </thead>
@@ -513,6 +516,11 @@ function VersionChurnNotice({ rows }: { rows: RefRecordVersionStatsRow[] }) {
                   </td>
                   <td className="py-2 text-muted-foreground tabular-nums">
                     {row.lastHistoryAt ? <Timestamp value={row.lastHistoryAt} /> : "—"}
+                  </td>
+                  <td className="max-w-[28rem] py-2 pl-3">
+                    <code className="block whitespace-normal rounded border border-border/70 bg-background px-2 py-1 font-mono text-[0.68rem] text-foreground leading-relaxed">
+                      {row.dryRunCommand}
+                    </code>
                   </td>
                 </tr>
               ))}
