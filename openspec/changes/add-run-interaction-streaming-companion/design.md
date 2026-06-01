@@ -356,21 +356,20 @@ owner dashboard
                   └─ browser owner
 ```
 
-Browser ownership has two modes:
+Browser ownership has two adapters under one posture contract:
 
-- **n.eko-owned Chromium** for the local SLVP and development proof. PDPP may
+- **n.eko-owned Patchright Chromium** for the local SLVP and development proof. PDPP may
   control X11 modes, Chromium app-window bounds, and n.eko screen selection.
-- **browser-owner/Patchright-compatible Chrome** for stealth-sensitive runs.
-  The browser owner is responsible for coherent launch-time profile, proxy,
-  user data dir, viewport class, DPR, touch capability, UA/client hints, and
-  Chrome channel. PDPP/n.eko streams and controls that browser without taking
-  over page instrumentation.
+- **local Patchright launch** for non-n.eko connectors. The launcher should
+  prefer Patchright's pinned bundled Chromium so local and n.eko paths share
+  the same browser-family posture. `PDPP_BROWSER_CHANNEL` remains an explicit
+  operator override for compatibility tests such as branded Chrome.
 
 Patchright's current published best practice for "without fingerprint
-injection" is persistent Chrome, headful mode, no default viewport override,
-and no custom headers/user agent. Its docs also call out `Runtime.enable` and
-command-flag leaks. Therefore PDPP should classify n.eko UX helpers by stealth
-budget:
+injection" is a persistent Chromium-based browser, headful mode, no default
+viewport override, and no custom headers/user agent. Its docs also call out
+`Runtime.enable` and command-flag leaks. Therefore PDPP should classify n.eko
+UX helpers by stealth budget:
 
 - **strict**: direct n.eko mount, native input, overlay focus on user gesture,
   n.eko/X11/display sizing, app-window bounds, local crop/remap, token-scoped

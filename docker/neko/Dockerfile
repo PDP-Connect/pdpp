@@ -56,12 +56,10 @@ FROM ${NEKO_BASE_IMAGE} AS neko-runtime
 # so version bumps don't require touching the script.
 COPY --from=patchright-chromium /opt/patchright-browsers /opt/patchright-browsers
 
-# Install Google Chrome alongside the base image's Chromium. Real branded
-# Chrome carries fingerprint signals (extensions surface, chrome.runtime,
-# component updater traffic) that bot-protection systems treat as
-# distinctly human compared to vanilla Chromium. start-chromium.sh prefers
-# google-chrome-stable when present and falls back to /usr/bin/chromium so
-# the image still boots if this install ever fails.
+# Install Google Chrome alongside the preferred Patchright Chromium tree as an
+# explicit comparison/fallback channel. start-chromium.sh prefers Patchright's
+# bundled Chromium, then google-chrome-stable, then system Chromium so the image
+# still boots if the preferred binary is unavailable.
 USER root
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl gnupg \

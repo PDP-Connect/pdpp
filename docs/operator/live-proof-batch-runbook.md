@@ -99,10 +99,10 @@ captured DOM/records before scrubbing.
 
 ## Sitting A — Local browser-collector bench
 
-**One host, one Chrome, three logged-in profiles. Closes three gates.**
+**One host, one Patchright browser, three logged-in profiles. Closes three gates.**
 
 All three gates here run browser-session connectors through the **local
-device-exporter / connector path with a real, visible Chrome** — the same
+device-exporter / connector path with a real, visible Patchright browser** — the same
 runtime, the same `PDPP_CAPTURE_FIXTURES=1` capture step, the same
 `scrub-connector-fixtures` review. That shared environment is exactly why they
 batch: enroll once per connector, complete each provider's login in the visible

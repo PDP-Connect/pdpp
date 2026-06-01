@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   acquireBrowserForConnector,
+  configuredBrowserChannel,
   decideContainerHeadedBrowserGate,
   fetchPageTargetWsUrl,
   HEADED_BROWSER_UNAVAILABLE_CODE,
@@ -201,6 +202,16 @@ test("HeadedBrowserUnavailableError carries the stable code", () => {
   assert.equal(err.code, HEADED_BROWSER_UNAVAILABLE_CODE);
   assert.equal(err.name, "HeadedBrowserUnavailableError");
   assert.ok(err instanceof Error);
+});
+
+test("configuredBrowserChannel defaults to bundled Patchright Chromium", () => {
+  assert.equal(configuredBrowserChannel({}), undefined);
+  assert.equal(configuredBrowserChannel({ PDPP_BROWSER_CHANNEL: "   " }), undefined);
+});
+
+test("configuredBrowserChannel preserves explicit channel override", () => {
+  assert.equal(configuredBrowserChannel({ PDPP_BROWSER_CHANNEL: " chrome " }), "chrome");
+  assert.equal(configuredBrowserChannel({ PDPP_BROWSER_CHANNEL: "chromium" }), "chromium");
 });
 
 // ─── wsUrl extraction (DevToolsActivePort + /json target listing) ──────

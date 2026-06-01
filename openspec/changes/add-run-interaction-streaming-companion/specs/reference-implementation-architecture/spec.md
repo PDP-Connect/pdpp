@@ -96,6 +96,13 @@ When the reference implementation uses n.eko as a streaming backend, it SHALL ke
 - **AND** browser fingerprint controls such as user agent, client hints, device scale, touch capability, proxy, and profile SHALL be owned by the browser launch/profile boundary rather than silently mutated by the viewer mid-page
 - **AND** any page-level helper SHALL be gated behind an explicit assistive mode or equivalent operator choice
 
+#### Scenario: A local non-n.eko browser-backed connector launches
+
+- **WHEN** a browser-backed connector runs without a managed n.eko browser-surface lease
+- **THEN** the reference SHALL prefer Patchright's bundled Chromium unless the operator explicitly configures a browser channel override
+- **AND** the reference SHALL keep the explicit browser channel override as an operator compatibility control rather than silently preferring branded Chrome
+- **AND** the local launch path SHALL preserve Patchright-owned launch defaults instead of duplicating n.eko-specific X11/window flags
+
 ### Requirement: Stream viewer control policy is replayable
 
 The reference implementation SHALL keep stream viewer protocol parsing,

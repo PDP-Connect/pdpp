@@ -185,29 +185,13 @@ export function decideContainerHeadedBrowserGate(inputs: ContainerHeadedBrowserG
   return { kind: "fail_closed" };
 }
 
-function configuredBrowserChannel(): string | undefined {
-  const raw = process.env.PDPP_BROWSER_CHANNEL;
+export function configuredBrowserChannel(env: Record<string, string | undefined> = process.env): string | undefined {
+  const raw = env.PDPP_BROWSER_CHANNEL;
   if (raw === undefined) {
     return;
   }
   const trimmed = raw.trim();
   return trimmed.length > 0 ? trimmed : undefined;
-}
-
-// Patchright/Playwright surfaces a specific error when the requested channel
-// binary is not installed on disk — e.g. for `channel: "chrome"`:
-//   "Chromium distribution 'chrome' is not found at /opt/google/chrome/chrome"
-// We use this discriminator to decide whether a launch failure is "Chrome
-// just isn't installed" (safe to fall back to bundled Chromium) versus any
-// other launch failure (port collision, profile lock, OOM, etc.) which must
-// propagate so the operator sees the real problem.
-const MISSING_CHROME_INSTALL_RE = /Chromium distribution 'chrome' is not found|Executable doesn't exist.*chrome/i;
-
-function isMissingChromeInstallError(error: unknown): boolean {
-  if (!(error instanceof Error)) {
-    return false;
-  }
-  return MISSING_CHROME_INSTALL_RE.test(error.message);
 }
 
 /**
@@ -424,6 +408,9 @@ export async function acquireIsolatedBrowser({
   };
 
   const explicitChannel = configuredBrowserChannel();
+  // Default to Patchright's pinned bundled Chromium so local and n.eko runs
+  // share the same browser-family posture. Operators can still opt into a
+  // branded channel explicitly with PDPP_BROWSER_CHANNEL=chrome.
   // Cleanup-then-launch is gated by an in-process mutex keyed on the
   // user-data-dir. The mutex is the load-bearing primitive: it guarantees
   // PDPP never has two of its own processes launching against the same
@@ -439,18 +426,7 @@ export async function acquireIsolatedBrowser({
         channel: explicitChannel,
       });
     }
-    try {
-      return await localChromium.launchPersistentContext(isolatedDir, {
-        ...baseLaunchOptions,
-        channel: "chrome",
-      });
-    } catch (error) {
-      if (!isMissingChromeInstallError(error)) {
-        throw error;
-      }
-      logChromiumFallback();
-      return localChromium.launchPersistentContext(isolatedDir, baseLaunchOptions);
-    }
+    return localChromium.launchPersistentContext(isolatedDir, baseLaunchOptions);
   });
 
   // Publish the CDP host:port to env so the browser-binding-local handoff
@@ -642,22 +618,9 @@ export async function fetchPageTargetWsUrl({
   return pageTarget?.webSocketDebuggerUrl ?? null;
 }
 
-let chromiumFallbackLogged = false;
 // Module-scope so the DISPLAY-without-XAUTHORITY warning fires once per
 // process, not once per browser launch — quiet logs in normal operation.
 let displayAuthWarningEmitted = false;
-
-function logChromiumFallback(): void {
-  if (chromiumFallbackLogged) {
-    return;
-  }
-  chromiumFallbackLogged = true;
-  process.stderr.write(
-    "[browser-launch] Real Chrome not installed; falling back to bundled Patchright Chromium. " +
-      "For best stealth on the host, run `pnpm --dir packages/polyfill-connectors exec patchright install chrome` " +
-      "(or set PDPP_BROWSER_CHANNEL to override).\n"
-  );
-}
 
 /**
  * Acquire a browser context for connector use.

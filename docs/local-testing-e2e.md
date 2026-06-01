@@ -18,10 +18,10 @@ Everything else is mechanical.
 
 - Node.js ≥ 20
 - `pnpm` installed (`npm i -g pnpm` if not)
-- Google Chrome recommended for the strongest Patchright stealth posture. If Chrome is absent, the connector falls back to bundled Patchright Chromium installed by `pnpm install`.
+- Patchright's bundled Chromium is used by default for the strongest aligned browser posture. Google Chrome is optional and only used when you explicitly set `PDPP_BROWSER_CHANNEL=chrome`.
 - A ChatGPT account (email + password)
 
-Quick sanity check for Chrome on macOS: `ls "/Applications/Google Chrome.app"`. To install Chrome-for-Testing for Patchright explicitly, run `pnpm --dir packages/polyfill-connectors exec patchright install chrome`.
+Optional Chrome sanity check on macOS: `ls "/Applications/Google Chrome.app"`. Use this only when intentionally testing `PDPP_BROWSER_CHANNEL=chrome`.
 
 ## Repo setup
 
@@ -63,7 +63,7 @@ In one terminal:
 PDPP_CHATGPT_HEADLESS=0 node packages/polyfill-connectors/bin/orchestrate.js run chatgpt
 ```
 
-`PDPP_CHATGPT_HEADLESS=0` opens a visible Chrome window. It's recommended for the **first run** because ChatGPT's Cloudflare protection may show a challenge that you need to complete manually once. On subsequent runs the cookies persist and you can omit this flag for a headless run.
+`PDPP_CHATGPT_HEADLESS=0` opens a visible Patchright browser window. It's recommended for the **first run** because ChatGPT's Cloudflare protection may show a challenge that you need to complete manually once. On subsequent runs the cookies persist and you can omit this flag for a headless run.
 
 What happens:
 1. An embedded PDPP authorization + resource server starts on two local ports (ephemeral).
