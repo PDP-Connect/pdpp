@@ -2,5 +2,4 @@
 .next
 apps/site/.next
 apps/console/.next
-apps/web/.next
 demo/app/.next

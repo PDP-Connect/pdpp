@@ -8,8 +8,10 @@ name: reference-implementation
 # The apps/console/** trigger is here because two integration tests in the
 # reference suite (composed-origin.test.js, dashboard-proxy-redirect.test.js)
 # build apps/console and spawn its standalone server to exercise the
-# dashboard/BFF/proxy. They were retargeted from apps/web in the split-site
-# web-retirement work; the trigger moved with them.
+# dashboard/BFF/proxy. The apps/site/** trigger is here because the RS/dataset
+# import-boundary tests read the public sandbox source from apps/site/src/app/
+# sandbox/**. Both were retargeted from the legacy apps/web app by the
+# split-public-site-and-operator-console migration; the triggers moved with them.
 
 on:
   push:
@@ -20,6 +22,7 @@ on:
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
       - "apps/console/**"
+      - "apps/site/**"
       - "packages/reference-contract/**"
       - "reference-implementation/**"
   pull_request:
@@ -29,6 +32,7 @@ on:
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
       - "apps/console/**"
+      - "apps/site/**"
       - "packages/reference-contract/**"
       - "reference-implementation/**"
   workflow_dispatch: {}

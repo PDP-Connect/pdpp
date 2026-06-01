@@ -38,13 +38,11 @@ FROM base AS deps
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
-# apps/web is the legacy combined app, retired by the public-site/operator-console
-# split. Its image stages are gone (the GHCR `web` tag now builds the `console`
-# stage below), but its package.json is still COPY'd here because `apps/web`
-# remains a `pnpm-workspace.yaml` member; `pnpm install --frozen-lockfile` needs
-# every workspace manifest present. This COPY is removed when apps/web is deleted
-# from the tree and lockfile (split task 6.4).
-COPY apps/web/package.json apps/web/package.json
+# The legacy combined `apps/web` app has been removed by the
+# public-site/operator-console split. The GHCR `web` image tag now builds the
+# `console` stage below. Only the operator-console manifest is needed in the
+# deps stage; the public-site (`apps/site`) image is built in a follow-up stage
+# and is not required by the operator's default `docker compose up`.
 COPY apps/console/package.json apps/console/package.json
 COPY packages/pdpp-brand/package.json packages/pdpp-brand/package.json
 COPY packages/mcp-server/package.json packages/mcp-server/package.json
@@ -118,7 +116,7 @@ CMD ["node", "reference-implementation/server/index.js"]
 # the default target for `docker compose up` (see docker-compose.yml `web`
 # service, which selects `target: console`). The GHCR `web` image tag is kept
 # as an operator-compatibility alias and now builds this stage; the legacy
-# combined `apps/web` Docker stages were removed by the web-retirement tail.
+# combined `apps/web` app was removed by the public-site/operator-console split.
 # The public docs image (apps/site) lands as a separate stage in a follow-up
 # tranche. See openspec/changes/split-public-site-and-operator-console.
 FROM base AS console

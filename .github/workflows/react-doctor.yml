@@ -1,20 +1,20 @@
 name: react-doctor
 
-# Regression-only React health check on the Next.js apps (web + console).
+# Regression-only React health check on the Next.js apps (site + console).
 #
 # Why regression-only: the existing apps have an established baseline of
 # React Doctor diagnostics. We do not gate on an absolute floor; we only fail
 # when a PR introduces *new* findings against main. Owner can promote to a
 # score floor later once the baseline is paid down.
 #
-# Path filter covers both apps/web (public site + sandbox) and apps/console
-# (operator dashboard) because both are React surfaces in flux during the
+# Path filter covers both apps/site (public site + sandbox) and apps/console
+# (operator dashboard) because both are React surfaces produced by the
 # split-public-site-and-operator-console migration.
 
 on:
   pull_request:
     paths:
-      - "apps/web/**"
+      - "apps/site/**"
       - "apps/console/**"
       - ".github/workflows/react-doctor.yml"
   workflow_dispatch: {}

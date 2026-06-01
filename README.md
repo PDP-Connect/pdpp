@@ -62,9 +62,6 @@ not the implementation boundary itself, and never serves live owner state. The
 operator console is the live-instance operator surface, not protocol
 documentation.
 
-(`apps/web/` is the legacy combined app; it is retained only until the
-apps/web removal tranche — split task 6.4.)
-
 ## Quick start
 
 Run the default contributor stack (operator console + reference AS/RS):

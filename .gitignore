@@ -48,10 +48,6 @@ skills-lock.json
 skills/*
 !skills/pdpp-data-access/
 !skills/pdpp-data-access/**
-!apps/web/src/app/well-known/skills/
-!apps/web/src/app/well-known/skills/[[...path]]/
-!apps/web/src/app/well-known/skills/[[...path]]/route.ts
-!apps/web/src/app/well-known/skills/route.test.ts
 
 # Agent config dirs (from skills installer)
 .adal/
