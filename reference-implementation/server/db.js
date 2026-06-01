@@ -185,6 +185,29 @@ CREATE TABLE IF NOT EXISTS connector_instances (
 CREATE INDEX IF NOT EXISTS idx_connector_instances_owner_connector_status
   ON connector_instances(owner_subject_id, connector_id, status);
 
+-- Per-connection encrypted static-secret credential store. A peer of the
+-- instance-scoped storage / schedule state: a single static provider secret
+-- (Google app password, GitHub PAT, …) sealed at rest under the owner/operator
+-- key and keyed to exactly one connector instance. The plaintext is NEVER
+-- stored; sealed_secret is the AES-256-GCM token from credential-encryption.js
+-- and is never returned by any read surface. See
+-- add-static-secret-owner-connect-primitive design Decisions 1 & 7.
+CREATE TABLE IF NOT EXISTS connector_instance_credentials (
+  connector_instance_id TEXT PRIMARY KEY,
+  owner_subject_id      TEXT NOT NULL,
+  credential_kind       TEXT NOT NULL CHECK (credential_kind IN ('app_password', 'personal_access_token')),
+  sealed_secret         TEXT NOT NULL,
+  fingerprint           TEXT,
+  status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
+  captured_at           TEXT NOT NULL,
+  rotated_at            TEXT,
+  revoked_at            TEXT,
+  FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_connector_instance_credentials_owner_status
+  ON connector_instance_credentials(owner_subject_id, status);
+
 CREATE TABLE IF NOT EXISTS grants (
   grant_id       TEXT PRIMARY KEY,
   subject_id     TEXT NOT NULL,

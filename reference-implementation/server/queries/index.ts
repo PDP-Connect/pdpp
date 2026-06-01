@@ -216,6 +216,12 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly clientEventSubscriptionsUpdateQueueAttempt: MutationQuery;
   readonly clientEventSubscriptionsUpdateSecret: MutationQuery;
   readonly clientEventSubscriptionsUpdateStatus: MutationQuery;
+  // Per-connection encrypted static-secret credential store (peer of the
+  // connector-instance row). Sealed secrets only; never projected to reads.
+  readonly connectorInstanceCredentialsDeleteByInstance: MutationQuery;
+  readonly connectorInstanceCredentialsGetByInstance: ReadOneQuery;
+  readonly connectorInstanceCredentialsRevokeByInstance: MutationQuery;
+  readonly connectorInstanceCredentialsUpsert: MutationQuery;
   readonly connectorInstancesGetByBinding: ReadOneQuery;
   readonly connectorInstancesGetById: ReadOneQuery;
   readonly connectorInstancesInsert: MutationQuery;

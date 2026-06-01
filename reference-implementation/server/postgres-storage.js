@@ -229,6 +229,21 @@ export async function bootstrapPostgresSchema() {
       CREATE INDEX IF NOT EXISTS idx_pg_connector_instances_owner_connector_status
         ON connector_instances(owner_subject_id, connector_id, status);
 
+      CREATE TABLE IF NOT EXISTS connector_instance_credentials (
+        connector_instance_id TEXT PRIMARY KEY
+          REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
+        owner_subject_id TEXT NOT NULL,
+        credential_kind TEXT NOT NULL CHECK (credential_kind IN ('app_password', 'personal_access_token')),
+        sealed_secret TEXT NOT NULL,
+        fingerprint TEXT,
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
+        captured_at TEXT NOT NULL,
+        rotated_at TEXT,
+        revoked_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_connector_instance_credentials_owner_status
+        ON connector_instance_credentials(owner_subject_id, status);
+
       CREATE TABLE IF NOT EXISTS oauth_clients (
         client_id TEXT PRIMARY KEY,
         registration_mode TEXT NOT NULL,
