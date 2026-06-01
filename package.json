@@ -44,12 +44,12 @@
     "console:dev": "pnpm --dir apps/console dev",
     "console:build": "pnpm --dir apps/console build",
     "console:start": "pnpm --dir apps/console start",
-    "//site:dev": "Public docs/marketing surface alias. Boots apps/web until apps/site lands; see openspec/changes/split-public-site-and-operator-console.",
-    "site:dev": "pnpm --dir apps/web dev",
-    "site:build": "pnpm --dir apps/web build",
-    "site:start": "pnpm --dir apps/web start",
-    "//dev:full": "Reference + console + site in parallel for cross-surface link verification. Until apps/site lands this just runs all three filter targets via pnpm -r.",
-    "dev:full": "pnpm -r --parallel --stream --filter pdpp-reference-implementation --filter pdpp-console --filter pdpp-web run dev"
+    "//site:dev": "Public docs/marketing surface (apps/site): home, docs, reference, llms*, sandbox (mock-backed), planning, design, palette. No BFF, no live AS/RS. Defaults to :3001.",
+    "site:dev": "pnpm --dir apps/site dev",
+    "site:build": "pnpm --dir apps/site build",
+    "site:start": "pnpm --dir apps/site start",
+    "//dev:full": "Reference + console + site in parallel for cross-surface link verification (design.md §5).",
+    "dev:full": "pnpm -r --parallel --stream --filter pdpp-reference-implementation --filter pdpp-console --filter pdpp-site run dev"
   },
   "keywords": [],
   "author": "",
