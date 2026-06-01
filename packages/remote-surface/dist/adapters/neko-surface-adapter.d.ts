@@ -18,7 +18,7 @@ export type RemoteSurfaceLogger = (level: "debug" | "info" | "warn" | "error", m
  *   - `sendText`      → wraps `nekoInstance.control.paste(text)` (line ~1088)
  *
  * `NekoClientConfig` is intentionally typed as `unknown` here so the
- * adapter doesn't pull in apps/web types. The dashboard owns the cast at
+ * adapter doesn't pull in apps/console types. The dashboard owns the cast at
  * the wiring boundary.
  */
 export interface NekoClientApi {
