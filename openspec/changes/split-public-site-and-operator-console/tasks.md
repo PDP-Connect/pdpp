@@ -19,35 +19,35 @@
 > `packages/operator-ui` was never created and the `packages/operator/`
 > placeholder is gone.
 >
-> This is recorded honestly here rather than back-filled: the extraction the
-> original section describes was never performed. The supersession of the
-> *ordering* is in `design.md` §6 (also updated in this pass).
+> The original section *ordering* (extract-then-split) was superseded by
+> copy-then-trim and is recorded in `design.md` §6.
 >
-> **ARCHIVE-BLOCKING CAVEAT — owner (Codex) decision required.** The
-> `reference-implementation-architecture` spec delta in this change is still
-> normative that this duplication is **not** allowed:
-> "Shared UI … SHALL live in a workspace package consumed by both rather than
-> being duplicated" and "neither deployable SHALL duplicate those feature
-> components in its own source tree" (Requirement: *The reference deployable
-> shape SHALL be three independent artifacts*, Scenario: *Sandbox and dashboard
-> share UI*). `reference-surface-topology`'s *Sandbox UI reuses dashboard
-> components* scenario says the same. Archiving folds those `SHALL`s into the
-> canonical specs while the code violates them. A worker may not unilaterally
-> relax a normative requirement (per the playbook this is an owner/OpenSpec
-> decision and a stop-and-report trigger), so this section is left **open** and
-> the disposition is escalated to the owner. The owner must pick one before
-> archive: (a) extract `packages/operator-ui` (satisfy the spec) and then check
-> 2.1–2.3/2.5; (b) relax the architecture + topology deltas to permit
-> copy-then-trim duplication (then this section is fully superseded and closeable);
-> or (c) defer de-dup as a tracked follow-up change and convert the requirement
-> to an explicit Residual Risk before archive. See the
-> `ri-split-site-archive-readiness-v1` report for the full evidence.
+> **RESOLUTION (extraction pass `ri-split-operator-ui-extraction-v1`).** The
+> archive-blocking duplication is now **eliminated by extracting
+> `packages/operator-ui`** — option (a) of the prior owner-decision menu. The
+> shared dashboard/sandbox feature components, views, explore helpers, pure lib,
+> the `DashboardDataSource` type seam, and the AS/RS type surface now live in the
+> private `@pdpp/operator-ui` workspace package, consumed by BOTH `apps/site`
+> (mock-backed) and `apps/console` (live) through `transpilePackages`. Neither
+> app keeps its own copy of those feature components: `apps/site` deleted its
+> `dashboard/{components,explore,lib}` tree except the forked public-safe
+> `shell.tsx`, and `apps/console` deleted the same shared set while keeping only
+> its genuinely app-local live layer (live `ref-client`/`rs-client`/`data-source`
+> with owner-token + HTTP, the live actions-coupled `command-palette`, the forked
+> operator `shell`, and the owner-gated `/dashboard` pages). The
+> `reference-implementation-architecture` "Shared UI SHALL live in a workspace
+> package … neither deployable SHALL duplicate" requirement and
+> `reference-surface-topology`'s *Sandbox UI reuses dashboard components* scenario
+> are now satisfied in code, so archiving them no longer folds a `SHALL` over a
+> violation. Proof of no live auth/BFF leak into the package, exact moved-vs-kept
+> file lists, and validation are in
+> `tmp/workstreams/ri-split-operator-ui-extraction-v1-report.md`.
 
-- [ ] 2.1 Inventory components reused between `apps/web/src/app/sandbox/**` and `apps/web/src/app/dashboard/**`. Confirm coverage of records, search, grants, runs, traces, deployment, timelines. (SUPERSEDED/NOT-DONE as written — `apps/web` no longer exists, so the named inventory target is gone. The coverage it sought is observable today as the duplicated `dashboard/{components,explore,lib}` trees that BOTH `apps/site` and `apps/console` carry. No `packages/operator-ui` inventory/extraction was performed. Blocked behind the section-2 owner decision above.)
-- [ ] 2.2 Create `packages/operator-ui/` as a private pnpm workspace package. Add to `pnpm-workspace.yaml`. (NOT DONE — `packages/operator-ui/` does not exist and `pnpm-workspace.yaml` contains no such entry. Verified in `ri-split-site-archive-readiness-v1`. Blocked behind the section-2 owner decision above.)
-- [ ] 2.3 Move the shared feature components and the `DashboardDataSource` interface into `packages/operator-ui/`. Update both `/sandbox` and `/dashboard` imports to consume the package. (NOT DONE — no shared package exists to import from; the components remain duplicated per-app. The `DashboardDataSource` interface still exists but lives inside each app's `dashboard/lib/data-source.ts` (types-only in `apps/site` per task 4.2, runtime in `apps/console`), not in a shared package. Blocked behind the section-2 owner decision above.)
-- [x] 2.4 Decide whether to absorb or remove the existing `packages/operator/` placeholder. Record the decision in the workstream report. (DONE — DECISION: removed. The `packages/operator/` placeholder no longer exists in the tree (verified `ri-split-site-archive-readiness-v1`); it was neither absorbed into a new `packages/operator-ui` nor retained. This is the one section-2 item the current reality unambiguously settles: there is no placeholder left to decide about. Note that "removed without a successor package" means the shared-component substrate the placeholder anticipated also does not yet exist — that gap is the section-2 owner decision above, not this task.)
-- [ ] 2.5 Verify both `/sandbox/**` and `/dashboard/**` still render and behave identically in `apps/web`. Run `pnpm --dir apps/web run types:check`, `pnpm --dir apps/web run check`, and `pnpm --dir apps/web run build`. (SUPERSEDED — `apps/web` no longer exists, so "render identically in `apps/web`" is unverifiable by construction. The equivalent split-era proof is split across apps: `/sandbox/**` renders mock-backed with no AS/RS in `apps/site` (tasks 4.3/7.3/7.9; re-proven live in this pass — `/`, `/docs`, `/reference`, `/sandbox`, `/planning` all 200 text/html on a fresh `next start` with AS/RS env unset and zero contact to the running reference), and `/dashboard/**` renders owner-gated in `apps/console` (tasks 3.4/7.8). The single-app "identical in `apps/web`" check this task specifies cannot be performed and is superseded by the per-app proofs; it is left unchecked because the literal verification it names did not and cannot run.)
+- [x] 2.1 Inventory components reused between `apps/web/src/app/sandbox/**` and `apps/web/src/app/dashboard/**`. Confirm coverage of records, search, grants, runs, traces, deployment, timelines. (DONE as the split-era equivalent in `ri-split-operator-ui-extraction-v1` — `apps/web` is gone, so the inventory was run across the duplicated `apps/site` and `apps/console` `dashboard/{components,explore,lib}` trees. Coverage confirmed and extracted: records (`records-explorer-view`, `record-kind`, `record-preview`, `explore-data-assembler`), search (`search-view`, `search-hit-attribution`, `search-record-timestamps`), grants/runs/traces (`list-with-peek`, `overview-view`, `timeline-detail-view`, `timeline`, `timeline-summaries`, `timeline-view`, `peek`), deployment (`deployment-diagnostics-view`, `connect-agent-card`), and the shared chrome (`shell`-extracted `EmptyState`, `primitives`, `mobile-drawer`, `command-palette`, `copy-button`, `overview-hero`, `connector-display`, `routes`). Genuinely-forked surfaces (live vs mock `shell`/`command-palette`/clients/`data-source`) were identified and kept app-local.)
+- [x] 2.2 Create `packages/operator-ui/` as a private pnpm workspace package. Add to `pnpm-workspace.yaml`. (DONE — `packages/operator-ui/` exists as `@pdpp/operator-ui` (private, `type: module`, subpath `exports`, own `tsconfig.json`/`biome.jsonc`/`typecheck`/`check`/`test` scripts). It is picked up by the existing `packages/*` glob in `pnpm-workspace.yaml` and added to each app's `dependencies` (`workspace:*`) and `transpilePackages`.)
+- [x] 2.3 Move the shared feature components and the `DashboardDataSource` interface into `packages/operator-ui/`. Update both `/sandbox` and `/dashboard` imports to consume the package. (DONE — the shared feature components/views/explore/pure-lib and the `DashboardDataSource` interface (plus the AS/RS type surface it references) now live in `@pdpp/operator-ui`; the live and mock `DashboardDataSource` *implementations* stay app-local (`apps/console/.../lib/data-source.ts` live, `apps/site/.../sandbox/_demo/data-source.ts` mock). Every `/sandbox` and `/dashboard` import of a shared module was repointed to `@pdpp/operator-ui/*`. `apps/site` carries zero duplication; `apps/console` keeps only its live data layer. Both apps `types:check` + `check` + `build` green.)
+- [x] 2.4 Decide whether to absorb or remove the existing `packages/operator/` placeholder. Record the decision in the workstream report. (DONE — DECISION: removed. The `packages/operator/` placeholder no longer exists in the tree (verified `ri-split-site-archive-readiness-v1`); it was neither absorbed into a new `packages/operator-ui` nor retained. This is the one section-2 item the current reality unambiguously settles: there is no placeholder left to decide about. The shared-component substrate the placeholder anticipated now DOES exist as the freshly-created `packages/operator-ui` (task 2.2), so "removed without a successor" is no longer a gap — the successor is `@pdpp/operator-ui`, created under a clearer name in the `ri-split-operator-ui-extraction-v1` pass.)
+- [x] 2.5 Verify both `/sandbox/**` and `/dashboard/**` still render and behave identically in `apps/web`. Run `pnpm --dir apps/web run types:check`, `pnpm --dir apps/web run check`, and `pnpm --dir apps/web run build`. (DONE as the split-era equivalent — the literal `apps/web` single-app check is unverifiable (`apps/web` is gone), so it is satisfied by the per-app proofs AFTER the package extraction. `apps/site`: `types:check` + `check` green and `pnpm --dir apps/site run build` succeeds with no reference-implementation dependency (sandbox routes prerender; `sandbox-route-parity` guard 8/8 green against the fresh build). `apps/console`: `types:check` + `check` (197 files) green and `pnpm --dir apps/console run build` succeeds with all `/dashboard/**` + BFF/proxy routes + Proxy middleware emitted. The shared feature behavior is preserved across the extraction: the console explore `page.invariants` assembler-identity assertions (no `loadTimeline`, `connectionId`, `connectorSummaryDisplayName`) pass against the package's assembler. `@pdpp/operator-ui` itself: `typecheck` + `check` (50 files) + 69/69 tests green.)
 
 ## 3. Create `apps/console` (operator surface + BFF)
 
