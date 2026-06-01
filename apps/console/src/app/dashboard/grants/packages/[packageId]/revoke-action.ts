@@ -18,7 +18,7 @@
 
 import { redirect } from "next/navigation";
 import { requireDashboardAccess } from "../../../lib/dashboard-access.ts";
-import { revokeGrantPackage } from "../../../lib/ref-client.ts";
+import { GrantPackageRevokePartialFailureError, revokeGrantPackage } from "../../../lib/ref-client.ts";
 
 function detailHref(packageId: string, params: Record<string, string> = {}): string {
   const sp = new URLSearchParams(params);
@@ -28,6 +28,9 @@ function detailHref(packageId: string, params: Record<string, string> = {}): str
 }
 
 function errorMessage(err: unknown): string {
+  if (err instanceof GrantPackageRevokePartialFailureError) {
+    return err.message;
+  }
   if (err instanceof Error && err.message) {
     return err.message;
   }

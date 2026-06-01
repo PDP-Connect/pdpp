@@ -153,7 +153,7 @@ export default async function GrantPackageDetailPage({
 
       {isActive ? (
         <Section
-          description="Revoking the package cascades to every active child grant in one storage transaction and invalidates the package's MCP refresh token. Individual child grants can still be revoked from their own detail pages without affecting siblings."
+          description="Revoking the package dispatches one revoke per active child grant and invalidates the package's MCP refresh token only after every child succeeds. If one child fails, the page reports which child did not revoke and leaves the package active."
           title="Revoke"
         >
           <form action={revokePackageAction} className="flex flex-wrap items-center gap-3">

@@ -472,6 +472,18 @@ class RefNotFoundError extends Error {
   readonly status = 404;
 }
 
+class RefRequestError extends Error {
+  readonly bodyText: string;
+  readonly status: number;
+
+  constructor(message: string, status: number, bodyText: string) {
+    super(message);
+    this.name = "RefRequestError";
+    this.status = status;
+    this.bodyText = bodyText;
+  }
+}
+
 async function refFetch(path: string, params?: Record<string, string | number | undefined>, init: RequestInit = {}) {
   // DAL gate: verify owner session before any AS read. The proxy already
   // redirects unauthenticated browser navigations; this catches programmatic
@@ -511,7 +523,7 @@ async function refFetch(path: string, params?: Record<string, string | number | 
     // than the raw JSON body: this Error.message is shown verbatim to operators
     // in action banners (e.g. the event-subscription disable affordance), where
     // a stringified `{"error":{...}}` blob reads as a crash, not a reason.
-    throw new Error(describeErrorText(body, `_ref ${path} failed (${res.status})`));
+    throw new RefRequestError(describeErrorText(body, `_ref ${path} failed (${res.status})`), res.status, body);
   }
   return res.json();
 }
@@ -1114,11 +1126,48 @@ export interface GrantPackageDetail {
 }
 
 export interface GrantPackageRevokeResult {
+  not_revoked_child_count: number;
+  not_revoked_child_grants: {
+    error: {
+      code: string;
+      message: string;
+    };
+    grant_id: string;
+  }[];
   object: "grant_package_revoke_result";
   package_id: string;
-  revoked_at: string;
+  revoked_at: string | null;
   revoked_child_count: number;
+  revoked_child_grants: string[];
   status: string;
+}
+
+export class GrantPackageRevokePartialFailureError extends Error {
+  readonly result: GrantPackageRevokeResult;
+
+  constructor(result: GrantPackageRevokeResult) {
+    super(formatGrantPackageRevokePartialFailure(result));
+    this.name = "GrantPackageRevokePartialFailureError";
+    this.result = result;
+  }
+}
+
+function parseGrantPackageRevokeResult(bodyText: string): GrantPackageRevokeResult | null {
+  try {
+    const parsed = JSON.parse(bodyText) as Partial<GrantPackageRevokeResult>;
+    if (parsed.object !== "grant_package_revoke_result" || parsed.status !== "partial_failure") {
+      return null;
+    }
+    return parsed as GrantPackageRevokeResult;
+  } catch {
+    return null;
+  }
+}
+
+function formatGrantPackageRevokePartialFailure(result: GrantPackageRevokeResult): string {
+  const failed = result.not_revoked_child_grants.map((entry) => `${entry.grant_id} (${entry.error.code})`).join(", ");
+  const failedSummary = failed || "unknown child grant";
+  return `Partial revoke: ${result.revoked_child_count} child grant(s) revoked; ${result.not_revoked_child_count} not revoked: ${failedSummary}. Package remains active.`;
 }
 
 export async function listGrantPackages(): Promise<ListResponse<GrantPackageSummary>> {
@@ -1162,9 +1211,19 @@ export async function getGrantPackage(packageId: string): Promise<GrantPackageDe
 }
 
 export async function revokeGrantPackage(packageId: string): Promise<GrantPackageRevokeResult> {
-  return (await refFetch(`/_ref/grant-packages/${encodeURIComponent(packageId)}/revoke`, undefined, {
-    body: "{}",
-    headers: { "content-type": "application/json" },
-    method: "POST",
-  })) as GrantPackageRevokeResult;
+  try {
+    return (await refFetch(`/_ref/grant-packages/${encodeURIComponent(packageId)}/revoke`, undefined, {
+      body: "{}",
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    })) as GrantPackageRevokeResult;
+  } catch (err) {
+    if (err instanceof RefRequestError) {
+      const result = parseGrantPackageRevokeResult(err.bodyText);
+      if (result) {
+        throw new GrantPackageRevokePartialFailureError(result);
+      }
+    }
+    throw err;
+  }
 }
