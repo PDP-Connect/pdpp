@@ -30,6 +30,7 @@ export interface AsConsentDecisionInput {
     readonly ai_training_consented?: unknown;
     readonly approvedSourceIndexes?: readonly number[];
     readonly confirmedApproveAll?: boolean;
+    readonly sourceNarrowing?: Readonly<Record<number, unknown>>;
   };
 }
 

@@ -261,11 +261,177 @@ async function dispatchApproveResponse(
   res.send(renderApproveHtml(ctx, grant, token));
 }
 
+// Owner per-source narrowing keyed by staged source index. The narrowing
+// directive is validated and enforced server-side (the AS may narrow, never
+// widen); this adapter only normalizes transport shape. Two wire forms are
+// accepted:
+//   - JSON branch: a structured `source_narrowing` object (agent-friendly):
+//       { "<index>": { streams?: string[], fields?: { [stream]: string[] }, since?: { [stream]: ISO } } }
+//   - HTML form branch: flat fields the rendered ceremony posts:
+//       narrow_streams_<index>            (repeated) — stream names to keep
+//       narrow_fields_<index>__<stream>   (repeated) — field names to keep
+//       narrow_since_<index>__<stream>    (single)   — tightened ISO since bound
+//     `<stream>` is base64url-encoded in the field name to stay key-safe.
+interface SourceNarrowing {
+  fields?: Record<string, string[]>;
+  since?: Record<string, string>;
+  streams?: string[];
+}
+
+function decodeStreamKey(encoded: string | undefined): string | null {
+  if (!encoded) {
+    return null;
+  }
+  try {
+    return Buffer.from(encoded, "base64url").toString("utf8") || null;
+  } catch {
+    return null;
+  }
+}
+
+function asStringArray(raw: unknown): string[] {
+  const values = Array.isArray(raw) ? raw : [raw];
+  return values.filter((value): value is string => typeof value === "string" && value.length > 0);
+}
+
+function parseStreamFieldMap(raw: unknown): Record<string, string[]> | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return;
+  }
+  const fields: Record<string, string[]> = {};
+  for (const [stream, fieldList] of Object.entries(raw as Record<string, unknown>)) {
+    fields[stream] = asStringArray(fieldList);
+  }
+  return fields;
+}
+
+function parseStreamSinceMap(raw: unknown): Record<string, string> | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return;
+  }
+  const since: Record<string, string> = {};
+  for (const [stream, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > 0) {
+      since[stream] = value;
+    }
+  }
+  return since;
+}
+
+function parseStructuredSourceNarrowing(raw: unknown): Record<number, SourceNarrowing> | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return;
+  }
+  const out: Record<number, SourceNarrowing> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const index = Number(key);
+    if (!(Number.isInteger(index) && value) || typeof value !== "object") {
+      continue;
+    }
+    const entry = value as Record<string, unknown>;
+    const narrowing: SourceNarrowing = {};
+    if (Array.isArray(entry.streams)) {
+      narrowing.streams = asStringArray(entry.streams);
+    }
+    const fields = parseStreamFieldMap(entry.fields);
+    if (fields) {
+      narrowing.fields = fields;
+    }
+    const since = parseStreamSinceMap(entry.since);
+    if (since) {
+      narrowing.since = since;
+    }
+    out[index] = narrowing;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+const NARROW_STREAMS_KEY = /^narrow_streams_(\d+)$/;
+const NARROW_FIELDS_KEY = /^narrow_fields_(\d+)__(.+)$/;
+const NARROW_SINCE_KEY = /^narrow_since_(\d+)__(.+)$/;
+
+function applyFlatNarrowingKey(out: Record<number, SourceNarrowing>, key: string, raw: unknown): void {
+  const ensure = (index: number): SourceNarrowing => {
+    out[index] = out[index] || {};
+    return out[index];
+  };
+
+  const streamsMatch = NARROW_STREAMS_KEY.exec(key);
+  if (streamsMatch) {
+    const narrowing = ensure(Number(streamsMatch[1]));
+    narrowing.streams = [...(narrowing.streams || []), ...asStringArray(raw)];
+    return;
+  }
+
+  const fieldsMatch = NARROW_FIELDS_KEY.exec(key);
+  if (fieldsMatch) {
+    const stream = decodeStreamKey(fieldsMatch[2]);
+    if (!stream) {
+      return;
+    }
+    const narrowing = ensure(Number(fieldsMatch[1]));
+    narrowing.fields = narrowing.fields || {};
+    narrowing.fields[stream] = [...(narrowing.fields[stream] || []), ...asStringArray(raw)];
+    return;
+  }
+
+  const sinceMatch = NARROW_SINCE_KEY.exec(key);
+  if (sinceMatch) {
+    const stream = decodeStreamKey(sinceMatch[2]);
+    const value = asStringArray(raw)[0];
+    if (!(stream && value)) {
+      return;
+    }
+    const narrowing = ensure(Number(sinceMatch[1]));
+    narrowing.since = narrowing.since || {};
+    narrowing.since[stream] = value;
+  }
+}
+
+// HTML checkboxes for a dropped stream still post their field/since values (only
+// the stream checkbox went unchecked). Prune field/since directives for any
+// stream the owner dropped, so an unchecked stream does not produce a
+// contradictory directive the strict server validator would reject. When the
+// owner left every stream checked, `narrow_streams_<index>` carries the full
+// staged set, so this pruning is a no-op for the common path.
+function pruneDroppedStreamDirectives(narrowing: SourceNarrowing): void {
+  if (!narrowing.streams) {
+    return;
+  }
+  const kept = new Set(narrowing.streams);
+  for (const stream of Object.keys(narrowing.fields || {})) {
+    if (!kept.has(stream)) {
+      delete narrowing.fields?.[stream];
+    }
+  }
+  for (const stream of Object.keys(narrowing.since || {})) {
+    if (!kept.has(stream)) {
+      delete narrowing.since?.[stream];
+    }
+  }
+}
+
+function parseFlatFormNarrowing(body: Readonly<Record<string, unknown>>): Record<number, SourceNarrowing> | undefined {
+  const out: Record<number, SourceNarrowing> = {};
+  for (const [key, raw] of Object.entries(body)) {
+    applyFlatNarrowingKey(out, key, raw);
+  }
+  for (const narrowing of Object.values(out)) {
+    pruneDroppedStreamDirectives(narrowing);
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 function parseBatchApproveSelection(body: Readonly<Record<string, unknown>> | undefined): {
   approvedSourceIndexes?: number[];
   confirmedApproveAll?: boolean;
+  sourceNarrowing?: Record<number, SourceNarrowing>;
 } {
-  const out: { approvedSourceIndexes?: number[]; confirmedApproveAll?: boolean } = {};
+  const out: {
+    approvedSourceIndexes?: number[];
+    confirmedApproveAll?: boolean;
+    sourceNarrowing?: Record<number, SourceNarrowing>;
+  } = {};
   const raw = body?.approved_source_indexes;
   if (raw !== undefined && raw !== null) {
     const values = Array.isArray(raw) ? raw : [raw];
@@ -281,6 +447,12 @@ function parseBatchApproveSelection(body: Readonly<Record<string, unknown>> | un
   const confirm = body?.confirm_approve_all;
   if (confirm === true || confirm === "true" || confirm === "1" || confirm === "on") {
     out.confirmedApproveAll = true;
+  }
+  const structured = parseStructuredSourceNarrowing(body?.source_narrowing);
+  const flat = body ? parseFlatFormNarrowing(body) : undefined;
+  const narrowing = structured ?? flat;
+  if (narrowing) {
+    out.sourceNarrowing = narrowing;
   }
   return out;
 }

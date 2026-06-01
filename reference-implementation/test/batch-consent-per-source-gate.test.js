@@ -367,6 +367,288 @@ test('batch consent gate: a package mixing access modes across approved sources 
   });
 });
 
+function childGrantStreams(db, packageId, sourceId) {
+  const rows = db
+    .prepare(
+      `SELECT g.grant_json
+         FROM grant_package_members m
+         JOIN grants g ON g.grant_id = m.grant_id
+        WHERE m.package_id = ?`,
+    )
+    .all(packageId)
+    .map((row) => JSON.parse(row.grant_json));
+  const grant = rows.find((g) => g.source?.id === sourceId);
+  return grant ? grant.streams : null;
+}
+
+test('batch consent narrowing: owner defers a source by approving a subset', async () => {
+  await withHarness(async ({ asUrl, spotify, reddit }) => {
+    const { body } = await par(asUrl, [
+      detail({ kind: 'connector', id: spotify.connector_id }, [{ name: 'top_artists' }]),
+      detail({ kind: 'connector', id: reddit.connector_id }, [{ name: 'posts' }]),
+    ]);
+
+    // Approve only spotify (index 0); defer reddit (index 1).
+    const approved = await approve(asUrl, {
+      request_uri: body.request_uri,
+      subject_id: 'owner_local',
+      approved_source_indexes: [0],
+    });
+    assert.equal(approved.status, 200);
+    assert.equal(approved.body.grant.child_grants.length, 1);
+    assert.equal(approved.body.grant.child_grants[0].source.id, 'spotify');
+
+    const db = getDb();
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM grants').get().n, 1);
+    // No reddit grant issued from this ceremony.
+    assert.equal(childGrantStreams(db, approved.body.package_id, 'reddit'), null);
+  });
+});
+
+test('batch consent narrowing: owner reduces a wildcard source to a single stream', async () => {
+  await withHarness(async ({ asUrl, spotify, reddit }) => {
+    // spotify staged as wildcard (all streams); reddit as posts.
+    const { body } = await par(asUrl, [
+      detail({ kind: 'connector', id: spotify.connector_id }, [{ name: '*' }]),
+      detail({ kind: 'connector', id: reddit.connector_id }, [{ name: 'posts' }]),
+    ]);
+
+    const approved = await approve(asUrl, {
+      request_uri: body.request_uri,
+      subject_id: 'owner_local',
+      approved_source_indexes: [0, 1],
+      source_narrowing: { 0: { streams: ['top_artists'] } },
+    });
+    assert.equal(approved.status, 200);
+
+    const db = getDb();
+    const spotifyStreams = childGrantStreams(db, approved.body.package_id, 'spotify');
+    assert.deepEqual(
+      spotifyStreams.map((s) => s.name),
+      ['top_artists'],
+    );
+    // reddit untouched.
+    const redditStreams = childGrantStreams(db, approved.body.package_id, 'reddit');
+    assert.deepEqual(
+      redditStreams.map((s) => s.name),
+      ['posts'],
+    );
+  });
+});
+
+// Narrowing only engages on the batch path (authorization_details.length > 1),
+// so every narrowing test stages at least two source-bounded entries and
+// targets narrowing at the spotify entry (index 0). reddit (index 1) is the
+// second staged source.
+
+test('batch consent narrowing: owner reduces a stream to a subset of staged fields', async () => {
+  await withHarness(async ({ asUrl, spotify, reddit }) => {
+    const { body } = await par(asUrl, [
+      detail({ kind: 'connector', id: spotify.connector_id }, [
+        { name: 'top_artists', fields: ['id', 'name', 'genres', 'popularity'] },
+      ]),
+      detail({ kind: 'connector', id: reddit.connector_id }, [{ name: 'posts' }]),
+    ]);
+
+    const approved = await approve(asUrl, {
+      request_uri: body.request_uri,
+      subject_id: 'owner_local',
+      approved_source_indexes: [0, 1],
+      source_narrowing: { 0: { fields: { top_artists: ['id', 'name'] } } },
+    });
+    assert.equal(approved.status, 200);
+
+    const db = getDb();
+    const streams = childGrantStreams(db, approved.body.package_id, 'spotify');
+    assert.equal(streams.length, 1);
+    assert.deepEqual(streams[0].fields, ['id', 'name']);
+  });
+});
+
+test('batch consent narrowing: owner tightens an existing time bound', async () => {
+  await withHarness(async ({ asUrl, spotify, reddit }) => {
+    const { body } = await par(asUrl, [
+      detail({ kind: 'connector', id: spotify.connector_id }, [
+        { name: 'top_artists', time_range: { since: '2026-01-01T00:00:00Z' } },
+      ]),
+      detail({ kind: 'connector', id: reddit.connector_id }, [{ name: 'posts' }]),
+    ]);
+
+    const approved = await approve(asUrl, {
+      request_uri: body.request_uri,
+      subject_id: 'owner_local',
+      approved_source_indexes: [0, 1],
+      source_narrowing: { 0: { since: { top_artists: '2026-03-01T00:00:00Z' } } },
+    });
+    assert.equal(approved.status, 200);
+
+    const db = getDb();
+    const streams = childGrantStreams(db, approved.body.package_id, 'spotify');
+    assert.equal(streams[0].time_range.since, '2026-03-01T00:00:00Z');
+  });
+});
+
+test('batch consent narrowing: widening streams beyond the staged set is rejected', async () => {
+  await withHarness(async ({ asUrl, spotify, reddit }) => {
+    // Stage only top_artists for spotify; try to "narrow" to a stream that was
+    // not staged.
+    const { body } = await par(asUrl, [
+      detail({ kind: 'connector', id: spotify.connector_id }, [{ name: 'top_artists' }]),
+      detail({ kind: 'connector', id: reddit.connector_id }, [{ name: 'posts' }]),
+    ]);
+
+    const rejected = await approve(asUrl, {
+      request_uri: body.request_uri,
+      subject_id: 'owner_local',
+      approved_source_indexes: [0, 1],
+      source_narrowing: { 0: { streams: ['top_artists', 'saved_tracks'] } },
+    });
+    assert.equal(rejected.status, 400);
+    assert.equal(rejected.body.error.code, 'invalid_request');
+    assert.match(rejected.body.error.message, /widening is forbidden/);
+
+    const db = getDb();
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM grants').get().n, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM grant_packages').get().n, 0);
+  });
+});
+
+test('batch consent narrowing: widening fields beyond the staged set is rejected', async () => {
+  await withHarness(async ({ asUrl, spotify, reddit }) => {
+    const { body } = await par(asUrl, [
+      detail({ kind: 'connector', id: spotify.connector_id }, [
+        { name: 'top_artists', fields: ['id', 'name'] },
+      ]),
+      detail({ kind: 'connector', id: reddit.connector_id }, [{ name: 'posts' }]),
+    ]);
+
+    const rejected = await approve(asUrl, {
+      request_uri: body.request_uri,
+      subject_id: 'owner_local',
+      approved_source_indexes: [0, 1],
+      // 'genres' is a real manifest field but was NOT in the staged field set.
+      source_narrowing: { 0: { fields: { top_artists: ['id', 'genres'] } } },
+    });
+    assert.equal(rejected.status, 400);
+    assert.match(rejected.body.error.message, /not in the staged field set/);
+
+    const db = getDb();
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM grants').get().n, 0);
+  });
+});
+
+test('batch consent narrowing: a since bound earlier than the staged bound is rejected', async () => {
+  await withHarness(async ({ asUrl, spotify, reddit }) => {
+    const { body } = await par(asUrl, [
+      detail({ kind: 'connector', id: spotify.connector_id }, [
+        { name: 'top_artists', time_range: { since: '2026-03-01T00:00:00Z' } },
+      ]),
+      detail({ kind: 'connector', id: reddit.connector_id }, [{ name: 'posts' }]),
+    ]);
+
+    const rejected = await approve(asUrl, {
+      request_uri: body.request_uri,
+      subject_id: 'owner_local',
+      approved_source_indexes: [0, 1],
+      source_narrowing: { 0: { since: { top_artists: '2026-01-01T00:00:00Z' } } },
+    });
+    assert.equal(rejected.status, 400);
+    assert.match(rejected.body.error.message, /earlier than the staged bound/);
+
+    const db = getDb();
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM grants').get().n, 0);
+  });
+});
+
+test('batch consent narrowing: a malformed since value is rejected before issuing', async () => {
+  await withHarness(async ({ asUrl, spotify, reddit }) => {
+    const { body } = await par(asUrl, [
+      detail({ kind: 'connector', id: spotify.connector_id }, [
+        { name: 'top_artists', time_range: { since: '2026-01-01T00:00:00Z' } },
+      ]),
+      detail({ kind: 'connector', id: reddit.connector_id }, [{ name: 'posts' }]),
+    ]);
+
+    const rejected = await approve(asUrl, {
+      request_uri: body.request_uri,
+      subject_id: 'owner_local',
+      approved_source_indexes: [0, 1],
+      source_narrowing: { 0: { since: { top_artists: 'not-a-date' } } },
+    });
+    assert.equal(rejected.status, 400);
+    assert.match(rejected.body.error.message, /not a valid ISO-8601 instant/);
+
+    const db = getDb();
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM grants').get().n, 0);
+  });
+});
+
+test('batch consent narrowing: a field subset on an unprojected stream is rejected', async () => {
+  await withHarness(async ({ asUrl, spotify, reddit }) => {
+    // spotify top_artists staged with NO field projection. A field subset
+    // cannot be proven narrower against an unprojected (full-record) stream, so
+    // the narrowing is rejected rather than silently issuing the full record.
+    const { body } = await par(asUrl, [
+      detail({ kind: 'connector', id: spotify.connector_id }, [{ name: 'top_artists' }]),
+      detail({ kind: 'connector', id: reddit.connector_id }, [{ name: 'posts' }]),
+    ]);
+
+    const rejected = await approve(asUrl, {
+      request_uri: body.request_uri,
+      subject_id: 'owner_local',
+      approved_source_indexes: [0, 1],
+      source_narrowing: { 0: { fields: { top_artists: ['id'] } } },
+    });
+    assert.equal(rejected.status, 400);
+    assert.match(rejected.body.error.message, /no field projection/);
+
+    const db = getDb();
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM grants').get().n, 0);
+  });
+});
+
+test('batch consent narrowing: narrowing a source that was not approved is rejected', async () => {
+  await withHarness(async ({ asUrl, spotify, reddit }) => {
+    const { body } = await par(asUrl, [
+      detail({ kind: 'connector', id: spotify.connector_id }, [{ name: 'top_artists' }]),
+      detail({ kind: 'connector', id: reddit.connector_id }, [{ name: 'posts' }]),
+    ]);
+
+    const rejected = await approve(asUrl, {
+      request_uri: body.request_uri,
+      subject_id: 'owner_local',
+      approved_source_indexes: [0],
+      // index 1 (reddit) was deferred, so narrowing it is a mistake.
+      source_narrowing: { 1: { streams: ['posts'] } },
+    });
+    assert.equal(rejected.status, 400);
+    assert.match(rejected.body.error.message, /not in the approved set/);
+
+    const db = getDb();
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM grants').get().n, 0);
+  });
+});
+
+test('batch consent narrowing: ceremony renders per-source narrowing controls', async () => {
+  await withHarness(async ({ asUrl, spotify, reddit }) => {
+    const { body } = await par(asUrl, [
+      detail({ kind: 'connector', id: spotify.connector_id }, [
+        { name: 'top_artists', fields: ['id', 'name'], time_range: { since: '2026-01-01T00:00:00Z' } },
+      ]),
+      detail({ kind: 'connector', id: reddit.connector_id }, [{ name: 'posts' }]),
+    ]);
+
+    const { status, html } = await consentPage(asUrl, body.request_uri);
+    assert.equal(status, 200);
+    assert.match(html, /Narrow this source/);
+    assert.match(html, /name="narrow_streams_0"/);
+    // top_artists staged with explicit fields → field checkboxes rendered.
+    assert.match(html, /name="narrow_fields_0__/);
+    // top_artists staged with a time bound → since input rendered.
+    assert.match(html, /name="narrow_since_0__/);
+  });
+});
+
 test('batch consent gate: a uniform-access-mode package issues all children under one access mode', async () => {
   await withHarness(async ({ asUrl, spotify, reddit }) => {
     // Both sources declare single_use — a uniform-mode batch issues every child

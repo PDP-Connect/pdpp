@@ -2983,6 +2983,175 @@ function evaluateBatchApproveAllGate(cards = []) {
   };
 }
 
+// Owner-driven per-source narrowing applied at approval time. The owner may
+// reduce a staged entry's streams, reduce a stream's fields, and tighten (or
+// add) a `time_range.since` bound — but MUST NOT widen beyond what the client
+// staged and the owner reviewed. Narrowing is validated against the staged
+// resolved baseline (`resolveGrantSelection(entry.selection, manifest)`), which
+// is the authoritative ceiling of what the client asked for. Anything not a
+// subset/tightening of that baseline is rejected before any grant is issued.
+//
+// Shape (per staged source index):
+//   { streams?: string[], fields?: { [stream]: string[] }, since?: { [stream]: ISO } }
+// `streams` keeps only the named subset; an empty/missing `streams` keeps all
+// baseline streams. `fields[stream]` narrows that stream's field set to a
+// subset of its baseline fields. `since[stream]` sets/tightens that stream's
+// time bound. Streams dropped by `streams` are removed entirely.
+function narrowingHasAnyDirective(narrowing) {
+  if (!narrowing || typeof narrowing !== 'object') return false;
+  return (
+    Array.isArray(narrowing.streams)
+    || (narrowing.fields && typeof narrowing.fields === 'object')
+    || (narrowing.since && typeof narrowing.since === 'object')
+  );
+}
+
+function parseIsoInstant(value, { sourceLabel, streamName }) {
+  if (!isNonEmptyString(value)) {
+    throw bindingError(
+      'invalid_request',
+      `Narrowed time bound for '${sourceLabel}' stream '${streamName}' must be a non-empty ISO-8601 string`,
+    );
+  }
+  const ms = Date.parse(value);
+  if (Number.isNaN(ms)) {
+    throw bindingError(
+      'invalid_request',
+      `Narrowed time bound '${value}' for '${sourceLabel}' stream '${streamName}' is not a valid ISO-8601 instant`,
+    );
+  }
+  return ms;
+}
+
+function narrowResolvedSelectionForSource(baselineResolved, narrowing, sourceLabel) {
+  const baseline = Array.isArray(baselineResolved) ? baselineResolved : [];
+  if (!narrowingHasAnyDirective(narrowing)) {
+    return baseline;
+  }
+
+  const baselineByName = new Map(baseline.map((stream) => [stream.name, stream]));
+
+  // 1. Resolve which streams the owner keeps. Absent/empty keeps the full
+  //    baseline; any named stream must exist in the baseline (no widening to a
+  //    stream the client did not stage).
+  let keptNames;
+  if (Array.isArray(narrowing.streams)) {
+    if (narrowing.streams.length === 0) {
+      throw bindingError(
+        'invalid_request',
+        `Narrowed stream set for '${sourceLabel}' must keep at least one stream`,
+      );
+    }
+    const seen = new Set();
+    for (const name of narrowing.streams) {
+      if (!isNonEmptyString(name)) {
+        throw bindingError('invalid_request', `Narrowed stream name for '${sourceLabel}' must be a non-empty string`);
+      }
+      if (!baselineByName.has(name)) {
+        throw bindingError(
+          'invalid_request',
+          `Cannot narrow '${sourceLabel}' to stream '${name}' — it was not in the staged request (widening is forbidden)`,
+        );
+      }
+      seen.add(name);
+    }
+    keptNames = baseline.map((stream) => stream.name).filter((name) => seen.has(name));
+  } else {
+    keptNames = baseline.map((stream) => stream.name);
+  }
+
+  const fieldsNarrowing = narrowing.fields && typeof narrowing.fields === 'object' ? narrowing.fields : {};
+  const sinceNarrowing = narrowing.since && typeof narrowing.since === 'object' ? narrowing.since : {};
+
+  // Reject directives that reference a stream the owner is not keeping — those
+  // can only be a client/UI mistake and must not silently no-op.
+  for (const targetMap of [fieldsNarrowing, sinceNarrowing]) {
+    for (const streamName of Object.keys(targetMap)) {
+      if (!keptNames.includes(streamName)) {
+        throw bindingError(
+          'invalid_request',
+          `Narrowing references '${sourceLabel}' stream '${streamName}', which is not in the approved stream set`,
+        );
+      }
+    }
+  }
+
+  return keptNames.map((name) => {
+    const baseStream = baselineByName.get(name);
+    const narrowed = { ...baseStream };
+
+    // 2. Field narrowing: the narrowed set must be a non-empty subset of the
+    //    baseline fields. If the baseline carried no `fields` (full record),
+    //    the baseline ceiling is the manifest-resolved stream and we cannot
+    //    safely subset against an unknown set here, so we forbid field
+    //    narrowing on an unprojected stream and require the client/UI to stage
+    //    a projection first. This keeps "no widen" provable.
+    if (Object.prototype.hasOwnProperty.call(fieldsNarrowing, name)) {
+      const requestedFields = fieldsNarrowing[name];
+      if (!Array.isArray(requestedFields) || requestedFields.length === 0) {
+        throw bindingError(
+          'invalid_request',
+          `Narrowed field set for '${sourceLabel}' stream '${name}' must be a non-empty array`,
+        );
+      }
+      const baselineFields = Array.isArray(baseStream.fields) ? baseStream.fields : null;
+      if (!baselineFields) {
+        throw bindingError(
+          'invalid_request',
+          `Cannot narrow fields for '${sourceLabel}' stream '${name}' — the staged request placed no field projection on it, so a field subset cannot be proven to be narrower`,
+        );
+      }
+      const baselineFieldSet = new Set(baselineFields);
+      const seenFields = new Set();
+      for (const field of requestedFields) {
+        if (!isNonEmptyString(field)) {
+          throw bindingError('invalid_request', `Narrowed field name for '${sourceLabel}' stream '${name}' must be a non-empty string`);
+        }
+        if (!baselineFieldSet.has(field)) {
+          throw bindingError(
+            'invalid_request',
+            `Cannot narrow '${sourceLabel}' stream '${name}' to field '${field}' — it was not in the staged field set (widening is forbidden)`,
+          );
+        }
+        seenFields.add(field);
+      }
+      // Preserve baseline ordering; drop a `view` since fields now diverge from it.
+      narrowed.fields = baselineFields.filter((field) => seenFields.has(field));
+      if (narrowed.view) delete narrowed.view;
+    }
+
+    // 3. Time narrowing: tighten an existing `since`. The narrowed `since` must
+    //    be greater than or equal to the staged `since` (a later start is a
+    //    narrower window). We only allow tightening a stream that ALREADY
+    //    carries a staged time bound: the resolved baseline does not tell us
+    //    whether an unbounded stream supports `time_range` at all (that lives in
+    //    the manifest's `consent_time_field`), so adding a brand-new bound here
+    //    could persist an unenforceable range. Tighten-only keeps "no widen"
+    //    provable from the baseline alone.
+    if (Object.prototype.hasOwnProperty.call(sinceNarrowing, name)) {
+      const baselineSince = baseStream.time_range?.since;
+      if (!isNonEmptyString(baselineSince)) {
+        throw bindingError(
+          'invalid_request',
+          `Cannot set a time bound on '${sourceLabel}' stream '${name}' — the staged request placed no time bound on it, so a tighter bound cannot be proven against it`,
+        );
+      }
+      const requestedSince = sinceNarrowing[name];
+      const requestedMs = parseIsoInstant(requestedSince, { sourceLabel, streamName: name });
+      const baselineMs = Date.parse(baselineSince);
+      if (!Number.isNaN(baselineMs) && requestedMs < baselineMs) {
+        throw bindingError(
+          'invalid_request',
+          `Cannot narrow '${sourceLabel}' stream '${name}' to start at '${requestedSince}' — that is earlier than the staged bound '${baselineSince}' (widening is forbidden)`,
+        );
+      }
+      narrowed.time_range = { ...baseStream.time_range, since: requestedSince };
+    }
+
+    return narrowed;
+  });
+}
+
 async function getPendingConsentBatch(request, row) {
   try {
     await requirePendingRequestClientRegistration(request);
@@ -3098,11 +3267,31 @@ async function approveStagedGrantBatch(deviceCode, pending, request, subjectId, 
     throw err;
   }
 
+  const sourceNarrowing = opts.sourceNarrowing && typeof opts.sourceNarrowing === 'object'
+    ? opts.sourceNarrowing
+    : {};
+  // Owner narrowing is keyed by staged source index. A directive that targets a
+  // source the owner did not approve can only be a UI/client mistake and must
+  // not silently no-op, so reject it before issuing anything.
+  for (const key of Object.keys(sourceNarrowing)) {
+    const index = Number(key);
+    if (!Number.isInteger(index) || !approvedIndexes.includes(index)) {
+      const err = new Error(
+        `Narrowing references staged source index ${key}, which is not in the approved set`,
+      );
+      err.code = 'invalid_request';
+      err.param = 'source_narrowing';
+      throw err;
+    }
+  }
+
   let registeredClient;
   const resolvedEntries = [];
   try {
     registeredClient = await requirePendingRequestClientRegistration(request);
-    for (const entry of approvedEntries) {
+    for (let position = 0; position < approvedEntries.length; position += 1) {
+      const entry = approvedEntries[position];
+      const stagedIndex = approvedIndexes[position];
       const slice = asSingleEntryRequestSlice(request, entry);
       requireStructuredPendingRequestShape(slice);
       const { sourceBinding, storageBinding } = requireStructuredPendingRequestBindings(slice);
@@ -3110,7 +3299,16 @@ async function approveStagedGrantBatch(deviceCode, pending, request, subjectId, 
       entry.storage_binding = normalizeStorageBinding(storageBinding);
       const manifest = await requireGrantManifestForBindings(sourceBinding, storageBinding, opts);
       slice.manifest_version = entry.manifest_version;
-      const resolvedStreams = requirePendingRequestContractAgainstManifest(slice, manifest);
+      const baselineStreams = requirePendingRequestContractAgainstManifest(slice, manifest);
+      // Apply owner per-source narrowing against the staged resolved baseline.
+      // narrowResolvedSelectionForSource proves the result is a subset/tightening
+      // of what the client staged; widening throws invalid_request here, before
+      // any package row or child grant is written.
+      const resolvedStreams = narrowResolvedSelectionForSource(
+        baselineStreams,
+        sourceNarrowing[stagedIndex],
+        sourceBinding?.id || `source ${stagedIndex + 1}`,
+      );
       resolvedEntries.push({ entry, slice, sourceBinding, storageBinding, manifest, resolvedStreams });
     }
   } catch (err) {

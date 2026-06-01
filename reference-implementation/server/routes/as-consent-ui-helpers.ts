@@ -638,6 +638,62 @@ function buildBatchSourceCards(cards: PendingConsentCard[], ui: ConsentUiRendere
     .join("\n");
 }
 
+// Base64url-encode a stream name so it is safe to embed inside a flat HTML
+// form field name (narrow_fields_<index>__<encoded>, narrow_since_…). The
+// transport adapter (`decodeStreamKey` in as-consent.ts) decodes it
+// symmetrically with `Buffer.from(…, "base64url")`.
+function encodeStreamKey(name: string): string {
+  return Buffer.from(name, "utf8").toString("base64url");
+}
+
+// Per-source owner narrowing controls, rendered inside the per-source confirm
+// form. The owner may drop staged streams (uncheck), reduce a stream's fields
+// (uncheck), and tighten a stream's existing time bound (date input). Every
+// control defaults to the staged value, so submitting without touching them
+// reproduces the staged request unchanged. Widening is not representable: the
+// controls only offer what the client staged, and the server re-validates the
+// posted narrowing against the staged baseline.
+function buildSourceNarrowingControls(card: PendingConsentCard, ui: ConsentUiRenderer): string {
+  const streams = Array.isArray(card.resolvedStreams) ? card.resolvedStreams : [];
+  if (streams.length === 0) {
+    return "";
+  }
+  const index = card.index;
+  const streamRows = streams
+    .map((stream) => {
+      const encoded = encodeStreamKey(stream.name);
+      const streamToggle = `<label class="hosted-ui-narrow-stream"><input type="checkbox" name="narrow_streams_${index}" value="${ui.escapeHtml(
+        stream.name
+      )}" checked /> <span class="hosted-ui-stream-name">${ui.escapeHtml(stream.name)}</span></label>`;
+
+      const fields = Array.isArray(stream.fields) ? stream.fields : null;
+      const fieldControls = fields
+        ? `<div class="hosted-ui-narrow-fields" aria-label="Fields for ${ui.escapeHtml(stream.name)}">${fields
+            .map(
+              (field) =>
+                `<label class="hosted-ui-narrow-field"><input type="checkbox" name="narrow_fields_${index}__${encoded}" value="${ui.escapeHtml(
+                  field
+                )}" checked /> ${ui.escapeHtml(field)}</label>`
+            )
+            .join("")}</div>`
+        : "";
+
+      const since = stream.time_range?.since;
+      const sinceControl = since
+        ? `<label class="hosted-ui-narrow-since">Start no earlier than <input type="text" name="narrow_since_${index}__${encoded}" value="${ui.escapeHtml(
+            since
+          )}" placeholder="${ui.escapeHtml(since)}" /></label>`
+        : "";
+
+      return `<div class="hosted-ui-narrow-stream-row">${streamToggle}${sinceControl}${fieldControls}</div>`;
+    })
+    .join("\n");
+
+  return `<details class="hosted-ui-narrow"><summary class="pdpp-title">Narrow this source (optional)</summary>
+<p class="pdpp-body">Uncheck streams or fields to share less, or tighten a start date. You can only reduce what was requested — you cannot add anything here.</p>
+${streamRows}</details>`;
+}
+
 const APPROVE_ALL_SUPPRESSION_LABELS: Record<string, string> = {
   continuous_all_streams: "a source requests continuous access to all of its streams",
   sensitive_no_time_bound: "a sensitive source has no time bound",
@@ -657,9 +713,10 @@ function buildPerSourceConfirmForm(
   const checkboxes = cards
     .map((card) => {
       const sourceLabel = card.source?.id || `source ${card.index + 1}`;
-      return `<label class="hosted-ui-source-toggle"><input type="checkbox" name="approved_source_indexes" value="${ui.escapeHtml(
+      const narrowControls = buildSourceNarrowingControls(card, ui);
+      return `<div class="hosted-ui-source-block"><label class="hosted-ui-source-toggle"><input type="checkbox" name="approved_source_indexes" value="${ui.escapeHtml(
         String(card.index)
-      )}" checked /> ${ui.escapeHtml(sourceLabel)}</label>`;
+      )}" checked /> ${ui.escapeHtml(sourceLabel)}</label>${narrowControls}</div>`;
     })
     .join("\n");
   return `<form class="hosted-ui-form" method="POST" action="/consent/approve" aria-label="Confirm each source">
