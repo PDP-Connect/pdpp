@@ -1445,6 +1445,61 @@ test('hosted MCP picker renders collapsed source summaries with per-stream contr
   }
 });
 
+test('hosted MCP picker pre-selects nothing: zero checked sources and zero checked streams on first render', async () => {
+  // UAT regression (owner-reported): "Streams should not be selected by
+  // default while parent connection is not selected." The existing render
+  // test asserts no-checked per known input; this locks the coupled aggregate
+  // invariant directly — across the whole picker render there must be zero
+  // checked source boxes AND zero checked stream boxes AND every source group
+  // must report data-source-selected="false". A future change that pre-checks
+  // either side (e.g. defaulting one stream on, or marking a source selected
+  // before any stream is chosen) breaks this single assertion.
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    await registerSpotify(asUrl);
+    await registerGithub(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+    const verifier = randomBytes(32).toString('base64url');
+
+    const authorizeUrl = new URL(`${asUrl}/oauth/authorize`);
+    authorizeUrl.searchParams.set('client_id', client.client_id);
+    authorizeUrl.searchParams.set('redirect_uri', 'https://client.example/callback');
+    authorizeUrl.searchParams.set('response_type', 'code');
+    authorizeUrl.searchParams.set('state', 'nothing-preselected');
+    authorizeUrl.searchParams.set('code_challenge', pkceChallenge(verifier));
+    authorizeUrl.searchParams.set('code_challenge_method', 'S256');
+
+    const resp = await fetch(authorizeUrl);
+    assert.equal(resp.status, 200);
+    const html = await resp.text();
+
+    const sourceBoxes = [...html.matchAll(/<input[^>]*data-hosted-mcp-source-checkbox[^>]*>/g)].map((m) => m[0]);
+    const streamBoxes = [...html.matchAll(/<input[^>]*data-hosted-mcp-stream-checkbox[^>]*>/g)].map((m) => m[0]);
+
+    // The render must actually contain pickable sources and streams, otherwise
+    // "zero checked" would pass vacuously.
+    assert.ok(sourceBoxes.length >= 2, 'render must contain the registered source checkboxes');
+    assert.ok(streamBoxes.length >= 2, 'render must contain stream checkboxes to choose from');
+
+    const checkedSources = sourceBoxes.filter((b) => /\schecked(?:\s|\/|>)/.test(b)).length;
+    const checkedStreams = streamBoxes.filter((b) => /\schecked(?:\s|\/|>)/.test(b)).length;
+    assert.equal(checkedSources, 0, 'no source may be checked on first render');
+    assert.equal(checkedStreams, 0, 'no stream may be checked while its parent source is unselected');
+
+    // Every source group must also declare itself unselected, so the derived
+    // "source participates" state starts false everywhere.
+    const sourceGroups = [...html.matchAll(/<details class="hosted-ui-option-source"[^>]*>/g)].map((m) => m[0]);
+    assert.equal(sourceGroups.length, sourceBoxes.length, 'one source group per source checkbox');
+    for (const group of sourceGroups) {
+      assert.match(group, /data-source-selected="false"/, 'each source group must start unselected');
+    }
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test('POST /oauth/authorize/mcp-package narrows the child grant to the submitted stream subset', async () => {
   const server = await startOpenTestServer();
   const asUrl = `http://localhost:${server.asPort}`;
