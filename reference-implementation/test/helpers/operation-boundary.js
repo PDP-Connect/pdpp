@@ -64,7 +64,7 @@ export const forbiddenOperationImports = Object.freeze([
   '../server/auth',
   '../server/index',
   // Sandbox UI/page code and fixture builders.
-  'apps/web',
+  'apps/site',
   '_demo/',
   // Route-contract runtime. The contract package owns JSON-Schema +
   // request/response validators used at the HTTP wire edge; operation

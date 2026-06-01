@@ -27,7 +27,7 @@ The PDPP reference implementation still owns PDPP-specific behavior:
 - Persistence adapters, in-memory reference stores, and boot reconciliation.
 - Docker/Compose/sidecar allocation, operator config, and profile storage.
 
-This package must not import `reference-implementation`, `apps/web`,
+This package must not import `reference-implementation`, `apps/site`, `apps/console`,
 `packages/polyfill-connectors`, Docker implementation code, or server routes.
 
 ## Exports

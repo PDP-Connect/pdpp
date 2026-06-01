@@ -85,10 +85,10 @@ test('forbidden relative server modules fail the gate', () => {
 test('forbidden sandbox/demo specifier prefixes fail the gate', () => {
   // The needles are matched as specifier prefixes, mirroring how the prior
   // per-operation checks worked. A relative path that traverses *through*
-  // these directories (e.g., `../../apps/web/...`) is not matched here;
+  // these directories (e.g., `../../apps/site/...`) is not matched here;
   // those are caught by the relative-path entries (../server/index, etc.)
   // and by the no-cross-boundary review.
-  expectViolation(`import "apps/web/foo";\n`, 'apps/web');
+  expectViolation(`import "apps/site/foo";\n`, 'apps/site');
   expectViolation(`import { x } from "_demo/dataset";\n`, '_demo/');
 });
 

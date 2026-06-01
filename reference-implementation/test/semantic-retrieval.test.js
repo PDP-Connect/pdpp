@@ -358,7 +358,7 @@ test('RS metadata omits semantic retrieval and route 404s when backend is unavai
 // ─── Dashboard capability probe — fail-closed on unadvertised, true when on ─
 
 test('dashboard capability probe returns true when semantic is advertised', async () => {
-  // Exercises the same shape that apps/web/src/app/dashboard/lib/rs-client.ts
+  // Exercises the same shape that apps/console/src/app/dashboard/lib/rs-client.ts
   // #isSemanticRetrievalAdvertised reads from the RS metadata document. The
   // dashboard's blended-search composition depends on this probe returning
   // true ONLY when the RS really would serve /v1/search/semantic.

@@ -11,7 +11,7 @@
  *
  * These tests serve as the regression baseline for the operation's
  * behavior. Host-mounted parity is covered by the existing `pdpp.test.js`
- * (native) and `apps/web/.../routes.test.ts` (sandbox) suites.
+ * (native) and `apps/site/.../routes.test.ts` (sandbox) suites.
  */
 
 import assert from 'node:assert/strict';

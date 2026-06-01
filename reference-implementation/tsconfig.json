@@ -38,7 +38,7 @@
     // are present in the module graph; we let allowJs pull them in but
     // hold checkJs off until each file's own migration slice upgrades it
     // to .ts. Public package exports (owner-session, reference-topology,
-    // reference-local-defaults) are native TS modules — apps/web consumes
+    // reference-local-defaults) are native TS modules — apps/console consumes
     // them via transpilePackages.
     "allowJs": true,
     "checkJs": false,

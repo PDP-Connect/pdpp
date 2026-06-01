@@ -37,7 +37,7 @@ test('rs.streams.list operation has no host or storage concretes', () => {
 });
 
 test('sandbox /sandbox/v1/streams route does not import buildLiveStreamsList', () => {
-  const src = read('apps/web/src/app/sandbox/v1/streams/route.ts');
+  const src = read('apps/site/src/app/sandbox/v1/streams/route.ts');
   // Match any static-import statement that pulls buildLiveStreamsList in.
   // Comments referencing the deleted symbol are still allowed; only
   // import-binding usage is forbidden.
@@ -51,7 +51,7 @@ test('sandbox /sandbox/v1/streams route does not import buildLiveStreamsList', (
 });
 
 test('sandbox builders.ts no longer exports buildLiveStreamsList', () => {
-  const src = read('apps/web/src/app/sandbox/_demo/builders.ts');
+  const src = read('apps/site/src/app/sandbox/_demo/builders.ts');
   assert.equal(
     /export\s+function\s+buildLiveStreamsList\b/.test(src),
     false,

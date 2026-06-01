@@ -7,7 +7,7 @@
  * This module is the SINGLE enforcement path for `GET /v1/search`. The route
  * handler in index.js delegates to `runLexicalSearch` and does no parameter
  * parsing, mode branching, planning, FTS5 access, or snippet hydration of its
- * own. The dashboard (apps/web) reaches lexical retrieval through the same
+ * own. The dashboard (apps/console) reaches lexical retrieval through the same
  * public route over HTTP, so there is no second contract.
  *
  * Maintenance hooks (lexicalIndexUpsert, lexicalIndexDelete,

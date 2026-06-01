@@ -59,7 +59,7 @@ test('ref.dataset.summary operation does not import server/records.js', () => {
 });
 
 test('sandbox /sandbox/_ref/dataset/summary route does not import buildLiveDatasetSummary', () => {
-  const src = read('apps/web/src/app/sandbox/ref/dataset/summary/route.ts');
+  const src = read('apps/site/src/app/sandbox/ref/dataset/summary/route.ts');
   // Match any static-import statement that pulls buildLiveDatasetSummary in.
   // Comments referencing the deleted symbol are still allowed; only
   // import-binding usage is forbidden.
@@ -73,7 +73,7 @@ test('sandbox /sandbox/_ref/dataset/summary route does not import buildLiveDatas
 });
 
 test('sandbox builders.ts no longer exports buildLiveDatasetSummary', () => {
-  const src = read('apps/web/src/app/sandbox/_demo/builders.ts');
+  const src = read('apps/site/src/app/sandbox/_demo/builders.ts');
   assert.equal(
     /export\s+function\s+buildLiveDatasetSummary\b/.test(src),
     false,
@@ -82,7 +82,7 @@ test('sandbox builders.ts no longer exports buildLiveDatasetSummary', () => {
 });
 
 test('sandbox builders.ts no longer exports LiveDatasetSummary', () => {
-  const src = read('apps/web/src/app/sandbox/_demo/builders.ts');
+  const src = read('apps/site/src/app/sandbox/_demo/builders.ts');
   // The interface previously co-located with the builder is also demoted —
   // the operation owns the envelope shape via `RefDatasetSummaryEnvelope`.
   assert.equal(
@@ -101,7 +101,7 @@ test('sandbox dashboard data source mounts ref.dataset.summary instead of buildi
   // `built.earliest_record_time` → `earliest_ingested_at`, etc.) silently
   // disagreed with the canonical route. The fix mounts the operation;
   // this test pins it.
-  const src = read('apps/web/src/app/sandbox/_demo/data-source.ts');
+  const src = read('apps/site/src/app/sandbox/_demo/data-source.ts');
   assert.ok(
     /\bexecuteRefDatasetSummary\b/.test(src),
     'sandbox dashboard data source must call the canonical ref.dataset.summary operation',

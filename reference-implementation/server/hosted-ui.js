@@ -30,7 +30,7 @@ export function escapeHtml(input) {
 }
 
 // ─── PDPP mark (server-side SVG) ─────────────────────────────────────────────
-// Geometry mirrors apps/web/src/components/PdppLogo.tsx so the reference
+// Geometry mirrors apps/site/src/components/PdppLogo.tsx so the reference
 // pages carry the same mark as the website. Keep in sync.
 
 const HUMAN = 'oklch(0.52 0.11 45)';
