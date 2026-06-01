@@ -144,6 +144,10 @@ export const WarningCodeSchema: JsonSchema = {
     // Request supplied a deprecated compatibility alias such as
     // `connector_instance_id`.
     "deprecated_alias_used",
+    // Records list request asked for more than the maximum page size and
+    // the server returned the bounded page with this warning instead of a
+    // silent clamp.
+    "limit_clamped",
     // Response is partial because the server short-circuited (e.g. timeout
     // budget exceeded) and the remaining sources were not consulted.
     "partial_results",

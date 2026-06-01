@@ -15,7 +15,7 @@ The reference implementation SHALL report non-fatal lossiness, compatibility beh
 #### Scenario: Records-list limit is clamped to the page maximum
 - **WHEN** a records-list read receives a `limit` greater than the contract maximum page size (100)
 - **THEN** the response SHALL return at most the maximum page size of records rather than rejecting the request
-- **AND** the response SHALL include a structured `meta.warnings` entry with the stable code `limit_clamped` identifying the requested limit and the effective maximum
+- **AND** the response SHALL include a structured `meta.warnings` entry with the stable code `limit_clamped` and `detail.requested_limit` / `detail.max_limit` values identifying the requested limit and the effective maximum
 - **AND** a request whose `limit` is within the maximum (including exactly the maximum) SHALL NOT include a `limit_clamped` warning
 - **AND** a request whose `limit` is absent, non-positive, or unparseable SHALL fall back to the default page size and SHALL NOT include a `limit_clamped` warning
 - **AND** under multi-connection fan-in the response SHALL include at most one `limit_clamped` warning regardless of how many connections were queried.

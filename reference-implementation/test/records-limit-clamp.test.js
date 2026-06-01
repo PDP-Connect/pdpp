@@ -204,6 +204,10 @@ test('limit=500 returns at most 100 records and surfaces a limit_clamped warning
     const warning = findLimitClampedWarning(response);
     assert.ok(warning, 'expected a limit_clamped warning in meta.warnings[]');
     assert.equal(warning.param, 'limit');
+    assert.deepEqual(warning.detail, {
+      requested_limit: 500,
+      max_limit: RECORDS_MAX_PAGE_LIMIT,
+    });
     assert.match(warning.message, /500/, 'message names the requested limit');
     assert.match(warning.message, /100/, 'message names the effective maximum');
   });
@@ -278,5 +282,9 @@ test('multi-connection fan-in surfaces a single deduplicated limit_clamped warni
     );
     assert.equal(clampWarnings.length, 1, 'fan-in must deduplicate the limit_clamped warning');
     assert.equal(clampWarnings[0].param, 'limit');
+    assert.deepEqual(clampWarnings[0].detail, {
+      requested_limit: 500,
+      max_limit: RECORDS_MAX_PAGE_LIMIT,
+    });
   });
 });

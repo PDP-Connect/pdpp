@@ -97,12 +97,17 @@ export function clampRecordsPageLimit(rawLimit) {
 
 /**
  * Build the structured `limit_clamped` warning for a clamped records page.
- * Shape matches the other canonical read warnings (`{ code, param, message }`).
+ * `detail` carries the stable machine-readable values; `message` is only for
+ * human diagnostics.
  */
 export function buildLimitClampedWarning(requested) {
   return {
     code: CANONICAL_WARNING_CODES.LIMIT_CLAMPED,
     param: 'limit',
+    detail: {
+      requested_limit: requested,
+      max_limit: RECORDS_MAX_PAGE_LIMIT,
+    },
     message: `Requested limit=${requested} exceeds the maximum page size of ${RECORDS_MAX_PAGE_LIMIT}; returned ${RECORDS_MAX_PAGE_LIMIT} records per page. Page forward with the returned cursor.`,
   };
 }

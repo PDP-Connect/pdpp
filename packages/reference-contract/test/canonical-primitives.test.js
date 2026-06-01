@@ -98,6 +98,7 @@ test('WarningCodeSchema enumerates the initial closed code set', () => {
     'count_downgraded',
     'source_skipped_not_applicable',
     'deprecated_alias_used',
+    'limit_clamped',
     'partial_results',
     'compatibility_fallback',
   ]) {
