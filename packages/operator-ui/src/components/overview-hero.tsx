@@ -1,7 +1,7 @@
 import Link from "next/link";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { formatConnectorKeyForDisplay } from "../lib/connector-display.ts";
 import type { DatasetSummary } from "../lib/ref-client.ts";
+import { Timestamp } from "../ui/timestamp.tsx";
 
 /**
  * Overview-page credibility hero.
@@ -48,7 +48,7 @@ export function OverviewHero({
         <span className="font-normal text-muted-foreground"> records from </span>
         <span>{formatInteger(summary.connector_count)}</span>
         <span className="font-normal text-muted-foreground">
-          {summary.connector_count === 1 ? " connection" : " connections"}
+          {summary.connector_count === 1 ? " connector" : " connectors"}
         </span>
         {summary.earliest_record_time ? (
           <>

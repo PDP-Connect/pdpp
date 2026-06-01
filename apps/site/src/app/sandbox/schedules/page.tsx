@@ -5,8 +5,8 @@
  * the same cadence model with owner-write controls.
  */
 
+import { ScheduleReadRow, SchedulesView } from "@pdpp/operator-ui/components/views/schedules-view";
 import { DashboardShell } from "@/app/dashboard/components/shell.tsx";
-import { ScheduleReadRow, SchedulesView } from "@/app/dashboard/components/views/schedules-view.tsx";
 import { sandboxDashboardDataSource } from "../_demo/data-source.ts";
 
 export const dynamic = "force-static";

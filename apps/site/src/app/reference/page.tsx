@@ -1,7 +1,7 @@
+import { ConnectAgentCard } from "@pdpp/operator-ui/components/connect-agent-card";
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import Link from "next/link";
-import { ConnectAgentCard } from "@/app/dashboard/components/connect-agent-card.tsx";
 import { buttonVariants } from "@/components/ui/button.tsx";
 import { cn } from "@/lib/utils.ts";
 

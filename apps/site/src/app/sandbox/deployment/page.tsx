@@ -3,11 +3,11 @@
  * with deterministic demo data, then appends sandbox-only metadata sections.
  */
 
+import { ConnectAgentCard } from "@pdpp/operator-ui/components/connect-agent-card";
+import { Section } from "@pdpp/operator-ui/components/primitives";
+import { DeploymentDiagnosticsView } from "@pdpp/operator-ui/components/views/deployment-diagnostics-view";
 import { headers } from "next/headers";
-import { ConnectAgentCard } from "@/app/dashboard/components/connect-agent-card.tsx";
-import { Section } from "@/app/dashboard/components/primitives.tsx";
 import { DashboardShell } from "@/app/dashboard/components/shell.tsx";
-import { DeploymentDiagnosticsView } from "@/app/dashboard/components/views/deployment-diagnostics-view.tsx";
 import { getDemoCapabilities } from "../_demo/builders.ts";
 import { CodeBlock } from "../_demo/components/code-block.tsx";
 import { sandboxDashboardDataSource } from "../_demo/data-source.ts";

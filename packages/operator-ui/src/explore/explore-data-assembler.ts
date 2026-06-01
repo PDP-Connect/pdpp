@@ -21,20 +21,20 @@ import {
   exactWindowSummaryText,
   parseExplorerPeekParam,
   type RecordsExplorerData,
-} from "@/app/dashboard/components/views/records-explorer-view.tsx";
-import { formatConnectorNameForDisplay } from "@/app/dashboard/lib/connector-display.ts";
-import type { DashboardDataSource } from "@/app/dashboard/lib/data-source.ts";
-import { classifyRecordKind, type DeclaredFieldTypes } from "@/app/dashboard/lib/record-kind.ts";
-import { buildRecordPreview } from "@/app/dashboard/lib/record-preview.ts";
-import type { RefConnectorSummary } from "@/app/dashboard/lib/ref-client.ts";
-import type { RecordsWindowMeta, StreamMetadata } from "@/app/dashboard/lib/rs-client.ts";
+} from "../components/views/records-explorer-view.tsx";
+import { formatConnectorNameForDisplay } from "../lib/connector-display.ts";
+import type { DashboardDataSource } from "../lib/data-source.ts";
+import { classifyRecordKind, type DeclaredFieldTypes } from "../lib/record-kind.ts";
+import { buildRecordPreview } from "../lib/record-preview.ts";
+import type { RefConnectorSummary } from "../lib/ref-client.ts";
+import type { RecordsWindowMeta, StreamMetadata } from "../lib/rs-client.ts";
 import {
   lookupSearchTimestampMetadata,
   pickSearchDisplayTimestamp,
   type SearchTimestampMetadata,
   searchTimestampMetadataKey,
-} from "@/app/dashboard/lib/search-record-timestamps.ts";
-import { summarize } from "@/app/dashboard/lib/timeline-summaries.ts";
+} from "../lib/search-record-timestamps.ts";
+import { summarize } from "../lib/timeline-summaries.ts";
 import { buildPeekReadUrl } from "./peek-read-url.ts";
 import { attributeSearchHit, shouldIncludeSearchHit } from "./search-hit-attribution.ts";
 

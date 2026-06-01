@@ -1,6 +1,6 @@
+import { MetaPill, PageHeader } from "@pdpp/operator-ui/components/primitives";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { MetaPill, PageHeader } from "@/app/dashboard/components/primitives.tsx";
 import { DocsLayout } from "@/components/docs/docs-layout.tsx";
 import { ProsePage } from "@/components/docs/prose-page.tsx";
 import { SourceLink } from "@/components/docs/source-link.tsx";

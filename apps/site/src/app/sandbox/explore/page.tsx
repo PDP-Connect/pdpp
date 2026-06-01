@@ -20,11 +20,11 @@
  *     instance would issue, without implying a real RS is reachable here.
  */
 
-import { Callout } from "@/app/dashboard/components/primitives.tsx";
+import { Callout } from "@pdpp/operator-ui/components/primitives";
+import { buildExplorerHref, RecordsExplorerView } from "@pdpp/operator-ui/components/views/records-explorer-view";
+import { sandboxRoutes } from "@pdpp/operator-ui/components/views/routes";
+import { assembleExplorerData } from "@pdpp/operator-ui/explore/explore-data-assembler";
 import { DashboardShell } from "@/app/dashboard/components/shell.tsx";
-import { buildExplorerHref, RecordsExplorerView } from "@/app/dashboard/components/views/records-explorer-view.tsx";
-import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
-import { assembleExplorerData } from "@/app/dashboard/explore/explore-data-assembler.ts";
 import { sandboxDashboardDataSource } from "../_demo/data-source.ts";
 
 export const dynamic = "force-dynamic";

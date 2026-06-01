@@ -1,0 +1,20 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "root": false,
+  "extends": ["ultracite/biome/core", "ultracite/biome/type-aware"],
+  "formatter": {
+    "lineWidth": 120
+  },
+  "files": {
+    "ignoreUnknown": true,
+    // Shared dashboard substrate: every .ts/.tsx under src/ is linted and
+    // formatted to the same Ultracite bar as the apps that consume it.
+    "includes": [
+      "src/**/*.ts",
+      "src/**/*.tsx",
+      "*.jsonc",
+      "*.json",
+      "!node_modules"
+    ]
+  }
+}

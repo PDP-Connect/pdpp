@@ -1,12 +1,12 @@
-import type { Metadata } from "next";
-import { notFound } from "next/navigation";
 import {
   ARTIFACT_LIFECYCLE_VOCABULARY,
   MetaPill,
   PageHeader,
   Section,
   StatusBadge,
-} from "@/app/dashboard/components/primitives.tsx";
+} from "@pdpp/operator-ui/components/primitives";
+import type { Metadata } from "next";
+import { notFound } from "next/navigation";
 import { ArtifactLink } from "@/components/docs/artifact-link.tsx";
 import { DocsLayout } from "@/components/docs/docs-layout.tsx";
 import { SourceLink } from "@/components/docs/source-link.tsx";

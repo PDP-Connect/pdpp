@@ -1,10 +1,10 @@
-import { CopyButton } from "@/app/dashboard/components/copy-button.tsx";
 import {
   pdppCliConnectCommand,
   pdppCliConnectCommandFor,
   pdppCliPackageInfo,
   pdppCliTokenCompletionUnavailable,
-} from "@/lib/pdpp-cli-command.ts";
+} from "../lib/cli-command.ts";
+import { CopyButton } from "./copy-button.tsx";
 
 export function ConnectAgentCard({ mode, providerUrl }: { mode: "live" | "sandbox"; providerUrl?: string }) {
   const label = mode === "live" ? "Live reference" : "Sandbox mock";

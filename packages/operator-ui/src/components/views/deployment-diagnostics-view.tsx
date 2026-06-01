@@ -1,13 +1,14 @@
 import type { ReactNode } from "react";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { formatConnectorKeyForDisplay } from "../../lib/connector-display.ts";
 import type { DeploymentDiagnostics } from "../../lib/ref-client.ts";
+import { Timestamp } from "../../ui/timestamp.tsx";
+import { EmptyState } from "../empty-state.tsx";
 import { Callout, PageHeader, Section } from "../primitives.tsx";
-import { EmptyState } from "../shell.tsx";
 
 interface DeploymentDiagnosticsViewProps {
   actions?: ReactNode;
   afterDiagnostics?: ReactNode;
+  beforeDiagnostics?: ReactNode;
   breadcrumbs?: { href?: string; label: string }[];
   description: string;
   report: DeploymentDiagnostics;
@@ -17,6 +18,7 @@ interface DeploymentDiagnosticsViewProps {
 export function DeploymentDiagnosticsView({
   actions,
   afterDiagnostics,
+  beforeDiagnostics,
   breadcrumbs,
   description,
   report,
@@ -26,6 +28,7 @@ export function DeploymentDiagnosticsView({
     <>
       <PageHeader actions={actions} breadcrumbs={breadcrumbs} description={description} title={title} />
 
+      {beforeDiagnostics}
       <WarningsSection warnings={report.warnings} />
       <RuntimeCapabilitiesSection capabilities={report.runtime_capabilities} />
       <LexicalSection report={report} />
@@ -36,6 +39,14 @@ export function DeploymentDiagnosticsView({
       <EnvironmentSection environment={report.environment} />
       {afterDiagnostics}
     </>
+  );
+}
+
+export function isDeploymentIndexing(report: DeploymentDiagnostics): boolean {
+  return Boolean(
+    report.lexical.index.backfill_progress ||
+      report.semantic.index.backfill_progress ||
+      report.semantic.index.state === "building"
   );
 }
 
@@ -142,7 +153,7 @@ function SemanticSection({ report }: { report: DeploymentDiagnostics }) {
   const { backend, index } = report.semantic;
   return (
     <Section title="Semantic backend">
-      <SemanticBackfillProgress index={index} />
+      {renderSemanticBackfillProgress(index)}
       <dl className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
         <Field label="Configured" value={yesNo(backend.configured)} />
         <Field label="Available" value={yesNo(backend.available)} />
@@ -168,7 +179,7 @@ function SemanticSection({ report }: { report: DeploymentDiagnostics }) {
   );
 }
 
-function SemanticBackfillProgress({ index }: { index: DeploymentDiagnostics["semantic"]["index"] }) {
+function renderSemanticBackfillProgress(index: DeploymentDiagnostics["semantic"]["index"]) {
   if (index.backfill_progress) {
     return (
       <BackfillProgress

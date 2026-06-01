@@ -21,8 +21,7 @@
  *     never resolves it through path-based discovery.
  */
 
-import { executeRefDatasetSummary } from "pdpp-reference-implementation/operations/ref-dataset-summary";
-import type { DashboardDataSource } from "@/app/dashboard/lib/data-source.ts";
+import type { DashboardDataSource } from "@pdpp/operator-ui/lib/data-source";
 import type {
   DeploymentDiagnostics,
   ListQuery,
@@ -37,7 +36,7 @@ import type {
   RefSchedule,
   SpineEvent,
   TimelineEnvelope,
-} from "@/app/dashboard/lib/ref-client.ts";
+} from "@pdpp/operator-ui/lib/ref-client";
 import type {
   ConnectorManifest,
   ConnectorOverview,
@@ -48,7 +47,8 @@ import type {
   StreamMetadata,
   StreamRecord,
   StreamSummary,
-} from "@/app/dashboard/lib/rs-client.ts";
+} from "@pdpp/operator-ui/lib/rs-client";
+import { executeRefDatasetSummary } from "pdpp-reference-implementation/operations/ref-dataset-summary";
 import {
   buildGrantTimeline,
   buildRecordsList,

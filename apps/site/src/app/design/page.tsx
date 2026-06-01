@@ -1,7 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
-import { CopyButton } from "@/app/dashboard/components/copy-button.tsx";
+import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import {
   ARTIFACT_LIFECYCLE_VOCABULARY,
   Callout,
@@ -14,7 +13,8 @@ import {
   SplitLayout,
   StatusBadge,
   Toolbar,
-} from "@/app/dashboard/components/primitives.tsx";
+} from "@pdpp/operator-ui/components/primitives";
+import React, { useEffect, useState } from "react";
 import { ArtifactLink } from "@/components/docs/artifact-link.tsx";
 import { ProsePage } from "@/components/docs/prose-page.tsx";
 import { SourceLink } from "@/components/docs/source-link.tsx";

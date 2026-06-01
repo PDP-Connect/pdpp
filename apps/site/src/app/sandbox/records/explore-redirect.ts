@@ -1,5 +1,5 @@
-import { explorerPeekParam } from "@/app/dashboard/components/views/explorer-utils.ts";
-import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
+import { explorerPeekParam } from "@pdpp/operator-ui/components/views/explorer-utils";
+import { sandboxRoutes } from "@pdpp/operator-ui/components/views/routes";
 
 export function sandboxExploreRedirectHref({
   connectorId,

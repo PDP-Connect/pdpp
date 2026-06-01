@@ -5,9 +5,9 @@
  * content so the sandbox entrypoint is the dashboard, not a tutorial fork.
  */
 
+import { OverviewView, type OverviewViewData } from "@pdpp/operator-ui/components/views/overview-view";
+import { sandboxRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { DashboardShell } from "@/app/dashboard/components/shell.tsx";
-import { OverviewView, type OverviewViewData } from "@/app/dashboard/components/views/overview-view.tsx";
-import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
 import { sandboxDashboardDataSource } from "./_demo/data-source.ts";
 
 async function loadOverview(): Promise<OverviewViewData> {

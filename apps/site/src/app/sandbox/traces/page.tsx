@@ -1,9 +1,9 @@
+import { StatusBadge } from "@pdpp/operator-ui/components/primitives";
+import { type ListWithPeekParams, ListWithPeekView } from "@pdpp/operator-ui/components/views/list-with-peek";
+import { sandboxRoutes } from "@pdpp/operator-ui/components/views/routes";
+import type { TraceSummary } from "@pdpp/operator-ui/lib/ref-client";
 import Link from "next/link";
-import { StatusBadge } from "@/app/dashboard/components/primitives.tsx";
 import { DashboardShell } from "@/app/dashboard/components/shell.tsx";
-import { type ListWithPeekParams, ListWithPeekView } from "@/app/dashboard/components/views/list-with-peek.tsx";
-import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
-import type { TraceSummary } from "@/app/dashboard/lib/ref-client.ts";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { sandboxDashboardDataSource } from "../_demo/data-source.ts";
 

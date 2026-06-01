@@ -1,8 +1,8 @@
 "use client";
 
 import { createContext, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { Button } from "@/components/ui/button.tsx";
-import { Dialog, DialogBackdrop, DialogPopup, DialogPortal } from "@/components/ui/dialog.tsx";
+import { Button } from "../ui/button.tsx";
+import { Dialog, DialogBackdrop, DialogPopup, DialogPortal } from "../ui/dialog.tsx";
 
 interface MobileDrawerContextValue {
   close: () => void;

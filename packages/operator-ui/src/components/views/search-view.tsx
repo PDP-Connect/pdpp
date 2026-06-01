@@ -11,10 +11,10 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { Button } from "@/components/ui/button.tsx";
-import { Input } from "@/components/ui/input.tsx";
 import { formatConnectorKeyForDisplay } from "../../lib/connector-display.ts";
 import type { GrantSummary, RunSummary, TraceSummary } from "../../lib/ref-client.ts";
+import { Button } from "../../ui/button.tsx";
+import { Input } from "../../ui/input.tsx";
 import { PageHeader } from "../primitives.tsx";
 import type { Routes } from "./routes.ts";
 

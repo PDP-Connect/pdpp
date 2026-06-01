@@ -7,12 +7,12 @@
  */
 
 import Link from "next/link";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { formatSourceForDisplay } from "../../lib/connector-display.ts";
 import type { DatasetSummary, GrantSummary, RunSummary, TraceSummary } from "../../lib/ref-client.ts";
+import { Timestamp } from "../../ui/timestamp.tsx";
+import { EmptyState } from "../empty-state.tsx";
 import { OverviewHero } from "../overview-hero.tsx";
 import { DataList, PageHeader, Section, StatusBadge } from "../primitives.tsx";
-import { EmptyState } from "../shell.tsx";
 import type { Routes } from "./routes.ts";
 
 export interface OverviewViewData {

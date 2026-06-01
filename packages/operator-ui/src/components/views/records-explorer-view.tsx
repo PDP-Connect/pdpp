@@ -12,15 +12,15 @@
  */
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { Button, buttonVariants } from "@/components/ui/button.tsx";
-import { Input } from "@/components/ui/input.tsx";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "../../lib/connector-display.ts";
 import type { RecordKind } from "../../lib/record-kind.ts";
 import type { RecordPreview } from "../../lib/record-preview.ts";
 import { defaultWindow } from "../../lib/timeline.ts";
+import { Button, buttonVariants } from "../../ui/button.tsx";
+import { Input } from "../../ui/input.tsx";
+import { Timestamp } from "../../ui/timestamp.tsx";
+import { EmptyState } from "../empty-state.tsx";
 import { Callout, FilterSummary, PageHeader, Section, SplitLayout } from "../primitives.tsx";
-import { EmptyState } from "../shell.tsx";
 import type { Routes } from "./routes.ts";
 
 export type {
@@ -125,7 +125,7 @@ export function RecordsExplorerView({ data, routes }: { data: RecordsExplorerDat
       <PageHeader
         breadcrumbs={[{ label: "Explore" }]}
         count={feedCountLabel(feed.length, fromSearch, truncated)}
-        description="Search and browse records across every connection. Filter by connection, stream, or date — each connection stays distinct."
+        description="Search and browse records across every connection. Filter by connection, stream, or date — each account stays distinct."
         title="Explore"
       />
 
@@ -168,10 +168,10 @@ function buildExplorerFilterItems({
   since: string;
   until: string;
 }): ExplorerFilterItem[] {
-  // In search mode the public search endpoint narrows by connector type, not
-  // connection_id. Keep the chip label honest until the backend can enforce
-  // true connection-scoped search.
-  const connectionLabel = query ? "connector" : "connection";
+  // In search mode we cannot enforce per-connection scope (public search
+  // does not yet accept `connection_id`), so the chip label is honest:
+  // it narrows by connector type for the underlying request.
+  const connectionLabel = query ? "connector (from connection)" : "connection";
   const filterItems: ExplorerFilterItem[] = [];
   for (const id of selectedConnectionIds) {
     const conn = connections.find((c) => c.connectionId === id);

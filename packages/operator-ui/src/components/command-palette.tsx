@@ -2,8 +2,8 @@
 
 import { useRouter } from "next/navigation";
 import { createContext, type ReactNode, useContext, useEffect, useRef, useState } from "react";
-import { Button } from "@/components/ui/button.tsx";
-import { Input } from "@/components/ui/input.tsx";
+import { Button } from "../ui/button.tsx";
+import { Input } from "../ui/input.tsx";
 
 interface CommandPaletteContextValue {
   close: () => void;

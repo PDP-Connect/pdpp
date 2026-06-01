@@ -1,7 +1,7 @@
+import { sandboxRoutes } from "@pdpp/operator-ui/components/views/routes";
+import { type SearchData, SearchView } from "@pdpp/operator-ui/components/views/search-view";
 import { redirect } from "next/navigation";
 import { DashboardShell } from "@/app/dashboard/components/shell.tsx";
-import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
-import { type SearchData, SearchView } from "@/app/dashboard/components/views/search-view.tsx";
 import { sandboxDashboardDataSource } from "../_demo/data-source.ts";
 
 export const dynamic = "force-dynamic";

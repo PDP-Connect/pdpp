@@ -12,7 +12,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { findTimeAnchoredStreams, loadTimeline } from "../../dashboard/lib/timeline.ts";
+import { findTimeAnchoredStreams, loadTimeline } from "@pdpp/operator-ui/lib/timeline";
 import { sandboxDashboardDataSource } from "./data-source.ts";
 
 const SANDBOX_CONNECTOR_SUFFIX = /_demo$/;

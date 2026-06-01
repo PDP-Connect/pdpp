@@ -14,8 +14,8 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { classifyRecordKind } from "@pdpp/operator-ui/lib/record-kind";
 import { executeRefDatasetSummary } from "pdpp-reference-implementation/operations/ref-dataset-summary";
-import { classifyRecordKind } from "../../dashboard/lib/record-kind.ts";
 import { sandboxDashboardDataSource as ds } from "./data-source.ts";
 import { createSandboxRefDatasetSummaryDependencies } from "./operations-fixtures.ts";
 

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Fragment } from "react";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
 import type { SpineEvent } from "../lib/ref-client.ts";
+import { Timestamp } from "../ui/timestamp.tsx";
 
 const SECRET_KEYS = new Set([
   "interaction_response",

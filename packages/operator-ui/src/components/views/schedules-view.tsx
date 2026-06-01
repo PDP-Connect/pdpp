@@ -1,9 +1,9 @@
 import type { ReactNode } from "react";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "../../lib/connector-display.ts";
 import type { RefConnectorSummary } from "../../lib/ref-client.ts";
+import { Timestamp } from "../../ui/timestamp.tsx";
+import { EmptyState } from "../empty-state.tsx";
 import { DataList, PageHeader, Section } from "../primitives.tsx";
-import { EmptyState } from "../shell.tsx";
 
 export interface SchedulesViewProps {
   description: string;

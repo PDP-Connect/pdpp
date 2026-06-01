@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { pdppCliNoInstallCommand } from "@/lib/pdpp-cli-command.ts";
+import { pdppCliNoInstallCommand } from "../lib/cli-command.ts";
 import type { SpineEvent, TimelineEnvelope } from "../lib/ref-client.ts";
 import { TimelineView } from "./timeline-view.tsx";
 

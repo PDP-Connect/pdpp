@@ -18,13 +18,13 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { Button } from "@/components/ui/button.tsx";
-import { Input } from "@/components/ui/input.tsx";
-import { Select } from "@/components/ui/select.tsx";
 import type { ListResponse, TimelineEnvelope } from "../../lib/ref-client.ts";
+import { Button } from "../../ui/button.tsx";
+import { Input } from "../../ui/input.tsx";
+import { Select } from "../../ui/select.tsx";
+import { EmptyState } from "../empty-state.tsx";
 import { PeekEmpty, PeekPane, PeekTimeline, pivotsFromEnvelope } from "../peek.tsx";
 import { DataList, FilterSummary, PageHeader, Pager, Section, SplitLayout, Toolbar } from "../primitives.tsx";
-import { EmptyState } from "../shell.tsx";
 import type { Routes } from "./routes.ts";
 import type { TimelineSubject } from "./timeline-detail-view.tsx";
 

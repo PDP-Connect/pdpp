@@ -2,13 +2,15 @@
  * Pure attribution of a public `search_result` hit to a concrete
  * connection summary.
  *
- * The deployed RS does not return `connection_id` on `/v1/search*` hits
- * today; the public response schema is `additionalProperties: true` and a
- * future tranche (`expose-connection-identity-on-public-read`) makes the
- * field additive-optional. This helper is honest about that uncertainty:
+ * Per the canonical public read contract, search hits SHALL carry
+ * `(connection_id, stream, record_id)` and the deprecated
+ * `connector_instance_id` alias when the underlying snapshot recorded the
+ * binding (see `reference-implementation/test/search-connection-identity.test.js`).
+ * Pre-identity snapshots predating the runtime change may still omit the
+ * field, in which case this helper falls back to a narrow deduction:
  *
- *   1. If the hit carries a concrete `connection_id` (or its deprecated
- *      `connector_instance_id` alias), resolve to that summary.
+ *   1. If the hit carries a concrete `connection_id` (or the deprecated
+ *      `connector_instance_id` alias), resolve to that summary directly.
  *   2. Otherwise, attribute to a summary ONLY when exactly one connection
  *      of the hit's `connector_id` is visible. With two or more matching
  *      connections we refuse to pick an arbitrary first match.
@@ -29,16 +31,18 @@ export interface AttributedSearchHit {
 /**
  * Post-hoc filter applied to public `/v1/search*` hits in connection-aware
  * mode. The public contract does not yet accept `connection_id` as a
- * request parameter, so the dashboard narrows the response itself.
+ * request parameter (see canonical change task 3.3: alias validation is in
+ * place, but storage fan-in does not yet narrow by connection_id), so the
+ * dashboard narrows the response itself.
  *
  * Two layers:
  *   1. Connector-scope: drop hits whose `connector_id` is not represented
  *      in the visible (already filtered) summaries.
- *   2. Connection-scope (forward-compatible): when the owner has selected
- *      connection chips AND the hit carries concrete identity
- *      (`connection_id` or its deprecated `connector_instance_id` alias),
- *      drop the hit unless that identity is one of the selected visible
- *      connections. Hits without concrete identity fall through to (1).
+ *   2. Connection-scope: when the owner has selected connection chips AND
+ *      the hit carries concrete identity (`connection_id` or its deprecated
+ *      `connector_instance_id` alias), drop the hit unless that identity
+ *      is one of the selected visible connections. Hits without concrete
+ *      identity (legacy pre-identity snapshots) fall through to (1).
  *
  * Stream-scope is enforced by the caller against the `stream` filter set.
  */

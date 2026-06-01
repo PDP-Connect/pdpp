@@ -1,7 +1,7 @@
+import { sandboxRoutes } from "@pdpp/operator-ui/components/views/routes";
+import { TimelineDetailView } from "@pdpp/operator-ui/components/views/timeline-detail-view";
 import { notFound } from "next/navigation";
 import { DashboardShell } from "@/app/dashboard/components/shell.tsx";
-import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
-import { TimelineDetailView } from "@/app/dashboard/components/views/timeline-detail-view.tsx";
 import { sandboxDashboardDataSource } from "../../_demo/data-source.ts";
 
 export const dynamic = "force-static";
