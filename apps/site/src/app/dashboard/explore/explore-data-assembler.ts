@@ -324,7 +324,7 @@ async function loadEmptyQueryFeed(
                 displayAt: display.value,
                 summary: summarize(summary.connector_id, streamName, data),
                 kind,
-                preview: buildRecordPreview(kind, data) ?? undefined,
+                preview: buildRecordPreview(kind, data, metadata.declaredFieldTypes) ?? undefined,
               };
             }),
             exactWindow: exactWindowFromPage(page),
@@ -414,7 +414,7 @@ function toTimeRangeEntry({
     displayAt: new Date(ms).toISOString(),
     summary: summarize(summary.connector_id, streamName, data),
     kind,
-    preview: buildRecordPreview(kind, data) ?? undefined,
+    preview: buildRecordPreview(kind, data, declaredFieldTypes) ?? undefined,
   };
 }
 

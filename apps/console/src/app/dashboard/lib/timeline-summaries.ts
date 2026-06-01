@@ -107,6 +107,16 @@ const SUMMARIES: Record<string, SummaryFn> = {
   "gmail::threads": (d) => s(d.subject ?? d.snippet, 120),
 
   // Finance
+  // Chase `amount` is signed INTEGER CENTS (manifest declares
+  // `x_pdpp_type: currency`, documented "signed amount in cents"). It must use
+  // `formatCents`, not the milliunit-straddling `formatAmount` — otherwise a
+  // small value like -1245 renders as -$1245.00 instead of -$12.45, the same
+  // live-fidelity bug the Explorer money preview had.
+  "chase::transactions": (d) => {
+    const amt = typeof d.amount === "number" ? formatCents(d.amount) : s(d.amount, 16);
+    const desc = s(d.name ?? d.merchant ?? d.description ?? d.memo, 80);
+    return [amt, desc].filter(Boolean).join(" — ");
+  },
   "ynab::transactions": (d) => {
     const amt = typeof d.amount === "number" ? formatAmount(d.amount) : s(d.amount, 16);
     const payee = s(d.payee_name ?? d.payee, 40);

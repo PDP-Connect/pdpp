@@ -25,7 +25,7 @@
  * `field_capabilities` consumer, this heuristic extraction is the seam that a
  * declared-schema dispatch would replace.
  */
-import type { RecordKind } from "./record-kind.ts";
+import type { DeclaredFieldTypes, RecordKind } from "./record-kind.ts";
 
 /**
  * A small, presentation-only structured read of a record body. Every field is
@@ -75,6 +75,28 @@ function firstString(data: RecordData, fields: readonly string[], max: number): 
 // A numeric field whose name ends in `cents` is an unambiguous cents amount.
 const CENTS_FIELD_RE = /_cents$|^cents$/;
 
+// Declared presentation types (from `field_capabilities[].type`) that denote a
+// monetary value carried in MINOR units — i.e. integer cents. `currency` is the
+// vocabulary the pilot manifests use (e.g. chase `amount`, documented as
+// "signed amount in cents"); the explicit `*_minor_units` / `cents` aliases
+// future-proof the same intent. A field with one of these declared types is
+// formatted as cents (÷100), independent of its magnitude — which is what makes
+// chase's small `-1245` render as `-$12.45` instead of being mistaken for whole
+// dollars by the magnitude heuristic below.
+const MINOR_UNITS_TYPE_RE = /^(currency|currency_minor_units|minor_units|cents)$/;
+// Declared types denoting MILLI units (thousandths), e.g. YNAB-style amounts.
+// No pilot manifest declares this today, but honoring it lets a connector state
+// its unit explicitly instead of relying on the magnitude heuristic.
+const MILLI_UNITS_TYPE_RE = /^(currency_milliunits|milliunits|milli_units)$/;
+
+function normalizeType(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim().toLowerCase();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function formatDollars(n: number): { text: string; positive: boolean } {
   const positive = n >= 0;
   const sign = positive ? "" : "-";
@@ -82,13 +104,35 @@ function formatDollars(n: number): { text: string; positive: boolean } {
 }
 
 /**
- * Pull a formatted money amount from the body. Mirrors the convention the
- * one-line `summarize()` already uses: a bare `amount` over ~10k is treated as
- * YNAB-style milliunits, any `*_cents` field is cents. Returns null when no
+ * Pull a formatted money amount from the body.
+ *
+ * Unit resolution for a bare `amount` field, in precedence order:
+ *   1. A DECLARED presentation type wins. `field_capabilities[].type` of
+ *      `currency` (the pilot vocabulary) means minor units → cents (÷100);
+ *      a declared `*_milliunits` type means thousandths (÷1000). This is why
+ *      live chase `amount: -1245` (declared `currency`, documented cents)
+ *      renders `-$12.45` rather than being read as whole dollars.
+ *   2. With NO declared type, fall back to the legacy magnitude heuristic the
+ *      one-line `summarize()` still uses: |amount| > 10k is treated as
+ *      YNAB-style milliunits, otherwise whole dollars. This preserves the
+ *      sandbox/YNAB behavior tests rely on for un-annotated manifests.
+ *
+ * Any `*_cents` field is always unambiguous cents. Returns null when no
  * amount-shaped field is present.
  */
-function extractAmount(data: RecordData): { text: string; positive: boolean } | null {
+function extractAmount(
+  data: RecordData,
+  fieldTypes?: DeclaredFieldTypes | null
+): { text: string; positive: boolean } | null {
   if (typeof data.amount === "number") {
+    const declared = normalizeType(fieldTypes?.amount);
+    if (declared && MINOR_UNITS_TYPE_RE.test(declared)) {
+      return formatDollars(data.amount / 100);
+    }
+    if (declared && MILLI_UNITS_TYPE_RE.test(declared)) {
+      return formatDollars(data.amount / 1000);
+    }
+    // No declared unit: keep the legacy magnitude heuristic.
     const n = Math.abs(data.amount) > 10_000 ? data.amount / 1000 : data.amount;
     return formatDollars(n);
   }
@@ -139,9 +183,11 @@ function extractEventTime(data: RecordData): string | undefined {
   return startLabel;
 }
 
-function buildMoneyPreview(data: RecordData): RecordPreview | null {
-  const amt = extractAmount(data);
-  const title = firstString(data, ["merchant", "payee_name", "payee", "description", "memo", "category"], 60);
+function buildMoneyPreview(data: RecordData, fieldTypes?: DeclaredFieldTypes | null): RecordPreview | null {
+  const amt = extractAmount(data, fieldTypes);
+  // `name` covers chase, whose payee is carried in `name` (declared `text`);
+  // ordered after the more specific payee/merchant fields so they still win.
+  const title = firstString(data, ["merchant", "payee_name", "payee", "name", "description", "memo", "category"], 60);
   const body = firstString(data, ["memo", "category_name", "category", "note"], 60);
   if (!(amt || title)) {
     return null;
@@ -184,25 +230,40 @@ function buildTitledPreview(data: RecordData): RecordPreview | null {
   return { body: body && body !== title ? body : undefined, kind: "titled", title };
 }
 
-const PREVIEW_BUILDERS: Record<RecordKind, (data: RecordData) => RecordPreview | null> = {
-  event: buildEventPreview,
-  generic: () => null,
-  message: buildMessagePreview,
-  money: buildMoneyPreview,
-  titled: buildTitledPreview,
-};
-
 /**
  * Build the kind-specific preview for a feed row.
  *
  * `data` is the record body when the lens has it (recency / time-range) and
- * `null` for search hits, which carry only a snippet. Returns null when there
- * is no body or nothing kind-distinct could be extracted, in which case the
- * card falls back to the one-line summary.
+ * `null` for search hits, which carry only a snippet.
+ *
+ * `fieldTypes` is the optional declared presentation-type map for the stream
+ * (`field_capabilities[].type`, sourced from the manifest). Only the money
+ * builder consults it today — to resolve a bare `amount`'s unit from its
+ * declared type (e.g. chase `amount: currency` → cents) instead of guessing
+ * from magnitude. It is presentation metadata only; absent or unrecognized
+ * types leave every builder on its existing heuristic.
+ *
+ * Returns null when there is no body or nothing kind-distinct could be
+ * extracted, in which case the card falls back to the one-line summary.
  */
-export function buildRecordPreview(kind: RecordKind, data: RecordData | null): RecordPreview | null {
+export function buildRecordPreview(
+  kind: RecordKind,
+  data: RecordData | null,
+  fieldTypes?: DeclaredFieldTypes | null
+): RecordPreview | null {
   if (!data) {
     return null;
   }
-  return PREVIEW_BUILDERS[kind](data);
+  switch (kind) {
+    case "money":
+      return buildMoneyPreview(data, fieldTypes);
+    case "message":
+      return buildMessagePreview(data);
+    case "event":
+      return buildEventPreview(data);
+    case "titled":
+      return buildTitledPreview(data);
+    case "generic":
+      return null;
+  }
 }

@@ -14,6 +14,20 @@ test("a transactions record surfaces amount + merchant, not a bare timestamp", (
   assert.ok(!line.includes("2026-04-22T13:42:00Z"), line);
 });
 
+test("a chase transaction formats its bare integer-cents amount, not as dollars", () => {
+  // Chase `amount` is signed integer cents. -1245 must render as -$12.45, not
+  // -$1245.00 (the milliunit-straddling formatAmount mistake on live data).
+  const line = summarize("chase", "transactions", {
+    date: "2026-04-22",
+    amount: -1245,
+    currency: "USD",
+    name: "Bluebird Bakery",
+  });
+  assert.ok(line.includes("-$12.45"), line);
+  assert.ok(line.includes("Bluebird Bakery"), line);
+  assert.ok(!line.includes("-$1245.00"), line);
+});
+
 test("a pay-statement record formats its cents amount", () => {
   const line = summarize("acme_payroll_demo", "pay_statements", {
     period_end: "2026-03-31",

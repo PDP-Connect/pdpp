@@ -16,6 +16,44 @@ test("builds a money preview from cents fields without inventing schema semantic
   });
 });
 
+test("formats a chase bare `amount` declared `currency` as integer cents", () => {
+  // The live UAT bug: chase `amount` is signed integer cents (declared
+  // `x_pdpp_type: currency`). Without the declared-type signal the small
+  // magnitude (-1245) fell through to the whole-dollars branch and rendered
+  // `-$1245.00`. The declared type must pin it to cents → `-$12.45`.
+  assert.deepEqual(
+    buildRecordPreview("money", { amount: -1245, currency: "USD", name: "Bluebird Bakery" }, { amount: "currency" }),
+    {
+      kind: "money",
+      amount: "-$12.45",
+      amountPositive: false,
+      title: "Bluebird Bakery",
+      body: undefined,
+    }
+  );
+});
+
+test("a declared `currency` amount above the milliunit threshold still formats as cents", () => {
+  // 438120 cents = $4381.20. The magnitude heuristic would have mis-divided this
+  // by 1000 (→ $438.12); the declared type must win regardless of magnitude.
+  const preview = buildRecordPreview("money", { amount: 438_120, currency: "USD" }, { amount: "currency" });
+  assert.equal(preview?.amount, "$4381.20");
+  assert.equal(preview?.amountPositive, true);
+});
+
+test("an explicit declared milliunits type divides by 1000", () => {
+  const preview = buildRecordPreview("money", { amount: -12_450 }, { amount: "currency_milliunits" });
+  assert.equal(preview?.amount, "-$12.45");
+});
+
+test("preserves the legacy milliunit magnitude heuristic when no type is declared", () => {
+  // YNAB-style: no declared field type. A large bare `amount` is milliunits
+  // (÷1000); a small one is whole dollars. This is the un-annotated fallback
+  // the sandbox/YNAB summaries still rely on.
+  assert.equal(buildRecordPreview("money", { amount: -12_450 })?.amount, "-$12.45");
+  assert.equal(buildRecordPreview("money", { amount: 42 })?.amount, "$42.00");
+});
+
 test("builds a message preview from author and body fields", () => {
   assert.deepEqual(buildRecordPreview("message", { role: "user", content: "hello from the thread" }), {
     kind: "message",
