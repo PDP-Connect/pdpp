@@ -8,6 +8,7 @@
  * the existing owner-session + CSRF gate; the dashboard never sees those
  * bearer-equivalent values.
  */
+import { describeError } from "./describe-error.ts";
 import { getAsInternalUrl, ReferenceServerUnreachableError, withOwnerSessionCookie } from "./owner-token.ts";
 
 function asForm(body: Record<string, string>): string {
@@ -20,33 +21,6 @@ function readBody(res: Response): Promise<unknown> {
     return res.json();
   }
   return res.text();
-}
-
-function describeError(body: unknown, fallback: string): string {
-  if (body && typeof body === "object") {
-    const oauth = body as {
-      error?: string | { message?: string };
-      error_description?: string;
-    };
-    if (typeof oauth.error_description === "string" && oauth.error_description) {
-      return oauth.error_description;
-    }
-    if (typeof oauth.error === "string" && oauth.error) {
-      return oauth.error;
-    }
-    if (
-      oauth.error &&
-      typeof oauth.error === "object" &&
-      typeof oauth.error.message === "string" &&
-      oauth.error.message
-    ) {
-      return oauth.error.message;
-    }
-  }
-  if (typeof body === "string" && body.trim()) {
-    return body.trim();
-  }
-  return fallback;
 }
 
 async function fetchAs(path: string, init: RequestInit): Promise<Response> {

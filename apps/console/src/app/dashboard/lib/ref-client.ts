@@ -7,6 +7,7 @@
  * Server-only: do not import from client components.
  */
 import { isOwnerSessionRequiredBody } from "./auth-errors.ts";
+import { describeErrorText } from "./describe-error.ts";
 import { redirectToOwnerLogin } from "./login-redirect.ts";
 import { getAsInternalUrl, ReferenceServerUnreachableError, withOwnerSessionCookie } from "./owner-token.ts";
 import { verifyDashboardSession } from "./verify-session.ts";
@@ -506,7 +507,11 @@ async function refFetch(path: string, params?: Record<string, string | number | 
     if (res.status === 401 && isOwnerSessionRequiredBody(body)) {
       await redirectToOwnerLogin();
     }
-    throw new Error(`_ref ${path} failed (${res.status}): ${body}`);
+    // Surface the reference server's envelope message (`error.message`) rather
+    // than the raw JSON body: this Error.message is shown verbatim to operators
+    // in action banners (e.g. the event-subscription disable affordance), where
+    // a stringified `{"error":{...}}` blob reads as a crash, not a reason.
+    throw new Error(describeErrorText(body, `_ref ${path} failed (${res.status})`));
   }
   return res.json();
 }

@@ -5,6 +5,7 @@
  * ephemeral dashboard state in memory so the UI can step through the flow
  * without inventing a second token minting surface.
  */
+import { describeError } from "./describe-error.ts";
 import { DEFAULT_DCR_INITIAL_ACCESS_TOKEN } from "./operator-grant-request.ts";
 import {
   getAsInternalUrl,
@@ -58,33 +59,6 @@ function readBody(res: Response): Promise<unknown> {
     return res.json();
   }
   return res.text();
-}
-
-function describeError(body: unknown, fallback: string): string {
-  if (body && typeof body === "object") {
-    const oauth = body as {
-      error?: string | { message?: string };
-      error_description?: string;
-    };
-    if (typeof oauth.error_description === "string" && oauth.error_description) {
-      return oauth.error_description;
-    }
-    if (typeof oauth.error === "string" && oauth.error) {
-      return oauth.error;
-    }
-    if (
-      oauth.error &&
-      typeof oauth.error === "object" &&
-      typeof oauth.error.message === "string" &&
-      oauth.error.message
-    ) {
-      return oauth.error.message;
-    }
-  }
-  if (typeof body === "string" && body.trim()) {
-    return body.trim();
-  }
-  return fallback;
 }
 
 function requireFlow(flowId: string): OwnerBootstrapFlow {

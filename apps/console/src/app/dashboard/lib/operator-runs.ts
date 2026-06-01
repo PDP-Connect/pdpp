@@ -1,3 +1,4 @@
+import { describeError } from "./describe-error.ts";
 import { getAsInternalUrl, ReferenceServerUnreachableError, withOwnerSessionCookie } from "./owner-token.ts";
 
 const DURATION_RE = /^(\d+)(s|m|h|d)?$/i;
@@ -12,33 +13,6 @@ function readBody(res: Response): Promise<unknown> {
     return res.json();
   }
   return res.text();
-}
-
-function describeError(body: unknown, fallback: string): string {
-  if (body && typeof body === "object") {
-    const maybeError = body as {
-      error?: string | { message?: string };
-      error_description?: string;
-    };
-    if (typeof maybeError.error_description === "string" && maybeError.error_description) {
-      return maybeError.error_description;
-    }
-    if (typeof maybeError.error === "string" && maybeError.error) {
-      return maybeError.error;
-    }
-    if (
-      maybeError.error &&
-      typeof maybeError.error === "object" &&
-      typeof maybeError.error.message === "string" &&
-      maybeError.error.message
-    ) {
-      return maybeError.error.message;
-    }
-  }
-  if (typeof body === "string" && body.trim()) {
-    return body.trim();
-  }
-  return fallback;
 }
 
 async function fetchAs(path: string, init: RequestInit): Promise<Response> {
