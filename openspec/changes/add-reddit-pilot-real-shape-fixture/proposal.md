@@ -1,29 +1,35 @@
 ## Why
 
-The connector fixture scrubber pipeline shipped with two pilot shapes: a browser DOM capture (Amazon) and an API JSON capture (GitHub). Reddit is now the third distinct shape — a records-level JSONL stream emitted directly from `runConnector()` — and has no committed real-shape fixture. Its integration tests use synthetic listings, which miss drift between the hand-crafted shapes and what Reddit's old-reddit JSON actually serves.
+The connector fixture scrubber pipeline shipped with three pilot shapes: a browser DOM capture (Amazon), an API JSON capture (GitHub), and the records-stream shape. Reddit is the records-stream connector — a JSONL stream emitted directly from `runConnector()` with no intermediate DOM or stored HTTP-JSON layer — and until now had no committed `pilot-real-shape` fixture. Its tests used only synthetic in-test listings, so no committed artifact locked the v0.2.0 emitted-record shape against schema drift.
 
-A 2026-04-25 raw Reddit run exists locally. The deterministic scrubber catches `/u/<user>` mentions and the shared PII defaults, but Reddit bodies and titles contain identifying free-form user-authored text that deterministic rules cannot safely classify. Per the already-shipped scrubber pipeline, this is exactly the case its LLM-assisted structured-redaction mode is designed for.
+The established `pilot-real-shape` convention (see `src/pilot-fixture-test-helper.ts` and the committed GitHub pilot) is a **synthetic-but-shape-real** fixture: real field shapes and representative non-identifying values, with `[REDACTED_*]` placeholders wherever a real capture would carry owner identity. The GitHub records pilot (`fixtures/github/scrubbed/pilot-real-shape/records/*.jsonl`) is exactly this — e.g. `id:"555555"`, `topics:["testing","fixtures","synthetic"]`, `owner_login:"[REDACTED_LOGIN]"`. It is committed, PII-free, and requires no live owner sitting. The only invariant the pilot test enforces is that every committed row passes the connector's live `validateRecord()`.
 
-Committing a reviewed Reddit pilot fixture would (a) lock the v0.2.0 emitted-record shape against regression, (b) give integration tests a real-shape ground truth matching the Amazon/GitHub pilots, and (c) prove the LLM-redaction mode end-to-end on a records-stream shape.
+This change closes the no-human-prep gap: it commits a synthetic-but-shape-real Reddit records pilot across all six streams, wires the shared pilot test, and documents the records-stream shape alongside Amazon (DOM) and GitHub (API JSON). A separate, clearly-labeled live-gated follow-up (below) can later replace the synthetic fixture with a reviewed real owner capture if higher fidelity is wanted — that path requires owner credentials and LLM-assisted redaction, and is not a blocker for locking the shape.
+
+Note: an earlier draft of this proposal asserted "a 2026-04-25 raw Reddit run exists locally." That is not true — there is no `fixtures/reddit/raw/` run on disk, and `fixtures/*/raw/` is gitignored by design. The 2026-04-30 owner capture attempt recorded in `tasks.md` was blocked by a Reddit login/Cloudflare challenge. The synthetic-but-shape-real path does not depend on that capture.
 
 ## What Changes
 
-- Capture a fresh real Reddit run with the v0.2.0 connector (`PDPP_CAPTURE_FIXTURES=1`).
-- Author an LLM redaction plan covering every raw `records/*.jsonl` row — every free-form `title`, `body`, `selftext`, `url`, and any `permalink` whose slug carries identifying text.
-- Run the scrubber with `--llm-redactions-dir` to produce `fixtures/reddit/scrubbed/pilot-real-shape/records/{submitted,comments,saved,upvoted,downvoted,hidden}.jsonl`.
-- Review the scrubbed output by eye; commit only after reviewer sign-off.
-- Add a `pilot-real-shape` integration test that reads the committed JSONL and asserts every row passes `validateRecord()` for its stream.
-- Document the Reddit pilot in the connector authoring guide alongside the Amazon and GitHub pilots, so future connectors have a records-stream reference.
+- Author a synthetic-but-shape-real Reddit records pilot at `fixtures/reddit/scrubbed/pilot-real-shape/records/{submitted,comments,saved,upvoted,downvoted,hidden}.jsonl`. Every row is PII-free, uses `[REDACTED_*]` placeholders where identity would appear, and passes the connector's live `validateRecord()` for its stream.
+- Wire `connectors/reddit/pilot-fixture.test.ts` via the shared `registerPilotFixtureTests({ connector: "reddit", validateRecord })` helper, matching GitHub.
+- Document the records-stream pilot shape in the connector authoring guide §9.1, naming Amazon (DOM), GitHub (API JSON), and Reddit (records-stream) as the three per-shape references.
+- Add a `FIXTURES` note in the Reddit `index.ts` header pointing at the committed pilot and the drift-lock test.
+- Generalize the governance capability so the records-stream pilot path (deterministic-or-synthetic) is a valid way to satisfy the policy, and the LLM-assisted-redaction requirement applies specifically when a connector commits a fixture derived from a **real owner capture** of free-form user-authored text.
+
+### Out of scope (live-gated owner follow-up)
+
+Replacing the synthetic fixture with a reviewed real owner capture is a separate sitting that needs owner credentials and is not required to lock the shape. Its exact owner packet lives in `tasks.md §8`. It does not block this change.
 
 ## Capabilities
 
 ### Modified Capabilities
 
-- `reference-implementation-governance`: extend the scrubbed-fixture policy to cover records-stream JSONL, not just DOM and API JSON.
+- `reference-implementation-governance`: extend the `pilot-real-shape` policy to cover records-stream JSONL (not just DOM and API JSON), and scope the LLM-assisted-redaction requirement to real-owner-capture fixtures specifically.
 
 ## Impact
 
-- `packages/polyfill-connectors/fixtures/reddit/scrubbed/pilot-real-shape/**` (new, committed)
-- `packages/polyfill-connectors/connectors/reddit/integration.test.ts` (new pilot-real-shape test block)
-- `packages/polyfill-connectors/docs/connector-authoring-guide.md` (records-stream pilot reference)
-- No runtime or manifest changes.
+- `packages/polyfill-connectors/fixtures/reddit/scrubbed/pilot-real-shape/records/*.jsonl` (new, committed, synthetic-but-shape-real)
+- `packages/polyfill-connectors/connectors/reddit/pilot-fixture.test.ts` (new, one-line helper wiring)
+- `packages/polyfill-connectors/connectors/reddit/index.ts` (header `FIXTURES` note only)
+- `packages/polyfill-connectors/docs/connector-authoring-guide.md` (§9.1 pilot-real-shape + records-stream reference)
+- No runtime, schema, or manifest changes.

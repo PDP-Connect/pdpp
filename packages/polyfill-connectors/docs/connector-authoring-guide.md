@@ -526,6 +526,28 @@ Confirm the scrubbed fixture preserves parser-relevant structure before commit: 
 
 When committing a pilot fixture, commit only `fixtures/<connector>/scrubbed/<runId>/...` and tests that consume it. Do not commit `fixtures/<connector>/raw/...` or local redaction-plan directories; keep those local unless a plan itself is synthetic and intentionally useful as test data.
 
+**The `pilot-real-shape` fixture (schema-drift lock)**
+
+Each schema-bearing connector ships one canonical fixture under `fixtures/<connector>/scrubbed/pilot-real-shape/`. Its job is to lock the connector's emitted-record shape against schema drift: any later change to `schemas.ts` that would reject a row surfaces as a test failure instead of reaching production silently. Wire it in one line with the shared helper:
+
+```ts
+// connectors/<name>/pilot-fixture.test.ts
+import { registerPilotFixtureTests } from "../../src/pilot-fixture-test-helper.ts";
+import { validateRecord } from "./schemas.ts";
+
+registerPilotFixtureTests({ connector: "<name>", validateRecord });
+```
+
+The helper registers one `node:test` case per `records/<stream>.jsonl`, parses every non-blank line, and asserts `validateRecord(stream, row).ok === true`. A missing fixture directory or an empty stream file fails the test — a `schemas.ts`-bearing connector is expected to ship this fixture (opt out only with `expectMissing: true`, and only with justification).
+
+A `pilot-real-shape` fixture is either a reviewed real owner capture (scrubbed via the steps above) or a hand-authored **synthetic-but-shape-real** record set: real field shapes and representative non-identifying values, with `[REDACTED_*]` placeholders wherever a real capture would carry owner identity. Either way the committed bytes are PII-free; the only requirement the test enforces is that every row matches the connector's live schema.
+
+The three committed pilots double as the per-shape reference for new connectors:
+
+- **Amazon — DOM shape.** `fixtures/amazon/scrubbed/pilot-real-shape/dom/` holds scrubbed `page.content()` HTML for a browser-scraped connector.
+- **GitHub — API-JSON shape.** `fixtures/github/scrubbed/pilot-real-shape/api/` holds scrubbed HTTP response bodies, and `records/*.jsonl` holds the emitted records derived from them.
+- **Reddit — records-stream shape.** `fixtures/reddit/scrubbed/pilot-real-shape/records/{submitted,comments,saved,upvoted,downvoted,hidden}.jsonl` holds the records the connector emits directly from `old.reddit.com/*.json`, with no intermediate DOM or stored HTTP-JSON layer. This is the reference for any connector whose only durable output is a JSONL record stream.
+
 **Smoke-test the capture pipeline**
 
 `pnpm exec tsx bin/test-fixture-capture.ts` runs a self-contained end-to-end check (no network, no browser) that capture + scrub produce sanitized output from PII-bearing input. Run it after changing anything in `fixture-capture.ts`, `scrub-defaults.ts`, or `scrub-fixtures.ts`.

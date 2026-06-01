@@ -35,6 +35,13 @@
  *     enriched records with domain, *_len, is_top_level, is_post,
  *     over_18, gilded, fetched_at.
  *   v0.1.0 — initial browser-session implementation.
+ *
+ * FIXTURES
+ *   A committed records-stream pilot lives at
+ *   fixtures/reddit/scrubbed/pilot-real-shape/records/<stream>.jsonl
+ *   (synthetic-but-shape-real, PII-free). pilot-fixture.test.ts replays it
+ *   through validateRecord to lock the emitted-record shape against drift.
+ *   See docs/connector-authoring-guide.md §9.1.
  */
 
 import type { Page } from "playwright";
