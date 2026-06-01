@@ -47,6 +47,7 @@ import {
   type RecordsListInput,
   RecordsListVisibilityError,
 } from "../../operations/rs-records-list/index.ts";
+import { projectSchemaCompactView } from "../../operations/rs-schema-get/compact-view.ts";
 import {
   executeSchemaGet,
   type SchemaGetDependencies,
@@ -664,6 +665,162 @@ export function mountRsConnectors(app: AppLike, ctx: MountRsReadContext): void {
   );
 }
 
+// Read the `view` selector off the schema query. `qs.parse` may produce a
+// string, an array (repeated params), or an object (bracketed params); only a
+// plain string is meaningful here, and it is compared case-insensitively after
+// trimming. Anything else is treated as "no view" so the full body is served.
+function readSchemaView(query: Readonly<Record<string, unknown>>): string | null {
+  const raw = query?.view;
+  if (typeof raw !== "string") {
+    return null;
+  }
+  const trimmed = raw.trim().toLowerCase();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+// Read the optional `stream` scope off the schema query. Only a non-empty
+// plain string narrows the document; any other shape leaves the document
+// unscoped.
+function readSchemaStreamScope(query: Readonly<Record<string, unknown>>): string | null {
+  const raw = query?.stream;
+  if (typeof raw !== "string") {
+    return null;
+  }
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+interface SchemaGetPlan {
+  dependencies: Record<string, unknown>;
+  operationInput: Record<string, unknown>;
+}
+
+// Owner branch: native single-connector binding when present, else fan out over
+// every registered connector with a null source descriptor (the historical
+// shape). Mutates `queryContext.sourceDescriptor` for the native case.
+function buildOwnerSchemaGetPlan(
+  ctx: MountRsReadContext,
+  tokenInfo: TokenInfo,
+  queryContext: QueryContext
+): SchemaGetPlan {
+  const operationInput = {
+    actor: { kind: "owner", subject_id: tokenInfo.subject_id || null },
+  };
+  const ownerSubjectId = ctx.ownerSubjectIdForBindings(tokenInfo);
+  const nativeManifest = ctx.resolveNativeManifest(ctx.opts);
+  const nativeStorageBinding = ctx.resolveNativeStorageBinding(ctx.opts);
+  if (nativeManifest && nativeStorageBinding) {
+    const source = ctx.buildSourceDescriptor({
+      kind: "provider_native",
+      id: nativeManifest.provider_id,
+    });
+    queryContext.sourceDescriptor = source;
+    return {
+      operationInput,
+      dependencies: {
+        getSourceDescriptor: () => source,
+        listConnectorItems: async () => [
+          await ctx.buildConnectorSchemaItem({
+            source,
+            storageBinding: nativeStorageBinding,
+            manifest: nativeManifest,
+            ownerSubjectId,
+          }),
+        ],
+      },
+    };
+  }
+  // Multiple registered connectors: no single source descriptor, the disclosure
+  // event has historically emitted `source: null` for this branch. Operation
+  // propagates `null` through verbatim.
+  return {
+    operationInput,
+    dependencies: {
+      getSourceDescriptor: () => null,
+      listConnectorItems: async () => {
+        const connectorIds = await ctx.listRegisteredConnectorIds();
+        return Promise.all(
+          connectorIds.map(async (connectorId) => {
+            const manifest = await ctx.resolveRegisteredConnectorManifest(connectorId);
+            return ctx.buildConnectorSchemaItem({
+              source: ctx.buildSourceDescriptor({ kind: "connector", id: connectorId }),
+              storageBinding: { connector_id: connectorId },
+              manifest,
+              ownerSubjectId,
+            });
+          })
+        );
+      },
+    },
+  };
+}
+
+// Client branch: resolve the grant eagerly so the rejected-query path has the
+// correct source descriptor even if connector-item assembly throws. Mutates
+// `queryContext.sourceDescriptor`.
+async function buildClientSchemaGetPlan(
+  ctx: MountRsReadContext,
+  tokenInfo: TokenInfo,
+  queryContext: QueryContext
+): Promise<SchemaGetPlan> {
+  const operationInput = {
+    actor: {
+      kind: "client",
+      subject_id: tokenInfo.subject_id || null,
+      client_id: tokenInfo.client_id || null,
+      grant_id: tokenInfo.grant_id || null,
+    },
+  };
+  const grantResolved = await ctx.resolveGrantManifest(tokenInfo, ctx.opts);
+  const source = grantResolved.source;
+  queryContext.sourceDescriptor = source;
+  const ownerSubjectId = ctx.ownerSubjectIdForBindings(tokenInfo);
+  return {
+    operationInput,
+    dependencies: {
+      getSourceDescriptor: () => source,
+      listConnectorItems: async () => [
+        await ctx.buildConnectorSchemaItem({
+          source,
+          storageBinding: grantResolved.storageBinding,
+          manifest: grantResolved.manifest,
+          grant: tokenInfo.grant,
+          ownerSubjectId,
+        }),
+      ],
+    },
+  };
+}
+
+function buildSchemaGetPlan(
+  ctx: MountRsReadContext,
+  tokenInfo: TokenInfo,
+  queryContext: QueryContext
+): Promise<SchemaGetPlan> {
+  return tokenInfo.pdpp_token_kind === "owner"
+    ? Promise.resolve(buildOwnerSchemaGetPlan(ctx, tokenInfo, queryContext))
+    : buildClientSchemaGetPlan(ctx, tokenInfo, queryContext);
+}
+
+// Derive the connector/stream counts that match the body actually served. When
+// the compact view scopes to a stream (or omits connectors), the served counts
+// differ from the operation's full-body counts; this recomputes them from the
+// served body and falls back to the operation counts for a non-list shape.
+function deriveServedSchemaCounts(
+  responseBody: { connectors?: unknown },
+  fallback: { connector_count: number; stream_count: number }
+): { connector_count: number; stream_count: number } {
+  const connectors = responseBody?.connectors;
+  if (!Array.isArray(connectors)) {
+    return fallback;
+  }
+  const stream_count = connectors.reduce((sum: number, connector) => {
+    const streams = (connector as { streams?: unknown })?.streams;
+    return sum + (Array.isArray(streams) ? streams.length : 0);
+  }, 0);
+  return { connector_count: connectors.length, stream_count };
+}
+
 // GET /v1/schema — one-shot capability/schema discovery for the bearer
 export function mountRsSchema(app: AppLike, ctx: MountRsReadContext): void {
   app.get("/v1/schema", { contract: "getSchema" }, ctx.requireToken, async (req: RouteRequest, res: RouteResponse) => {
@@ -673,6 +830,14 @@ export function mountRsSchema(app: AppLike, ctx: MountRsReadContext): void {
       const queryId = ctx.ensureRequestId(res);
       const { actorType, actorId, traceId, scenarioId } = ctx.buildQueryActorContext(tokenInfo);
       ctx.setReferenceTraceId(res, traceId);
+
+      // `view=compact` selects the additive, token-efficient schema projection;
+      // any other (or omitted) `view` preserves the current full body. `stream`
+      // narrows the document to one stream for the cheap `schema(stream)`
+      // discovery middle step. Both are read-only request shaping — they never
+      // change visibility, only the rendered detail level / scope.
+      const compactView = readSchemaView(req.query) === "compact";
+      const streamScope = readSchemaStreamScope(req.query);
 
       queryContext = {
         tokenInfo,
@@ -685,92 +850,31 @@ export function mountRsSchema(app: AppLike, ctx: MountRsReadContext): void {
           tokenInfo.pdpp_token_kind === "owner"
             ? ctx.buildOwnerQuerySourceDescriptor(req, ctx.opts)
             : ctx.buildClientSourceDescriptor(tokenInfo),
-        queryData: { query_shape: "schema" },
+        queryData: {
+          query_shape: "schema",
+          ...(compactView ? { requested_view: "compact" } : {}),
+          ...(streamScope ? { requested_stream: streamScope } : {}),
+        },
       };
 
-      let operationInput: Record<string, unknown>;
-      let dependencies: Record<string, unknown>;
-      if (tokenInfo.pdpp_token_kind === "owner") {
-        operationInput = {
-          actor: { kind: "owner", subject_id: tokenInfo.subject_id || null },
-        };
-        const ownerSubjectId = ctx.ownerSubjectIdForBindings(tokenInfo);
-        const nativeManifest = ctx.resolveNativeManifest(ctx.opts);
-        const nativeStorageBinding = ctx.resolveNativeStorageBinding(ctx.opts);
-        if (nativeManifest && nativeStorageBinding) {
-          const source = ctx.buildSourceDescriptor({
-            kind: "provider_native",
-            id: nativeManifest.provider_id,
-          });
-          queryContext.sourceDescriptor = source;
-          dependencies = {
-            getSourceDescriptor: () => source,
-            listConnectorItems: async () => {
-              const item = await ctx.buildConnectorSchemaItem({
-                source,
-                storageBinding: nativeStorageBinding,
-                manifest: nativeManifest,
-                ownerSubjectId,
-              });
-              return [item];
-            },
-          };
-        } else {
-          // Multiple registered connectors: no single source descriptor, the
-          // disclosure event has historically emitted `source: null` for this
-          // branch. Operation propagates `null` through verbatim.
-          dependencies = {
-            getSourceDescriptor: () => null,
-            listConnectorItems: async () => {
-              const connectorIds = await ctx.listRegisteredConnectorIds();
-              return Promise.all(
-                connectorIds.map(async (connectorId) => {
-                  const manifest = await ctx.resolveRegisteredConnectorManifest(connectorId);
-                  return ctx.buildConnectorSchemaItem({
-                    source: ctx.buildSourceDescriptor({ kind: "connector", id: connectorId }),
-                    storageBinding: { connector_id: connectorId },
-                    manifest,
-                    ownerSubjectId,
-                  });
-                })
-              );
-            },
-          };
-        }
-      } else {
-        operationInput = {
-          actor: {
-            kind: "client",
-            subject_id: tokenInfo.subject_id || null,
-            client_id: tokenInfo.client_id || null,
-            grant_id: tokenInfo.grant_id || null,
-          },
-        };
-        // Eagerly resolve the grant so the rejected-query path has the
-        // correct source descriptor even if connector-item assembly throws.
-        const grantResolved = await ctx.resolveGrantManifest(tokenInfo, ctx.opts);
-        const source = grantResolved.source;
-        queryContext.sourceDescriptor = source;
-        const ownerSubjectId = ctx.ownerSubjectIdForBindings(tokenInfo);
-        dependencies = {
-          getSourceDescriptor: () => source,
-          listConnectorItems: async () => {
-            const item = await ctx.buildConnectorSchemaItem({
-              source,
-              storageBinding: grantResolved.storageBinding,
-              manifest: grantResolved.manifest,
-              grant: tokenInfo.grant,
-              ownerSubjectId,
-            });
-            return [item];
-          },
-        };
-      }
+      // Build the actor input + connector-item dependencies for this bearer.
+      // Mutates `queryContext.sourceDescriptor` to the resolved source (mirrors
+      // the inline behavior the route previously had and the `resolveReadScope`
+      // convention used by the records routes).
+      const { operationInput, dependencies } = await buildSchemaGetPlan(ctx, tokenInfo, queryContext);
 
       const result = await executeSchemaGet(
         operationInput as unknown as SchemaGetInput,
         dependencies as unknown as SchemaGetDependencies
       );
+
+      // Apply the compact projection (and optional stream scope) as a pure,
+      // post-operation transform. The operation owns visibility/grant scope and
+      // emits the full body; the route only down-projects the rendered detail.
+      const responseBody = compactView
+        ? projectSchemaCompactView(result.response, { stream: streamScope })
+        : result.response;
+      const servedCounts = deriveServedSchemaCounts(responseBody, result.counts);
 
       await ctx.emitQueryReceived(queryContext, req);
 
@@ -791,12 +895,13 @@ export function mountRsSchema(app: AppLike, ctx: MountRsReadContext): void {
         data: {
           source: result.sourceDescriptor,
           query_shape: "schema",
-          connector_count: result.counts.connector_count,
-          stream_count: result.counts.stream_count,
+          connector_count: servedCounts.connector_count,
+          stream_count: servedCounts.stream_count,
+          ...(compactView ? { requested_view: "compact" } : {}),
         },
       });
 
-      return res.json(ctx.finalizeCanonicalEnvelope(result.response, req));
+      return res.json(ctx.finalizeCanonicalEnvelope(responseBody, req));
     } catch (err) {
       if (queryContext) {
         await ctx.emitQueryReceived(queryContext, req);
