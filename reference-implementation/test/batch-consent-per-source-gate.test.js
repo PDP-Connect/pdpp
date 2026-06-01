@@ -6,7 +6,11 @@ import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
 import { getDb } from '../server/db.js';
-import { parsePendingConsentRequestUri } from '../server/auth.js';
+import {
+  getGrantPackageIdForGrant,
+  listGrantPackagesForOwner,
+  parsePendingConsentRequestUri,
+} from '../server/auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
@@ -180,6 +184,49 @@ test('batch consent gate: explicit per-source indexes issue only the selected ch
     const db = getDb();
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM grants').get().n, 1);
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM grant_package_members').get().n, 1);
+  });
+});
+
+test('batch consent gate: approved sources become independent child grants under one package', async () => {
+  await withHarness(async ({ asUrl, spotify, reddit }) => {
+    const { body } = await par(asUrl, [
+      detail({ kind: 'connector', id: spotify.connector_id }, [{ name: 'top_artists' }]),
+      detail({ kind: 'connector', id: reddit.connector_id }, [{ name: 'posts' }]),
+    ]);
+
+    const approved = await approve(asUrl, {
+      request_uri: body.request_uri,
+      subject_id: 'owner_local',
+      approved_source_indexes: [0, 1],
+    });
+    assert.equal(approved.status, 200);
+    assert.ok(approved.body.package_id?.startsWith('gpkg_'));
+    assert.equal(approved.body.grant.package, true);
+    assert.equal(approved.body.grant.child_grants.length, 2);
+    assert.deepEqual(
+      approved.body.grant.child_grants.map((child) => child.source.id).sort(),
+      ['reddit', 'spotify'],
+    );
+
+    const db = getDb();
+    const pkg = db
+      .prepare('SELECT package_id, status FROM grant_packages WHERE package_id = ?')
+      .get(approved.body.package_id);
+    assert.equal(pkg.status, 'active');
+    const members = db
+      .prepare('SELECT grant_id, token_id FROM grant_package_members WHERE package_id = ?')
+      .all(approved.body.package_id);
+    assert.equal(members.length, 2);
+    assert.equal(new Set(members.map((member) => member.grant_id)).size, 2);
+    assert.equal(new Set(members.map((member) => member.token_id)).size, 2);
+    assert.ok(!members.some((member) => member.token_id === approved.body.token));
+
+    const owned = await listGrantPackagesForOwner({ limit: 50 });
+    const listed = owned.data.find((entry) => entry.package_id === approved.body.package_id);
+    assert.equal(listed?.member_count, 2);
+    for (const member of members) {
+      assert.equal(await getGrantPackageIdForGrant(member.grant_id), approved.body.package_id);
+    }
   });
 });
 
