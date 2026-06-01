@@ -22,6 +22,8 @@ import {
 } from './stores/connector-instance-store.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
 import {
+  buildLimitClampedWarning,
+  clampRecordsPageLimit,
   enforceConnectionNarrowing,
   projectStorageDisplayName,
   resolveRequestConnectionId,
@@ -54,8 +56,6 @@ async function resolveRecordIdentityForBinding(connectorInstanceId, connectorId)
   return identity;
 }
 
-const DEFAULT_LIMIT = 25;
-const MAX_LIMIT = 100;
 
 // Canonical public-read graded-count vocabulary. Mirrors
 // `SUPPORTED_COUNT_KINDS` in records.js. Kept in sync by duplication so
@@ -391,12 +391,6 @@ function decorateRecordWithConnectionIdentity(record, identity) {
   if (displayName) {
     record.display_name = displayName;
   }
-}
-
-function parseLimit(value) {
-  const parsed = Number.parseInt(String(value ?? DEFAULT_LIMIT), 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_LIMIT;
-  return Math.min(parsed, MAX_LIMIT);
 }
 
 function buildFilterClause(filter, params) {
@@ -819,8 +813,12 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
   const resolvedSort = validateCanonicalSort(requestParams.sort, manifestStream);
   const orderDirection = resolveListOrder(requestParams.order, resolvedSort);
   const order = orderDirection === 'ASC' ? 'asc' : 'desc';
-  const limit = parseLimit(requestParams.limit);
+  const { limit, clamped: limitClamped, requested: requestedLimit } =
+    clampRecordsPageLimit(requestParams.limit);
   const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
+  if (limitClamped) {
+    requestWarnings.push(buildLimitClampedWarning(requestedLimit));
+  }
   enforceConnectionNarrowing(requestParams, connectorInstanceId);
   const identity = await resolveRecordIdentityForBinding(connectorInstanceId, connectorId);
 

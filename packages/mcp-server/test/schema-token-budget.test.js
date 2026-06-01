@@ -304,8 +304,13 @@ test('query_records description documents the bounded default page and readable 
   );
   assert.match(
     queryTool.description,
-    /caps any `limit` at 100/,
-    'description must state the RS limit cap (100)',
+    /capped at 100/,
+    'description must state the limit cap (100)',
+  );
+  assert.match(
+    queryTool.description,
+    /limit_clamped/,
+    'description must name the REST limit_clamped warning so the behavior is never silent',
   );
   assert.match(
     queryTool.description,
@@ -316,6 +321,51 @@ test('query_records description documents the bounded default page and readable 
     queryTool.description,
     /structuredContent\.data/,
     'description must point at the canonical full page in structuredContent.data',
+  );
+
+  await client.close();
+  await server.close();
+});
+
+test('query_records input schema caps `limit` at 100 and rejects an over-max value', async () => {
+  // The MCP layer mirrors the spec-core §8 contract (`limit` max 100). Rather
+  // than forward `limit=500` and let the RS silently clamp it, the tool's input
+  // schema caps `limit` at 100 so an over-max value is rejected at validation —
+  // the page size an agent asks for through this tool is the page size it gets.
+  const { fetch } = makeLargeSchemaFetch();
+  const { client, server } = await connectClient(fetch);
+
+  const tools = await client.listTools();
+  const queryTool = tools.tools.find((t) => t.name === 'query_records');
+  assert.ok(queryTool, 'query_records tool must be exposed');
+  assert.equal(
+    queryTool.inputSchema.properties.limit.maximum,
+    100,
+    'limit input must advertise the contract maximum of 100',
+  );
+
+  // The MCP SDK validates arguments against the published input schema before
+  // the handler runs, returning a typed input-validation error result (it does
+  // not reach the RS). An over-max `limit` therefore never silently clamps.
+  const overMax = await client.callTool({
+    name: 'query_records',
+    arguments: { stream: 'orders', limit: 500 },
+  });
+  assert.equal(overMax.isError, true, 'an over-max limit must be an error result');
+  const overMaxText = overMax.content?.map((c) => c.text ?? '').join('\n') ?? '';
+  assert.match(
+    overMaxText,
+    /validation|too_big|less than or equal to 100/i,
+    'the error must be an input-validation rejection of the over-max limit',
+  );
+
+  // The cap is inclusive: `limit=100` is a valid argument against the published
+  // schema (proves the boundary is not a blanket rejection of large pages).
+  const limitSchema = queryTool.inputSchema.properties.limit;
+  assert.equal(limitSchema.maximum, 100);
+  assert.ok(
+    limitSchema.exclusiveMaximum === undefined,
+    'the maximum must be inclusive so limit=100 is accepted',
   );
 
   await client.close();

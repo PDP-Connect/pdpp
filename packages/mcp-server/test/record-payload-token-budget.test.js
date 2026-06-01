@@ -122,7 +122,9 @@ async function connectClient(fetchImpl) {
 test('query_records prose stays bounded while the canonical envelope remains verbatim in structuredContent.data', async () => {
   const { client, server } = await connectClient(makeFatFetch());
 
-  const result = await client.callTool({ name: 'query_records', arguments: { stream: 'mail', limit: 500 } });
+  // limit is capped at the contract max of 100; the fat-fetch stub returns a
+  // multi-MB envelope regardless, which is what this prose-budget guard needs.
+  const result = await client.callTool({ name: 'query_records', arguments: { stream: 'mail', limit: 100 } });
   assert.equal(result.isError, undefined);
 
   const proseBytes = byteLength(result.content[0].text);

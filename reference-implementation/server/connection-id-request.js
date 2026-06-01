@@ -41,6 +41,11 @@ export const CONNECTION_ALIAS_DEPRECATED_WARNING_CODE = 'deprecated_alias_used';
  *   the deprecated `connector_instance_id` alias was sent on the wire.
  * - `count_downgraded`: emitted when the server downgraded a requested
  *   count grade (e.g. estimated → exact, or estimated → none).
+ * - `limit_clamped`: emitted by the records list path when a request asks
+ *   for more records per page than the contract maximum (`limit` > 100). The
+ *   server returns the bounded page rather than rejecting, and surfaces this
+ *   warning so an agent learns the effective page size instead of silently
+ *   reasoning against a 500-record page it never received.
  * - `source_skipped_not_applicable`, `partial_results`,
  *   `compatibility_fallback`: reserved for multi-source read fan-in and
  *   compatibility paths that do not yet emit warnings; the constants
@@ -53,10 +58,54 @@ export const CONNECTION_ALIAS_DEPRECATED_WARNING_CODE = 'deprecated_alias_used';
 export const CANONICAL_WARNING_CODES = Object.freeze({
   DEPRECATED_ALIAS_USED: 'deprecated_alias_used',
   COUNT_DOWNGRADED: 'count_downgraded',
+  LIMIT_CLAMPED: 'limit_clamped',
   SOURCE_SKIPPED_NOT_APPLICABLE: 'source_skipped_not_applicable',
   PARTIAL_RESULTS: 'partial_results',
   COMPATIBILITY_FALLBACK: 'compatibility_fallback',
 });
+
+// Records-list page sizing. spec-core §8 ("List records") fixes the public
+// contract: `limit` defaults to 25 and is capped at 100. These were previously
+// inline magic numbers duplicated at the SQLite and Postgres clamp sites;
+// naming them here — the module both record paths already import — gives one
+// source of truth for the runtime, the warning message, and the tests.
+export const RECORDS_DEFAULT_PAGE_LIMIT = 25;
+export const RECORDS_MAX_PAGE_LIMIT = 100;
+
+/**
+ * Clamp a request's `limit` to the records-list page contract (default 25,
+ * max 100) without throwing. Returns the effective `limit`, the parsed
+ * `requested` value (or null when absent/unparseable), and whether the cap
+ * was applied.
+ *
+ * The runtime clamps rather than rejects an over-max `limit` so a client that
+ * optimistically asks for a big page still gets a valid bounded page; the
+ * `clamped` flag lets the caller surface a `limit_clamped` warning so the
+ * reduction is never silent. A non-positive or unparseable `limit` falls back
+ * to the default and is not treated as a clamp (there is nothing to report).
+ */
+export function clampRecordsPageLimit(rawLimit) {
+  const parsed = Number.parseInt(rawLimit, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return { limit: RECORDS_DEFAULT_PAGE_LIMIT, requested: null, clamped: false };
+  }
+  if (parsed > RECORDS_MAX_PAGE_LIMIT) {
+    return { limit: RECORDS_MAX_PAGE_LIMIT, requested: parsed, clamped: true };
+  }
+  return { limit: parsed, requested: parsed, clamped: false };
+}
+
+/**
+ * Build the structured `limit_clamped` warning for a clamped records page.
+ * Shape matches the other canonical read warnings (`{ code, param, message }`).
+ */
+export function buildLimitClampedWarning(requested) {
+  return {
+    code: CANONICAL_WARNING_CODES.LIMIT_CLAMPED,
+    param: 'limit',
+    message: `Requested limit=${requested} exceeds the maximum page size of ${RECORDS_MAX_PAGE_LIMIT}; returned ${RECORDS_MAX_PAGE_LIMIT} records per page. Page forward with the returned cursor.`,
+  };
+}
 
 /**
  * Throw a typed `invalid_argument` error when both identifiers are present

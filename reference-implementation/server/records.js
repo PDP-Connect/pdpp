@@ -79,7 +79,9 @@ import {
   markRetainedSizeStreamDirty,
 } from './retained-size-read-model.js';
 import {
+  buildLimitClampedWarning,
   CANONICAL_WARNING_CODES,
+  clampRecordsPageLimit,
   CONNECTION_ALIAS_DEPRECATED_WARNING_CODE,
   enforceConnectionNarrowing,
   projectStorageDisplayName,
@@ -2051,7 +2053,11 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
   const effective = buildEffectiveFilter(streamGrant, requestParams, requiredFields);
   const expansions = normalizeExpandRequest(requestParams, stream, grant, mStream, order);
 
-  const limit = Math.min(parseInt(requestParams.limit) || 25, 100);
+  const { limit, clamped: limitClamped, requested: requestedLimit } =
+    clampRecordsPageLimit(requestParams.limit);
+  if (limitClamped) {
+    requestWarnings.push(buildLimitClampedWarning(requestedLimit));
+  }
 
   // Parse changes_since cursor
   const changesSince = requestParams.changes_since ? parseChangesSinceCursor(requestParams.changes_since) : null;

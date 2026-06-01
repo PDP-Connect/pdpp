@@ -63,6 +63,9 @@ const CONNECTION_ID_DESCRIPTION =
 const CONNECTOR_INSTANCE_ID_DESCRIPTION =
   'Deprecated wire alias for `connection_id`. Accepted only for pre-migration compatibility — new clients SHOULD pass `connection_id` instead and ignore this field on the response.';
 
+const LIMIT_DESCRIPTION =
+  'Records per page. Omit for the default page of 25; the maximum is 100 (the spec-core §8 contract). Values above 100 are rejected here rather than silently clamped, so the page size you request is always the page size you get. Page forward with the returned `cursor` instead of asking for a larger page.';
+
 const FIELDS_DESCRIPTION =
   'Field allowlist for projection. Field paths must be declared by the stream; advertised by `GET /v1/schema` (`field_capabilities`). Unknown paths are rejected by the RS rather than silently widened.';
 
@@ -278,14 +281,14 @@ export function buildTools({ rs, providerUrl }) {
       name: 'query_records',
       title: 'Query PDPP records',
       description:
-        'Query records in a stream via `GET /v1/streams/{stream}/records`. Forwards canonical public read args verbatim — MCP does not silently drop a parameter the RS would reject. The page is bounded by default: omitting `limit` returns at most 25 records and the RS caps any `limit` at 100, so this tool is safe to call before you know a stream is small; page forward with the returned `cursor` and narrow the payload with `fields` (a schema-advertised projection) when records are wide. The `content[]` text summary previews up to the first 5 records within a fixed character budget; the full page stays in `structuredContent.data`. Omitting `connection_id` on a multi-connection grant fans in across granted connections; records carry `connection_id` for attribution and package-source metadata uses canonical `connector_key` for connector type. ' +
+        'Query records in a stream via `GET /v1/streams/{stream}/records`. Forwards canonical public read args verbatim — MCP does not silently drop a parameter the RS would reject. The page is bounded by default: omitting `limit` returns at most 25 records and `limit` is capped at 100 (the spec-core §8 contract). This tool enforces that cap at input validation, so a `limit` above 100 is rejected here rather than silently clamped; a direct REST client that sends `limit>100` is clamped to 100 and told so via a `limit_clamped` entry in the response `meta.warnings[]`. Either way the page size is never silently surprising. The tool is safe to call before you know a stream is small; page forward with the returned `cursor` and narrow the payload with `fields` (a schema-advertised projection) when records are wide. The `content[]` text summary previews up to the first 5 records within a fixed character budget; the full page stays in `structuredContent.data`. Omitting `connection_id` on a multi-connection grant fans in across granted connections; records carry `connection_id` for attribution and package-source metadata uses canonical `connector_key` for connector type. ' +
         CANONICAL_SCHEMA_HINT +
         ' Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({
           stream: z.string().min(1).describe('Stream name as returned by `list_streams`.'),
-          limit: z.number().int().positive().max(1000).optional(),
+          limit: z.number().int().positive().max(100).optional().describe(LIMIT_DESCRIPTION),
           cursor: z.string().optional(),
           order: z.string().optional().describe(ORDER_DESCRIPTION),
           sort: z.string().optional().describe(SORT_DESCRIPTION),
