@@ -5465,7 +5465,7 @@ The tool SHALL be authorized by direct database access (`PDPP_DATABASE_URL` or `
 
 The tool SHALL maintain a registry of `(connector_id, stream)` compaction policies in code. Each policy SHALL declare the per-stream fingerprint definition (`excludeKeys` list, where an empty list means stable-stringify of the full `record_json`). The registry SHALL cover two policy families:
 
-- **Connector fingerprint mirror.** Gmail `threads`, Slack `workspace` (with `fetched_at` excluded from the fingerprint), Slack `users`, Slack `files`, and YNAB `payee_locations`. Each policy SHALL declare the same fingerprint definition the corresponding connector uses to suppress no-op emits.
+- **Connector fingerprint mirror.** Gmail `threads`, Slack `workspace` (with `fetched_at` excluded from the fingerprint), Slack `users`, Slack `files`, YNAB `payee_locations`, and YNAB `budgets` (with `last_month` and `last_modified_on` excluded from the fingerprint). Each policy SHALL declare the same fingerprint definition the corresponding connector uses to suppress no-op emits.
 - **Exact stable-JSON identity for local-device connectors.** Codex (`messages`, `function_calls`, `sessions`, `skills`, `prompts`, `rules`) and Claude Code (`messages`, `attachments`, `sessions`, `skills`, `memory_notes`, `slash_commands`). Each policy SHALL declare an empty `excludeKeys` list. The policy is justified per-stream by verifying the `record_json` payload contains no `fetched_at`-style volatile field — adjacent versions with byte-identical canonical JSON are then strictly more conservative than the connector's own no-op-emit semantics could be.
 
 Registering a new policy SHALL be a code-review gate that either references a connector-side fingerprint already in production (family 1) or documents the per-stream proof that the record payload contains no volatile field that would force exact-JSON identity to over-classify (family 2).
@@ -5523,6 +5523,12 @@ After a successful apply against a `(connector_instance_id, stream)` scope, the 
 - **WHEN** the operator invokes the tool with `--apply` but `PDPP_DATABASE_URL` and `PDPP_TEST_POSTGRES_URL` are both unset
 - **THEN** the tool SHALL exit non-zero
 - **AND** SHALL NOT create a backup table or modify any row
+
+#### Scenario: The YNAB budgets policy collapses calendar-only churn but preserves genuine summary edits
+
+- **WHEN** a `ynab/budgets` key's history contains adjacent versions whose only differences are `last_month` and `last_modified_on`
+- **THEN** the tool SHALL classify those adjacent versions as removable under the `["last_month", "last_modified_on"]` fingerprint exclusion, matching the connector's `BUDGET_FINGERPRINT_EXCLUDE` no-op-emit definition
+- **AND** a version that changes any retained budget-summary field (for example the budget `name`, currency locale, date format, or `first_month`) SHALL remain a fingerprint boundary that is never collapsed
 
 ### Requirement: The reference AS SHALL support RFC 7592 client deletion for dynamic clients
 
@@ -6941,7 +6947,7 @@ The reference implementation SHALL expose public read capabilities through `GET 
 - **THEN** `/v1/schema` SHALL advertise that limitation instead of requiring the client to discover it by failed calls.
 
 ### Requirement: Public read warnings SHALL be structured and closed over known non-fatal outcomes
-The reference implementation SHALL report non-fatal lossiness, compatibility behavior, approximation, skipped sources, or partial results through structured `meta.warnings` entries with stable codes. Warnings SHALL NOT become a prose-only catch-all.
+The reference implementation SHALL report non-fatal lossiness, compatibility behavior, approximation, skipped sources, partial results, or a clamped page limit through structured `meta.warnings` entries with stable codes. Warnings SHALL NOT become a prose-only catch-all.
 
 #### Scenario: Source is skipped as not applicable
 - **WHEN** a multi-source public read skips a source because the requested stream or field is not applicable
@@ -6952,8 +6958,16 @@ The reference implementation SHALL report non-fatal lossiness, compatibility beh
 - **WHEN** a request succeeds because the server accepted a deprecated compatibility alias
 - **THEN** the response SHALL include a warning code for deprecated alias usage unless the operation's migration window explicitly suppresses warnings for that alias.
 
+#### Scenario: Records-list limit is clamped to the page maximum
+- **WHEN** a records-list read receives a `limit` greater than the contract maximum page size (100)
+- **THEN** the response SHALL return at most the maximum page size of records rather than rejecting the request
+- **AND** the response SHALL include a structured `meta.warnings` entry with the stable code `limit_clamped` and `detail.requested_limit` / `detail.max_limit` values identifying the requested limit and the effective maximum
+- **AND** a request whose `limit` is within the maximum (including exactly the maximum) SHALL NOT include a `limit_clamped` warning
+- **AND** a request whose `limit` is absent, non-positive, or unparseable SHALL fall back to the default page size and SHALL NOT include a `limit_clamped` warning
+- **AND** under multi-connection fan-in the response SHALL include at most one `limit_clamped` warning regardless of how many connections were queried.
+
 ### Requirement: MCP read tools SHALL mirror the canonical public read contract
-The in-repo MCP server and hosted MCP gateway SHALL mirror the canonical public read contract instead of defining a separate read API. MCP tool input schemas SHALL expose the same public arguments as REST, tool output schemas SHALL describe the canonical envelope, `structuredContent` SHALL carry the canonical body, and prose `content[]` SHALL be a concise summary only.
+The in-repo MCP server and hosted MCP gateway SHALL mirror the canonical public read contract instead of defining a separate read API. MCP tool input schemas SHALL expose the same public arguments as REST, including the same documented bounds, tool output schemas SHALL describe the canonical envelope, `structuredContent` SHALL carry the canonical body, and prose `content[]` SHALL be a concise summary only.
 
 #### Scenario: MCP tool returns structured content
 - **WHEN** an MCP client calls a read tool such as `query_records`, `search`, `fetch`, `list_streams`, `schema`, or `aggregate_records`
@@ -6964,6 +6978,12 @@ The in-repo MCP server and hosted MCP gateway SHALL mirror the canonical public 
 - **WHEN** an MCP client supplies filters, fields, sort, expand, count, cursor, or `connection_id`
 - **THEN** the MCP server SHALL forward or validate them according to the same canonical public read contract as REST
 - **AND** it SHALL NOT silently drop arguments that the REST surface would reject.
+
+#### Scenario: MCP enforces the records-list limit cap at input validation
+- **WHEN** an MCP client calls `query_records` with a `limit` greater than the contract maximum page size (100)
+- **THEN** the MCP `query_records` input schema SHALL advertise the maximum as an inclusive bound of 100
+- **AND** the MCP server SHALL reject the over-max `limit` at input validation rather than forwarding it to the RS to be silently clamped
+- **AND** a `limit` within the maximum (including exactly the maximum) SHALL be accepted and forwarded.
 
 ### Requirement: The reference's hosted consent-approval HTML SHALL NOT embed a live client bearer
 
@@ -7677,3 +7697,53 @@ The reference implementation SHALL provide a testable owner-agent access pattern
 - **WHEN** the trusted local owner agent has a durable valid-TLS HTTPS callback receiver
 - **THEN** it MAY create event subscriptions for low-latency update notification where the reference advertises trusted owner-agent support
 - **AND** when it lacks such a receiver it SHALL use cursor polling instead of attempting callback delivery to an unreachable local endpoint
+
+### Requirement: `GET /v1/schema` SHALL offer an additive compact view
+
+The reference implementation SHALL expose an additive, opt-in compact projection
+of the `rs.schema.get` response on `GET /v1/schema`, selected by `view=compact`,
+optionally scoped to a single stream by `stream=<name>`. The compact view SHALL
+materially reduce the response size while preserving the identity an owner-agent
+REST client needs to continue the `list_streams -> schema(stream) ->
+query_records` discovery path. The full body SHALL remain the default. The
+compact view SHALL NOT be the default in this capability and SHALL NOT alter
+grant evaluation, visibility, connection identity, or the deprecated
+`connector_instance_id` alias. The public route contract and generated OpenAPI
+artifact SHALL document the `view` and `stream` query selectors and SHALL admit
+both full field-capability objects and compact field-capability flag strings on
+the schema response.
+
+#### Scenario: Omitted view preserves the full body
+
+- **WHEN** a caller requests `GET /v1/schema` without a `view` parameter
+- **THEN** the response SHALL be the exhaustive `rs.schema.get` body, byte-for-byte equivalent to the prior behavior, including the raw per-stream and per-field JSON Schema
+- **AND** the response SHALL NOT carry a `detail: "compact"` marker
+
+#### Scenario: Compact view returns a smaller identity-preserving projection
+
+- **WHEN** a caller requests `GET /v1/schema?view=compact`
+- **THEN** the response SHALL preserve the envelope shape (`object: "schema"`, `bearer`, `connectors[]`) and carry a top-level `detail: "compact"` marker
+- **AND** each stream SHALL preserve its stream identity (`name`) and per-connection identity (`granted_connections[].{connection_id, display_name}`, and the deprecated `connector_instance_id` alias where the stream entry exposes it)
+- **AND** each field of `field_capabilities` SHALL be projected to a single terse capability-flag string carrying its declared type, grant flag, and usable filter/search/aggregation flags
+- **AND** the response SHALL NOT include the raw per-stream JSON Schema or the raw per-field JSON Schema
+- **AND** the projected body SHALL be materially smaller than the full body for a schema document carrying verbose per-field JSON Schema
+
+#### Scenario: Compact view scoped to a single stream
+
+- **WHEN** a caller requests `GET /v1/schema?view=compact&stream=<name>`
+- **THEN** the response SHALL include only connectors that contribute the named stream, and within each such connector only the named stream
+- **AND** each surviving connector's `stream_count` SHALL equal the number of streams it contributes after scoping
+- **AND** the per-field capability flags SHALL remain present on the scoped stream
+
+#### Scenario: Unknown stream scope is empty, not an error
+
+- **WHEN** a caller requests `GET /v1/schema?view=compact&stream=<name>` for a stream no granted connector exposes
+- **THEN** the response SHALL be a successful compact schema body with an empty `connectors` array
+- **AND** the response SHALL NOT be an error
+
+#### Scenario: Compact projection is a route-level down-projection
+
+- **WHEN** the compact view is produced
+- **THEN** it SHALL be a pure transform applied to the response the canonical `rs.schema.get` operation already produced, after the operation runs and before envelope finalization
+- **AND** it SHALL NOT recompute visibility, grant scope, or disclosure totals
+- **AND** the route contract and generated artifacts SHALL describe the compact selector and response marker without making compact the default
