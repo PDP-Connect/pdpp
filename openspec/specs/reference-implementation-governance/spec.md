@@ -645,4 +645,3 @@ A committed records-stream pilot fixture SHALL be consumed by at least one integ
 - **WHEN** the integration test replays `fixtures/<connector>/scrubbed/pilot-real-shape/records/<stream>.jsonl`
 - **THEN** any row for which `validateRecord(stream, row)` returns `{ ok: false }` SHALL fail the test with the zod issues reported
 - **AND** the test SHALL NOT silently skip or soft-fail when a fixture is absent — missing pilot files SHALL cause test failure
-
