@@ -172,7 +172,7 @@ CREATE TABLE IF NOT EXISTS connector_instances (
   connector_id          TEXT NOT NULL,
   display_name          TEXT NOT NULL,
   status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'revoked')),
-  source_kind           TEXT NOT NULL CHECK (source_kind IN ('account', 'local_device', 'manual')),
+  source_kind           TEXT NOT NULL CHECK (source_kind IN ('account', 'local_device', 'browser_collector', 'manual')),
   source_binding_key    TEXT NOT NULL,
   source_binding_json   TEXT NOT NULL DEFAULT '{}',
   created_at            TEXT NOT NULL,
@@ -2482,7 +2482,7 @@ function migrateConnectorInstancesSourceKindCheck(raw, opts = {}) {
         connector_id          TEXT NOT NULL,
         display_name          TEXT NOT NULL,
         status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'revoked')),
-        source_kind           TEXT NOT NULL CHECK (source_kind IN ('account', 'local_device', 'manual')),
+        source_kind           TEXT NOT NULL CHECK (source_kind IN ('account', 'local_device', 'browser_collector', 'manual')),
         source_binding_key    TEXT NOT NULL,
         source_binding_json   TEXT NOT NULL DEFAULT '{}',
         created_at            TEXT NOT NULL,
@@ -2532,6 +2532,82 @@ function migrateConnectorInstancesSourceKindCheck(raw, opts = {}) {
   const result = migration();
   if (typeof opts.onSchemaMigration === 'function') {
     opts.onSchemaMigration({ name: 'connector_instances_source_kind_check', ...result });
+  }
+  return result;
+}
+
+// Widen the connector_instances.source_kind CHECK to admit `browser_collector`
+// alongside the existing account/local_device/manual kinds. A database created
+// before the browser-collector enrollment primitive carries the narrower CHECK;
+// rebuild the table so a `browser_collector` enrollment can persist. No-op once
+// the constraint already names `browser_collector`. See
+// add-browser-collector-enrollment-primitive design Decision 1/2.
+function migrateConnectorInstancesSourceKindBrowserCollector(raw, opts = {}) {
+  const table = raw.prepare(
+    `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'connector_instances'`
+  ).get();
+  if (!table?.sql || table.sql.includes("'browser_collector'")) {
+    return { rebuilt: false };
+  }
+
+  const migration = raw.transaction(() => {
+    raw.exec(`
+      ALTER TABLE connector_instances RENAME TO connector_instances_old_browser_collector;
+      DROP INDEX IF EXISTS idx_connector_instances_owner_connector_status;
+
+      CREATE TABLE connector_instances (
+        connector_instance_id TEXT PRIMARY KEY,
+        owner_subject_id      TEXT NOT NULL,
+        connector_id          TEXT NOT NULL,
+        display_name          TEXT NOT NULL,
+        status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'revoked')),
+        source_kind           TEXT NOT NULL CHECK (source_kind IN ('account', 'local_device', 'browser_collector', 'manual')),
+        source_binding_key    TEXT NOT NULL,
+        source_binding_json   TEXT NOT NULL DEFAULT '{}',
+        created_at            TEXT NOT NULL,
+        updated_at            TEXT NOT NULL,
+        revoked_at            TEXT,
+        UNIQUE(owner_subject_id, connector_id, source_kind, source_binding_key),
+        FOREIGN KEY(connector_id) REFERENCES connectors(connector_id) ON DELETE RESTRICT
+      );
+
+      INSERT INTO connector_instances(
+        connector_instance_id,
+        owner_subject_id,
+        connector_id,
+        display_name,
+        status,
+        source_kind,
+        source_binding_key,
+        source_binding_json,
+        created_at,
+        updated_at,
+        revoked_at
+      )
+      SELECT
+        connector_instance_id,
+        owner_subject_id,
+        connector_id,
+        display_name,
+        status,
+        source_kind,
+        source_binding_key,
+        source_binding_json,
+        created_at,
+        updated_at,
+        revoked_at
+      FROM connector_instances_old_browser_collector;
+
+      DROP TABLE connector_instances_old_browser_collector;
+      CREATE INDEX IF NOT EXISTS idx_connector_instances_owner_connector_status
+        ON connector_instances(owner_subject_id, connector_id, status);
+    `);
+    return { rebuilt: true };
+  });
+
+  const result = migration();
+  if (typeof opts.onSchemaMigration === 'function') {
+    opts.onSchemaMigration({ name: 'connector_instances_source_kind_browser_collector', ...result });
   }
   return result;
 }
@@ -2984,6 +3060,7 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
   runWithSqliteBusyRetrySync(() => migrateSchedulerInstanceColumns(raw));
   runWithSqliteBusyRetrySync(() => migrateLegacyConnectorInstancesToDefaultAccount(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorInstancesSourceKindCheck(raw, opts));
+  runWithSqliteBusyRetrySync(() => migrateConnectorInstancesSourceKindBrowserCollector(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateClientEventSubscriptionAuthority(raw));
   runWithSqliteBusyRetrySync(() => ensureClientEventSubscriptionAuthorityIndex(raw));
   raw.exec(

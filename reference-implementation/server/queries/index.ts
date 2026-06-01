@@ -137,8 +137,9 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly approvalsListPendingConsents: SmallEnumerationQuery;
   readonly approvalsListPendingOwnerDevices: SmallEnumerationQuery;
   readonly authConnectorsGetManifestById: ReadOneQuery;
-  readonly authConnectorsListIds: SmallEnumerationQuery;
   // Auth — connectors (manifest registry)
+  readonly authConnectorsInsertIfAbsent: MutationQuery;
+  readonly authConnectorsListIds: SmallEnumerationQuery;
   readonly authConnectorsUpsert: MutationQuery;
   readonly authGrantPackageMembersGetPackageIdByGrant: ReadOneQuery;
   readonly authGrantPackageMembersListAllByPackage: SmallEnumerationQuery;
@@ -648,6 +649,7 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "authOauthClientsListByIssuerSubject",
     "authOauthClientsDeleteByClientId",
     // Auth — connectors
+    "authConnectorsInsertIfAbsent",
     "authConnectorsUpsert",
     "authConnectorsListIds",
     "authConnectorsGetManifestById",

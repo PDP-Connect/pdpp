@@ -683,7 +683,14 @@ async function ensureReferenceConnectorCatalogEntry(connectorId, connectorDispla
     );
     return;
   }
-  exec(referenceQueries.authConnectorsUpsert, [connectorKey, JSON.stringify(manifest)]);
+  // Insert the minimal catalog stub only when the connector is not already
+  // registered. A real manifest (e.g. a browser-bound connector like amazon
+  // registered via POST /connectors) MUST NOT be clobbered by this stub on
+  // enroll — otherwise a second enrollment for the same connector type would
+  // read a manifest stripped of its runtime bindings. This matches the
+  // postgres branch's DO NOTHING semantics. (Without this guard the shared
+  // authConnectorsUpsert query DO-UPDATEs the manifest.)
+  exec(referenceQueries.authConnectorsInsertIfAbsent, [connectorKey, JSON.stringify(manifest)]);
 }
 
 function handleError(res, err) {
@@ -3167,6 +3174,8 @@ function buildAsApp(opts = {}) {
     sanitizeLocalCollectorGapDetails,
     canonicalConnectorKey,
     makeConnectorInstanceSourceBindingKey,
+    getConnectorManifest: (connectorId) => getConnectorManifest(connectorId),
+    readReferenceLocalConnectorCatalogManifest,
     deviceExporterStore,
     createRequestConnectorInstanceStore,
     getDefaultConnectorDetailGapStore,

@@ -1026,3 +1026,138 @@ test('ingest rejects unaccepted collector protocol version with 409 before any r
     assert.equal(recordRows.n, 0);
   });
 });
+
+// ─── Binding-aware enrollment (add-browser-collector-enrollment-primitive) ────
+// The enroll/enrollment-code routes derive the connector-instance source kind
+// from the connector manifest bindings rather than hardcoding `local_device`:
+//   filesystem -> local_device, browser -> browser_collector, contradiction or
+// no-resolvable-binding -> typed 400 reject. See design Decision 2.
+
+async function registerAmazonConnector(asUrl) {
+  const fs = await import('node:fs');
+  const manifest = JSON.parse(
+    fs.readFileSync(new URL('../../packages/polyfill-connectors/manifests/amazon.json', import.meta.url), 'utf8'),
+  );
+  const resp = await fetch(`${asUrl}/connectors`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(manifest),
+  });
+  assert.ok(resp.status < 500, `register amazon: ${resp.status}`);
+}
+
+test('enrollment derives local_device for a filesystem connector', async () => {
+  await withServer(async ({ asUrl }) => {
+    const device = await enrollDevice(asUrl, 'laptop-fs', 'codex');
+    const row = getDb()
+      .prepare('SELECT source_kind, source_binding_json FROM connector_instances WHERE connector_instance_id = ?')
+      .get(device.connector_instance_id);
+    assert.equal(row.source_kind, 'local_device');
+    assert.equal(JSON.parse(row.source_binding_json).kind, 'local_device');
+  });
+});
+
+test('enrollment derives browser_collector for a browser-bound connector and never local_device', async () => {
+  await withServer(async ({ asUrl }) => {
+    await registerAmazonConnector(asUrl);
+
+    const codeResp = await postJson(`${asUrl}/_ref/device-exporters/enrollment-codes`, {
+      connector_id: 'amazon',
+      local_binding_name: 'the owner-personal-amazon',
+    });
+    assert.equal(codeResp.status, 201, JSON.stringify(codeResp.body));
+
+    const enrollResp = await postJson(
+      `${asUrl}/_ref/device-exporters/enroll`,
+      { enrollment_code: codeResp.body.enrollment_code },
+      PROTOCOL_HEADERS,
+    );
+    assert.equal(enrollResp.status, 201, JSON.stringify(enrollResp.body));
+    assert.equal(enrollResp.body.connector_id, 'amazon');
+
+    const row = getDb()
+      .prepare('SELECT source_kind, source_binding_json FROM connector_instances WHERE connector_instance_id = ?')
+      .get(enrollResp.body.connector_instance_id);
+    assert.equal(row.source_kind, 'browser_collector', 'browser-bound connector must enroll as browser_collector');
+    assert.notEqual(row.source_kind, 'local_device');
+    assert.equal(JSON.parse(row.source_binding_json).kind, 'browser_collector');
+  });
+});
+
+test('a second Amazon account enrolls as a distinct browser_collector instance', async () => {
+  // Multi-account is correct by construction: each browser_collector binding
+  // resolves to its own connector_instance_id under the same connector_id.
+  await withServer(async ({ asUrl }) => {
+    await registerAmazonConnector(asUrl);
+
+    const enrollOne = async (binding) => {
+      const code = await postJson(`${asUrl}/_ref/device-exporters/enrollment-codes`, {
+        connector_id: 'amazon',
+        local_binding_name: binding,
+      });
+      assert.equal(code.status, 201, JSON.stringify(code.body));
+      const enroll = await postJson(
+        `${asUrl}/_ref/device-exporters/enroll`,
+        { enrollment_code: code.body.enrollment_code },
+        PROTOCOL_HEADERS,
+      );
+      assert.equal(enroll.status, 201, JSON.stringify(enroll.body));
+      return enroll.body;
+    };
+
+    const personal = await enrollOne('the owner-personal-amazon');
+    const shared = await enrollOne('shared-amazon');
+    assert.equal(personal.connector_id, 'amazon');
+    assert.equal(shared.connector_id, 'amazon');
+    assert.notEqual(personal.connector_instance_id, shared.connector_instance_id);
+
+    const rows = getDb()
+      .prepare(
+        `SELECT connector_instance_id, source_kind FROM connector_instances
+          WHERE connector_id = 'amazon' AND source_kind = 'browser_collector'
+          ORDER BY connector_instance_id`,
+      )
+      .all();
+    assert.equal(rows.length, 2);
+  });
+});
+
+test('a source_kind that contradicts the manifest is rejected with a typed 400 and persists nothing', async () => {
+  await withServer(async ({ asUrl }) => {
+    await registerAmazonConnector(asUrl);
+
+    // amazon is browser-bound; asking to enroll it as local_device contradicts
+    // the manifest and must be rejected before any code is minted.
+    const reject = await postJson(`${asUrl}/_ref/device-exporters/enrollment-codes`, {
+      connector_id: 'amazon',
+      local_binding_name: 'amazon-wrong-kind',
+      source_kind: 'local_device',
+    });
+    assert.equal(reject.status, 400, JSON.stringify(reject.body));
+    assert.equal(reject.body.error.code, 'invalid_request');
+
+    // No enrollment code row was minted for the contradicting request.
+    const codes = getDb()
+      .prepare("SELECT COUNT(*) AS n FROM device_enrollment_codes WHERE connector_id = 'amazon'")
+      .get();
+    assert.equal(codes.n, 0, 'a contradicting request must not mint an enrollment code');
+  });
+});
+
+test('a connector with no resolvable binding is rejected with a typed 400, never defaulted', async () => {
+  await withServer(async ({ asUrl }) => {
+    // No manifest registered for this connector_id at all → no resolvable
+    // binding → typed reject, never a defaulted source kind.
+    const reject = await postJson(`${asUrl}/_ref/device-exporters/enrollment-codes`, {
+      connector_id: 'totally-unregistered-connector',
+      local_binding_name: 'nope',
+    });
+    assert.equal(reject.status, 400, JSON.stringify(reject.body));
+    assert.equal(reject.body.error.code, 'invalid_request');
+
+    const instances = getDb()
+      .prepare("SELECT COUNT(*) AS n FROM connector_instances WHERE connector_id = 'totally-unregistered-connector'")
+      .get();
+    assert.equal(instances.n, 0);
+  });
+});

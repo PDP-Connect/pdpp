@@ -23,6 +23,11 @@
 // directly.
 
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
+import {
+  type EnrolledSourceKind,
+  resolveEnrolledSourceKind,
+  type SourceKindManifestLike,
+} from "./connector-source-kind.ts";
 
 interface RouteRequest {
   readonly body?: unknown;
@@ -274,6 +279,10 @@ export interface MountRefDeviceExportersContext {
 
   // ID generation
   generateSpineId(prefix: string): string;
+  // Resolves a registered connector manifest by key, or `null` for an unknown
+  // connector. Used to derive the enrolled source kind from the manifest
+  // bindings. Async to match the host's `getConnectorManifest`.
+  getConnectorManifest(connectorId: string): Promise<SourceKindManifestLike | null> | SourceKindManifestLike | null;
   getDefaultConnectorDetailGapStore(): ConnectorDetailGapStore;
   getOwnerSubjectId(req: unknown): string;
   getSyncState(storageTarget: StorageTarget, options: { grantId: null }): Promise<SyncStateProjection>;
@@ -297,6 +306,11 @@ export interface MountRefDeviceExportersContext {
     options: { grantId: null }
   ): Promise<SyncStateProjection>;
   readCollectorProtocolHeader(headers: unknown): string | null;
+  // Resolves a local-collector catalog manifest (claude-code, codex) by key, or
+  // `null` for connectors not in the local-collector catalog. Mirrors the
+  // intent route so the enroll path classifies a local-collector connector even
+  // before any registered connector manifest exists.
+  readReferenceLocalConnectorCatalogManifest(connectorId: string): SourceKindManifestLike | null;
   requireDeviceExporterCredential: MiddlewareHandler;
   // Auth middleware
   requireOwnerSession: MiddlewareHandler;
@@ -340,11 +354,38 @@ function sameConnectorType(ctx: MountRefDeviceExportersContext, a: string, b: st
   return ka === kb;
 }
 
-function deviceExporterSourceBindingIdentity(localBindingName: string): {
-  kind: "local_device";
+// The source-binding identity for a device-exporter enrollment. `kind` defaults
+// to `local_device` so the legacy binding-fallback resolution paths (which only
+// fire for older rows whose `connector_instance_id` column is null and which are
+// always filesystem-collected) keep their existing behaviour. The enroll write
+// path passes the manifest-resolved kind explicitly so a `browser_collector`
+// binding is namespaced under its own source kind.
+function deviceExporterSourceBindingIdentity(
+  localBindingName: string,
+  kind: EnrolledSourceKind = "local_device"
+): {
+  kind: EnrolledSourceKind;
   local_binding_name: string;
 } {
-  return { kind: "local_device", local_binding_name: localBindingName };
+  return { kind, local_binding_name: localBindingName };
+}
+
+// Resolve the manifest for a connector being enrolled, then derive the enrolled
+// source kind from its bindings. Resolves the local-collector catalog first (so
+// claude-code/codex classify before any registered manifest exists), then falls
+// back to a registered connector manifest — mirroring the intent route's
+// resolution order so enroll and intent agree on the same manifest-derived
+// signal. Throws `SourceKindResolutionError` (mapped to 400 by `handleError`)
+// when the source kind cannot be resolved or a requested kind contradicts the
+// manifest. See add-browser-collector-enrollment-primitive design Decision 2.
+async function resolveEnrollmentSourceKind(
+  ctx: MountRefDeviceExportersContext,
+  connectorKey: string,
+  requestedSourceKind?: string | null
+): Promise<EnrolledSourceKind> {
+  const localManifest = ctx.readReferenceLocalConnectorCatalogManifest(connectorKey);
+  const manifest = localManifest ?? (await ctx.getConnectorManifest(connectorKey));
+  return resolveEnrolledSourceKind({ connectorId: connectorKey, manifest, requestedSourceKind });
 }
 
 function deriveSourceInstanceOutboxState(diagnostics: unknown): string {
@@ -850,6 +891,17 @@ export function mountRefDeviceExporterEnrollmentCodes(app: AppLike, ctx: MountRe
         const body = (req.body as Record<string, unknown>) || {};
         const connectorId = requireNonEmptyString(body.connector_id, "connector_id");
         const localBindingId = requireNonEmptyString(body.local_binding_name, "local_binding_name");
+        // Resolve the manifest-derived source kind up front so a connector with
+        // no resolvable binding — or a caller-supplied `source_kind` that
+        // contradicts the manifest — is rejected before a code is minted, rather
+        // than failing only at enroll time. Throws SourceKindResolutionError
+        // (mapped to 400 by handleError).
+        const enrollConnectorKey = ctx.canonicalConnectorKey(connectorId) ?? connectorId;
+        await resolveEnrollmentSourceKind(
+          ctx,
+          enrollConnectorKey,
+          typeof body.source_kind === "string" ? body.source_kind : null
+        );
         const now = new Date();
         const expiresInSeconds = Number.isInteger(body.expires_in_seconds)
           ? (body.expires_in_seconds as number)
@@ -947,17 +999,23 @@ export function mountRefDeviceExporterEnroll(app: AppLike, ctx: MountRefDeviceEx
         // Canonicalize connector id at the enroll boundary. See
         // canonicalize-connector-keys design Decision 7.
         const enrollConnectorKey = ctx.canonicalConnectorKey(enrollment.connectorId) ?? enrollment.connectorId;
+        // Derive the enrolled source kind from the connector manifest bindings
+        // rather than hardcoding `local_device`: a `filesystem` connector enrolls
+        // as `local_device`, a `browser` connector as `browser_collector`, and a
+        // connector with no resolvable binding is rejected. See
+        // add-browser-collector-enrollment-primitive design Decision 2.
+        const sourceKind = await resolveEnrollmentSourceKind(ctx, enrollConnectorKey);
         await ctx.ensureReferenceConnectorCatalogEntry(enrollConnectorKey, enrollment.displayName || displayName);
-        const sourceBindingIdentity = deviceExporterSourceBindingIdentity(enrollment.localBindingId);
+        const sourceBindingIdentity = deviceExporterSourceBindingIdentity(enrollment.localBindingId, sourceKind);
         const connectorInstance = await ctx.createRequestConnectorInstanceStore().upsert({
           ownerSubjectId: enrollment.ownerSubjectId,
           connectorId: enrollConnectorKey,
           displayName,
           status: "active",
-          sourceKind: "local_device",
+          sourceKind,
           sourceBindingKey: ctx.makeConnectorInstanceSourceBindingKey(sourceBindingIdentity),
           sourceBinding: {
-            kind: "local_device",
+            kind: sourceKind,
             device_id: deviceId,
             local_binding_name: enrollment.localBindingId,
             source_instance_id: sourceInstanceId,

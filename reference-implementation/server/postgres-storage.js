@@ -218,7 +218,7 @@ export async function bootstrapPostgresSchema() {
         connector_id TEXT NOT NULL REFERENCES connectors(connector_id) ON DELETE RESTRICT,
         display_name TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'revoked')),
-        source_kind TEXT NOT NULL CHECK (source_kind IN ('account', 'local_device', 'manual')),
+        source_kind TEXT NOT NULL CHECK (source_kind IN ('account', 'local_device', 'browser_collector', 'manual')),
         source_binding_key TEXT NOT NULL,
         source_binding_json JSONB NOT NULL DEFAULT '{}'::jsonb,
         created_at TEXT NOT NULL,
@@ -1102,6 +1102,7 @@ export async function bootstrapPostgresSchema() {
     await migratePostgresClientEventSubscriptionAuthority(client);
     await migratePostgresLocalDeviceConnectorInstances(client);
     await migratePostgresLegacyConnectorInstancesToDefaultAccount(client);
+    await migratePostgresConnectorInstancesSourceKindBrowserCollector(client);
   } finally {
     client.release();
   }
@@ -1780,7 +1781,7 @@ async function migratePostgresLegacyConnectorInstancesToDefaultAccount(client) {
     await client.query(
       `ALTER TABLE connector_instances
          ADD CONSTRAINT connector_instances_source_kind_check
-         CHECK (source_kind IN ('account', 'local_device', 'manual'))
+         CHECK (source_kind IN ('account', 'local_device', 'browser_collector', 'manual'))
          NOT VALID`,
     );
 
@@ -1912,6 +1913,41 @@ async function migratePostgresLegacyConnectorInstancesToDefaultAccount(client) {
       await client.query(`DELETE FROM connector_instances WHERE connector_instance_id = $1`, [oldId]);
     }
     await client.query(`ALTER TABLE connector_instances VALIDATE CONSTRAINT connector_instances_source_kind_check`);
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  }
+}
+
+// Widen the source_kind CHECK to admit `browser_collector` alongside the
+// existing account/local_device/manual kinds. Idempotent: no-op once the
+// constraint already names `browser_collector`. A database created or last
+// migrated before the browser-collector enrollment primitive carries the
+// narrower CHECK; without this a `browser_collector` enrollment would be
+// rejected by the constraint. See add-browser-collector-enrollment-primitive.
+async function migratePostgresConnectorInstancesSourceKindBrowserCollector(client) {
+  const checkInfo = await client.query(
+    `SELECT conname, pg_get_constraintdef(oid) AS def
+       FROM pg_constraint
+      WHERE conrelid = 'connector_instances'::regclass
+        AND contype = 'c'
+        AND pg_get_constraintdef(oid) ILIKE '%source_kind%'`,
+  );
+  const alreadyWidened = checkInfo.rows.some((row) => String(row.def).includes('browser_collector'));
+  if (alreadyWidened) {
+    return;
+  }
+  await client.query('BEGIN');
+  try {
+    for (const row of checkInfo.rows) {
+      await client.query(`ALTER TABLE connector_instances DROP CONSTRAINT IF EXISTS ${pgIdentifier(row.conname)}`);
+    }
+    await client.query(
+      `ALTER TABLE connector_instances
+         ADD CONSTRAINT connector_instances_source_kind_check
+         CHECK (source_kind IN ('account', 'local_device', 'browser_collector', 'manual'))`,
+    );
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

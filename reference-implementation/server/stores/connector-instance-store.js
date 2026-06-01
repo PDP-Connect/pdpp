@@ -7,7 +7,11 @@ const ACTIVE_RESOLUTION_LIMIT = 2;
 const ACTIVE_FANIN_LIMIT = 64;
 const LIST_LIMIT = 500;
 const VALID_STATUSES = new Set(['active', 'paused', 'revoked']);
-const VALID_SOURCE_KINDS = new Set(['account', 'local_device', 'manual']);
+// `browser_collector` is a peer of `local_device` on the connector-instance
+// source-binding axis: a binding collected by a local collector driving a
+// browser session for a browser-bound connector. See
+// add-browser-collector-enrollment-primitive design Decision 1.
+const VALID_SOURCE_KINDS = new Set(['account', 'local_device', 'browser_collector', 'manual']);
 const DEFAULT_ACCOUNT_SOURCE_BINDING_KEY = 'default';
 const DEFAULT_ACCOUNT_SOURCE_BINDING = Object.freeze({ kind: 'default_account' });
 
