@@ -502,18 +502,26 @@ export interface StreamDeps {
  * files were re-emitting on every slackdump pass even when source state
  * hadn't moved — see record-version-churn-data-quality-report.md
  * (31k+ versions/key on workspace, 250 versions/key on users, bimodal on
- * files). Channels, channel_memberships, canvases, messages, reactions
- * and message_attachments are intentionally NOT on this list:
+ * files). Channels, canvases, messages, reactions and message_attachments
+ * are intentionally NOT on this list:
  *   - channels: low cardinality, low version count today; out of scope
  *     for this batch.
- *   - channel_memberships: includes per-run `fetched_at`; will need a
- *     similar fix but the churn report didn't flag it as load-bearing.
- *     Deferred to keep the blast radius small.
  *   - canvases: tied to channel index; low cardinality.
  *   - messages/reactions/message_attachments: already incremental via
  *     last_ts cursor.
+ *
+ * `channel_memberships` WAS deferred here on the assumption that its churn
+ * was not load-bearing. Live retained-history later contradicted that: its
+ * record body is `{id, channel_id, user_id, fetched_at}`, so the per-run
+ * `fetched_at` forced a brand-new version of every membership on every run,
+ * and it grew into the single largest churn stream by absolute history
+ * volume (tens of thousands of `record_changes` rows for a membership set
+ * that barely moves). It is the exact `fetched_at`-volatility class already
+ * fixed for `workspace`, so it now joins the fingerprinted set with the same
+ * `fetched_at` exclusion. A membership only re-emits when it actually
+ * appears or disappears.
  */
-const FINGERPRINTED_STREAMS = ["workspace", "users", "files"] as const;
+export const FINGERPRINTED_STREAMS = ["workspace", "users", "files", "channel_memberships"] as const;
 type FingerprintedStream = (typeof FINGERPRINTED_STREAMS)[number];
 
 /**
@@ -525,11 +533,16 @@ type FingerprintedStream = (typeof FINGERPRINTED_STREAMS)[number];
  *
  *   workspace: fetched_at advances on every run by design.
  *   users / files: no run-clock fields, fingerprint covers the whole record.
+ *   channel_memberships: fetched_at is the run clock; the only other fields
+ *     (id, channel_id, user_id) are the membership identity itself, so
+ *     excluding fetched_at means the fingerprint moves only when a
+ *     membership is added or removed.
  */
-const FINGERPRINT_EXCLUDE: Record<FingerprintedStream, readonly string[]> = {
+export const FINGERPRINT_EXCLUDE: Record<FingerprintedStream, readonly string[]> = {
   workspace: ["fetched_at"],
   users: [],
   files: [],
+  channel_memberships: ["fetched_at"],
 };
 
 /**
@@ -591,7 +604,7 @@ async function runChannelMembershipsStream(deps: StreamDeps): Promise<void> {
   `
   );
   for (const r of rows) {
-    await deps.emitRecord("channel_memberships", buildChannelMembershipRecord(r, deps.emittedAt));
+    await emitWithFingerprint(deps, "channel_memberships", buildChannelMembershipRecord(r, deps.emittedAt));
   }
 }
 
@@ -777,11 +790,11 @@ interface StateEmitDeps {
  *   moves onto the messages cursor so `-resume` continues to work; it's
  *   workspace-global but messages is the canonical stream for slackdump
  *   state on the PDPP side.
- * - workspace / users / files: persist the per-record fingerprint map
- *   alongside the freshness marker so the next run can skip emitting
- *   records whose semantic shape hasn't moved (see emitWithFingerprint).
- *   A legacy cursor (no `fingerprints` key) is tolerated on the read
- *   side; the first post-deploy run rebuilds the map.
+ * - workspace / users / files / channel_memberships: persist the per-record
+ *   fingerprint map alongside the freshness marker so the next run can skip
+ *   emitting records whose semantic shape hasn't moved (see
+ *   emitWithFingerprint). A legacy cursor (no `fingerprints` key) is
+ *   tolerated on the read side; the first post-deploy run rebuilds the map.
  * - other mutable_state streams (channels, canvases):
  *   low cardinality, we full-sync each run; the cursor is just a freshness
  *   marker for visibility.
@@ -796,7 +809,7 @@ function emitStateCheckpoints(deps: StateEmitDeps): void {
       fetched_at: nowIso(),
     },
   });
-  for (const stream of ["channels", "users", "files", "canvases", "workspace"]) {
+  for (const stream of ["channels", "channel_memberships", "users", "files", "canvases", "workspace"]) {
     if (deps.requested.has(stream)) {
       const cursor: Record<string, unknown> = { synced_at: nowIso() };
       const fingerprintCursor = deps.fingerprintCursors.get(stream);

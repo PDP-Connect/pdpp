@@ -24,14 +24,7 @@ import { test } from "node:test";
 import type { StreamScope } from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
-import { emitWithFingerprint, type StreamDeps } from "./index.ts";
-
-const FINGERPRINTED_STREAMS = ["workspace", "users", "files"] as const;
-const FINGERPRINT_EXCLUDE: Record<(typeof FINGERPRINTED_STREAMS)[number], readonly string[]> = {
-  workspace: ["fetched_at"],
-  users: [],
-  files: [],
-};
+import { emitWithFingerprint, FINGERPRINT_EXCLUDE, FINGERPRINTED_STREAMS, type StreamDeps } from "./index.ts";
 
 interface SlackTestHarness {
   cursors: Map<string, FingerprintCursor>;
@@ -111,6 +104,94 @@ test("workspace: real source change DOES re-emit", async () => {
     fetched_at: "2026-05-26T13:00:00.000Z",
   });
   assert.equal(run2.emitted.length, 1, "changed record re-emits");
+});
+
+test("wiring: channel_memberships is in the production fingerprinted set with fetched_at excluded", () => {
+  // This pins the production wiring, not just the gate logic. The gate
+  // (`emitWithFingerprint`) is generic over any stream that has a cursor;
+  // the load-bearing fact is that `runChannelMembershipsStream` routes
+  // through it AND the bootstrap/STATE loops include the stream. Dropping
+  // `channel_memberships` from FINGERPRINTED_STREAMS (the original deferral)
+  // resurfaces the per-run `fetched_at` churn — this assertion fails first.
+  assert.ok(
+    (FINGERPRINTED_STREAMS as readonly string[]).includes("channel_memberships"),
+    "channel_memberships must be fingerprinted to stop per-run fetched_at churn"
+  );
+  assert.deepEqual(
+    FINGERPRINT_EXCLUDE.channel_memberships,
+    ["fetched_at"],
+    "channel_memberships must exclude the run-clock field from change detection"
+  );
+});
+
+test("channel_memberships: fetched_at is excluded — a stable membership does NOT re-emit", async () => {
+  // The record body is `{id, channel_id, user_id, fetched_at}` where
+  // fetched_at is the run clock. Before this stream was fingerprinted, the
+  // moving fetched_at forced a brand-new version of every membership on
+  // every run — this stream grew into the largest churn stream by absolute
+  // history volume. With fetched_at excluded the fingerprint is stable, so
+  // an unchanged membership set produces zero re-emits.
+  const membership = {
+    id: "C1:U1",
+    channel_id: "C1",
+    user_id: "U1",
+    fetched_at: "2026-05-26T12:00:00.000Z",
+  };
+
+  const run1 = makeHarness({}, ["channel_memberships"]);
+  await emitWithFingerprint(run1.deps, "channel_memberships", membership);
+  assert.equal(run1.emitted.length, 1, "first run emits the membership");
+  const priorState = run1.cursors.get("channel_memberships")?.toState() ?? {};
+
+  const run2 = makeHarness({ channel_memberships: priorState }, ["channel_memberships"]);
+  await emitWithFingerprint(run2.deps, "channel_memberships", {
+    ...membership,
+    fetched_at: "2026-05-27T12:00:00.000Z",
+  });
+  assert.equal(run2.emitted.length, 0, "an unchanged membership does not re-emit when only fetched_at moved");
+});
+
+test("channel_memberships: a newly-added membership DOES emit", async () => {
+  // The membership set is the source fact. A new (channel, user) pair is a
+  // real change and must produce a version; only redundant re-emits of the
+  // same pair are suppressed.
+  const existing = { id: "C1:U1", channel_id: "C1", user_id: "U1", fetched_at: "2026-05-26T12:00:00.000Z" };
+  const run1 = makeHarness({}, ["channel_memberships"]);
+  await emitWithFingerprint(run1.deps, "channel_memberships", existing);
+  const priorState = run1.cursors.get("channel_memberships")?.toState() ?? {};
+
+  const run2 = makeHarness({ channel_memberships: priorState }, ["channel_memberships"]);
+  await emitWithFingerprint(run2.deps, "channel_memberships", {
+    ...existing,
+    fetched_at: "2026-05-27T12:00:00.000Z",
+  });
+  await emitWithFingerprint(run2.deps, "channel_memberships", {
+    id: "C1:U2",
+    channel_id: "C1",
+    user_id: "U2",
+    fetched_at: "2026-05-27T12:00:00.000Z",
+  });
+  assert.equal(run2.emitted.length, 1, "only the newly-added membership re-emits");
+  assert.equal((run2.emitted[0]?.data as { id: string }).id, "C1:U2");
+});
+
+test("channel_memberships: a removed membership is pruned from carry-forward", async () => {
+  // When a user leaves a channel the pair disappears from CHANNEL_USER.
+  // Prune drops the stale fingerprint so the cursor reflects the live set
+  // and the pair re-emits if the user rejoins later.
+  const prior = { "C1:U1": "fp-1", "C1:U2": "fp-2" };
+  const run = makeHarness({ channel_memberships: prior }, ["channel_memberships"]);
+  // Only C1:U1 observed this run; C1:U2 left the channel.
+  await emitWithFingerprint(run.deps, "channel_memberships", {
+    id: "C1:U1",
+    channel_id: "C1",
+    user_id: "U1",
+    fetched_at: "2026-05-27T12:00:00.000Z",
+  });
+  pruneRequested(run);
+  const post = run.cursors.get("channel_memberships")?.toState() ?? {};
+  assert.equal(post["C1:U1"] !== undefined, true, "still-present membership retained");
+  assert.equal(post["C1:U2"], undefined, "departed membership pruned");
 });
 
 test("users: no excludes — every field participates in the fingerprint", async () => {
