@@ -133,6 +133,16 @@ live-proven (2026-05-31); this is the ChatGPT-side parity run. The task text is
 explicit: **do not mark task 5.2 complete until ChatGPT is also live-proven** or the
 task is explicitly narrowed.
 
+**The exact, mechanical, acceptance-grade ChatGPT runbook for this gate lives in
+[`chatgpt-mcp-canonical-proof-packet.md`](chatgpt-mcp-canonical-proof-packet.md).**
+Follow that packet for the full step sequence, the schema-checks, the partial-
+evidence classification, and the Codex pass/fail bar. The summary below is the
+index entry. The key residual that packet makes precise: ChatGPT registration
+refresh + `connection_id` retry were observed, but the **ChatGPT
+event-subscription lifecycle has not been driven** — that is what still has to be
+proven, and a stale 6-tool surface is host registration drift (fix by delete +
+re-add), not a backend defect.
+
 **Preconditions:**
 - A reachable hosted MCP integration endpoint (the running reference deployment's
   `/mcp`) and a ChatGPT client able to connect to it (ChatGPT's
