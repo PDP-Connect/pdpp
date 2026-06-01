@@ -35,6 +35,7 @@ import {
   referenceQueries,
   writeTransaction,
 } from '../lib/db.ts';
+import { withPostgresTransaction } from './postgres-storage.js';
 import {
   lexicalIndexDelete,
   lexicalIndexDeleteByConnectorStream,
@@ -3035,6 +3036,112 @@ async function postgresDeleteAllRecordsForConnector(connectorId) {
   }
 
   return { deletedCount, streams };
+}
+
+/**
+ * Erase ALL of one connection's collected data and derived state, keyed
+ * STRICTLY on a single connector_instance_id.
+ *
+ * This is the records-side of the owner-agent connection-delete cascade
+ * (`add-owner-connection-delete-contract`). Unlike `deleteAllRecords` (one
+ * stream) and `deleteAllRecordsForConnector` (connector-WIDE, across sibling
+ * connections), this erases every stream for exactly one connection and NEVER
+ * widens to connector_id — deleting one connection leaves sibling connections
+ * of the same connector type fully intact (invariant I1).
+ *
+ * What it erases (all by connector_instance_id):
+ *   - records, record_changes, version_counter   (the record + history spine)
+ *   - blob_bindings, blobs                        (this connection's blobs)
+ *   - connector_attention_records                 (open attention for it)
+ *   - lexical + semantic search indices           (derived; see note below)
+ *
+ * What it does NOT touch: connector_instances row, connector_schedules,
+ * controller_active_runs, device_source_instances, spine_events, grants — those
+ * are the store/route's responsibility (the row + schedule + active-run lease +
+ * device back-ref) or are deliberately preserved (audit spine + grants). This
+ * function owns ONLY the records-family + blobs + attention + search teardown.
+ *
+ * Transactionality (invariant I8): the source-of-truth row deletes
+ * (records/record_changes/version_counter/blob_bindings/blobs/attention) run in
+ * ONE transaction per backend, so a mid-cascade failure rolls them ALL back —
+ * no half-erased connection data. The search indices are a REBUILDABLE
+ * projection of `records` (the SQLite semantic path maintains a vec0 rowid
+ * sidecar that a flat by-instance DELETE cannot tear down correctly), so they
+ * are torn down per-stream AFTER the data commit through the proven
+ * stream-scoped helpers. A search-teardown failure after the data commit leaves
+ * orphaned index rows pointing at gone records — a derived-cache inconsistency
+ * (the records are gone, so a lookup returns nothing), recoverable by reindex,
+ * not a data-integrity loss. The data deletion itself is all-or-nothing.
+ *
+ * Returns a non-secret summary `{ deletedRecordCount, deletedStreamCount }` for
+ * the deletion audit event and route response. No record contents, no secrets.
+ */
+export async function deleteConnectionData(storageTarget) {
+  const connectorId = resolveStorageConnectorId(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
+
+  if (isPostgresStorageBackend()) {
+    // Discover streams BEFORE the delete so the post-commit search teardown
+    // knows which (instance, stream) pairs to clear.
+    const streamRows = await postgresQuery(
+      `SELECT DISTINCT stream FROM records WHERE connector_instance_id = $1 ORDER BY stream ASC`,
+      [connectorInstanceId],
+    );
+    const streams = streamRows.rows.map((row) => row.stream);
+    const deletedRecordCount = await withPostgresTransaction(async (client) => {
+      const countResult = await client.query(
+        `SELECT COUNT(*)::int AS count FROM records WHERE connector_instance_id = $1`,
+        [connectorInstanceId],
+      );
+      const count = Number(countResult.rows[0]?.count || 0);
+      await client.query(`DELETE FROM record_changes WHERE connector_instance_id = $1`, [connectorInstanceId]);
+      await client.query(`DELETE FROM version_counter WHERE connector_instance_id = $1`, [connectorInstanceId]);
+      await client.query(`DELETE FROM blob_bindings WHERE connector_instance_id = $1`, [connectorInstanceId]);
+      await client.query(`DELETE FROM blobs WHERE connector_instance_id = $1`, [connectorInstanceId]);
+      await client.query(`DELETE FROM connector_attention_records WHERE connector_instance_id = $1`, [connectorInstanceId]);
+      await client.query(`DELETE FROM records WHERE connector_instance_id = $1`, [connectorInstanceId]);
+      return count;
+    });
+    for (const stream of streams) {
+      await lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
+      await semanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
+    }
+    if (deletedRecordCount > 0) {
+      await markRetainedSizeConnectionDirty({ connectorInstanceId: null });
+    }
+    return { deletedRecordCount, deletedStreamCount: streams.length };
+  }
+
+  // SQLite: enumerate streams first (bounded read), then erase every
+  // record-family + blob + attention row for the instance in one
+  // BEGIN IMMEDIATE transaction so the data deletion is all-or-nothing.
+  const streamRows = allowUnboundedReadAcknowledged(
+    referenceQueries.recordsDeleteListStreamsByInstance,
+    [connectorInstanceId],
+  );
+  const streams = streamRows.map((row) => row.stream);
+  const deletedRecordCount = writeTransaction(() => {
+    const countRow = getOne(referenceQueries.recordsDeleteCountRecordsByInstance, [connectorInstanceId]);
+    const count = countRow?.count || 0;
+    exec(referenceQueries.recordsDeleteDeleteRecordChangesByInstance, [connectorInstanceId]);
+    exec(referenceQueries.recordsDeleteDeleteVersionCounterByInstance, [connectorInstanceId]);
+    exec(referenceQueries.recordsDeleteDeleteBlobBindingsByInstance, [connectorInstanceId]);
+    exec(referenceQueries.recordsDeleteDeleteBlobsByInstance, [connectorInstanceId]);
+    exec(referenceQueries.recordsDeleteDeleteAttentionRecordsByInstance, [connectorInstanceId]);
+    exec(referenceQueries.recordsDeleteDeleteRecordsByInstance, [connectorInstanceId]);
+    return count;
+  });
+  // Search index teardown runs per-stream after the data commit (vec0 sidecar
+  // teardown lives in the semantic helper). Idempotent if a stream had no index.
+  for (const stream of streams) {
+    await lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
+    await semanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
+  }
+  if (deletedRecordCount > 0) {
+    markDatasetSummaryProjectionStale('connection delete erased a connection\'s records across all streams');
+    await markRetainedSizeConnectionDirty({ connectorInstanceId: null });
+  }
+  return { deletedRecordCount, deletedStreamCount: streams.length };
 }
 
 /**

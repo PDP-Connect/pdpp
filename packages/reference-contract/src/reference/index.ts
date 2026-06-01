@@ -447,6 +447,39 @@ const OwnerConnectionRevokeSchema = {
   required: ["object", "connection_id", "connector_id", "connector_key", "status", "revoked_at"],
 };
 
+// Non-secret deletion summary returned by the owner-agent connection-DELETE
+// routes. Carries counts + stable identifiers only — never record contents,
+// secrets, or per-record detail. `deleted_record_count` /
+// `deleted_stream_count` report what the cascade erased; `schedule_deleted`
+// reflects whether a schedule row existed; `device_refs_cleared` is the count
+// of device source-instance back-references set to null.
+const OwnerConnectionDeleteSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    object: { const: "owner_connection_delete" },
+    connection_id: { type: "string" },
+    connector_id: { type: "string" },
+    connector_key: { type: "string" },
+    deleted: { const: true },
+    deleted_record_count: { type: "integer" },
+    deleted_stream_count: { type: "integer" },
+    schedule_deleted: { type: "boolean" },
+    device_refs_cleared: { type: "integer" },
+  },
+  required: [
+    "object",
+    "connection_id",
+    "connector_id",
+    "connector_key",
+    "deleted",
+    "deleted_record_count",
+    "deleted_stream_count",
+    "schedule_deleted",
+    "device_refs_cleared",
+  ],
+};
+
 // Owner-agent connection-intent request: a trusted owner agent names the
 // connector type it wants to add a connection for. `connector_id` accepts the
 // canonical key (`amazon`) or a registry URL; the route canonicalizes it. An
@@ -1611,6 +1644,34 @@ export const referenceManifests = [
     request: { params: ConnectorIdParamSchema },
     responses: {
       200: { schema: OwnerConnectionRevokeSchema, description: "Revoked" },
+      ...CommonErrors,
+    },
+  },
+  {
+    id: "ownerDeleteConnection",
+    method: "DELETE",
+    path: "/v1/owner/connections/{connectionId}",
+    surface: "reference",
+    tags: ["reference", "connections", "owner-agent"],
+    summary:
+      "Owner-agent bearer: DESTRUCTIVELY delete one configured connection, addressed by `connection_id`. Erases that connection's records, record-change history, version counters, blobs, blob bindings, search indices, and attention records, deletes its schedule and active-run lease, clears its device source-instance back-reference, and removes the connector_instances row — all keyed strictly on one connection_id, never widening to connector_id (sibling connections of the same connector type are untouched). PRESERVES the audit spine (appending an owner_agent.connection.delete event), disclosure grants, and the device edge. Delete is NOT revoke: it erases the past and removes the configuration, where revoke only stops the future. A repeat/unknown/foreign-owner id returns a typed `connection_not_found` (404) without leaking existence. An in-flight run returns `connection_run_active` (409). A default-account binding returns `default_account_delete_unsupported` (409) — revoke it instead. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. `/mcp` owner-bearer rejection is untouched.",
+    request: { params: ConnectionIdParamSchema },
+    responses: {
+      200: { schema: OwnerConnectionDeleteSchema, description: "Deleted" },
+      ...CommonErrors,
+    },
+  },
+  {
+    id: "ownerDeleteConnector",
+    method: "DELETE",
+    path: "/v1/owner/connectors/{connectorId}",
+    surface: "reference",
+    tags: ["reference", "owner-agent"],
+    summary:
+      "Owner-agent bearer: DESTRUCTIVELY delete a connector's connection addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Erases the resolved connection's data + configuration per the connection-scoped cascade (see ownerDeleteConnection). Owner bearers only; client/mcp_package grants SHALL NOT reach this route.",
+    request: { params: ConnectorIdParamSchema },
+    responses: {
+      200: { schema: OwnerConnectionDeleteSchema, description: "Deleted" },
       ...CommonErrors,
     },
   },

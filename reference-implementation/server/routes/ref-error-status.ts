@@ -62,6 +62,8 @@ export const codeToStatus: Readonly<Record<string, number>> = {
   ambiguous_connector_instance: 400,
   ambiguous_connection: 409,
   connection_not_found: 404,
+  connection_run_active: 409,
+  default_account_delete_unsupported: 409,
   connector_instance_connector_mismatch: 400,
   connector_instance_inactive: 400,
   connector_instance_selector_required: 400,

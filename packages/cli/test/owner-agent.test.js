@@ -453,10 +453,10 @@ const CONTROL_DOCUMENT = {
     },
     {
       family: 'delete_connection',
-      status: 'unsupported',
-      method: null,
-      url: null,
-      reason: 'Connection delete is not an owner-agent control route in this build.',
+      status: 'supported',
+      method: 'DELETE',
+      url: 'https://ref.test/v1/owner/connections/{connection_id}',
+      reason: 'Delete a connection by connection_id to erase its data and remove its configuration.',
     },
   ],
 };
@@ -513,7 +513,7 @@ test('control lists capabilities and connections without printing the bearer', a
     // capability families surfaced with status
     assert.match(captured.stdout, /list_connections \[supported\] GET https:\/\/ref\.test\/v1\/owner\/connections/);
     assert.match(captured.stdout, /initiate_connection \[supported\]/);
-    assert.match(captured.stdout, /delete_connection \[unsupported\]/);
+    assert.match(captured.stdout, /delete_connection \[supported\] DELETE https:\/\/ref\.test\/v1\/owner\/connections\/\{connection_id\}/);
     // mcp rejection surfaced
     assert.match(captured.stdout, /\/mcp owner bearer: rejected/i);
     // both connections + label state

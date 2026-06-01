@@ -252,8 +252,18 @@ test('owner-agent bearer lists a configured connection with full identity + owne
       revokeConnection.url,
     );
     assert.ok(!revokeConnection.url.includes('{connection_id}'), 'placeholder must be resolved');
-    // delete_connection remains a typed unsupported family (named, not omitted).
-    assert.equal(byFamily.get('delete_connection')?.status, 'unsupported');
+    // delete_connection is now supported and instance-scoped: the per-connection
+    // URL resolves to this connection's DELETE route (the bare connection
+    // resource, no `/delete` suffix). See add-owner-connection-delete-contract.
+    const deleteConnection = byFamily.get('delete_connection');
+    assert.ok(deleteConnection, 'delete_connection action must be advertised');
+    assert.equal(deleteConnection.status, 'supported');
+    assert.equal(deleteConnection.method, 'DELETE');
+    assert.ok(
+      deleteConnection.url.endsWith('/v1/owner/connections/cin_amazon_personal'),
+      deleteConnection.url,
+    );
+    assert.ok(!deleteConnection.url.includes('{connection_id}'), 'placeholder must be resolved');
   });
 });
 

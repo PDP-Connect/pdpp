@@ -331,6 +331,153 @@ test('SQLite ConnectorInstanceStore supports default account connections and amb
   }
 });
 
+// ─── deleteConnection store primitive (add-owner-connection-delete-contract) ──
+
+function seedDeletableInstance(store, { connectorInstanceId, connectorId, sourceKind = 'account', sourceBindingKey }) {
+  return store.upsert({
+    connectorInstanceId,
+    ownerSubjectId: 'owner_1',
+    connectorId,
+    displayName: connectorInstanceId,
+    status: 'active',
+    sourceKind,
+    sourceBindingKey,
+    sourceBinding: { hint: sourceBindingKey },
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+}
+
+function seedScheduleRow(connectorInstanceId, connectorId) {
+  getDb()
+    .prepare(
+      `INSERT INTO connector_schedules(connector_instance_id, connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at)
+       VALUES(?, ?, 3600, 0, 1, ?, ?)`,
+    )
+    .run(connectorInstanceId, connectorId, NOW, NOW);
+}
+
+test('SQLite deleteConnection erases schedule + row + device back-ref and refuses run-active / default-account', async () => {
+  initDb();
+  try {
+    const store = createSqliteConnectorInstanceStore();
+    await seedSqliteConnector('reddit');
+
+    // A deletable explicit-account connection with a schedule and a device
+    // source-instance back-reference.
+    await seedDeletableInstance(store, { connectorInstanceId: 'cin_del', connectorId: 'reddit', sourceBindingKey: 'the owner' });
+    seedScheduleRow('cin_del', 'reddit');
+    getDb()
+      .prepare(`INSERT OR IGNORE INTO device_exporters(device_id, owner_subject_id, display_name, status, created_at, updated_at) VALUES('dev_x','owner_1','dev_x','active',?,?)`)
+      .run(NOW, NOW);
+    getDb()
+      .prepare(`INSERT INTO device_source_instances(source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, status, created_at, updated_at) VALUES('dsi_x','dev_x','reddit','cin_del','lb_x','active',?,?)`)
+      .run(NOW, NOW);
+
+    let purgeCalls = 0;
+    const summary = await store.deleteConnection('cin_del', {
+      ownerSubjectId: 'owner_1',
+      now: LATER,
+      purgeConnectionData: (target) => {
+        purgeCalls += 1;
+        assert.equal(target.connector_instance_id, 'cin_del');
+        return Promise.resolve({ deletedRecordCount: 4, deletedStreamCount: 2 });
+      },
+    });
+    assert.equal(purgeCalls, 1, 'purgeConnectionData invoked exactly once');
+    assert.equal(summary.connection_id, 'cin_del');
+    assert.equal(summary.deleted_record_count, 4);
+    assert.equal(summary.schedule_deleted, true);
+    assert.equal(summary.device_refs_cleared, 1);
+
+    assert.equal(store.get('cin_del'), null, 'connector_instances row gone');
+    assert.equal(getDb().prepare('SELECT COUNT(*) n FROM connector_schedules WHERE connector_instance_id=?').get('cin_del').n, 0, 'schedule gone');
+    const dsi = getDb().prepare('SELECT connector_instance_id FROM device_source_instances WHERE source_instance_id=?').get('dsi_x');
+    assert.equal(dsi.connector_instance_id, null, 'device back-ref cleared');
+    assert.ok(getDb().prepare('SELECT device_id FROM device_exporters WHERE device_id=?').get('dev_x'), 'device edge preserved');
+
+    // Repeat delete → typed not-found (idempotency I4).
+    await assert.rejects(
+      () => store.deleteConnection('cin_del', { ownerSubjectId: 'owner_1', now: LATER, purgeConnectionData: () => Promise.resolve({}) }),
+      (err) => err instanceof ConnectorInstanceResolutionError && err.code === 'connector_instance_not_found',
+    );
+
+    // Foreign-owner → typed not-found, no purge (I5).
+    await seedDeletableInstance(store, { connectorInstanceId: 'cin_foreign', connectorId: 'reddit', sourceBindingKey: 'other' });
+    getDb().prepare(`UPDATE connector_instances SET owner_subject_id='owner_2' WHERE connector_instance_id='cin_foreign'`).run();
+    let foreignPurge = 0;
+    await assert.rejects(
+      () => store.deleteConnection('cin_foreign', { ownerSubjectId: 'owner_1', now: LATER, purgeConnectionData: () => { foreignPurge += 1; return Promise.resolve({}); } }),
+      (err) => err.code === 'connector_instance_not_found',
+    );
+    assert.equal(foreignPurge, 0, 'foreign delete never reaches purge');
+    assert.ok(store.get('cin_foreign'), 'foreign connection not erased');
+
+    // Active-run lease → typed connection_run_active, no purge (I7).
+    await seedDeletableInstance(store, { connectorInstanceId: 'cin_run', connectorId: 'reddit', sourceBindingKey: 'runner' });
+    getDb()
+      .prepare(`INSERT INTO controller_active_runs(connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at) VALUES('cin_run','reddit','run_1','trc','default',?)`)
+      .run(NOW);
+    let runPurge = 0;
+    await assert.rejects(
+      () => store.deleteConnection('cin_run', { ownerSubjectId: 'owner_1', now: LATER, purgeConnectionData: () => { runPurge += 1; return Promise.resolve({}); } }),
+      (err) => err.code === 'connection_run_active',
+    );
+    assert.equal(runPurge, 0, 'run-active delete never reaches purge');
+    assert.ok(store.get('cin_run'), 'run-active connection not erased');
+
+    // Default-account binding → typed default_account_delete_unsupported, no
+    // purge, row untouched (I6 / Decision 1 fallback).
+    const defaultId = makeDefaultAccountConnectorInstanceId('owner_1', 'reddit');
+    await store.ensureDefaultAccountConnection({ ownerSubjectId: 'owner_1', connectorId: 'reddit', displayName: 'Reddit', now: NOW });
+    let defaultPurge = 0;
+    await assert.rejects(
+      () => store.deleteConnection(defaultId, { ownerSubjectId: 'owner_1', now: LATER, purgeConnectionData: () => { defaultPurge += 1; return Promise.resolve({}); } }),
+      (err) => err.code === 'default_account_delete_unsupported',
+    );
+    assert.equal(defaultPurge, 0, 'default-account delete never reaches purge');
+    assert.equal(store.get(defaultId).status, 'active', 'default-account row untouched');
+  } finally {
+    closeDb();
+  }
+});
+
+test('SQLite deleteConnection is all-or-nothing: a purge failure leaves the row, schedule, and device back-ref intact (I8)', async () => {
+  initDb();
+  try {
+    const store = createSqliteConnectorInstanceStore();
+    await seedSqliteConnector('reddit');
+    await seedDeletableInstance(store, { connectorInstanceId: 'cin_atomic', connectorId: 'reddit', sourceBindingKey: 'atom' });
+    seedScheduleRow('cin_atomic', 'reddit');
+    getDb()
+      .prepare(`INSERT OR IGNORE INTO device_exporters(device_id, owner_subject_id, display_name, status, created_at, updated_at) VALUES('dev_a','owner_1','dev_a','active',?,?)`)
+      .run(NOW, NOW);
+    getDb()
+      .prepare(`INSERT INTO device_source_instances(source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, status, created_at, updated_at) VALUES('dsi_a','dev_a','reddit','cin_atomic','lb_a','active',?,?)`)
+      .run(NOW, NOW);
+
+    // The data purge runs FIRST and fails. Because it owns its own atomic
+    // transaction and the schedule/device/row deletes only run AFTER a
+    // successful purge, the failure leaves the connection fully present: row,
+    // schedule, and device back-reference all intact (no half-deleted state).
+    await assert.rejects(
+      () => store.deleteConnection('cin_atomic', {
+        ownerSubjectId: 'owner_1',
+        now: LATER,
+        purgeConnectionData: () => Promise.reject(new Error('injected mid-cascade failure')),
+      }),
+      /injected mid-cascade failure/,
+    );
+
+    assert.ok(store.get('cin_atomic'), 'connector_instances row still present after purge failure');
+    assert.equal(getDb().prepare('SELECT COUNT(*) n FROM connector_schedules WHERE connector_instance_id=?').get('cin_atomic').n, 1, 'schedule still present');
+    const dsi = getDb().prepare('SELECT connector_instance_id FROM device_source_instances WHERE source_instance_id=?').get('dsi_a');
+    assert.equal(dsi.connector_instance_id, 'cin_atomic', 'device back-ref still intact');
+  } finally {
+    closeDb();
+  }
+});
+
 test('Postgres ConnectorInstanceStore conforms when PDPP_TEST_POSTGRES_URL is set', { skip: !process.env.PDPP_TEST_POSTGRES_URL }, async () => {
   await initPostgresStorage({ backend: 'postgres', databaseUrl: process.env.PDPP_TEST_POSTGRES_URL });
   try {

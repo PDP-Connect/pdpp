@@ -613,11 +613,14 @@ const OWNER_AGENT_CONTROL_ACTION_CATALOG: readonly OwnerAgentControlActionDescri
   {
     family: "delete_connection",
     scope: "instance",
-    status: "unsupported",
-    method: null,
-    urlTemplate: null,
+    status: "supported",
+    method: "DELETE",
+    // Templated path: the surface catalog carries the literal `{connection_id}`
+    // placeholder; the per-connection projection substitutes the concrete id.
+    // The bare connection resource (REST DELETE verb), not a `/delete` suffix.
+    urlTemplate: (rs) => `${rs}/v1/owner/connections/{connection_id}`,
     reason:
-      "Connection delete is not implemented as an owner-agent control route in this build. The connector-instance store has no delete primitive (only status/label mutation), and no browser owner-session route deletes a connection either, so there is no existing semantic to share. The connection-scoped delete cascade is now specified (records/record-changes/version-counter/blobs/search indices/attention/schedule/active-run erased per connection_id; device source-instance back-reference cleared; audit spine, sibling connections, and disclosure grants preserved; transactional, run-active-refusing, and non-resurrecting for default-account connections) in the add-owner-connection-delete-contract change. The route and store primitive ship in a later lane gated on that contract's acceptance-test matrix; until then this action stays unsupported.",
+      "DESTRUCTIVELY delete a connection by connection_id to ERASE its data and remove its configuration: DELETE this URL. It erases that connection's records, record-change history, version counters, blobs, blob bindings, search indices, and attention records, deletes its schedule and active-run lease, clears its device source-instance back-reference, and removes the connector_instances row — all keyed strictly on one connection_id, NEVER widening to connector_id (sibling connections of the same connector type are untouched). It PRESERVES the audit spine (appending an owner_agent.connection.delete event), disclosure grants, and the device edge. Delete is NOT revoke: revoke stops the future and preserves the past; delete erases the past and removes the configuration, and is reversible only by re-initiating a fresh connection. The data deletion is transactional all-or-nothing. A repeat/unknown/foreign-owner connection_id returns a typed connection_not_found (404) without leaking existence. Deleting a connection with an in-flight run returns a typed connection_run_active (409) — stop or await the run first. A default-account binding returns a typed default_account_delete_unsupported (409): its deterministic id would silently re-materialize, so revoke it (or re-initiate to replace it) instead. Connector-only addressing (`DELETE /v1/owner/connectors/{connector_id}`) auto-selects a single active connection or returns a typed ambiguous_connection. To revoke a client's grant access (not delete a connection binding) use the owner-session grant-package revoke; that is deliberately not an owner-agent action.",
   },
   {
     family: "revoke_connection",

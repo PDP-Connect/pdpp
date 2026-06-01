@@ -247,6 +247,19 @@ test('control document marks supported families with method + absolute URL', asy
     assert.match(revokeConnection.reason, /future collection/i);
     assert.match(revokeConnection.reason, /records/i);
 
+    // Connection delete is served over the owner-agent bearer surface as of the
+    // delete-cascade slice (add-owner-connection-delete-contract section 2). It
+    // is templated by connection_id; the representative URL is the bare
+    // connection resource (REST DELETE verb, no `/delete` suffix) and the reason
+    // states it erases the past and removes the configuration (NOT revoke).
+    const deleteConnection = actionByFamily(body, 'delete_connection');
+    assert.ok(deleteConnection, 'delete_connection must be listed');
+    assert.equal(deleteConnection.status, 'supported');
+    assert.equal(deleteConnection.method, 'DELETE');
+    assert.equal(deleteConnection.url, `${rsUrl}/v1/owner/connections/{connection_id}`);
+    assert.match(deleteConnection.reason, /erase/i);
+    assert.match(deleteConnection.reason, /NOT revoke/i);
+
     // Event-subscription management is served over the owner-agent bearer
     // surface: the `/v1/event-subscriptions*` routes already accept a
     // trusted_owner_agent bearer, and the control catalog now advertises that
@@ -264,35 +277,42 @@ test('control document marks supported families with method + absolute URL', asy
   });
 });
 
-test('control document names unsupported/owner-mediated families instead of omitting them', async () => {
+test('control document names every family with a typed status and a non-empty reason (no silent omission)', async () => {
   await withServer(async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl);
     const { body } = await fetchJson(`${rsUrl}/v1/owner/control`, {
       headers: { Authorization: `Bearer ${ownerToken}` },
     });
 
-    // Important admin tasks the change explicitly does NOT overclaim in this
-    // branch must be present and typed, not silently dropped.
-    // `rename_connection`, `initiate_connection`, `manage_schedule`, and
-    // `run_connection` are intentionally NOT in this list anymore: all are now
-    // served over the owner-agent bearer surface (tasks 4.4, 2.3/5.x, 6.1-6.3)
-    // and are asserted as `supported` in the "supported families" test above.
-    // `revoke_connection` is intentionally NOT in this list anymore: it is now
-    // served over the owner-agent bearer surface (POST .../revoke, tasks
-    // 3.1d/6.1d) and is asserted as `supported` in the "supported families"
-    // test above. `delete_connection` remains the one destructive family that is
-    // honestly typed-unsupported (no store delete primitive + cascade contract).
-    for (const family of [
-      'delete_connection',
-    ]) {
-      const action = actionByFamily(body, family);
-      assert.ok(action, `${family} must be named in the catalog`);
-      assert.notEqual(action.status, 'supported', `${family} must not be overclaimed as supported`);
-      assert.ok(['owner_mediated', 'unsupported'].includes(action.status));
-      // No supported route → no URL to probe.
-      assert.equal(action.url, null);
-      assert.ok(action.reason.length > 0, `${family} must carry a non-empty reason`);
+    // As of the delete-cascade slice (add-owner-connection-delete-contract
+    // section 2) every owner-agent control family is `supported`:
+    // `delete_connection` was the last destructive family honestly typed
+    // `unsupported`, and its route + store primitive + acceptance-test matrix
+    // now land together, so the catalog flips it to `supported`. The
+    // no-silent-omission property the catalog guarantees still holds: EVERY
+    // family is named, carries a typed status from the known enum, and has a
+    // non-empty reason — nothing is dropped.
+    const VALID_STATUSES = new Set(['supported', 'owner_mediated', 'unsupported']);
+    assert.ok(Array.isArray(body.actions) && body.actions.length > 0, 'catalog must enumerate families');
+    for (const action of body.actions) {
+      assert.ok(typeof action.family === 'string' && action.family.length > 0, 'every family is named');
+      assert.ok(VALID_STATUSES.has(action.status), `${action.family} carries a typed status`);
+      assert.ok(typeof action.reason === 'string' && action.reason.length > 0, `${action.family} carries a non-empty reason`);
+      // A non-supported family must not advertise a route; a supported one must.
+      if (action.status === 'supported') {
+        assert.ok(action.method, `${action.family} supported → method present`);
+        assert.ok(action.url, `${action.family} supported → url present`);
+      } else {
+        assert.equal(action.url, null, `${action.family} not supported → no url`);
+      }
     }
+
+    // delete_connection is specifically the formerly-unsupported destructive
+    // family that is now named-and-supported (the overclaim guard inverted: it
+    // is no longer faked as unsupported now that the cascade is proven).
+    const del = actionByFamily(body, 'delete_connection');
+    assert.ok(del, 'delete_connection must be named in the catalog');
+    assert.equal(del.status, 'supported');
   });
 });
 

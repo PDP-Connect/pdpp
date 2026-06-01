@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
-import { exec, getMany, getOne, referenceQueries } from '../../lib/db.ts';
-import { postgresQuery } from '../postgres-storage.js';
+import { allowUnboundedReadAcknowledged, exec, getMany, getOne, referenceQueries, writeTransaction } from '../../lib/db.ts';
+import { postgresQuery, withPostgresTransaction } from '../postgres-storage.js';
 
 const ACTIVE_RESOLUTION_LIMIT = 2;
 const ACTIVE_FANIN_LIMIT = 64;
@@ -22,6 +22,79 @@ export class ConnectorInstanceResolutionError extends Error {
     this.code = code;
     Object.assign(this, details);
   }
+}
+
+// Thrown by `deleteConnection` when the cascade is refused for a typed reason
+// (an in-flight run holds the active-run lease, or the connection is a
+// default-account binding whose deterministic id would silently re-materialize
+// — see Decision 1). The route maps `code` to the HTTP status via
+// `codeToStatus` (connection_run_active → 409, default_account_delete_unsupported
+// → 409). Distinct from ConnectorInstanceResolutionError so a delete-refusal is
+// never confused with a not-found/ownership outcome.
+export class ConnectorInstanceDeleteError extends Error {
+  constructor(code, message, details = {}) {
+    super(message);
+    this.name = 'ConnectorInstanceDeleteError';
+    this.code = code;
+    Object.assign(this, details);
+  }
+}
+
+// Shared precondition check for `deleteConnection` on both backends. Resolves
+// the row, verifies owner ownership BEFORE any mutation (foreign/unknown id →
+// connector_instance_not_found, which the route maps to 404 without leaking
+// existence — invariant I5), refuses an in-flight active run (I7), and refuses a
+// default-account binding whose deterministic id would re-materialize (I6,
+// Decision 1 fallback: typed-unsupported rather than a half-built tombstone).
+// Returns the resolved instance when the delete may proceed.
+function assertDeletableConnection(instance, { connectorInstanceId, ownerSubjectId, hasActiveRun }) {
+  if (!instance || instance.ownerSubjectId !== ownerSubjectId) {
+    // Absent OR foreign — both surface as not-found so existence is not leaked
+    // across owners and a repeat delete of an already-deleted id is typed.
+    throw new ConnectorInstanceResolutionError(
+      'connector_instance_not_found',
+      `Connector instance '${connectorInstanceId}' does not exist for owner '${ownerSubjectId}'.`,
+      { ownerSubjectId, connectorInstanceId },
+    );
+  }
+  if (hasActiveRun) {
+    throw new ConnectorInstanceDeleteError(
+      'connection_run_active',
+      `Connection '${connectorInstanceId}' has an active collection run; stop or await the run before deleting.`,
+      { ownerSubjectId, connectorInstanceId },
+    );
+  }
+  if (instance.sourceKind === 'account' && instance.sourceBindingKey === DEFAULT_ACCOUNT_SOURCE_BINDING_KEY) {
+    // The default-account id is deterministic, so a hard row delete would be
+    // silently re-materialized to active (with zero records) by the next
+    // `ensureDefaultAccountConnection` read. This slice does not ship the
+    // tombstone ledger that would let the materialization path refuse a
+    // deleted binding, so default-account delete stays typed-unsupported
+    // rather than shipping silent resurrection. Device-collected and explicit
+    // (non-default) account connections have non-deterministic binding keys and
+    // are deletable. See add-owner-connection-delete-contract Decision 1.
+    throw new ConnectorInstanceDeleteError(
+      'default_account_delete_unsupported',
+      `Connection '${connectorInstanceId}' is a default-account binding; deleting it is not supported until a deletion tombstone exists, because the deterministic default-account id would otherwise silently re-materialize on the next owner read. Revoke it instead, or re-initiate to replace it.`,
+      { ownerSubjectId, connectorInstanceId, connectorId: instance.connectorId },
+    );
+  }
+  return instance;
+}
+
+// Non-secret deletion summary returned by `deleteConnection` for the audit
+// event + route response. Carries only counts and stable identifiers — never
+// record contents or secrets.
+function buildDeleteSummary(instance, { deletedRecordCount, deletedStreamCount, scheduleDeleted, deviceRefsCleared }) {
+  return {
+    connection_id: instance.connectorInstanceId,
+    connector_id: instance.connectorId,
+    source_kind: instance.sourceKind,
+    deleted_record_count: deletedRecordCount,
+    deleted_stream_count: deletedStreamCount,
+    schedule_deleted: scheduleDeleted,
+    device_refs_cleared: deviceRefsCleared,
+  };
 }
 
 function stableJson(value) {
@@ -363,6 +436,56 @@ export function createSqliteConnectorInstanceStore() {
       }
       return this.get(connectorInstanceId);
     },
+
+    // Connection-scoped destructive delete of ONE connection, keyed strictly on
+    // connector_instance_id. Erases the connection's records/history/blobs/
+    // attention/search (via the injected `purgeConnectionData`), its schedule
+    // and active-run lease, clears its device source-instance back-reference,
+    // and removes the connector_instances row LAST. Preserves the audit spine,
+    // disclosure grants, sibling connections, and the device edge itself.
+    //
+    // Order (matches the contract's store-primitive section):
+    //   1. resolve + verify ownership, refuse active-run, refuse default-account
+    //      (assertDeletableConnection) — BEFORE any mutation (I5/I6/I7).
+    //   2. purge the connection's records-family data (its own all-or-nothing
+    //      transaction inside `purgeConnectionData`) — runs first so a failure
+    //      here leaves the row + data fully intact (I8: no orphaned readable
+    //      records).
+    //   3. in one writeTransaction: delete the schedule, clear the device
+    //      back-reference, and delete the connector_instances row LAST.
+    //
+    // `purgeConnectionData(storageTarget)` is injected (rather than imported)
+    // to avoid a records.js ↔ store import cycle; the caller passes
+    // `(t) => deleteConnectionData(t)`.
+    async deleteConnection(connectorInstanceId, { ownerSubjectId, now, purgeConnectionData }) {
+      const instance = this.get(connectorInstanceId);
+      const activeRuns = allowUnboundedReadAcknowledged(referenceQueries.controllerListActiveRuns);
+      const hasActiveRun = activeRuns.some((run) => run.connector_instance_id === connectorInstanceId);
+      assertDeletableConnection(instance, { connectorInstanceId, ownerSubjectId, hasActiveRun });
+
+      const purgeSummary = await purgeConnectionData({
+        connector_id: instance.connectorId,
+        connector_instance_id: connectorInstanceId,
+      });
+
+      const stamp = now ?? new Date().toISOString();
+      const { scheduleDeleted, deviceRefsCleared } = writeTransaction(() => {
+        const schedule = exec(referenceQueries.controllerDeleteSchedule, [connectorInstanceId]);
+        const device = exec(referenceQueries.deviceExportersClearSourceInstanceConnectorRef, [stamp, connectorInstanceId]);
+        exec(referenceQueries.connectorInstancesDeleteById, [connectorInstanceId]);
+        return {
+          scheduleDeleted: (schedule?.changes ?? 0) > 0,
+          deviceRefsCleared: device?.changes ?? 0,
+        };
+      });
+
+      return buildDeleteSummary(instance, {
+        deletedRecordCount: purgeSummary?.deletedRecordCount ?? 0,
+        deletedStreamCount: purgeSummary?.deletedStreamCount ?? 0,
+        scheduleDeleted,
+        deviceRefsCleared,
+      });
+    },
   };
 }
 
@@ -544,6 +667,54 @@ export function createPostgresConnectorInstanceStore() {
         );
       }
       return await this.get(connectorInstanceId);
+    },
+
+    // Postgres connection-scoped delete. Mirrors the SQLite arm exactly: resolve
+    // + verify ownership, refuse active-run (I7) and default-account (I6/Decision
+    // 1), purge the connection's data through the injected `purgeConnectionData`
+    // (its own transaction), then delete schedule + clear device back-reference +
+    // delete the connector_instances row LAST inside one withPostgresTransaction.
+    // See the SQLite `deleteConnection` for the full ordering rationale.
+    async deleteConnection(connectorInstanceId, { ownerSubjectId, now, purgeConnectionData }) {
+      const instance = await this.get(connectorInstanceId);
+      const activeRuns = await postgresQuery(
+        `SELECT connector_instance_id FROM controller_active_runs WHERE connector_instance_id = $1`,
+        [connectorInstanceId],
+      );
+      const hasActiveRun = activeRuns.rows.length > 0;
+      assertDeletableConnection(instance, { connectorInstanceId, ownerSubjectId, hasActiveRun });
+
+      const purgeSummary = await purgeConnectionData({
+        connector_id: instance.connectorId,
+        connector_instance_id: connectorInstanceId,
+      });
+
+      const stamp = now ?? new Date().toISOString();
+      const { scheduleDeleted, deviceRefsCleared } = await withPostgresTransaction(async (client) => {
+        const schedule = await client.query(
+          `DELETE FROM connector_schedules WHERE connector_instance_id = $1`,
+          [connectorInstanceId],
+        );
+        const device = await client.query(
+          `UPDATE device_source_instances SET connector_instance_id = NULL, updated_at = $1 WHERE connector_instance_id = $2`,
+          [stamp, connectorInstanceId],
+        );
+        await client.query(
+          `DELETE FROM connector_instances WHERE connector_instance_id = $1`,
+          [connectorInstanceId],
+        );
+        return {
+          scheduleDeleted: (schedule?.rowCount ?? 0) > 0,
+          deviceRefsCleared: device?.rowCount ?? 0,
+        };
+      });
+
+      return buildDeleteSummary(instance, {
+        deletedRecordCount: purgeSummary?.deletedRecordCount ?? 0,
+        deletedStreamCount: purgeSummary?.deletedStreamCount ?? 0,
+        scheduleDeleted,
+        deviceRefsCleared,
+      });
     },
   };
 }

@@ -50,10 +50,10 @@ const OWNER_CONNECTION_ROW = {
     },
     {
       family: 'delete_connection',
-      status: 'unsupported',
-      method: null,
-      url: null,
-      reason: 'Delete is not an owner-agent control route in this build.',
+      status: 'supported',
+      method: 'DELETE',
+      url: 'https://rs.example/v1/owner/connections/cin_amazon_personal',
+      reason: 'Delete a connection by connection_id to erase its data and remove its configuration.',
     },
   ],
 };

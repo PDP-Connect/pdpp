@@ -96,7 +96,7 @@ import {
   listAttemptsForSubscription,
 } from './stores/client-event-subscription-store.ts';
 import { getDefaultDeliveryWorker } from './client-event-delivery-worker.ts';
-import { setClientEventEnqueueHook } from './records.js';
+import { deleteConnectionData, setClientEventEnqueueHook } from './records.js';
 import { DeviceBatchConflictError, createDeviceExporterStore, getDefaultDeviceExporterStore } from './stores/device-exporter-store.js';
 import { getDefaultConnectorDetailGapStore } from './stores/connector-detail-gap-store.js';
 import {
@@ -373,6 +373,7 @@ import { mountOwnerConnectionRename, mountOwnerConnectionsList } from './routes/
 import { mountOwnerConnectionSchedule } from './routes/owner-connection-schedule.ts';
 import { mountOwnerConnectionRun } from './routes/owner-connection-run.ts';
 import { mountOwnerConnectionRevoke } from './routes/owner-connection-revoke.ts';
+import { mountOwnerConnectionDelete } from './routes/owner-connection-delete.ts';
 import { mountOwnerConnectionDiagnostics } from './routes/owner-connection-diagnostics.ts';
 import { mountOwnerConnectionIntent } from './routes/owner-connection-intent.ts';
 import { mountOwnerConnectorTemplates } from './routes/owner-connector-templates.ts';
@@ -3792,6 +3793,46 @@ function buildRsApp(opts = {}) {
     setReferenceTraceId,
     updateConnectorInstanceStatus: (connectorInstanceId, options) =>
       createRequestConnectorInstanceStore().updateStatus(connectorInstanceId, options),
+  });
+
+  // DELETE /v1/owner/connections/:connectionId and
+  // DELETE /v1/owner/connectors/:connectorId are the bearer-authed owner-agent
+  // connection-DELETE routes: a trusted local owner agent DESTRUCTIVELY purges
+  // ONE connection — its records/history/blobs/search/attention, its schedule
+  // and active-run lease, the device source-instance back-reference, and the
+  // connector_instances row — keyed strictly on one connection_id. Unlike revoke
+  // (zero-cascade soft-flip preserving the past), delete erases the past and
+  // removes the configuration. It PRESERVES the audit spine (appending an
+  // owner_agent.connection.delete event), disclosure grants, sibling
+  // connections, and the device edge. Ownership is verified in the store BEFORE
+  // any mutation (foreign/unknown/repeat → connection_not_found 404, no
+  // existence leak); an in-flight run → connection_run_active (409); a
+  // default-account binding → default_account_delete_unsupported (409, no silent
+  // re-materialization). The connector-only route auto-selects a single active
+  // connection or returns a typed ambiguous_connection (409). The data deletion
+  // is all-or-nothing per backend; search-index teardown is a rebuildable
+  // projection torn down after the data commit. `/mcp` owner-bearer rejection is
+  // untouched. See openspec/changes/add-owner-connection-delete-contract.
+  mountOwnerConnectionDelete(app, {
+    AmbiguousConnectionError,
+    canonicalConnectorKey,
+    createTraceContext,
+    deleteConnection: (connectorInstanceId, options) =>
+      createRequestConnectorInstanceStore().deleteConnection(connectorInstanceId, {
+        ...options,
+        purgeConnectionData: (storageTarget) => deleteConnectionData(storageTarget),
+      }),
+    emitSpineEvent,
+    ensureRequestId,
+    getOwnerTokenSubjectId,
+    handleError,
+    listActiveBindingsForGrant,
+    pdppError,
+    projectBindingForWire,
+    requireOwner,
+    requireToken,
+    resolveOwnerConnectorNamespace,
+    setReferenceTraceId,
   });
 
   // GET /v1/owner/connections/:connectionId/diagnostics and
