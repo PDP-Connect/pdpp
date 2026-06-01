@@ -1138,6 +1138,8 @@ test('over-max limit clamps to 100 and surfaces a limit_clamped warning on the H
     assert.ok(clamp, 'limit_clamped warning is surfaced in the HTTP body');
     assert.equal(clamp.param, 'limit');
     assert.deepEqual(clamp.detail, { requested_limit: 200, max_limit: 100 });
+    assert.match(clamp.message, /200/);
+    assert.match(clamp.message, /100/);
   });
 });
 
@@ -1451,6 +1453,10 @@ test('noncanonical range query parameters are rejected loudly', async () => {
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
     const ownerToken = await issueOwnerToken(asUrl);
     const connectorId = spotifyManifest.connector_id;
+    await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, [
+      { id: 'a1', name: 'A', source_updated_at: '2026-01-01T00:00:00Z' },
+      { id: 'a2', name: 'B', source_updated_at: '2026-02-01T00:00:00Z' },
+    ]);
     const baseUrl = `${rsUrl}/v1/streams/top_artists/records`
       + `?connector_id=${encodeURIComponent(connectorId)}`;
     const badParams = [
@@ -1467,6 +1473,12 @@ test('noncanonical range query parameters are rejected loudly', async () => {
       assert.equal(status, 400, `${param} must fail instead of widening the read`);
       assert.equal(body.error.code, 'invalid_request');
     }
+    const { status, body } = await fetchJson(
+      `${baseUrl}&filter[source_updated_at][gte]=2026-02-01T00:00:00Z`,
+      { headers: { 'Authorization': `Bearer ${ownerToken}` } },
+    );
+    assert.equal(status, 200);
+    assert.deepEqual(body.data.map((record) => record.id).sort(), ['a2']);
   });
 });
 
