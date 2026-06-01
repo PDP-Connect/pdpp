@@ -1294,6 +1294,16 @@ export async function runConnector(opts) {
     referenceBaseUrl = null,
     browserSurfaceLease = null,
     browserSurfaceEnv = null,
+    // Connection-scoped static-secret injection (Gmail app password / GitHub
+    // PAT). The controller resolves this fragment from the per-connection
+    // encrypted credential store and threads it here; it carries ONLY this one
+    // connection's secret env var(s). It is merged LAST over `process.env` at
+    // spawn so a stored credential overrides any process-global secret the
+    // operator may still have set — making two mailboxes two distinct runs
+    // rather than a collision on one global. Null/absent means no stored
+    // credential applies to this run (the legacy process-env path is used).
+    // See add-static-secret-owner-connect-primitive design Decision 5.
+    staticSecretEnv = null,
     triggerKind = null,
     automationMode = null,
   } = opts;
@@ -1340,6 +1350,10 @@ export async function runConnector(opts) {
         }
       : {};
   const browserSurfaceLaunchEnv = buildBrowserSurfaceLaunchEnv({ browserSurfaceLease, browserSurfaceEnv });
+  // Connection-scoped static-secret env fragment, merged LAST at spawn so a
+  // stored credential takes precedence over any process-global provider secret.
+  const staticSecretLaunchEnv =
+    staticSecretEnv && typeof staticSecretEnv === 'object' ? staticSecretEnv : {};
   const normalizedConnectorInstanceId = optionalNonEmptyEnv(connectorInstanceId);
   const connectorInstanceEnv = normalizedConnectorInstanceId
     ? { PDPP_CONNECTOR_INSTANCE_ID: normalizedConnectorInstanceId }
@@ -1365,6 +1379,8 @@ export async function runConnector(opts) {
       PDPP_RS_URL: rsUrl,
       ...streamingRegistrationEnv,
       ...browserSurfaceLaunchEnv,
+      // LAST: a connection's own static secret overrides any process-global one.
+      ...staticSecretLaunchEnv,
     },
   });
 

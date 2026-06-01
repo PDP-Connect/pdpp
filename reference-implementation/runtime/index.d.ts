@@ -78,6 +78,16 @@ export interface RuntimeRunConnectorOptions {
   scope?: Record<string, unknown> | null;
   state?: Record<string, unknown> | null;
   /**
+   * Connection-scoped static-secret env fragment (Gmail app password /
+   * GitHub PAT) resolved by the controller from the per-connection encrypted
+   * credential store. Carries ONLY this one connection's secret env var(s)
+   * and is merged LAST over `process.env` at spawn, so a stored credential
+   * overrides any process-global provider secret. Null/absent means no stored
+   * credential applies and the legacy process-env path is used.
+   * See add-static-secret-owner-connect-primitive design Decision 5.
+   */
+  staticSecretEnv?: Record<string, string> | null;
+  /**
    * Mode-A streaming-target registration: per-run shared secret minted
    * by the controller. Forwarded as
    * `PDPP_STREAMING_REGISTRATION_TOKEN`. The child sends it as a Bearer

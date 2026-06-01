@@ -84,6 +84,24 @@
       closed on revoked/deleted credentials; re-capture is the only resurrection.
       Connection-revoke already fails runs closed via the resolver's active-status
       gate, kept distinct from credential lifecycle per Decision 7.)
+- [x] Wire the injection seam into the actual run path. Prior tranches built the
+      `resolveStaticSecretRunEnv` seam + `buildConnectionScopedSecretEnv` but left
+      them unreferenced by any run dispatcher — a captured credential was never
+      injected into a real run. The controller's `runNow` now resolves the
+      connection-scoped fragment via an injected `resolveStaticSecretRunEnv`
+      resolver and threads it to `runConnector` as `staticSecretEnv`, merged LAST
+      over `process.env` at spawn (`reference-implementation/runtime/controller.ts`,
+      `runtime/index.js`, `runtime/index.d.ts`). The reference server wires the
+      real resolver (real credential store + real injection helpers) with a
+      credential-EXISTENCE gate: no captured credential → legacy process-env
+      fallback (backward compatible); a captured credential → inject for active,
+      fail closed for revoked/deleted (`server/index.js`
+      `buildControllerStaticSecretRunEnvResolver`). Proven by
+      `reference-implementation/test/static-secret-controller-run-injection.test.js`
+      (5 tests: scoped injection, two mailboxes distinct, no-credential fallback,
+      non-static-secret no-op, revoke fails the run closed). This closes the
+      build→run gap WITHOUT touching a live provider; the live-ingest leg below is
+      still gated.)
 - [ ] Land the end-to-end proof: intent → owner-mediated capture → first ingest →
       addressable labeled `connection_id`, with audit asserting no secret leak and
       two mailboxes producing two `connection_id`s; plus revoke/delete durability.

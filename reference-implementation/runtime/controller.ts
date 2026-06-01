@@ -313,6 +313,30 @@ export interface ControllerOptions {
   logger?: ControllerLogger;
   ownerClientId?: string;
   ownerSubjectId?: string;
+  /**
+   * Optional connection-scoped static-secret resolver. When present, the
+   * controller calls it before each run to obtain the env fragment carrying
+   * exactly that connection's provider secret (Gmail app password / GitHub
+   * PAT), recovered from the per-connection encrypted credential store. The
+   * fragment is threaded to `runConnector` as `staticSecretEnv` and merged
+   * LAST over `process.env` at spawn (design Decision 5).
+   *
+   * Contract:
+   *   - Return a non-empty env fragment when the connection has an active
+   *     stored credential — the run is then scoped to that secret.
+   *   - Return `null` when the connector is not a static-secret connector, or
+   *     when no stored credential applies — the run falls back to the legacy
+   *     process-env path (backward compatible with existing single-account
+   *     deployments).
+   *   - Throw (fail closed) when a static-secret connection HAS a credential
+   *     that is revoked/deleted or otherwise unrecoverable — the run is then
+   *     refused rather than started with a stale or process-global secret.
+   *
+   * Injected (not imported) so the controller stays decoupled from the
+   * credential store and the connector package, matching `runConnectorImpl`.
+   * Absent in pure-runtime tests; the reference server wires the real resolver.
+   */
+  resolveStaticSecretRunEnv?: StaticSecretRunEnvResolver;
   rsUrl?: string;
   runConnectorImpl?: RunConnectorFn;
   runtime?: unknown;
@@ -339,6 +363,16 @@ export interface ControllerOptions {
    */
   streamingTargetNonceHooks?: RunTargetNonceHooks;
 }
+
+/**
+ * Resolves the connection-scoped static-secret env fragment for one run, or
+ * `null` when none applies. See `CreateControllerOptions.resolveStaticSecretRunEnv`.
+ */
+export type StaticSecretRunEnvResolver = (args: {
+  readonly connectorId: string;
+  readonly connectorInstanceId: string;
+  readonly ownerSubjectId: string;
+}) => Promise<Record<string, string> | null> | Record<string, string> | null;
 
 export interface Controller {
   cancelBrowserSurfaceRun(runId: string): Promise<BrowserSurfaceProjection | null>;
@@ -2888,6 +2922,18 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const browserSurfaceLease = acquireResult.lease;
     const browserSurfaceEnv = acquireResult.env;
 
+    // Connection-scoped static-secret injection. When a resolver is wired and
+    // this connection has an active stored credential, recover its env
+    // fragment so the run authenticates with exactly that connection's secret
+    // (two mailboxes → two distinct runs). A resolver throw is fail-closed: the
+    // connection has a credential we cannot use (revoked/deleted), so we refuse
+    // the run rather than fall through to a stale or process-global secret.
+    // A `null` return means no stored credential applies (non-static-secret
+    // connector, or none captured) — the legacy process-env path is used.
+    const staticSecretEnv = opts.resolveStaticSecretRunEnv
+      ? await opts.resolveStaticSecretRunEnv({ connectorId, connectorInstanceId, ownerSubjectId })
+      : null;
+
     const { state, collectionMode } = deriveCollectionState(
       (await getSyncState(connectorId, { connectorInstanceId })) as { state?: unknown } | null
     );
@@ -2968,6 +3014,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           streamingRegistrationToken: streamingNonce,
           referenceBaseUrl: currentReferenceBaseUrl(),
           browserSurfaceEnv,
+          staticSecretEnv,
         })
       )
       .catch((err: unknown) => {

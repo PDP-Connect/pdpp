@@ -76,6 +76,7 @@ import {
   createPostgresConnectorInstanceCredentialStore,
   createSqliteConnectorInstanceCredentialStore,
 } from './stores/connector-instance-credential-store.js';
+import { resolveStaticSecretRunEnv } from './stores/static-secret-run-credentials.js';
 import { postgresPersistContentAddressedBlob } from './postgres-records.js';
 import { createConsentStore } from './stores/consent-store.js';
 import { createOwnerDeviceAuthStore } from './stores/owner-device-auth-store.js';
@@ -1222,6 +1223,60 @@ function createRequestConnectorInstanceCredentialStore() {
   return isPostgresStorageBackend()
     ? createPostgresConnectorInstanceCredentialStore()
     : createSqliteConnectorInstanceCredentialStore();
+}
+
+// Lazily loads the pure static-secret injection helpers from the
+// polyfill-connectors runner slice. The reference server reaches connector
+// code by relative path (it does not declare the package as a dependency), so
+// this mirrors the controller's `await import("../../packages/...")` idiom and
+// caches the resolved module after the first run.
+let staticSecretInjectionModulePromise = null;
+function loadStaticSecretInjectionHelpers() {
+  if (!staticSecretInjectionModulePromise) {
+    staticSecretInjectionModulePromise = import(
+      '../../packages/polyfill-connectors/src/static-secret-injection.ts'
+    );
+  }
+  return staticSecretInjectionModulePromise;
+}
+
+// Builds the controller's connection-scoped static-secret resolver (design
+// Decision 5). For a static-secret connector that HAS an active stored
+// credential, it returns the env fragment carrying only that connection's
+// secret; the run then authenticates with exactly that secret, overriding any
+// process-global one. It returns `null` for non-static-secret connectors and
+// for connections with no captured credential — those fall back to the legacy
+// process-env path, so existing single-account deployments are unaffected. A
+// revoked/deleted credential on a static-secret connection fails closed: the
+// run seam throws and the run is refused (no stale or process-global secret).
+function buildControllerStaticSecretRunEnvResolver() {
+  return async ({ connectorId, connectorInstanceId, ownerSubjectId }) => {
+    const { isStaticSecretConnector, buildConnectionScopedSecretEnv } =
+      await loadStaticSecretInjectionHelpers();
+    if (!isStaticSecretConnector(connectorId)) {
+      return null;
+    }
+    const credentialStore = createRequestConnectorInstanceCredentialStore();
+    // Backward-compatible gate keyed on credential EXISTENCE, not active status.
+    // When no credential row was ever captured for this connection, fall back to
+    // the legacy process-env path so existing single-account deployments keep
+    // working. When a credential row DOES exist (active, revoked, or deleted)
+    // we defer to the run seam, which injects the secret for an active
+    // credential and FAILS CLOSED for a revoked/deleted one — a deliberately
+    // revoked credential must never silently resurrect onto a process-global
+    // secret (design Decision 7).
+    if ((await credentialStore.getMetadata(connectorInstanceId)) === null) {
+      return null;
+    }
+    return await resolveStaticSecretRunEnv({
+      connectorId,
+      connectorInstanceId,
+      ownerSubjectId,
+      credentialStore,
+      isStaticSecretConnector,
+      buildConnectionScopedSecretEnv,
+    });
+  };
 }
 
 async function resolveOwnerConnectorNamespace(req, connectorId, options = {}) {
@@ -4266,6 +4321,7 @@ export async function startServer(opts = {}) {
       registerNonce: (args) => runTargetRegistry.registerNonce(args),
       clearNonce: (args) => runTargetRegistry.clearNonce(args),
     },
+    resolveStaticSecretRunEnv: buildControllerStaticSecretRunEnvResolver(),
   });
   await controller.reconcileBrowserSurfaceLeasesAfterBoot();
   let schedulerManager = null;
