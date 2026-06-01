@@ -178,6 +178,24 @@ this skill remains the canonical interface and the source of truth for query
 shapes. If `@pdpp/mcp-server` is not yet published to npm, consume it from the
 in-repo workspace package or use the raw-HTTP path.
 
+**MCP filter argument is a typed object, not a query string.** The raw-HTTP query
+shapes above use bracket query syntax (`filter[field]=value`,
+`filter[field][op]=value`). When you call the MCP `query_records`, `aggregate`, or
+`search` tools, pass `filter` as a **typed object** instead — the adapter encodes
+the brackets for you:
+
+```jsonc
+{ "filter": { "user_id": "U123" } }                                  // exact
+{ "filter": { "created_at": { "gte": "2026-01-01T00:00:00Z" } } }    // range (gte|gt|lte|lt)
+```
+
+A literal bracket string (`"filter[user_id]=U123"`) is still accepted, but any
+other string (a bare term, `field=value`, `field>value`, or JSON-as-string) is
+rejected with a typed `invalid_filter` error rather than silently ignored. Use
+the cheap `list_streams -> schema(stream) -> query_records` discovery path
+(`schema` defaults to a compact projection) to learn which fields and operators a
+stream declares before filtering.
+
 ### 9. Event subscriptions (push delivery)
 
 Use event subscriptions when the task requires **push delivery** — the server

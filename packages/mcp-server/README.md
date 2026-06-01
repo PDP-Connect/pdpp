@@ -116,6 +116,29 @@ bigger page. (A direct REST client that sends `limit > 100` is clamped to 100 an
 via a `limit_clamped` entry in the response `meta.warnings[]`; the cap is never silent on
 either surface.)
 
+### Filtering (`query_records`, `aggregate`, `search`)
+
+Pass `filter` as a **typed object**, not a pre-encoded query string. The adapter
+encodes it into the resource server's `filter[field]=value` (exact) and
+`filter[field][op]=value` (range) parameters for you:
+
+```jsonc
+// exact match
+{ "filter": { "user_id": "U123" } }
+// range (operators: gte, gt, lte, lt; AND together across fields)
+{ "filter": { "created_at": { "gte": "2026-01-01T00:00:00Z", "lt": "2026-02-01T00:00:00Z" } } }
+```
+
+Allowed fields and operators are advertised per stream by `GET /v1/schema`
+(`field_capabilities`) — discover them with the cheap
+`list_streams -> schema(stream) -> query_records` path before constructing a
+filter. A legacy raw string using literal bracket syntax
+(`"filter[user_id]=U123"`) is still accepted and parsed. Any other string shape
+(a bare term like `"Vana"`, `"field=value"`, `"amount>100"`, or JSON encoded as a
+string) is **rejected with a typed `invalid_filter` error** — it is never
+silently forwarded as a bare `filter=` parameter (which the resource server
+ignores). `aggregate` and `search` accept the same typed `filter` input.
+
 `aggregate` is the token-efficient way to answer count / sum / min / max / distinct-count and
 grouped or time-bucketed rollup questions. It returns small bucket rows from
 `GET /v1/streams/{stream}/aggregate`, never record bodies — so an agent that needs "how many
@@ -123,7 +146,10 @@ orders", "total spend by month", or "distinct senders" should call `aggregate` i
 paging `query_records` and counting client-side. Group with exactly one dimension per call
 (`group_by` for a scalar field XOR `group_by_time` + `granularity` for a date field).
 Groupable, time-bucketable, and distinct-able fields are advertised by `GET /v1/schema`
-(`field_capabilities.*.aggregation`).
+(`field_capabilities.*.aggregation`). The aggregate tool result `content[]` text includes
+the metric, stream, and numeric result (or a compact preview of grouped buckets with their
+counts) so an agent that can read only `content[]` still gets the answer; the canonical
+envelope remains in `structuredContent.data`.
 
 `search` is bounded the same way: omitting `limit` returns at most 25 hits, and `limit` is
 capped at 100 — the bound the published `/v1/search`, `/v1/search/semantic`, and

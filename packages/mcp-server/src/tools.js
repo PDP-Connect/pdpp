@@ -73,7 +73,7 @@ const FIELDS_DESCRIPTION =
   'Field allowlist for projection. Field paths must be declared by the stream; advertised by `GET /v1/schema` (`field_capabilities`). Unknown paths are rejected by the RS rather than silently widened.';
 
 const FILTER_DESCRIPTION =
-  'Per-field filter spec, URL-encoded as `filter[field]=value` (exact) or `filter[field][op]=value` (operator). Allowed fields and operators are advertised by `GET /v1/schema` (`field_capabilities`); unsupported fields or operators are rejected by the RS rather than silently ignored. Forwarded verbatim — MCP does not parse the filter shape.';
+  'Typed per-field filter. Pass an OBJECT keyed by field name — never a pre-encoded query string. Exact match: `{ "user_id": "U123" }`. Range: `{ "created_at": { "gte": "2026-01-01T00:00:00Z", "lt": "2026-02-01T00:00:00Z" } }`, where the operator is one of `gte`, `gt`, `lte`, `lt`. Multiple fields AND together. The adapter encodes this into the RS `filter[field]=value` / `filter[field][op]=value` query shape for you. Allowed fields and operators are advertised by `GET /v1/schema` (`field_capabilities`); unsupported fields or operators are rejected by the RS rather than silently ignored. A legacy raw query string using literal `filter[field]=value` bracket syntax is still accepted and parsed; any other string shape (a bare value, `field=value`, `field>value`, or JSON-in-a-string) is rejected with an actionable error telling you to use the typed object — it is never silently no-opped.';
 
 const EXPAND_DESCRIPTION =
   'One-hop inline expansion list. Each entry is a manifest-declared parent-to-child relation. Expandable relations and per-relation `expand_limit` caps are advertised by `GET /v1/schema` (`expand_capabilities`); unadvertised relations are rejected by the RS.';
@@ -91,6 +91,152 @@ const COUNT_DESCRIPTION =
   'Canonical opt-in count grade (`none`, `estimated`, `exact`) advertised by `GET /v1/schema`. The reference runtime does not yet implement counts and will reject with a typed `unsupported_query` 400 if forwarded; consult `/v1/schema` for count support. Forwarded verbatim so MCP does not silently drop a parameter REST would reject.';
 
 const EMPTY_TOOL_INPUT_SCHEMA = z.object({}).strict();
+
+// Supported range operators, mirroring the RS (`record-filters.js`
+// SUPPORTED_RANGE_OPERATORS) and the published query contract
+// (`apps/site/content/docs/spec-data-query-api.md`).
+const SUPPORTED_RANGE_OPERATORS = new Set(['gte', 'gt', 'lte', 'lt']);
+
+// A single exact-filter value. The RS coerces by the field's declared JSON
+// Schema type, so a scalar is the only meaningful shape; arrays/objects are not
+// exact matches.
+const FilterScalar = z.union([z.string(), z.number(), z.boolean()]);
+
+// Typed filter input. Each field maps either to a scalar (exact match) or to a
+// range object keyed by `gte`/`gt`/`lte`/`lt`. This mirrors the parsed shape the
+// RS receives from `qs.parse(filter[field][op]=value)`, so the adapter can
+// encode it back into bracket query params with no semantic invention. A legacy
+// raw query string is also accepted (and parsed) for pre-typed-input clients.
+const TypedFilterInput = z.union([
+  z.record(
+    z.string().min(1),
+    z.union([
+      FilterScalar,
+      z
+        .object({
+          gte: FilterScalar.optional(),
+          gt: FilterScalar.optional(),
+          lte: FilterScalar.optional(),
+          lt: FilterScalar.optional(),
+        })
+        .strict(),
+    ]),
+  ),
+  z.string(),
+]);
+
+// Thrown when a legacy string filter cannot be unambiguously parsed into RS
+// bracket params. Surfaced as a typed MCP tool error (`server.js`
+// `toolHandlerError` reads `.code`) so the agent gets an actionable instruction
+// instead of a silently-ignored filter.
+class MalformedFilterError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'MalformedFilterError';
+    this.code = 'invalid_filter';
+  }
+}
+
+// Translate a typed filter object into `[bracketKey, value]` query entries the
+// RsClient appends verbatim (`filter[field]=value`, `filter[field][op]=value`).
+function filterObjectToBracketEntries(filter) {
+  const entries = [];
+  for (const [field, spec] of Object.entries(filter)) {
+    if (spec === undefined || spec === null) continue;
+    if (typeof spec === 'object' && !Array.isArray(spec)) {
+      const opEntries = Object.entries(spec).filter(([, v]) => v !== undefined && v !== null);
+      if (opEntries.length === 0) {
+        throw new MalformedFilterError(
+          `filter range on '${field}' must include at least one of gte/gt/lte/lt; use the typed filter object, e.g. filter: { "${field}": { "gte": <value> } }`,
+        );
+      }
+      for (const [op, value] of opEntries) {
+        if (!SUPPORTED_RANGE_OPERATORS.has(op)) {
+          throw new MalformedFilterError(
+            `unsupported range operator '${op}' on '${field}'; supported operators are gte, gt, lte, lt`,
+          );
+        }
+        entries.push([`filter[${field}][${op}]`, String(value)]);
+      }
+      continue;
+    }
+    // Scalar exact match.
+    entries.push([`filter[${field}]`, String(spec)]);
+  }
+  return entries;
+}
+
+// Parse a legacy raw query-string filter. Only the canonical bracket shape
+// (`filter[field]=value`, `filter[field][op]=value`, optionally `&`-joined) is
+// accepted; every other string shape is rejected with an actionable error
+// rather than forwarded as a bare `filter=` param that the RS silently ignores.
+function legacyFilterStringToBracketEntries(raw) {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return [];
+  const pairs = trimmed.split('&').filter((segment) => segment.length > 0);
+  const entries = [];
+  for (const pair of pairs) {
+    const eq = pair.indexOf('=');
+    if (eq === -1) {
+      throw new MalformedFilterError(
+        `unparseable filter string segment '${pair}'; pass a typed filter object instead, e.g. filter: { "field": "value" } or filter: { "field": { "gte": <value> } }`,
+      );
+    }
+    const rawKey = pair.slice(0, eq);
+    const rawValue = pair.slice(eq + 1);
+    const key = rawKey.trim();
+    const match = /^filter\[([^\]]+)\](?:\[([^\]]+)\])?$/.exec(key);
+    if (!match) {
+      throw new MalformedFilterError(
+        `filter string must use literal bracket syntax 'filter[field]=value' or 'filter[field][op]=value'; got '${rawKey}'. Prefer the typed filter object, e.g. filter: { "field": "value" }`,
+      );
+    }
+    const field = match[1];
+    const op = match[2];
+    if (op !== undefined && !SUPPORTED_RANGE_OPERATORS.has(op)) {
+      throw new MalformedFilterError(
+        `unsupported range operator '${op}' on '${field}'; supported operators are gte, gt, lte, lt`,
+      );
+    }
+    const value = decodeFilterComponent(rawValue);
+    entries.push([op === undefined ? `filter[${field}]` : `filter[${field}][${op}]`, value]);
+  }
+  return entries;
+}
+
+function decodeFilterComponent(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+// Resolve the tool `filter` argument (typed object or legacy string) into the
+// `filter[...]` query entries the RS expects. Returns [] when no filter was
+// supplied. Throws MalformedFilterError on an ambiguous/malformed string.
+function resolveFilterQueryEntries(filter) {
+  if (filter === undefined || filter === null) return [];
+  if (typeof filter === 'string') {
+    return legacyFilterStringToBracketEntries(filter);
+  }
+  if (typeof filter === 'object' && !Array.isArray(filter)) {
+    return filterObjectToBracketEntries(filter);
+  }
+  throw new MalformedFilterError(
+    'filter must be a typed object, e.g. filter: { "field": "value" } or filter: { "field": { "gte": <value> } }',
+  );
+}
+
+// Merge resolved filter bracket entries into a query object built by
+// `pickQuery` (which deliberately drops the raw `filter` key). Mutates and
+// returns `query` for call-site brevity.
+function applyFilterToQuery(query, filter) {
+  for (const [key, value] of resolveFilterQueryEntries(filter)) {
+    query[key] = value;
+  }
+  return query;
+}
 
 const ConnectionIdInputShape = {
   connection_id: z.string().min(1).describe(CONNECTION_ID_DESCRIPTION).optional(),
@@ -311,7 +457,7 @@ export function buildTools({ rs, providerUrl }) {
           order: z.string().optional().describe(ORDER_DESCRIPTION),
           sort: z.string().optional().describe(SORT_DESCRIPTION),
           count: z.enum(['none', 'estimated', 'exact']).optional().describe(COUNT_DESCRIPTION),
-          filter: z.string().optional().describe(FILTER_DESCRIPTION),
+          filter: TypedFilterInput.optional().describe(FILTER_DESCRIPTION),
           fields: z.array(z.string()).optional().describe(FIELDS_DESCRIPTION),
           view: z.string().optional(),
           expand: z.array(z.string()).optional().describe(EXPAND_DESCRIPTION),
@@ -326,7 +472,7 @@ export function buildTools({ rs, providerUrl }) {
       outputSchema: z.object(READ_OUTPUT_SCHEMA_SHAPE),
       handler: async (args) => {
         const stream = requireSafeName(args?.stream, 'stream');
-        const query = pickQuery(args, SUPPORTED_QUERY_KEYS);
+        const query = applyFilterToQuery(pickQuery(args, SUPPORTED_QUERY_KEYS), args?.filter);
         const response = await rs.getJson(`/v1/streams/${encodeURIComponent(stream)}/records`, {
           query,
         });
@@ -378,18 +524,18 @@ export function buildTools({ rs, providerUrl }) {
             .max(100)
             .optional()
             .describe('Maximum number of group buckets (1-100). Only valid with `group_by` or `group_by_time`.'),
-          filter: z.string().optional().describe(FILTER_DESCRIPTION),
+          filter: TypedFilterInput.optional().describe(FILTER_DESCRIPTION),
           ...ConnectionIdInputShape,
         })
         .strict(),
       outputSchema: z.object(READ_OUTPUT_SCHEMA_SHAPE),
       handler: async (args) => {
         const stream = requireSafeName(args?.stream, 'stream');
-        const query = pickQuery(args, SUPPORTED_AGGREGATE_QUERY_KEYS);
+        const query = applyFilterToQuery(pickQuery(args, SUPPORTED_AGGREGATE_QUERY_KEYS), args?.filter);
         const response = await rs.getJson(`/v1/streams/${encodeURIComponent(stream)}/aggregate`, {
           query,
         });
-        return toToolResult(response, providerUrl, `aggregation for stream "${stream}"`);
+        return toAggregateToolResult(response, providerUrl, stream);
       },
     },
     {
@@ -405,22 +551,24 @@ export function buildTools({ rs, providerUrl }) {
           limit: z.number().int().positive().max(100).optional().describe(SEARCH_LIMIT_DESCRIPTION),
           cursor: z.string().optional(),
           mode: z.enum(['lexical', 'semantic', 'hybrid']).optional(),
-          filter: z.string().optional().describe(FILTER_DESCRIPTION),
+          filter: TypedFilterInput.optional().describe(FILTER_DESCRIPTION),
           ...ConnectionIdInputShape,
         })
         .strict(),
       outputSchema: z.object(SEARCH_OUTPUT_SCHEMA_SHAPE),
       handler: async (args) => {
         const path = searchPathForMode(args.mode);
-        const query = {
-          q: args.q,
-          streams: args.streams,
-          limit: args.limit,
-          cursor: args.cursor,
-          filter: args.filter,
-          connection_id: args.connection_id,
-          connector_instance_id: args.connector_instance_id,
-        };
+        const query = applyFilterToQuery(
+          {
+            q: args.q,
+            streams: args.streams,
+            limit: args.limit,
+            cursor: args.cursor,
+            connection_id: args.connection_id,
+            connector_instance_id: args.connector_instance_id,
+          },
+          args.filter,
+        );
         const response = await rs.getJson(path, { query });
         return toSearchToolResult(response, providerUrl);
       },
@@ -718,6 +866,11 @@ function pickQuery(args, supportedKeys) {
   const out = {};
   for (const key of Object.keys(args)) {
     if (key === 'stream') continue;
+    // `filter` is never forwarded as a flat param: the RS expects bracketed
+    // `filter[field]=value` query keys, which callers build via
+    // `applyFilterToQuery`. Forwarding the raw value here would re-introduce the
+    // silent bare-`filter=` no-op this change fixes.
+    if (key === 'filter') continue;
     if (!supportedKeys.has(key)) continue;
     out[key] = args[key];
   }
@@ -1044,6 +1197,75 @@ function toFetchToolResult(response, providerUrl, requestedId) {
       request_id: response.requestId,
     },
   };
+}
+
+// Aggregate results must surface the numeric answer in `content[]` text, not
+// only in `structuredContent.data`: some hosted agents cannot reliably read
+// `structuredContent`. The text stays compact (metric, stream, scalar value or
+// a short preview of grouped buckets) — the full envelope remains canonical in
+// `structuredContent.data`. See validation criterion 3 in the lane brief.
+function toAggregateToolResult(response, providerUrl, stream) {
+  if (!response.ok) {
+    return errorToolResult(response, providerUrl);
+  }
+  return {
+    content: [
+      {
+        type: 'text',
+        text: summarizeAggregate(response.body, stream),
+      },
+    ],
+    structuredContent: { data: response.body, provider_url: providerUrl, request_id: response.requestId },
+  };
+}
+
+const AGGREGATE_GROUP_PREVIEW_LIMIT = 5;
+
+function summarizeAggregate(body, stream) {
+  const agg = unwrapAggregateBody(body);
+  const metric = typeof agg.metric === 'string' && agg.metric.length > 0 ? agg.metric : 'aggregate';
+  const field = typeof agg.field === 'string' && agg.field.length > 0 ? ` field=${agg.field}` : '';
+  const head = `${metric}(${stream})${field}`;
+
+  const groups = Array.isArray(agg.groups) ? agg.groups : null;
+  if (groups) {
+    const dimension = agg.group_by_time
+      ? `group_by_time=${formatScalar(agg.group_by_time)} granularity=${formatScalar(agg.granularity)}`
+      : `group_by=${formatScalar(agg.group_by)}`;
+    if (groups.length === 0) {
+      return `${head} ${dimension}: 0 group(s). See structuredContent.data for the canonical envelope.`;
+    }
+    const shown = groups.slice(0, AGGREGATE_GROUP_PREVIEW_LIMIT).map((g) => {
+      const key = g && typeof g === 'object' ? g.key : g;
+      const count = g && typeof g === 'object' ? g.count : undefined;
+      return `${formatScalar(key)}=${count == null ? '?' : count}`;
+    });
+    const more = groups.length > AGGREGATE_GROUP_PREVIEW_LIMIT ? ` more_groups=${groups.length - AGGREGATE_GROUP_PREVIEW_LIMIT};` : '';
+    return `${head} ${dimension}: ${groups.length} group(s) [${shown.join(', ')}]${more} canonical envelope in structuredContent.data`;
+  }
+
+  // Ungrouped: the scalar answer lives in `value`. Fall back to
+  // `filtered_record_count` for a count when `value` is absent.
+  const value = agg.value !== undefined ? agg.value : agg.filtered_record_count;
+  return `${head} = ${formatAggregateValue(value)}. canonical envelope in structuredContent.data`;
+}
+
+// Render the scalar aggregate answer. Numbers stay unquoted (the common
+// count/sum/min/max case) so the text reads as the numeric result; strings are
+// quoted for disambiguation.
+function formatAggregateValue(value) {
+  if (value === undefined || value === null) return 'null';
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return formatScalar(value);
+}
+
+function unwrapAggregateBody(body) {
+  if (!body || typeof body !== 'object') return {};
+  if (body.object === 'aggregation') return body;
+  if (body.data && typeof body.data === 'object' && !Array.isArray(body.data)) {
+    return body.data;
+  }
+  return body;
 }
 
 function summarizeBody(body, label, options = {}) {
