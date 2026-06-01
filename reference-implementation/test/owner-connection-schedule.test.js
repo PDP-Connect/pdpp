@@ -1,16 +1,18 @@
 /**
- * Integration suite for the bearer-authed owner-agent schedule pause/resume
+ * Integration suite for the bearer-authed owner-agent schedule lifecycle
  * control routes (mounted from `server/routes/owner-connection-schedule.ts`):
  *
  *   POST /v1/owner/connections/:connectionId/schedule/pause
  *   POST /v1/owner/connections/:connectionId/schedule/resume
  *   POST /v1/owner/connectors/:connectorId/schedule/pause
  *   POST /v1/owner/connectors/:connectorId/schedule/resume
+ *   DELETE /v1/owner/connections/:connectionId/schedule
+ *   DELETE /v1/owner/connectors/:connectorId/schedule
  *
  * Covers the instance-scoped owner-agent operations slice (tasks 6.1-6.4) plus
  * the authorization/audit/revocation hardening (tasks 3.1-3.4, 8.1, 8.4):
  *
- *   - a trusted owner-agent bearer pauses and resumes an instance-scoped
+ *   - a trusted owner-agent bearer pauses, resumes, and deletes an instance-scoped
  *     connection schedule by `connection_id`, and the change persists;
  *   - the connector-only route auto-selects the single active connection
  *     (single-instance compatibility, task 6.3);
