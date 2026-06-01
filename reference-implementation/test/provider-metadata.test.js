@@ -225,6 +225,165 @@ test('composed mode env drives browser-facing metadata when explicit public urls
   }
 });
 
+// ─── Discovery round-trip: advertised agent URLs must not 404 ───────────────
+// Regression for the Simon/agent discoverability defect: the RS metadata can
+// advertise agent-facing docs/skill pointers (`skill`, `skill_catalog`,
+// `llms_txt`, `llms_full_txt`, `mcp.endpoint`). Those routes are served by the
+// console/site Next.js origin, NOT the RS origin. In direct/ephemeral topology
+// the `/mcp` protected-resource metadata used to rebase those pointers onto the
+// RS origin itself, so an agent that followed them hit a 404 at the very origin
+// where `/v1/streams` lives. This gate asserts that whatever URL the RS
+// metadata advertises, if it names the RS's own origin a GET returns < 400 —
+// i.e. the RS never advertises an RS-origin URL it does not serve.
+
+// The docs/skill pointers the RS origin does NOT serve. Only the
+// console/site Next.js origin serves these routes; the RS serves none of
+// them, so advertising any of them rebased onto the RS origin produces a 404.
+const RS_UNSERVED_DOCS_KEYS = ['skill', 'skill_catalog', 'llms_txt', 'llms_full_txt'];
+
+// Assert that every docs/skill pointer in a `pdpp_agent_discovery` block names
+// some origin OTHER than the RS, and that any pointer which does name the RS
+// origin actually round-trips (GET < 400). This is the discovery round-trip
+// gate: whatever the RS advertises to agents, an RS-origin URL it does not
+// serve must never appear.
+async function assertAgentDiscoveryHonest(agentDiscovery, { rsOrigin, label }) {
+  if (!agentDiscovery) {
+    return;
+  }
+  for (const key of RS_UNSERVED_DOCS_KEYS) {
+    const url = agentDiscovery[key];
+    if (typeof url !== 'string') {
+      continue;
+    }
+    // The RS does not serve these docs routes, so it must never advertise them
+    // under its own origin — that is exactly the 404 seam agents hit.
+    assert.notEqual(
+      new URL(url).origin,
+      rsOrigin,
+      `${label}: pdpp_agent_discovery.${key} = ${url} names the RS origin, which does not serve it (would 404)`,
+    );
+  }
+  // The MCP endpoint IS an RS-origin route. If advertised under the RS origin,
+  // prove it resolves rather than 404s (a bare GET to the streamable-HTTP MCP
+  // endpoint must not be Not Found).
+  const mcpEndpoint = agentDiscovery.mcp && agentDiscovery.mcp.endpoint;
+  if (typeof mcpEndpoint === 'string' && new URL(mcpEndpoint).origin === rsOrigin) {
+    const resp = await fetch(mcpEndpoint);
+    assert.notEqual(
+      resp.status,
+      404,
+      `${label}: advertised RS-origin mcp.endpoint ${mcpEndpoint} returned 404`,
+    );
+  }
+}
+
+test('RS never advertises RS-origin docs/skill URLs it does not serve (direct/ephemeral)', async () => {
+  // Direct/ephemeral topology (no PDPP_REFERENCE_ORIGIN) — the case where the
+  // `/mcp` metadata previously rebased docs/skill pointers onto the RS origin
+  // (root-and-discovery.ts), so an agent following them hit a 404 at the RS.
+  const previous = {
+    PDPP_REFERENCE_MODE: process.env.PDPP_REFERENCE_MODE,
+    PDPP_REFERENCE_ORIGIN: process.env.PDPP_REFERENCE_ORIGIN,
+    AS_PUBLIC_URL: process.env.AS_PUBLIC_URL,
+    RS_PUBLIC_URL: process.env.RS_PUBLIC_URL,
+  };
+  delete process.env.PDPP_REFERENCE_MODE;
+  delete process.env.PDPP_REFERENCE_ORIGIN;
+  delete process.env.AS_PUBLIC_URL;
+  delete process.env.RS_PUBLIC_URL;
+
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+  });
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const rsOrigin = new URL(rsUrl).origin;
+
+  try {
+    for (const metadataPath of [
+      '/.well-known/oauth-protected-resource',
+      '/.well-known/oauth-protected-resource/mcp',
+    ]) {
+      const metadata = await fetchJson(`${rsUrl}${metadataPath}`);
+      assert.equal(metadata.status, 200, `${metadataPath} must return 200`);
+      await assertAgentDiscoveryHonest(metadata.body.pdpp_agent_discovery, {
+        rsOrigin,
+        label: metadataPath,
+      });
+    }
+  } finally {
+    await closeServer(server);
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test('composed mode advertises docs/skill URLs on the docs origin, never the RS origin', async () => {
+  // Composed topology: the configured browser origin (console/site) serves the
+  // docs/skill routes. The RS must point agents at THAT origin — and must not
+  // point them at itself — on both the plain and `/mcp` protected-resource
+  // metadata documents.
+  const previous = {
+    PDPP_REFERENCE_MODE: process.env.PDPP_REFERENCE_MODE,
+    PDPP_REFERENCE_ORIGIN: process.env.PDPP_REFERENCE_ORIGIN,
+    AS_PUBLIC_URL: process.env.AS_PUBLIC_URL,
+    RS_PUBLIC_URL: process.env.RS_PUBLIC_URL,
+  };
+  process.env.PDPP_REFERENCE_MODE = 'composed';
+  process.env.PDPP_REFERENCE_ORIGIN = 'http://localhost:3200';
+  delete process.env.AS_PUBLIC_URL;
+  delete process.env.RS_PUBLIC_URL;
+
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    ignoreAmbientPublicUrls: false,
+  });
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const rsOrigin = new URL(rsUrl).origin;
+  const docsOrigin = 'http://localhost:3200';
+
+  try {
+    for (const metadataPath of [
+      '/.well-known/oauth-protected-resource',
+      '/.well-known/oauth-protected-resource/mcp',
+    ]) {
+      const metadata = await fetchJson(`${rsUrl}${metadataPath}`);
+      assert.equal(metadata.status, 200, `${metadataPath} must return 200`);
+      const agentDiscovery = metadata.body.pdpp_agent_discovery;
+      assert.ok(agentDiscovery, `${metadataPath} must advertise pdpp_agent_discovery in composed mode`);
+      // Every docs/skill pointer must name the configured docs origin.
+      for (const key of RS_UNSERVED_DOCS_KEYS) {
+        assert.equal(
+          new URL(agentDiscovery[key]).origin,
+          docsOrigin,
+          `${metadataPath}: ${key} must point at the docs origin, got ${agentDiscovery[key]}`,
+        );
+      }
+      // And none of them may name the RS origin (the 404 seam).
+      await assertAgentDiscoveryHonest(agentDiscovery, { rsOrigin, label: metadataPath });
+    }
+  } finally {
+    await closeServer(server);
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
 // ─── Trusted owner-agent onboarding advisory block ──────────────────────────
 // openspec/changes/add-trusted-owner-agent-onboarding (tasks 2.1–2.4): the
 // advisory `pdpp_owner_agent_onboarding` block is emitted on `GET /` and

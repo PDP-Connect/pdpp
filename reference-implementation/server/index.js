@@ -3381,7 +3381,16 @@ function buildAsApp(opts = {}) {
 
 // ─── RS App ─────────────────────────────────────────────────────────────────
 
-function buildAgentDiscoveryMetadata(origin, { noOwnerToken = true } = {}) {
+// `origin` is the provider/MCP origin: it backs the `cli.run_command` connect
+// target and the `mcp.endpoint` (both of which the RS itself serves, so the RS
+// origin is honest here). `docsOrigin` backs the agent-facing docs/skill
+// pointers (`skill`, `skill_catalog`, `llms_txt`, `llms_full_txt`) — those
+// routes are served ONLY by the console/site Next.js origin, never the RS. When
+// no docs origin is available (direct/ephemeral topology), those pointers are
+// omitted entirely rather than rebased onto an origin that would 404. Defaults
+// to `origin` so callers whose `origin` already IS the docs origin (the plain
+// protected-resource metadata in composed mode) need not pass it twice.
+function buildAgentDiscoveryMetadata(origin, { noOwnerToken = true, docsOrigin = origin } = {}) {
   if (!origin) {
     return null;
   }
@@ -3390,6 +3399,7 @@ function buildAgentDiscoveryMetadata(origin, { noOwnerToken = true } = {}) {
   const noOwnerTokenPolicy = noOwnerToken
     ? cli.noOwnerTokenPolicy
     : 'requires_native_reference_provider_for_one_command_connect';
+  const docs = docsOrigin ? stripTrailingSlash(docsOrigin) : null;
   return {
     advisory: true,
     skill_name: 'pdpp-data-access',
@@ -3405,15 +3415,24 @@ function buildAgentDiscoveryMetadata(origin, { noOwnerToken = true } = {}) {
       no_owner_token: noOwnerToken,
       no_owner_token_policy: noOwnerTokenPolicy,
     },
-    skill_catalog: `${base}/.well-known/skills/index.json`,
-    skill: `${base}/.well-known/skills/pdpp-data-access/SKILL.md`,
+    // Docs/skill pointers are only honest when a docs origin serves them.
+    ...(docs
+      ? {
+          skill_catalog: `${docs}/.well-known/skills/index.json`,
+          skill: `${docs}/.well-known/skills/pdpp-data-access/SKILL.md`,
+        }
+      : {}),
     mcp: {
       transport: 'streamable_http',
       endpoint: `${base}/mcp`,
       no_owner_token: true,
     },
-    llms_txt: `${base}/llms.txt`,
-    llms_full_txt: `${base}/llms-full.txt`,
+    ...(docs
+      ? {
+          llms_txt: `${docs}/llms.txt`,
+          llms_full_txt: `${docs}/llms-full.txt`,
+        }
+      : {}),
   };
 }
 

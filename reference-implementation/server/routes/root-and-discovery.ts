@@ -246,7 +246,10 @@ export function mountRsRoot(app: AppLike, ctx: MountRsRootContext): void {
 export interface MountRsProtectedResourceMetadataContext {
   agentDiscoveryOrigin: string | null;
   asPort: number;
-  buildAgentDiscoveryMetadata(origin: string | null, opts?: { noOwnerToken?: boolean }): unknown;
+  buildAgentDiscoveryMetadata(
+    origin: string | null,
+    opts?: { noOwnerToken?: boolean; docsOrigin?: string | null }
+  ): unknown;
   buildDefaultHybridCapability(args: {
     lexicalAvailable: true;
     semanticAvailable: true;
@@ -402,9 +405,21 @@ export function mountRsMcpProtectedResourceMetadata(
         providerConnectVersion: ctx.pdppProviderConnectVersion,
         selfExportSupported: true,
         tokenKindsSupported: ["client", "mcp_package"],
+        // The hosted-MCP discovery surface always advertises the MCP endpoint
+        // and CLI connect target, both of which the RS itself serves — so the
+        // `origin` falls back to the RS `resourceBase` in direct/ephemeral mode.
+        // The docs/skill pointers (`skill`, `skill_catalog`, `llms_txt`, …) are
+        // served ONLY by the composed-mode console/site origin, never the RS, so
+        // their `docsOrigin` is the rebased browser origin or null — when null
+        // those pointers are omitted rather than rebased onto the RS origin,
+        // where they would 404. (Previously they were rebased onto the RS origin,
+        // sending agents to a 404 at the very host serving `/v1/streams`.)
         agentDiscovery: ctx.buildAgentDiscoveryMetadata(
           ctx.agentDiscoveryOrigin ? ctx.resolveSiblingPublicUrl(req, ctx.agentDiscoveryOrigin) : resourceBase,
-          { noOwnerToken: true }
+          {
+            noOwnerToken: true,
+            docsOrigin: ctx.agentDiscoveryOrigin ? ctx.resolveSiblingPublicUrl(req, ctx.agentDiscoveryOrigin) : null,
+          }
         ),
       })
     );
