@@ -3072,6 +3072,26 @@ async function approveStagedGrantBatch(deviceCode, pending, request, subjectId, 
     }
   }
 
+  // One access mode per package (tranche scope guard). Every child grant a package issues
+  // must carry the same access mode; per-source access-mode mixing is not offered in this
+  // tranche. An owner who needs different modes for different sources runs separate ceremonies.
+  const approvedAccessModes = new Set(
+    approvedEntries.map((entry) => entry.selection?.access_mode || null),
+  );
+  if (approvedAccessModes.size > 1) {
+    const err = new Error(
+      `A batch package applies one access mode to every source; the approved sources mix access modes (${Array.from(
+        approvedAccessModes,
+      )
+        .map((mode) => mode ?? 'unspecified')
+        .sort()
+        .join(', ')}). Run a separate ceremony per access mode.`,
+    );
+    err.code = 'invalid_request';
+    err.param = 'access_mode';
+    throw err;
+  }
+
   let registeredClient;
   const resolvedEntries = [];
   try {

@@ -339,3 +339,61 @@ test('batch consent gate: over-soft-cap requests are flagged with affected sourc
     assert.match(html, /reddit/);
   });
 });
+
+test('batch consent gate: a package mixing access modes across approved sources is rejected, not issued', async () => {
+  await withHarness(async ({ asUrl, spotify, reddit }) => {
+    // Two approved sources declaring different access modes. A package applies one
+    // access mode to every child grant in this tranche, so the mix must be rejected
+    // before any package or child grant is issued — not silently collapsed.
+    const { body } = await par(asUrl, [
+      detail({ kind: 'connector', id: spotify.connector_id }, [{ name: 'top_artists' }], { access_mode: 'continuous' }),
+      detail({ kind: 'connector', id: reddit.connector_id }, [{ name: 'posts' }], { access_mode: 'single_use' }),
+    ]);
+
+    const denied = await approve(asUrl, {
+      request_uri: body.request_uri,
+      subject_id: 'owner_local',
+      approved_source_indexes: [0, 1],
+    });
+    assert.equal(denied.status, 400);
+    assert.equal(denied.body.error.code, 'invalid_request');
+    assert.match(denied.body.error.message, /one access mode to every source/);
+    assert.match(denied.body.error.message, /continuous, single_use/);
+
+    const db = getDb();
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM grants').get().n, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM grant_packages').get().n, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM grant_package_members').get().n, 0);
+  });
+});
+
+test('batch consent gate: a uniform-access-mode package issues all children under one access mode', async () => {
+  await withHarness(async ({ asUrl, spotify, reddit }) => {
+    // Both sources declare single_use — a uniform-mode batch issues every child
+    // grant under that one access mode.
+    const { body } = await par(asUrl, [
+      detail({ kind: 'connector', id: spotify.connector_id }, [{ name: 'top_artists' }], { access_mode: 'single_use' }),
+      detail({ kind: 'connector', id: reddit.connector_id }, [{ name: 'posts' }], { access_mode: 'single_use' }),
+    ]);
+
+    const approved = await approve(asUrl, {
+      request_uri: body.request_uri,
+      subject_id: 'owner_local',
+      approved_source_indexes: [0, 1],
+    });
+    assert.equal(approved.status, 200);
+    assert.equal(approved.body.grant.child_grants.length, 2);
+
+    const db = getDb();
+    const modes = db
+      .prepare(
+        `SELECT DISTINCT g.access_mode
+           FROM grant_package_members m
+           JOIN grants g ON g.grant_id = m.grant_id
+          WHERE m.package_id = ?`,
+      )
+      .all(approved.body.package_id)
+      .map((row) => row.access_mode);
+    assert.deepEqual(modes, ['single_use']);
+  });
+});
