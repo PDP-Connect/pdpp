@@ -95,12 +95,7 @@ export function buildRecordsQuery(params: RecordsQueryInput = {}): ObjectLike {
     subject_id: params.subject_id,
     ...expandParams,
   });
-  if (
-    "filter" in params &&
-    params.filter !== undefined &&
-    params.filter !== null &&
-    !isPlainObject(params.filter)
-  ) {
+  if ("filter" in params && params.filter !== undefined && params.filter !== null && !isPlainObject(params.filter)) {
     query.filter = params.filter;
   }
   return query;

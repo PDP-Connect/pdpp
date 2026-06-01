@@ -95,11 +95,16 @@ These tasks describe the later implementation lane. They are intentionally small
 
 ## 3. Implementation-lane validation
 
-- [ ] 3.1 `pnpm exec openspec validate implement-batch-consent-ceremony --strict`
-- [ ] 3.2 `pnpm exec openspec validate --all --strict`
-- [ ] 3.3 `pnpm --dir reference-implementation run test` (note any owner-approved baseline failures by exact name)
-- [ ] 3.4 `pnpm --filter @pdpp/reference-contract run verify` and `run check:generated`
+- [x] 3.1 `pnpm exec openspec validate implement-batch-consent-ceremony --strict`
+  - Evidence: passed on 2026-06-01 during validation closeout.
+- [x] 3.2 `pnpm exec openspec validate --all --strict`
+  - Evidence: passed on 2026-06-01 during validation closeout.
+- [x] 3.3 `pnpm --dir reference-implementation run test` (note any owner-approved baseline failures by exact name)
+  - Evidence: passed on 2026-06-01 with no baseline failures.
+- [x] 3.4 `pnpm --filter @pdpp/reference-contract run verify` and `run check:generated`
+  - Evidence: both passed on 2026-06-01.
 - [ ] 3.5 Every requirement above pinned by at least one passing spec scenario and one regression test before any code is claimed complete.
+  - Left open because 2.5 owner-driven narrowing, 2.9 partial revoke-package failure visibility, 2.10 incremental `parent_package_id`, and 2.12 gated skill docs remain intentionally unchecked.
 
 ## Acceptance checks (spec-authoring lane)
 
