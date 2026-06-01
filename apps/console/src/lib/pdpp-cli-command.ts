@@ -84,6 +84,54 @@ export function pdppLocalCollectorRunCommand(args: { baseUrl: string; connectorI
 }
 
 /**
+ * Render the monorepo-only browser-collector enrollment command. Browser-bound
+ * connectors are not bundled in `@pdpp/local-collector@beta`; the owner runs
+ * this from a PDPP checkout that has `packages/polyfill-connectors`.
+ */
+export function pdppBrowserCollectorEnrollCommand(args: {
+  baseUrl: string;
+  code: string;
+  deviceLabel?: string | null | undefined;
+}): string {
+  const parts = [
+    "pnpm",
+    "--dir",
+    "packages/polyfill-connectors",
+    "exec",
+    "tsx",
+    "bin/local-device-exporter.ts",
+    "enroll",
+    "--base-url",
+    args.baseUrl,
+    "--code",
+    args.code,
+  ];
+  const label = args.deviceLabel?.trim();
+  if (label) {
+    parts.push("--device-label", JSON.stringify(label));
+  }
+  return parts.join(" ");
+}
+
+/**
+ * Render the monorepo-only browser-collector run command. The placeholders are
+ * the non-printing values returned by the enroll command: device id, device
+ * token, and `source_instance_id` as `PDPP_CONNECTION_ID`.
+ */
+export function pdppBrowserCollectorRunCommand(args: { baseUrl: string; connectorId: string }): string {
+  return [
+    "PDPP_CAPTURE_FIXTURES=1 \\",
+    `PDPP_${args.connectorId.toUpperCase()}_HEADLESS=0 \\`,
+    "pnpm --dir packages/polyfill-connectors exec tsx bin/local-device-exporter.ts run \\",
+    `  --base-url ${args.baseUrl} \\`,
+    `  --connector ${args.connectorId} \\`,
+    `  --device-id "$PDPP_LOCAL_DEVICE_ID" \\`,
+    `  --device-token "$PDPP_LOCAL_DEVICE_TOKEN" \\`,
+    `  --connection-id "$PDPP_CONNECTION_ID"`,
+  ].join("\n");
+}
+
+/**
  * Wrap a canonical `pdpp ...` command with `pnpm exec ` so it resolves the
  * workspace-linked binary inside a PDPP monorepo checkout.
  * Returns null for non-`pdpp ` inputs so callers can fall back gracefully.

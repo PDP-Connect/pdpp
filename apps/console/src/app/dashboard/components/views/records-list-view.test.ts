@@ -237,15 +237,15 @@ test("persistent Add-connection action targets the device-enrollment entry point
 // The owner-agent typed connection-intent route now exists, but it is
 // owner-BEARER REST — the browser owner session has no owner bearer, so the
 // console must not call it. The proven console creation primitive is the
-// cookie-authed local-collector enrollment at /dashboard/device-exporters.
+// cookie-authed device-exporter enrollment at /dashboard/device-exporters.
 // The records-list entry point must therefore be a REAL path: the supported
 // connectors (claude_code, codex) deep-link into the enrollment form
-// pre-selected, and the unsupported modalities (browser-bound like Amazon,
-// API/network) are named honestly with a plain-language reason plus a technical
-// primitive for reviewers — never an implied "Add connection"/"Sync now" that
-// would silently fail. The supported set + unsupported reasons come from the
-// shared connection-modality module (one source of truth across the console and
-// the backend intent route). The two audit copy soft spots are also fixed: the
+// pre-selected, Amazon deep-links into a manual browser_collector proof-run path,
+// and unsupported modalities are named honestly with a plain-language reason plus
+// a technical primitive for reviewers — never an implied "Add connection"/"Sync
+// now" that would silently fail. The supported set + unsupported reasons come
+// from the shared connection-modality module. The two audit copy soft spots are
+// also fixed: the
 // blanket "Click Sync now to pull fresh data" promise and the
 // local-collector-only "No data yet" wording.
 
@@ -267,10 +267,13 @@ const ADD_CONNECTION_GUIDANCE_ALWAYS_VISIBLE =
 // not be re-hardcoded in the view (single source of truth with the backend).
 const ADD_CONNECTION_USES_SHARED_MODALITY = /from "\.\.\/\.\.\/lib\/connection-modality\.ts"/;
 const ADD_CONNECTION_RENDERS_SUPPORTED = /SUPPORTED_LOCAL_COLLECTOR_CONNECTORS\.map\(/;
+const ADD_CONNECTION_RENDERS_BROWSER_SUPPORTED = /SUPPORTED_BROWSER_COLLECTOR_CONNECTORS\.map\(/;
 const ADD_CONNECTION_RENDERS_UNSUPPORTED = /UNSUPPORTED_ADD_MODALITIES\.map\(/;
 // Supported connectors deep-link into the enrollment form pre-selected.
 const ADD_CONNECTION_DEEP_LINKS_PRESELECTED =
   /\$\{deviceExportersHref\}\?connector=\$\{encodeURIComponent\(connectorId\)\}/;
+const ADD_CONNECTION_BROWSER_MANUAL_SECTION = /Manual browser-collector setup/;
+const ADD_CONNECTION_BROWSER_MANUAL_NOT_ONE_CLICK = /not a one-click\s+browser flow/;
 const ADD_CONNECTION_NAMES_NOT_SUPPORTED_YET = /Not supported from the console yet/;
 // An unsupported modality that carries a `runbookPath` (browser-bound) must
 // surface that documented owner-run path inline, so the owner is pointed at the
@@ -313,7 +316,10 @@ test("add-connection entry point sources its taxonomy from the shared module", a
   // re-hardcoding the supported set or the unsupported reasons.
   assert.match(src, ADD_CONNECTION_USES_SHARED_MODALITY);
   assert.match(src, ADD_CONNECTION_RENDERS_SUPPORTED);
+  assert.match(src, ADD_CONNECTION_RENDERS_BROWSER_SUPPORTED);
   assert.match(src, ADD_CONNECTION_RENDERS_UNSUPPORTED);
+  assert.match(src, ADD_CONNECTION_BROWSER_MANUAL_SECTION);
+  assert.match(src, ADD_CONNECTION_BROWSER_MANUAL_NOT_ONE_CLICK);
   // Unsupported modalities are named honestly, not hidden behind a generic
   // "not supported" line.
   assert.match(src, ADD_CONNECTION_NAMES_NOT_SUPPORTED_YET);

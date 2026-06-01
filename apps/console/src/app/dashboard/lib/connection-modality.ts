@@ -11,17 +11,15 @@
  * exact missing primitive for reviewers plus plain-language dashboard copy,
  * never an implied "Add connection" / "Sync now" that would silently fail.
  *
- * The proven console creation primitive is local-collector device enrollment via
- * the cookie-authed `POST /_ref/device-exporters/enrollment-codes` route
- * (surfaced at `/dashboard/device-exporters`). That path is proven one-click for
- * the filesystem-class collectors `claude_code` and `codex`. Browser-bound
- * sources (Amazon, Chase, ChatGPT) share the same enrollment route — it accepts
- * them and enrolls a `browser_collector` instance — but the console deliberately
- * does NOT advertise a one-click flow for them until committed proof shows a real
- * logged-in browser session ingesting end-to-end. Those modalities therefore
- * stay in the unsupported list, with a `runbookPath` pointing at the owner-run
- * procedure that works today. API/network sources (GitHub/Gmail) have no owner
- * connect route at all and remain flatly unsupported from the console.
+ * The proven console creation primitive is device-exporter enrollment via the
+ * cookie-authed `POST /_ref/device-exporters/enrollment-codes` route (surfaced at
+ * `/dashboard/device-exporters`). That path is one-click for filesystem-class
+ * collectors (`claude_code`, `codex`). It can also mint a browser_collector code
+ * for Amazon, but that remains a manual owner-run proof path: the owner must run
+ * the monorepo browser collector against a real local browser session. Do not
+ * advertise it as a one-click browser-bound flow until the committed live proof
+ * flips the owner-agent intent route. API/network sources (GitHub/Gmail) have no
+ * owner connect route at all and remain flatly unsupported from the console.
  *
  * Keep this list and the backend classifier in lockstep. The backend classifies
  * from a connector manifest's `runtime_requirements.bindings`; the console has no
@@ -42,9 +40,22 @@ export const SUPPORTED_LOCAL_COLLECTOR_CONNECTORS = ["claude_code", "codex"] as 
 export type SupportedLocalCollectorConnector = (typeof SUPPORTED_LOCAL_COLLECTOR_CONNECTORS)[number];
 
 /**
+ * Browser-bound connectors for which the console can honestly mint an
+ * enrollment code and generate the manual monorepo runner commands today. This
+ * is intentionally narrower than `BROWSER_BOUND_CONNECTORS`: most browser-bound
+ * manifests can be classified for row/action honesty, but only Amazon has the
+ * local-device runner profile and proof-run runbook needed for a supported
+ * console path before the one-click intent flip.
+ */
+export const SUPPORTED_BROWSER_COLLECTOR_CONNECTORS = ["amazon"] as const;
+
+export type SupportedBrowserCollectorConnector = (typeof SUPPORTED_BROWSER_COLLECTOR_CONNECTORS)[number];
+
+/**
  * Connector creation modalities the console understands, matching the backend
- * intent route's taxonomy. `local_collector` is the only one the console can
- * complete today; the rest are honestly unsupported with a named reason.
+ * intent route's taxonomy. `local_collector` is the only one-click path the
+ * console can complete today; the manual Amazon proof-run path is modeled by the
+ * supported browser-collector set above, not by flipping this modality.
  */
 export type ConnectionAddModality = "local_collector" | "browser_bound" | "api_network";
 
@@ -63,12 +74,34 @@ export function localCollectorConnectorLabel(connectorId: SupportedLocalCollecto
   }
 }
 
+/** Owner-meaningful display name for a supported manual browser collector. */
+export function browserCollectorConnectorLabel(connectorId: SupportedBrowserCollectorConnector): string {
+  switch (connectorId) {
+    case "amazon":
+      return "Amazon";
+    default: {
+      const _exhaustive: never = connectorId;
+      return _exhaustive;
+    }
+  }
+}
+
 /** True when this connector key can be created from the console today. */
 export function isSupportedLocalCollectorConnector(
   connectorId: string | null | undefined
 ): connectorId is SupportedLocalCollectorConnector {
   return (
     typeof connectorId === "string" && (SUPPORTED_LOCAL_COLLECTOR_CONNECTORS as readonly string[]).includes(connectorId)
+  );
+}
+
+/** True when this browser-bound connector has a supported manual console setup path. */
+export function isSupportedBrowserCollectorConnector(
+  connectorId: string | null | undefined
+): connectorId is SupportedBrowserCollectorConnector {
+  return (
+    typeof connectorId === "string" &&
+    (SUPPORTED_BROWSER_COLLECTOR_CONNECTORS as readonly string[]).includes(bareConnectorKey(connectorId))
   );
 }
 
@@ -101,11 +134,11 @@ export interface UnsupportedAddModality {
 }
 
 /**
- * The connection modalities the console cannot create today. Amazon is the
- * standing browser-bound exemplar (matching the backend's Amazon acceptance
- * fixture). Each entry names the precise missing primitive and a plain
- * owner-facing reason so the copy can be honest without implying the owner can
- * complete the flow here.
+ * The connection modalities the console cannot create today. Amazon is no longer
+ * listed here: it has a supported manual browser_collector enrollment path. Each
+ * remaining entry names the precise missing primitive and a plain owner-facing
+ * reason so the copy can be honest without implying the owner can complete the
+ * flow here.
  */
 /**
  * Connector keys whose manifest declares a `browser` binding — the browser-bound
@@ -169,18 +202,18 @@ export function isBrowserBoundConnector(connectorId: string | null | undefined):
   return (BROWSER_BOUND_CONNECTORS as readonly string[]).includes(bareConnectorKey(connectorId));
 }
 
-/** The browser-bound runbook path, surfaced verbatim by the empty-state too. */
+/** The browser-bound runbook path, surfaced verbatim by console guidance. */
 export const BROWSER_BOUND_RUNBOOK_PATH = "docs/operator/browser-collector-proof-runbook.md";
 
 export const UNSUPPORTED_ADD_MODALITIES: readonly UnsupportedAddModality[] = [
   {
     modality: "browser_bound",
     label: "Browser-bound sources",
-    examples: ["Amazon", "Chase", "ChatGPT"],
+    examples: ["Chase", "ChatGPT"],
     missingPrimitive:
-      "the browser-collector enrollment primitive (browser_collector source kind + binding-aware enrollment) already ships; what remains is committed proof that a local collector drives the browser connector end-to-end with a real logged-in session — until that lands, no one-click flow is advertised",
+      "a connector-specific browser-collector runner path and committed proof before the console can generate setup steps; Amazon is the current manual proof-run path",
     ownerFacingReason:
-      "the enrollment path exists, but the console does not yet offer a one-click flow: a browser-bound connection needs a real, owner-logged-in browser session running locally, which you complete yourself with the local collector",
+      "needs a supported browser-collector run profile and real owner-logged-in browser proof before the console can generate setup commands",
     runbookPath: BROWSER_BOUND_RUNBOOK_PATH,
   },
   {

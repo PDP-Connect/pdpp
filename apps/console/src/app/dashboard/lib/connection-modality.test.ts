@@ -7,8 +7,8 @@
  *      test-pinned `COLLECTOR_RUN_CONNECTORS` literal (no silent drift),
  *   2. the supported-connector type guard behaves,
  *   3. the unsupported modalities stay honest: every entry names its missing
- *      primitive and the browser-bound entry keeps Amazon as the exemplar
- *      (matching the backend intent route's Amazon acceptance fixture).
+ *      primitive, with Amazon excluded from the unsupported browser-bound bucket
+ *      because it has a generated manual setup path.
  */
 import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
@@ -17,9 +17,12 @@ import { fileURLToPath } from "node:url";
 import {
   BROWSER_BOUND_CONNECTORS,
   BROWSER_BOUND_RUNBOOK_PATH,
+  browserCollectorConnectorLabel,
   isBrowserBoundConnector,
+  isSupportedBrowserCollectorConnector,
   isSupportedLocalCollectorConnector,
   localCollectorConnectorLabel,
+  SUPPORTED_BROWSER_COLLECTOR_CONNECTORS,
   SUPPORTED_LOCAL_COLLECTOR_CONNECTORS,
   UNSUPPORTED_ADD_MODALITIES,
 } from "./connection-modality.ts";
@@ -28,12 +31,16 @@ const COLLECTOR_RUN_CONNECTORS_LITERAL_RE = /COLLECTOR_RUN_CONNECTORS\s*=\s*\[([
 const SURROUNDING_QUOTES_RE = /^["']|["']$/g;
 const BROWSER_COLLECTOR_PRIMITIVE_RE = /browser-collector/;
 const API_NETWORK_PRIMITIVE_RE = /implicitly on first ingest|API-connect/;
-const PRIMITIVE_SHIPS_RE = /already ships|exists/i;
-const PROOF_PENDING_RE = /proof/i;
+const AMAZON_RUNNER_PROFILE_RE = /Amazon is the current manual proof-run path/;
+const GENERATED_SETUP_RE = /generate setup|generated setup/i;
 const RUNBOOK_DOC_HEADING_RE = /Browser-Collector Proof Runbook/;
 
 test("supported local-collector set is exactly claude_code and codex", () => {
   assert.deepEqual([...SUPPORTED_LOCAL_COLLECTOR_CONNECTORS], ["claude_code", "codex"]);
+});
+
+test("supported manual browser-collector set is exactly amazon", () => {
+  assert.deepEqual([...SUPPORTED_BROWSER_COLLECTOR_CONNECTORS], ["amazon"]);
 });
 
 test("supported set matches the enrollment form's pinned COLLECTOR_RUN_CONNECTORS literal", async () => {
@@ -63,6 +70,17 @@ test("isSupportedLocalCollectorConnector narrows only the supported keys", () =>
   assert.equal(isSupportedLocalCollectorConnector(undefined), false);
 });
 
+test("isSupportedBrowserCollectorConnector narrows only the generated manual browser path", () => {
+  assert.equal(isSupportedBrowserCollectorConnector("amazon"), true);
+  assert.equal(isSupportedBrowserCollectorConnector("https://registry.pdpp.org/connectors/amazon"), true);
+  assert.equal(isSupportedBrowserCollectorConnector("chase"), false);
+  assert.equal(isSupportedBrowserCollectorConnector("chatgpt"), false);
+  assert.equal(isSupportedBrowserCollectorConnector("claude_code"), false);
+  assert.equal(isSupportedBrowserCollectorConnector(""), false);
+  assert.equal(isSupportedBrowserCollectorConnector(null), false);
+  assert.equal(isSupportedBrowserCollectorConnector(undefined), false);
+});
+
 test("every supported connector has an owner-meaningful label", () => {
   for (const connectorId of SUPPORTED_LOCAL_COLLECTOR_CONNECTORS) {
     const label = localCollectorConnectorLabel(connectorId);
@@ -70,6 +88,7 @@ test("every supported connector has an owner-meaningful label", () => {
   }
   assert.equal(localCollectorConnectorLabel("claude_code"), "Claude Code");
   assert.equal(localCollectorConnectorLabel("codex"), "Codex");
+  assert.equal(browserCollectorConnectorLabel("amazon"), "Amazon");
 });
 
 test("unsupported modalities are honest: each names a missing primitive", () => {
@@ -88,29 +107,21 @@ test("unsupported modalities are honest: each names a missing primitive", () => 
   }
 });
 
-test("browser-bound modality keeps Amazon as the acceptance exemplar", () => {
+test("browser-bound unsupported modality excludes Amazon because it has a manual console path", () => {
   const browserBound = UNSUPPORTED_ADD_MODALITIES.find((entry) => entry.modality === "browser_bound");
   assert.ok(browserBound, "a browser_bound unsupported modality must exist");
-  assert.ok(
-    browserBound.examples.includes("Amazon"),
-    "Amazon must remain the named browser-bound exemplar (matches the backend intent fixture)"
-  );
+  assert.equal(browserBound.examples.includes("Amazon"), false);
   assert.match(browserBound.missingPrimitive, BROWSER_COLLECTOR_PRIMITIVE_RE);
 });
 
-test("browser-bound copy is honest that the primitive ships and only live proof is pending", () => {
-  // Guard against the copy silently reverting to over-stating the gap. The
-  // `browser_collector` source kind + binding-aware enrollment already shipped
-  // (see add-browser-collector-enrollment-primitive §3.1–3.3 + the green
-  // device-exporter route tests); the enrollment route already enrolls a second
-  // Amazon account as a distinct browser_collector instance. The ONLY remaining
-  // gap is committed proof of a real logged-in browser session ingesting. The
-  // copy must say the primitive ships and name proof — not imply the whole
-  // primitive is missing.
+test("browser-bound unsupported copy is scoped to connectors without generated setup steps", () => {
+  // Amazon has a generated manual proof-run path. The remaining browser-bound
+  // bucket is for connectors whose manifest classifies as browser-bound but for
+  // which the console cannot yet generate connector-specific setup commands.
   const browserBound = UNSUPPORTED_ADD_MODALITIES.find((entry) => entry.modality === "browser_bound");
   assert.ok(browserBound);
-  assert.match(browserBound.missingPrimitive, PRIMITIVE_SHIPS_RE);
-  assert.match(browserBound.missingPrimitive, PROOF_PENDING_RE);
+  assert.match(browserBound.missingPrimitive, GENERATED_SETUP_RE);
+  assert.match(browserBound.missingPrimitive, AMAZON_RUNNER_PROFILE_RE);
 });
 
 test("browser-bound modality points at the owner-run runbook that works today", () => {

@@ -39,6 +39,13 @@
       `test/connector-source-kind.test.js`; route-level enroll tests in
       `test/device-exporter-routes.test.js`. The enrollment-code route rejects a
       contradicting/unresolvable kind before minting a code.)
+- [x] Surface the already-shipped manual Amazon browser_collector enrollment
+      primitive in the operator console without flipping the proof-gated
+      owner-agent intent route. (`/dashboard/records` now lists Amazon under a
+      manual browser-collector setup path, `/dashboard/device-exporters` accepts
+      `?connector=amazon` as a supported prefill, and the enrollment form
+      generates monorepo browser-collector enroll/run commands while preserving
+      the "not one-click" proof boundary.)
 - [ ] Land an Amazon end-to-end proof test that drives enrollment → browser
       session → device-exporter ingest, plus a scrubbed Amazon fixture.
       (STILL OWNER/LIVE-GATED. The deterministic, no-human HALF landed in lane

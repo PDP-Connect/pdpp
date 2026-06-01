@@ -9,6 +9,7 @@ import { formatSourceOutboxState } from "../lib/connection-evidence.ts";
 import {
   BROWSER_BOUND_RUNBOOK_PATH,
   isBrowserBoundConnector,
+  isSupportedBrowserCollectorConnector,
   isSupportedLocalCollectorConnector,
 } from "../lib/connection-modality.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
@@ -46,19 +47,23 @@ export default async function DeviceExportersPage({
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }) {
   // The records-list "Add a connection" entry point deep-links here with
-  // `?connector=claude_code` (or `codex`). Validate against the supported
-  // local-collector set before prefilling so an arbitrary or unsupported value
-  // never lands in the form; an absent/invalid value leaves the field empty.
+  // `?connector=claude_code` / `codex` for one-click local collectors, or
+  // `?connector=amazon` for the supported manual browser_collector proof path.
+  // Validate against those supported sets before prefilling so arbitrary values
+  // never land in the form; an absent/invalid value leaves the field empty.
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
   const connectorParam = resolvedSearchParams?.connector;
   const requestedConnector = Array.isArray(connectorParam) ? connectorParam[0] : connectorParam;
-  const defaultConnectorId = isSupportedLocalCollectorConnector(requestedConnector) ? requestedConnector : undefined;
-  // A deep-link to a *browser-bound* connector (e.g. `?connector=amazon`) is an
-  // intentful request this filesystem-collector form cannot fulfill. Silently
-  // dropping it to an empty form is the owner-reported "no obvious way to add a
-  // second Amazon" dead-end. Detect that case via the shared modality classifier
-  // (no scattered key checks) and surface an honest notice that names the
-  // connector and points at the owner-run runbook — never a faked enroll flow.
+  const defaultConnectorId =
+    isSupportedLocalCollectorConnector(requestedConnector) || isSupportedBrowserCollectorConnector(requestedConnector)
+      ? requestedConnector
+      : undefined;
+  const browserCollectorRequest = isSupportedBrowserCollectorConnector(requestedConnector) ? requestedConnector : null;
+  // A deep-link to an unsupported *browser-bound* connector is an intentful
+  // request this page cannot generate commands for yet. Detect that case via the
+  // shared modality classifier (no scattered key checks) and surface an honest
+  // notice that names the connector and points at the owner-run runbook — never a
+  // faked enroll flow.
   const browserBoundRequest =
     !defaultConnectorId && isBrowserBoundConnector(requestedConnector) ? (requestedConnector as string) : undefined;
 
@@ -84,6 +89,7 @@ export default async function DeviceExportersPage({
           title="Local device exporters"
         />
 
+        {browserCollectorRequest ? <BrowserCollectorEnrollmentNotice connectorId={browserCollectorRequest} /> : null}
         {browserBoundRequest ? <BrowserBoundEnrollmentNotice connectorId={browserBoundRequest} /> : null}
 
         <Section>
@@ -122,33 +128,52 @@ export default async function DeviceExportersPage({
 }
 
 /**
- * Honest notice for a browser-bound connector deep-link.
+ * Honest notice for a supported manual browser-collector connector deep-link.
  *
- * This enrollment form completes the *filesystem-collector* path only
- * (claude_code/codex). A browser-bound connector (Amazon/Chase/ChatGPT) cannot be
- * enrolled here: it needs a real, owner-logged-in browser session driven locally
- * by the collector. Rather than silently swallowing the `?connector=` intent and
- * leaving the owner on a blank form, name the requested connector and point at the
- * owner-run runbook (the same path the records-list `AddConnectionGuidance`
- * surfaces, from the shared `connection-modality` source of truth). This is honest
- * discoverability, not an advertised next step — there is no "enroll" button here,
- * because the reference does not yet prove a one-click browser-bound flow.
+ * Amazon can mint a `browser_collector` enrollment code through the same
+ * device-exporter route the runbook documents. This is still not a one-click
+ * browser-bound flow: after code minting, the owner runs the monorepo browser
+ * collector from a host with a real logged-in browser session. The notice names
+ * that boundary so the prefilled form is discoverable without over-claiming.
+ */
+function BrowserCollectorEnrollmentNotice({ connectorId }: { connectorId: string }) {
+  return (
+    <Callout
+      className="mb-4"
+      description={`${formatConnectorKeyForDisplay(connectorId)} can mint a browser_collector enrollment code here. Complete the run from a local PDPP monorepo checkout with a real, owner-logged-in browser session.`}
+      surface="human"
+      title="Manual browser-collector setup"
+    >
+      <p className="pdpp-caption text-muted-foreground">
+        The connector id is prefilled below. After creating the code, use the generated monorepo commands and follow{" "}
+        <code className="pdpp-eyebrow font-mono text-foreground" data-testid="browser-bound-runbook-path">
+          {BROWSER_BOUND_RUNBOOK_PATH}
+        </code>
+        . The console still does not advertise a one-click browser flow; provider login and 2FA stay local to the owner.
+      </p>
+    </Callout>
+  );
+}
+
+/**
+ * Honest notice for a browser-bound connector deep-link that has no generated
+ * console setup path yet.
  */
 function BrowserBoundEnrollmentNotice({ connectorId }: { connectorId: string }) {
   return (
     <Callout
       className="mb-4"
-      description={`${formatConnectorKeyForDisplay(connectorId)} is a browser-bound source. It cannot be enrolled from this local-device (filesystem) collector form — it needs a real, owner-logged-in browser session that you run locally with the local collector.`}
+      description={`${formatConnectorKeyForDisplay(connectorId)} is a browser-bound source, but this console does not have a generated setup path for it yet. It needs a real, owner-logged-in browser session that you run locally with the browser collector.`}
       surface="human"
-      title="This connector needs a browser session"
+      title="This connector is not generated here yet"
     >
       <p className="pdpp-caption text-muted-foreground">
-        To add it today, follow the owner-run procedure in{" "}
+        The Amazon proof-run path shows the current browser-collector procedure in{" "}
         <code className="pdpp-eyebrow font-mono text-foreground" data-testid="browser-bound-runbook-path">
           {BROWSER_BOUND_RUNBOOK_PATH}
         </code>
-        . The console does not yet offer a one-click flow for browser-bound connectors; see the full add-connection
-        guidance on the{" "}
+        . The console does not yet offer a generated setup flow for this connector; see the full add-connection guidance
+        on the{" "}
         <Link className="underline underline-offset-2 hover:text-foreground" href="/dashboard/records">
           Connections
         </Link>{" "}

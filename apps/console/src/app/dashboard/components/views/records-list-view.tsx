@@ -21,7 +21,10 @@ import type { ReactNode } from "react";
 import { buttonVariants } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import {
+  BROWSER_BOUND_RUNBOOK_PATH,
+  browserCollectorConnectorLabel,
   localCollectorConnectorLabel,
+  SUPPORTED_BROWSER_COLLECTOR_CONNECTORS,
   SUPPORTED_LOCAL_COLLECTOR_CONNECTORS,
   UNSUPPORTED_ADD_MODALITIES,
 } from "../../lib/connection-modality.ts";
@@ -385,19 +388,17 @@ function RecordsHeaderActions({ interactive, routes }: { interactive: boolean; r
  * The owner-agent typed connection-intent route now exists
  * (`POST /v1/owner/connections/intents`), but it is owner-*bearer* REST for
  * trusted local agents — a browser owner session has no owner bearer, so the
- * console must not call it. The proven console creation primitive is the
- * cookie-authed local-collector device enrollment at
- * `/dashboard/device-exporters` (`POST /_ref/device-exporters/enrollment-codes`).
+ * console must not call it. The proven console primitive is the cookie-authed
+ * device-exporter enrollment at `/dashboard/device-exporters`
+ * (`POST /_ref/device-exporters/enrollment-codes`).
  *
- * This entry point gives owners a *real path*, not a dead button: the connectors
- * the reference can create one-click from here (`claude_code`, `codex`) deep-link
- * into the enrollment form pre-selected; the connectors it does not offer a
- * one-click flow for yet (browser-bound like Amazon, API/network like
- * GitHub/Gmail) are listed honestly with a plain-language reason and a technical
- * primitive in the tooltip — never an implied "Add connection" or "Sync now" that
- * would silently fail. Where a documented owner-run procedure exists today
- * (browser-bound connectors carry a `runbookPath`), the entry surfaces that path
- * so the owner is pointed at the real manual flow instead of a dead end.
+ * This entry point gives owners a *real path*, not a dead button:
+ * filesystem-class connectors (`claude_code`, `codex`) deep-link into the
+ * one-click enrollment form pre-selected; Amazon deep-links into the same form
+ * as a manual `browser_collector` proof-run path that mints a code and generates
+ * monorepo runner commands. Browser-bound sources without a generated runner path
+ * and API/network sources stay listed honestly with their missing primitive —
+ * never an implied "Add connection" or "Sync now" that would silently fail.
  *
  * The supported set and the unsupported reasons come from the shared
  * `connection-modality` module, which is the cookie-session sibling of the
@@ -408,7 +409,7 @@ function AddConnectionGuidance({ deviceExportersHref }: { deviceExportersHref: s
   return (
     <Callout
       className="mb-4"
-      description="Two connector types can be added from the console today by enrolling a local-collector device. Other source classes are listed below with the missing owner-approved flow."
+      description="Filesystem connectors can be added directly. Amazon can mint a manual browser-collector enrollment code and then requires the owner-run browser proof procedure. Other source classes are listed below with the missing owner-approved flow."
       surface="human"
       title="Add a connection"
     >
@@ -434,6 +435,31 @@ function AddConnectionGuidance({ deviceExportersHref }: { deviceExportersHref: s
           <p className="pdpp-caption mt-1.5 text-muted-foreground">
             Each opens the enrollment form pre-selected. You run the collector on the host that has the data; the
             connection materializes when the device enrolls and ingests.
+          </p>
+        </div>
+
+        <div>
+          <p className="pdpp-caption mb-1.5 font-medium text-foreground">Manual browser-collector setup</p>
+          <ul className="flex flex-wrap gap-2">
+            {SUPPORTED_BROWSER_COLLECTOR_CONNECTORS.map((connectorId) => (
+              <li key={connectorId}>
+                <Link
+                  className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/50 bg-amber-500/10 px-2.5 py-1 text-foreground transition-colors hover:bg-amber-500/15"
+                  href={`${deviceExportersHref}?connector=${encodeURIComponent(connectorId)}`}
+                >
+                  <span className="pdpp-caption font-medium">{browserCollectorConnectorLabel(connectorId)}</span>
+                  <code className="pdpp-eyebrow font-mono text-muted-foreground">{connectorId}</code>
+                  <span aria-hidden className="text-muted-foreground">
+                    →
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+          <p className="pdpp-caption mt-1.5 text-muted-foreground">
+            This mints a <code className="font-mono">browser_collector</code> enrollment code. It is not a one-click
+            browser flow: finish the local, owner-logged-in browser run with{" "}
+            <code className="pdpp-eyebrow font-mono text-foreground">{BROWSER_BOUND_RUNBOOK_PATH}</code>.
           </p>
         </div>
 
