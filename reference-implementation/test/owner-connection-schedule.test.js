@@ -207,6 +207,17 @@ async function postSchedule(rsUrl, ownerToken, path) {
   });
 }
 
+async function deleteSchedule(rsUrl, ownerToken, path) {
+  return fetchJson(`${rsUrl}${path}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${ownerToken}`, 'Content-Type': 'application/json' },
+  });
+}
+
+function scheduleExists(connectorInstanceId) {
+  return createSqliteSchedulerStore().getSchedule(connectorInstanceId) !== null;
+}
+
 function findScheduleAuditEvent(resp) {
   const traceId = resp.headers.get('PDPP-Reference-Trace-Id');
   assert.ok(traceId?.startsWith('trc_'), 'schedule response should carry an audit trace id');
@@ -526,6 +537,216 @@ test('/mcp continues to reject owner-agent bearers after schedule control lands'
     assert.equal(status, 403);
     assert.equal(body?.error?.code, 'permission_error');
     assert.match(body?.error?.message ?? '', /owner-agent/i);
+  });
+});
+
+test('owner-agent bearer deletes an instance-scoped connection schedule (204) and it persists', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const manifest = await registerConnector(asUrl, loadReferenceManifest('spotify'));
+    const connectorKey = canonicalConnectorKey(manifest.connector_id);
+    await seedInstance({
+      connectorInstanceId: 'cin_spotify_personal',
+      connectorId: connectorKey,
+      displayName: 'My Spotify',
+      sourceBindingKey: 'the owner@example.com',
+    });
+    await seedSchedule({ connectorInstanceId: 'cin_spotify_personal', connectorId: connectorKey, enabled: true });
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    const del = await deleteSchedule(
+      rsUrl,
+      ownerToken,
+      '/v1/owner/connections/cin_spotify_personal/schedule',
+    );
+    assert.equal(del.status, 204);
+    assert.equal(del.body, null, 'delete returns an empty 204 body');
+    assert.equal(scheduleExists('cin_spotify_personal'), false, 'delete must remove the schedule row');
+
+    const audit = findScheduleAuditEvent(del.resp);
+    assert.equal(audit.actor_type, 'owner_agent');
+    assert.equal(audit.actor_id, OWNER_CLIENT_ID);
+    assert.equal(audit.object_type, 'connection');
+    assert.equal(audit.object_id, 'cin_spotify_personal');
+    assert.equal(audit.status, 'succeeded');
+    assert.equal(audit.data?.operation, 'delete_schedule');
+    assert.equal(audit.data?.selector, 'connection_id');
+    assert.equal(audit.data?.connection_id, 'cin_spotify_personal');
+    assert.equal(audit.data?.connector_key, connectorKey);
+  });
+});
+
+test('owner-agent connector-only delete auto-selects the single active connection', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const manifest = await registerConnector(asUrl, loadReferenceManifest('spotify'));
+    const connectorKey = canonicalConnectorKey(manifest.connector_id);
+    await seedInstance({
+      connectorInstanceId: 'cin_spotify_only',
+      connectorId: connectorKey,
+      displayName: 'My Spotify',
+      sourceBindingKey: 'the owner@example.com',
+    });
+    await seedSchedule({ connectorInstanceId: 'cin_spotify_only', connectorId: connectorKey, enabled: true });
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    const del = await deleteSchedule(
+      rsUrl,
+      ownerToken,
+      `/v1/owner/connectors/${encodeURIComponent(connectorKey)}/schedule`,
+    );
+    assert.equal(del.status, 204);
+    assert.equal(scheduleExists('cin_spotify_only'), false);
+
+    const audit = findScheduleAuditEvent(del.resp);
+    assert.equal(audit.data?.selector, 'connector_id');
+    assert.equal(audit.data?.connection_id, 'cin_spotify_only');
+    assert.equal(audit.data?.operation, 'delete_schedule');
+  });
+});
+
+test('owner-agent connector-only delete rejects two active connections with typed ambiguous_connection', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const manifest = await registerConnector(asUrl, loadPackageManifest('amazon'));
+    const connectorKey = canonicalConnectorKey(manifest.connector_id);
+    await seedInstance({
+      connectorInstanceId: 'cin_amazon_personal',
+      connectorId: connectorKey,
+      displayName: 'the owner personal',
+      sourceBindingKey: 'the owner@example.com',
+    });
+    await seedSchedule({ connectorInstanceId: 'cin_amazon_personal', connectorId: connectorKey, enabled: true });
+    await seedInstance({
+      connectorInstanceId: 'cin_amazon_shared',
+      connectorId: connectorKey,
+      displayName: 'Shared Amazon',
+      sourceBindingKey: 'shared@example.com',
+    });
+    await seedSchedule({ connectorInstanceId: 'cin_amazon_shared', connectorId: connectorKey, enabled: true });
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    const { status, body, resp } = await deleteSchedule(
+      rsUrl,
+      ownerToken,
+      `/v1/owner/connectors/${encodeURIComponent(connectorKey)}/schedule`,
+    );
+    assert.equal(status, 409);
+    assert.equal(body?.error?.code, 'ambiguous_connection');
+    assert.equal(body?.error?.retry_with, 'connection_id');
+    const ids = (body?.error?.available_connections ?? []).map((c) => c.connection_id).sort();
+    assert.deepEqual(ids, ['cin_amazon_personal', 'cin_amazon_shared']);
+    // Neither schedule was touched by the ambiguous request.
+    assert.equal(scheduleExists('cin_amazon_personal'), true, 'ambiguous delete must not remove a schedule');
+    assert.equal(scheduleExists('cin_amazon_shared'), true, 'ambiguous delete must not remove a schedule');
+
+    const audit = findScheduleAuditEvent(resp);
+    assert.equal(audit.status, 'failed');
+    assert.equal(audit.data?.operation, 'delete_schedule');
+    assert.equal(audit.data?.selector, 'connector_id');
+    assert.equal(audit.data?.error?.code, 'ambiguous_connection');
+    assert.equal(audit.data?.error?.http_status, 409);
+  });
+});
+
+test('owner-agent delete on a connection with no schedule returns a typed 404 and audits the no-op', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const manifest = await registerConnector(asUrl, loadReferenceManifest('spotify'));
+    const connectorKey = canonicalConnectorKey(manifest.connector_id);
+    await seedInstance({
+      connectorInstanceId: 'cin_spotify_noschedule',
+      connectorId: connectorKey,
+      displayName: 'My Spotify',
+      sourceBindingKey: 'the owner@example.com',
+    });
+    const ownerToken = await issueOwnerToken(asUrl);
+    const { status, body, resp } = await deleteSchedule(
+      rsUrl,
+      ownerToken,
+      '/v1/owner/connections/cin_spotify_noschedule/schedule',
+    );
+    assert.equal(status, 404);
+    assert.equal(body?.error?.code, 'not_found');
+
+    const audit = findScheduleAuditEvent(resp);
+    assert.equal(audit.status, 'failed');
+    assert.equal(audit.data?.operation, 'delete_schedule');
+    assert.equal(audit.data?.error?.code, 'not_found');
+  });
+});
+
+test('owner-agent delete on an unknown connection_id returns a typed 404', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    await registerConnector(asUrl, loadReferenceManifest('spotify'));
+    const ownerToken = await issueOwnerToken(asUrl);
+    const { status, body } = await deleteSchedule(
+      rsUrl,
+      ownerToken,
+      '/v1/owner/connections/cin_missing/schedule',
+    );
+    assert.equal(status, 404);
+    assert.equal(body?.error?.code, 'connector_instance_not_found');
+  });
+});
+
+test('owner-agent delete cannot cross owners (other-owner schedule is untouched)', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const manifest = await registerConnector(asUrl, loadReferenceManifest('spotify'));
+    const connectorKey = canonicalConnectorKey(manifest.connector_id);
+    await seedInstance({
+      connectorInstanceId: 'cin_spotify_other',
+      connectorId: connectorKey,
+      displayName: 'Other Spotify',
+      sourceBindingKey: 'other@example.com',
+      ownerSubjectId: OTHER_SUBJECT_ID,
+    });
+    await seedSchedule({ connectorInstanceId: 'cin_spotify_other', connectorId: connectorKey, enabled: true });
+    const ownerToken = await issueOwnerToken(asUrl);
+    const { status } = await deleteSchedule(
+      rsUrl,
+      ownerToken,
+      '/v1/owner/connections/cin_spotify_other/schedule',
+    );
+    assert.ok(status === 404 || status === 403, `expected 404/403, got ${status}`);
+    assert.equal(scheduleExists('cin_spotify_other'), true, 'foreign schedule must be untouched');
+  });
+});
+
+test('owner-agent delete rejects a client grant token with 403 and audits it', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const manifest = await registerConnector(asUrl, loadReferenceManifest('spotify'));
+    const connectorKey = canonicalConnectorKey(manifest.connector_id);
+    await seedInstance({
+      connectorInstanceId: 'cin_spotify_personal',
+      connectorId: connectorKey,
+      displayName: 'My Spotify',
+      sourceBindingKey: 'the owner@example.com',
+    });
+    await seedSchedule({ connectorInstanceId: 'cin_spotify_personal', connectorId: connectorKey, enabled: true });
+    const clientToken = await approveClientGrant(asUrl, connectorKey, manifest.streams[0].name);
+
+    const { status, body, resp } = await deleteSchedule(
+      rsUrl,
+      clientToken,
+      '/v1/owner/connections/cin_spotify_personal/schedule',
+    );
+    assert.equal(status, 403);
+    assert.equal(body?.error?.code, 'permission_error');
+    assert.equal(scheduleExists('cin_spotify_personal'), true, 'client token must not delete the schedule');
+
+    const audit = findScheduleAuditEvent(resp);
+    assert.equal(audit.status, 'failed');
+    assert.equal(audit.actor_type, 'client');
+    assert.equal(audit.data?.operation, 'delete_schedule');
+    assert.equal(audit.data?.error?.code, 'permission_error');
+  });
+});
+
+test('owner-agent delete rejects a request with no bearer (401)', async () => {
+  await withServer(async ({ rsUrl }) => {
+    const { status, body } = await fetchJson(
+      `${rsUrl}/v1/owner/connections/cin_spotify_personal/schedule`,
+      { method: 'DELETE', headers: { 'Content-Type': 'application/json' } },
+    );
+    assert.equal(status, 401);
+    assert.equal(body?.error?.type, 'authentication_error');
   });
 });
 

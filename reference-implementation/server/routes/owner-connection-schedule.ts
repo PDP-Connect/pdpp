@@ -1,25 +1,28 @@
-// HTTP adapter for the bearer-authed owner-agent schedule pause/resume control
+// HTTP adapter for the bearer-authed owner-agent schedule lifecycle control
 // routes:
 //
-//   POST /v1/owner/connections/:connectionId/schedule/pause
-//   POST /v1/owner/connections/:connectionId/schedule/resume
-//   POST /v1/owner/connectors/:connectorId/schedule/pause
-//   POST /v1/owner/connectors/:connectorId/schedule/resume
+//   POST   /v1/owner/connections/:connectionId/schedule/pause
+//   POST   /v1/owner/connections/:connectionId/schedule/resume
+//   POST   /v1/owner/connectors/:connectorId/schedule/pause
+//   POST   /v1/owner/connectors/:connectorId/schedule/resume
+//   DELETE /v1/owner/connections/:connectionId/schedule
+//   DELETE /v1/owner/connectors/:connectorId/schedule
 //
 // These are the owner-agent (bearer) siblings of the cookie-authed
-// `/_ref/connections/:id/schedule/{pause,resume}` and
-// `/_ref/connectors/:id/schedule/{pause,resume}` routes in
-// `server/routes/ref-connectors.ts`. They live in the `/v1/owner/*` route
-// family and reuse the existing owner-bearer guards (`requireToken` +
-// `requireOwner`) without teaching `requireOwnerSession` (cookie) a second
-// identity source. `/mcp` owner-bearer rejection (`requireClientOrMcpPackage`)
-// is untouched.
+// `/_ref/connections/:id/schedule/{pause,resume}`,
+// `/_ref/connectors/:id/schedule/{pause,resume}`, and the two
+// `/_ref/.../schedule` DELETE routes in `server/routes/ref-connectors.ts`. They
+// live in the `/v1/owner/*` route family and reuse the existing owner-bearer
+// guards (`requireToken` + `requireOwner`) without teaching
+// `requireOwnerSession` (cookie) a second identity source. `/mcp` owner-bearer
+// rejection (`requireClientOrMcpPackage`) is untouched.
 //
-// Both surfaces converge on ONE mutation path — the controller's
-// `setScheduleEnabled` (owner-scoped via the connector-instance namespace
-// resolver) — under separate auth adapters, so the schedule pause/resume
-// semantics (schedule-not-found 404, automation-ineligibility 400, scheduler
-// refresh on success) are shared, not cloned.
+// Both surfaces converge on ONE mutation path per operation — the controller's
+// `setScheduleEnabled` (pause/resume) and `deleteSchedule` (delete), each
+// owner-scoped via the connector-instance namespace resolver — under separate
+// auth adapters, so the schedule semantics (schedule-not-found 404,
+// automation-ineligibility 400 on resume, delete returns 204 / typed 404 when
+// no schedule existed, scheduler refresh on success) are shared, not cloned.
 //
 // Instance scoping (design.md #5, tasks 6.1-6.3):
 //   - the `:connectionId` routes are addressed by a single `connection_id`
@@ -65,6 +68,7 @@ interface RouteRequest {
 }
 
 interface RouteResponse {
+  end(): unknown;
   getHeader(name: string): string | number | string[] | undefined;
   json(body: unknown): unknown;
   setHeader(name: string, value: string): void;
@@ -74,7 +78,14 @@ interface RouteResponse {
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 type NextFn = () => unknown | Promise<unknown>;
 
+// The three schedule lifecycle operations this adapter exposes over the
+// owner-agent bearer surface. `pause_schedule`/`resume_schedule` toggle the
+// enabled flag via `setScheduleEnabled`; `delete_schedule` removes the row via
+// `deleteSchedule`. The value is recorded verbatim in the audit event.
+type ScheduleOperation = "pause_schedule" | "resume_schedule" | "delete_schedule";
+
 interface AppLike {
+  delete(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
   post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
 }
 
@@ -122,6 +133,9 @@ export interface MountOwnerConnectionScheduleContext {
   ) => AmbiguousConnectionErrorLike;
   canonicalConnectorKey(value: string | null | undefined): string | null;
   createTraceContext(input?: { scenarioId?: string }): TraceContext;
+  // Controller schedule delete. Owner-scoped because the namespace was already
+  // resolved owner-side; returns false when no schedule row existed to delete.
+  deleteSchedule(connectorId: string, options: { connectorInstanceId?: string | null }): Promise<boolean>;
   emitSpineEvent(event: Record<string, unknown>): Promise<unknown>;
   ensureRequestId(res: RouteResponse): string;
   getOwnerTokenSubjectId(req: unknown): string;
@@ -207,7 +221,7 @@ async function emitScheduleAudit(
   args: {
     connectionId?: string | null;
     connectorKey?: string | null;
-    enabled: boolean;
+    operation: ScheduleOperation;
     error?: unknown;
     outcome: "succeeded" | "failed";
     ownerSubjectId?: string | null;
@@ -220,7 +234,7 @@ async function emitScheduleAudit(
   const actorKind = auditActorKind(req);
   const ownerSubjectId =
     args.ownerSubjectId ?? (typeof req.tokenInfo?.subject_id === "string" ? req.tokenInfo.subject_id : null);
-  const operation = args.enabled ? "resume_schedule" : "pause_schedule";
+  const operation = args.operation;
   const code = (args.error as { code?: unknown } | null)?.code;
   await ctx.emitSpineEvent({
     event_type: "owner_agent.connection.schedule",
@@ -264,7 +278,7 @@ async function emitScheduleAudit(
 function buildScheduleRequireOwner(
   ctx: MountOwnerConnectionScheduleContext,
   selector: "connection_id" | "connector_id",
-  enabled: boolean
+  operation: ScheduleOperation
 ): MiddlewareHandler {
   return async (...args: unknown[]) => {
     const [req, res, next] = args as [RouteRequest, RouteResponse, NextFn];
@@ -278,7 +292,7 @@ function buildScheduleRequireOwner(
     await emitScheduleAudit(ctx, req, res, {
       connectionId,
       connectorKey,
-      enabled,
+      operation,
       error: err,
       outcome: "failed",
       ownerSubjectId: typeof req.tokenInfo?.subject_id === "string" ? req.tokenInfo.subject_id : null,
@@ -328,13 +342,16 @@ async function rethrowAsAmbiguousConnection(
   );
 }
 
-// Shared handler body for all four routes. `selector` chooses connector-only
-// vs connection-scoped addressing; `enabled` chooses resume (true) vs pause
-// (false).
+// Shared handler body for all six routes. `selector` chooses connector-only
+// vs connection-scoped addressing; `operation` chooses pause/resume (toggle the
+// enabled flag via `setScheduleEnabled`, returning the schedule JSON) vs delete
+// (remove the row via `deleteSchedule`, returning 204, or a typed 404 when no
+// schedule existed). The namespace-resolution and ambiguity path is identical
+// across all three operations.
 function buildScheduleHandler(
   ctx: MountOwnerConnectionScheduleContext,
   selector: "connection_id" | "connector_id",
-  enabled: boolean
+  operation: ScheduleOperation
 ): RouteHandler {
   return async (req: RouteRequest, res: RouteResponse) => {
     const ownerSubjectId = ctx.getOwnerTokenSubjectId(req);
@@ -371,6 +388,44 @@ function buildScheduleHandler(
       connectionId = namespace.connectorInstanceId;
       connectorKey = ctx.canonicalConnectorKey(namespace.connectorId) ?? namespace.connectorId;
 
+      if (operation === "delete_schedule") {
+        const deleted = await ctx.deleteSchedule(namespace.connectorId, {
+          connectorInstanceId: namespace.connectorInstanceId,
+        });
+        if (!deleted) {
+          // No schedule row to delete. Mirror the cookie-authed `/_ref` delete
+          // route's typed 404 — and audit the no-op as a failed delete so the
+          // outcome is visible without leaking secrets.
+          const notFound = new Error(`Schedule not found for connection: ${connectionId}`) as Error & {
+            code: string;
+          };
+          notFound.code = "not_found";
+          await emitScheduleAudit(ctx, req, res, {
+            connectionId,
+            connectorKey,
+            operation,
+            error: notFound,
+            outcome: "failed",
+            ownerSubjectId,
+            selector,
+          });
+          ctx.pdppError(res, 404, "not_found", notFound.message);
+          return;
+        }
+        await ctx.onScheduleMutation?.();
+        await emitScheduleAudit(ctx, req, res, {
+          connectionId,
+          connectorKey,
+          operation,
+          outcome: "succeeded",
+          ownerSubjectId,
+          selector,
+        });
+        res.status(204).end();
+        return;
+      }
+
+      const enabled = operation === "resume_schedule";
       const schedule = await ctx.setScheduleEnabled(namespace.connectorId, enabled, {
         connectorInstanceId: namespace.connectorInstanceId,
       });
@@ -378,7 +433,7 @@ function buildScheduleHandler(
       await emitScheduleAudit(ctx, req, res, {
         connectionId,
         connectorKey,
-        enabled,
+        operation,
         outcome: "succeeded",
         ownerSubjectId,
         selector,
@@ -388,7 +443,7 @@ function buildScheduleHandler(
       await emitScheduleAudit(ctx, req, res, {
         connectionId,
         connectorKey,
-        enabled,
+        operation,
         error: err,
         outcome: "failed",
         ownerSubjectId,
@@ -404,28 +459,42 @@ export function mountOwnerConnectionSchedule(app: AppLike, ctx: MountOwnerConnec
     "/v1/owner/connections/:connectionId/schedule/pause",
     { contract: "ownerPauseConnectionSchedule" },
     ctx.requireToken,
-    buildScheduleRequireOwner(ctx, "connection_id", false),
-    buildScheduleHandler(ctx, "connection_id", false)
+    buildScheduleRequireOwner(ctx, "connection_id", "pause_schedule"),
+    buildScheduleHandler(ctx, "connection_id", "pause_schedule")
   );
   app.post(
     "/v1/owner/connections/:connectionId/schedule/resume",
     { contract: "ownerResumeConnectionSchedule" },
     ctx.requireToken,
-    buildScheduleRequireOwner(ctx, "connection_id", true),
-    buildScheduleHandler(ctx, "connection_id", true)
+    buildScheduleRequireOwner(ctx, "connection_id", "resume_schedule"),
+    buildScheduleHandler(ctx, "connection_id", "resume_schedule")
   );
   app.post(
     "/v1/owner/connectors/:connectorId/schedule/pause",
     { contract: "ownerPauseConnectorSchedule" },
     ctx.requireToken,
-    buildScheduleRequireOwner(ctx, "connector_id", false),
-    buildScheduleHandler(ctx, "connector_id", false)
+    buildScheduleRequireOwner(ctx, "connector_id", "pause_schedule"),
+    buildScheduleHandler(ctx, "connector_id", "pause_schedule")
   );
   app.post(
     "/v1/owner/connectors/:connectorId/schedule/resume",
     { contract: "ownerResumeConnectorSchedule" },
     ctx.requireToken,
-    buildScheduleRequireOwner(ctx, "connector_id", true),
-    buildScheduleHandler(ctx, "connector_id", true)
+    buildScheduleRequireOwner(ctx, "connector_id", "resume_schedule"),
+    buildScheduleHandler(ctx, "connector_id", "resume_schedule")
+  );
+  app.delete(
+    "/v1/owner/connections/:connectionId/schedule",
+    { contract: "ownerDeleteConnectionSchedule" },
+    ctx.requireToken,
+    buildScheduleRequireOwner(ctx, "connection_id", "delete_schedule"),
+    buildScheduleHandler(ctx, "connection_id", "delete_schedule")
+  );
+  app.delete(
+    "/v1/owner/connectors/:connectorId/schedule",
+    { contract: "ownerDeleteConnectorSchedule" },
+    ctx.requireToken,
+    buildScheduleRequireOwner(ctx, "connector_id", "delete_schedule"),
+    buildScheduleHandler(ctx, "connector_id", "delete_schedule")
   );
 }

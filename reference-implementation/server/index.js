@@ -3686,14 +3686,17 @@ function buildRsApp(opts = {}) {
   // openspec/changes/add-owner-agent-control-surface (task 4.4).
   mountOwnerConnectionRename(app, ownerConnectionsContext);
 
-  // POST /v1/owner/connections/:connectionId/schedule/{pause,resume} and
-  // POST /v1/owner/connectors/:connectorId/schedule/{pause,resume} are the
-  // bearer-authed owner-agent schedule pause/resume control routes. A trusted
-  // local owner agent pauses or resumes a connection's schedule without a
-  // browser owner session. They share the controller `setScheduleEnabled`
-  // semantics (schedule-not-found 404, automation-ineligibility 400, scheduler
-  // refresh on success) with the cookie-authed `/_ref` schedule routes under a
-  // separate owner-bearer auth adapter (`requireToken` + `requireOwner`). The
+  // POST /v1/owner/connections/:connectionId/schedule/{pause,resume},
+  // POST /v1/owner/connectors/:connectorId/schedule/{pause,resume}, and
+  // DELETE /v1/owner/{connections/:connectionId,connectors/:connectorId}/schedule
+  // are the bearer-authed owner-agent schedule lifecycle control routes. A
+  // trusted local owner agent pauses, resumes, or deletes a connection's
+  // schedule without a browser owner session. They share the controller
+  // `setScheduleEnabled` (pause/resume) and `deleteSchedule` (delete) semantics
+  // (schedule-not-found 404, automation-ineligibility 400 on resume, delete
+  // returns 204 / typed 404 when no schedule existed, scheduler refresh on
+  // success) with the cookie-authed `/_ref` schedule routes under a separate
+  // owner-bearer auth adapter (`requireToken` + `requireOwner`). The
   // connector-only routes auto-select the single active connection or reject
   // with a typed `ambiguous_connection` (409) carrying available `connection_id`
   // values; `/mcp` owner-bearer rejection is untouched. See
@@ -3716,6 +3719,7 @@ function buildRsApp(opts = {}) {
     setReferenceTraceId,
     setScheduleEnabled: (connectorId, enabled, options) =>
       opts.controller.setScheduleEnabled(connectorId, enabled, options),
+    deleteSchedule: (connectorId, options) => opts.controller.deleteSchedule(connectorId, options),
   });
 
   // POST /v1/owner/connections/intents is the bearer-authed owner-agent

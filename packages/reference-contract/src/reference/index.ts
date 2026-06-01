@@ -1406,6 +1406,28 @@ export const referenceManifests = [
     responses: { 200: { description: "Resumed" }, ...CommonErrors },
   },
   {
+    id: "ownerDeleteConnectionSchedule",
+    method: "DELETE",
+    path: "/v1/owner/connections/{connectionId}/schedule",
+    surface: "reference",
+    tags: ["reference", "runs", "connections", "owner-agent"],
+    summary:
+      "Owner-agent bearer: delete one configured connection's schedule config, addressed by `connection_id`. Returns 204 when the schedule was deleted and a typed 404 when no schedule existed. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. Shares the controller `deleteSchedule` semantics with the cookie-authed `/_ref` delete route under a separate owner-bearer auth adapter.",
+    request: { params: ConnectionIdParamSchema },
+    responses: { 204: { description: "Schedule deleted" }, ...CommonErrors },
+  },
+  {
+    id: "ownerDeleteConnectorSchedule",
+    method: "DELETE",
+    path: "/v1/owner/connectors/{connectorId}/schedule",
+    surface: "reference",
+    tags: ["reference", "runs", "owner-agent"],
+    summary:
+      "Owner-agent bearer: delete a connector's schedule config addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Returns 204 on delete and a typed 404 when no schedule existed. Owner bearers only; client/mcp_package grants SHALL NOT reach this route.",
+    request: { params: ConnectorIdParamSchema },
+    responses: { 204: { description: "Schedule deleted" }, ...CommonErrors },
+  },
+  {
     id: "refGetConnection",
     method: "GET",
     path: "/_ref/connections/{connectorInstanceId}",
