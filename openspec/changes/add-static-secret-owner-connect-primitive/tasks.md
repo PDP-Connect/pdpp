@@ -47,25 +47,52 @@
 - [x] `node --test reference-implementation/test/owner-connection-intent.test.js`
 - [x] `git diff --check`
 
-## 4. Implementation (future lane — out of scope here; each step handles a real provider secret)
+## 4. Implementation (lane `ri-static-secret-owner-connect-implementation-v1`)
 
-- [ ] Build the per-connection encrypted credential store: reversible encryption
+- [x] Build the per-connection encrypted credential store: reversible encryption
       at rest, keyed to one `connection_id`, owner/operator-held key, no-leakage
       read contract.
+      (`reference-implementation/server/stores/credential-encryption.js`,
+      `connector-instance-credential-store.js`; schema in `db.js` +
+      `postgres-storage.js`; SQL artifacts in
+      `server/queries/connector-instance-credentials/`. AES-256-GCM under
+      `PDPP_CREDENTIAL_ENCRYPTION_KEY`, fail-closed when unconfigured; reads
+      project only kind/status/fingerprint/timestamps. 15 tests.)
 - [ ] Build the owner-mediated capture surface (local stdin `credentials`
       interaction and/or owner-session route) that writes to the store and never
       exposes the secret to the agent.
-- [ ] Implement connection-scoped subprocess injection in
-      `packages/polyfill-connectors/src/collector-runner.ts`, replacing
-      process-global env for static-secret connectors.
-- [ ] Implement rotation / credential-revoke / connection-revoke / delete with no
+      (DEFERRED — needs a real owner-supplied provider secret; out of scope for
+      this no-human-secret lane. The store's `capture()` write path is the seam a
+      capture surface calls.)
+- [x] Implement connection-scoped subprocess injection in
+      `packages/polyfill-connectors`, replacing process-global env for
+      static-secret connectors.
+      (`packages/polyfill-connectors/src/static-secret-injection.ts` +
+      runner-barrel export; `reference-implementation/server/stores/static-secret-run-credentials.js`
+      ties store recovery to injection. The per-run `connector.env` fragment
+      merges LAST over `process.env` at spawn. 9 + 7 tests, incl. a live
+      `runCollectorConnector` spawn-path proof that two gmail connections run with
+      distinct secrets and override a polluted process-global env.)
+- [x] Implement rotation / credential-revoke / connection-revoke / delete with no
       implicit resurrection.
+      (Store `capture` rotate / `revoke` / `delete`; FK `ON DELETE CASCADE`
+      removes the credential when the connection is deleted; the run seam fails
+      closed on revoked/deleted credentials; re-capture is the only resurrection.
+      Connection-revoke already fails runs closed via the resolver's active-status
+      gate, kept distinct from credential lifecycle per Decision 7.)
 - [ ] Land the end-to-end proof: intent → owner-mediated capture → first ingest →
       addressable labeled `connection_id`, with audit asserting no secret leak and
       two mailboxes producing two `connection_id`s; plus revoke/delete durability.
+      (PARTIAL — revoke/delete durability, two-mailbox distinctness, and
+      no-leakage are proven at the store/seam/injection level with synthetic
+      secrets. The intent → owner-capture → first-ingest LIVE leg requires a real
+      provider secret and is deferred to a lane that can supply one.)
 - [ ] Flip the `api_network` intent branch to return
       `complete_credential_capture` and flip the catalog `initiate_connection`
       descriptor — only after the proof lands, in the same reviewable unit.
+      (NOT FLIPPED — gated on the live proof above. The runtime branch stays
+      `unsupported`, pinned by `owner-connection-intent.test.js`; the contract
+      enum reservation remains in place.)
 
 ## Acceptance checks
 

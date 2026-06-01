@@ -374,6 +374,18 @@ test('owner-agent initiating an API/network-only connector (gmail) gets a typed 
     // committed proof (add-static-secret-owner-connect-primitive design Decision 4
     // and proof-before-flip gate). Reserving the enum value does not advertise the
     // flow; the structural next_step.kind stays `unsupported`.
+    //
+    // STATUS (add-static-secret-owner-connect-primitive implementation lane): the
+    // per-connection encrypted credential store
+    // (server/stores/connector-instance-credential-store.js), connection-scoped
+    // subprocess injection (packages/polyfill-connectors static-secret-injection),
+    // and the fail-closed run seam (server/stores/static-secret-run-credentials.js)
+    // now exist and are proven by their own suites. The route flip stays GATED on
+    // Decision 6's end-to-end LIVE proof (intent -> owner-mediated capture -> first
+    // ingest -> addressable labeled connection_id, audited no-secret-leak, two
+    // mailboxes -> two connection_ids), which requires a real owner-supplied
+    // provider secret this lane cannot safely simulate. Until that proof lands the
+    // branch stays `unsupported`; this assertion is the guard that keeps it honest.
     assert.notEqual(body.next_step.kind, 'complete_credential_capture');
   });
 });
