@@ -46,7 +46,7 @@ pre-commit:
         fi
 
     - name: spec:check
-      glob: "{spec-*.md,apps/web/content/docs/spec-*.md,apps/web/content/docs/README.md,scripts/spec-check.mjs}"
+      glob: "{spec-*.md,apps/site/content/docs/spec-*.md,apps/site/content/docs/README.md,scripts/spec-check.mjs}"
       run: pnpm spec:check
 
     # Bounded-statement wrapper enforcement.

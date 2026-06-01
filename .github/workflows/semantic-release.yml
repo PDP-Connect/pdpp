@@ -97,8 +97,8 @@ jobs:
       - name: Check package release policy
         run: pnpm release:policy-check
 
-      - name: Typecheck web app
-        run: pnpm --dir apps/web run types:check
+      - name: Typecheck operator console app
+        run: pnpm --dir apps/console run types:check
 
       - name: Verify CLI package
         run: pnpm --filter @pdpp/cli run verify

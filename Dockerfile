@@ -34,10 +34,16 @@ FROM base AS deps
 # changes do not reinvalidate the browser layer; without this env, the
 # polyfill-connectors postinstall would also download browsers into
 # /opt/patchright-browsers during every dependency rebuild and would
-# slow the web/console build stages that do not need browsers.
+# slow the console build stage that does not need browsers.
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+# apps/web is the legacy combined app, retired by the public-site/operator-console
+# split. Its image stages are gone (the GHCR `web` tag now builds the `console`
+# stage below), but its package.json is still COPY'd here because `apps/web`
+# remains a `pnpm-workspace.yaml` member; `pnpm install --frozen-lockfile` needs
+# every workspace manifest present. This COPY is removed when apps/web is deleted
+# from the tree and lockfile (split task 6.4).
 COPY apps/web/package.json apps/web/package.json
 COPY apps/console/package.json apps/console/package.json
 COPY packages/pdpp-brand/package.json packages/pdpp-brand/package.json
@@ -52,10 +58,6 @@ RUN pnpm install --frozen-lockfile
 FROM deps AS source
 
 COPY . .
-
-FROM source AS web-builder
-
-RUN pnpm --filter pdpp-web build
 
 FROM source AS console-builder
 
@@ -112,28 +114,13 @@ EXPOSE 7662 7663
 
 CMD ["node", "reference-implementation/server/index.js"]
 
-FROM base AS web
-
-ENV NODE_ENV=production \
-    HOSTNAME=0.0.0.0 \
-    PORT=3000
-
-COPY --from=web-builder /app/apps/web/.next/standalone ./
-COPY --from=web-builder /app/apps/web/.next/static ./apps/web/.next/static
-COPY --from=web-builder /app/apps/web/public ./apps/web/public
-COPY --from=web-builder /app/openspec ./openspec
-COPY --from=web-builder /app/design-notes ./design-notes
-COPY --from=web-builder /app/spec-*.md ./
-
-EXPOSE 3000
-
-CMD ["node", "apps/web/server.js"]
-
 # Operator console: self-hosted dashboard + BFF proxy to the AS/RS. This is
 # the default target for `docker compose up` (see docker-compose.yml `web`
-# service). The public-site image is still built as the `web` stage above
-# until apps/site lands in a follow-up tranche. See
-# openspec/changes/split-public-site-and-operator-console.
+# service, which selects `target: console`). The GHCR `web` image tag is kept
+# as an operator-compatibility alias and now builds this stage; the legacy
+# combined `apps/web` Docker stages were removed by the web-retirement tail.
+# The public docs image (apps/site) lands as a separate stage in a follow-up
+# tranche. See openspec/changes/split-public-site-and-operator-console.
 FROM base AS console
 
 ENV NODE_ENV=production \
