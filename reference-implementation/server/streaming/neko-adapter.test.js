@@ -354,6 +354,28 @@ test('n.eko strict stealth mode does not use CDP for viewport application', asyn
   assert.deepEqual(WebSocketCtor.commands, []);
 });
 
+test('n.eko status remains available without CDP for strict visual fallback', async () => {
+  const companion = createNekoCompanion({
+    origin: 'http://neko.local/',
+    fetchImpl: createFetchMock(),
+    screenEndpoint: 'api/room/screen',
+    sleep: abortableSleep,
+    stealthMode: 'strict',
+  });
+
+  assert.equal(typeof companion.queryNekoStatus, 'function');
+
+  const status = await companion.queryNekoStatus();
+  await companion.stop();
+
+  assert.deepEqual(status.screen, { width: 2128, height: 816 });
+  assert.equal(status.page_cdp_available, false);
+  assert.deepEqual(status.page_cdp_skipped, {
+    browser_owner_mode: 'neko-owned',
+    stealth_mode: 'strict',
+  });
+});
+
 test('n.eko status drains playgroundEvents from the remote ring buffer', async () => {
   // The remote playground page maintains a small `__pdppPlaygroundEvents`
   // ring buffer of click/focus/scroll telemetry. The viewport-status

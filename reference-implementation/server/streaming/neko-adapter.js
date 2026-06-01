@@ -1466,9 +1466,7 @@ export function createNekoCompanion(options = {}) {
       stealthMode: () => stealthMode,
     },
   };
-  if (cdpControlAvailable) {
-    companion.queryNekoStatus = queryNekoStatus;
-  }
+  companion.queryNekoStatus = queryNekoStatus;
   return companion;
 }
 
