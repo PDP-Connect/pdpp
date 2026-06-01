@@ -137,7 +137,7 @@ Consent surfaces (consent card, grant request flow, and any dashboard or MCP ren
 
 - **WHEN** the reference renders any user-visible connection label on the consent card, the dashboard, or a grant-authorized read response
 - **THEN** inherited `"legacy"`/`"legacy (pre-header)"`/`"default_account"` strings SHALL NOT appear as the rendered primary label
-- **AND** the previously-shipped string at `apps/web/src/app/dashboard/components/views/deployment-diagnostics-view.tsx:94` SHALL be removed or replaced with an owner-meaningful label.
+- **AND** any reference dashboard diagnostic or status copy inherited from pre-connection storage SHALL be removed or replaced with an owner-meaningful label.
 
 ### Requirement: `connector_instance_id` SHALL be supported as a compatibility alias only
 
