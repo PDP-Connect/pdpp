@@ -188,6 +188,16 @@ test('control document marks supported families with method + absolute URL', asy
     assert.equal(rename.status, 'supported');
     assert.equal(rename.method, 'PATCH');
     assert.equal(rename.url, `${rsUrl}/v1/owner/connections/{connection_id}`);
+
+    // Connection initiation is served over the owner-agent bearer surface as of
+    // the connection-initiation slice (tasks 2.3, 5.1-5.4). The intent route
+    // returns a typed owner-mediated next step; it never marks a connection
+    // active.
+    const initiate = actionByFamily(body, 'initiate_connection');
+    assert.ok(initiate, 'initiate_connection must be listed');
+    assert.equal(initiate.status, 'supported');
+    assert.equal(initiate.method, 'POST');
+    assert.equal(initiate.url, `${rsUrl}/v1/owner/connections/intents`);
   });
 });
 
@@ -200,11 +210,11 @@ test('control document names unsupported/owner-mediated families instead of omit
 
     // Important admin tasks the change explicitly does NOT overclaim in this
     // branch must be present and typed, not silently dropped.
-    // `rename_connection` is intentionally NOT in this list anymore: it is now
-    // served over the owner-agent bearer surface (task 4.4) and is asserted as
-    // `supported` in the "supported families" test above.
+    // `rename_connection` and `initiate_connection` are intentionally NOT in
+    // this list anymore: both are now served over the owner-agent bearer surface
+    // (tasks 4.4 and 2.3/5.x) and are asserted as `supported` in the "supported
+    // families" test above.
     for (const family of [
-      'initiate_connection',
       'run_connection',
       'manage_schedule',
       'inspect_diagnostics',

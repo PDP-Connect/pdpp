@@ -9,7 +9,7 @@
 
 - [x] 2.1 Define owner-agent control metadata in root/protected-resource discovery, including entrypoint URL, action families, and unsupported-action semantics. (`pdpp_owner_agent_onboarding.control_surface` hint + bearer-authed `GET /v1/owner/control` capability document, both projected from `buildOwnerAgentControlSurface`; supported families carry method + URL, owner-mediated/unsupported families are named with a typed `status` and reason. Lane `ri-owner-agent-control-entrypoint-v1`.)
 - [ ] 2.2 Define connector template and connection instance response shapes with `connector_id`/`connector_key`, `connection_id`, deprecated `connector_instance_id` compatibility, `display_name`, label status, lifecycle status, and supported actions. (Connection-instance shape landed via `ownerListConnections` reference-contract op + `OwnerConnectionSchema`: `connection_id`, deprecated `connector_instance_id`, `connector_id`/`connector_key`, `display_name`, `label_status`, lifecycle fields. Template shape and `supported_actions` remain for other lanes.)
-- [ ] 2.3 Define typed connection-intent response shapes for OAuth, browser assistance, upload/import, local-collector enrollment, and unsupported connectors.
+- [x] 2.3 Define typed connection-intent response shapes for OAuth, browser assistance, upload/import, local-collector enrollment, and unsupported connectors. (`ownerCreateConnectionIntent` reference-contract op + `OwnerConnectionIntentRequestSchema` / `OwnerConnectionIntentNextStepSchema` / `OwnerConnectionIntentResponseSchema`: `next_step.kind` enum reserves `open_url` / `complete_browser_assistance` / `upload_file` / `enroll_local_collector` / `unsupported`; response carries `connector_modality` and `connection_active: false`. Lane `ri-owner-agent-connection-initiation-clean-v1`.)
 - [ ] 2.4 Add typed error envelopes for ambiguous connector-only actions, unsupported actions, missing owner-agent action family, and unsafe provider step.
 
 ## 3. Authorization And Audit
@@ -28,10 +28,10 @@
 
 ## 5. Connection Lifecycle Intents
 
-- [ ] 5.1 Implement typed connection-intent creation for at least one supported connector path without completing provider authentication silently.
-- [ ] 5.2 Return `open_url`, `complete_browser_assistance`, `upload_file`, `enroll_local_collector`, or `unsupported` next-step types as appropriate.
-- [ ] 5.3 Add Amazon-specific acceptance coverage proving a trusted owner agent can initiate the second-account flow up to the owner-mediated next step.
-- [ ] 5.4 Ensure connection instances are not marked active until provider authorization, upload/import, or local enrollment completes.
+- [x] 5.1 Implement typed connection-intent creation for at least one supported connector path without completing provider authentication silently. (`POST /v1/owner/connections/intents`, bearer-authed via `requireToken` + owner guard. Local-collector connectors (`claude-code`, `codex`) mint a real single-use enrollment code via the shared `deviceExporterStore.createEnrollmentCode`; the owner's collector performs any provider step locally. Lane `ri-owner-agent-connection-initiation-clean-v1`.)
+- [x] 5.2 Return `open_url`, `complete_browser_assistance`, `upload_file`, `enroll_local_collector`, or `unsupported` next-step types as appropriate. (Emits `enroll_local_collector` for proven local-collector connectors and typed `unsupported` for browser-bound, API/network-only, and unknown connectors, each with a reason naming the missing primitive. `open_url` / `complete_browser_assistance` / `upload_file` are contract-reserved for future primitives.)
+- [ ] 5.3 Add Amazon-specific acceptance coverage proving a trusted owner agent can initiate the second-account flow up to the owner-mediated next step. (Partial/honest: Amazon's intent is covered by `test/owner-connection-intent.test.js` returning a typed `unsupported` whose reason names the missing browser-collector primitive — the acceptance-permitted alternative to faking it. Flipping Amazon to a real enroll next step is gated on the browser-collector enrollment packet in `design.md` ("Resolved: Amazon second-account implementation packet").)
+- [x] 5.4 Ensure connection instances are not marked active until provider authorization, upload/import, or local enrollment completes. (Every intent response carries `connection_active: false`; the route writes no `connector_instances` row. Test "the minted enrollment code is genuine" proves the instance only materializes on device enroll + ingest, after the intent.)
 
 ## 6. Instance-Scoped Operations
 
@@ -50,7 +50,7 @@
 ## 8. Validation
 
 - [ ] 8.1 Add local integration tests for metadata discovery, owner-agent control authorization, connection listing, label-needed state, rename, and typed ambiguity.
-- [ ] 8.2 Add connection-intent tests for supported, browser-assisted, and unsupported connector types.
+- [x] 8.2 Add connection-intent tests for supported, browser-assisted, and unsupported connector types. (`test/owner-connection-intent.test.js`: local-collector success, browser-bound Amazon typed unsupported, API/network-only Gmail typed unsupported, unknown connector, invalid inputs, client-token rejection, missing bearer, `/mcp` owner-bearer rejection, and control-surface discoverability.)
 - [ ] 8.3 Run `openspec validate add-owner-agent-control-surface --strict` and `openspec validate --all --strict`.
 - [ ] 8.4 Run targeted reference implementation tests for owner-agent auth, connector routes, connection instance storage, and MCP owner-bearer rejection.
 - [ ] 8.5 Run a live Daisy/Simon-equivalent smoke proving a trusted owner agent can list connection instances, label one, initiate a new Amazon connection intent, and stop at the owner-mediated provider step.

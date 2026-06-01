@@ -244,6 +244,75 @@ const OwnerControlSurfaceResponseSchema = {
   required: ["object", "entrypoint", "scope", "mcp_owner_bearer_rejected", "actions"],
 };
 
+// Owner-agent connection-intent request: a trusted owner agent names the
+// connector type it wants to add a connection for. `connector_id` accepts the
+// canonical key (`amazon`) or a registry URL; the route canonicalizes it. An
+// optional `display_name` is a label hint carried through to the materialized
+// connection where the next step supports one (e.g. local-collector enroll).
+const OwnerConnectionIntentRequestSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    connector_id: { type: "string", minLength: 1 },
+    display_name: { type: "string", minLength: 1, maxLength: 200 },
+  },
+  required: ["connector_id"],
+};
+
+// Typed next step a connection intent returns. `kind` is the stable selector an
+// agent branches on. The reference build emits `enroll_local_collector` for
+// proven local-collector connectors and `unsupported` for browser-bound,
+// API/network-only, and unknown connectors; `open_url`, `complete_browser_assistance`,
+// and `upload_file` are reserved for future primitives so a later lane can emit
+// them without a contract break. Secret material (enrollment codes excepted —
+// they are single-use, owner-scoped, and short-lived) is never carried here.
+const OwnerConnectionIntentNextStepSchema = {
+  type: "object",
+  additionalProperties: true,
+  properties: {
+    kind: {
+      type: "string",
+      enum: [
+        "open_url",
+        "complete_browser_assistance",
+        "upload_file",
+        "enroll_local_collector",
+        "unsupported",
+      ],
+    },
+    reason: { type: ["string", "null"] },
+    url: { type: "string" },
+    enrollment_code: { type: "string" },
+    enroll_endpoint: { type: "string" },
+    local_binding_name: { type: "string" },
+    expires_at: { type: "string" },
+  },
+  required: ["kind"],
+};
+
+// Owner-agent connection-intent response. The intent is an auditable workflow
+// object, NOT a created connection: `connection_active` is always `false` and no
+// `connector_instances` row is written by the intent itself. `connector_modality`
+// classifies the connector by its manifest `runtime_requirements.bindings`
+// (`local_collector` | `browser_bound` | `api_network` | `unknown`) so an agent
+// can explain why a given `next_step.kind` was returned.
+const OwnerConnectionIntentResponseSchema = {
+  type: "object",
+  additionalProperties: true,
+  properties: {
+    object: { const: "owner_connection_intent" },
+    connector_id: { type: "string" },
+    connector_key: { type: "string" },
+    connector_modality: {
+      type: "string",
+      enum: ["local_collector", "browser_bound", "api_network", "unknown"],
+    },
+    connection_active: { const: false },
+    next_step: OwnerConnectionIntentNextStepSchema,
+  },
+  required: ["object", "connector_id", "connector_key", "connector_modality", "connection_active", "next_step"],
+};
+
 const ApprovalItemSchema = {
   type: "object",
   additionalProperties: true,
@@ -1183,6 +1252,17 @@ export const referenceManifests = [
       },
     },
     responses: { 200: { schema: OwnerConnectionSchema }, ...CommonErrors },
+  },
+  {
+    id: "ownerCreateConnectionIntent",
+    method: "POST",
+    path: "/v1/owner/connections/intents",
+    surface: "reference",
+    tags: ["reference", "connections", "owner-agent"],
+    summary:
+      "Owner-agent bearer: initiate a new connection as a typed, auditable, owner-mediated intent. Returns a typed `next_step` (`enroll_local_collector` for proven local-collector connectors; `unsupported` with a reason for browser-bound, API/network-only, and unknown connectors) and never marks a connection active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route.",
+    request: { body: { schema: OwnerConnectionIntentRequestSchema } },
+    responses: { 201: { schema: OwnerConnectionIntentResponseSchema }, ...CommonErrors },
   },
   {
     id: "refGetConnection",

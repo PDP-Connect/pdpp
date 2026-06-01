@@ -96,7 +96,7 @@ import {
 } from './stores/client-event-subscription-store.ts';
 import { getDefaultDeliveryWorker } from './client-event-delivery-worker.ts';
 import { setClientEventEnqueueHook } from './records.js';
-import { DeviceBatchConflictError, createDeviceExporterStore } from './stores/device-exporter-store.js';
+import { DeviceBatchConflictError, createDeviceExporterStore, getDefaultDeviceExporterStore } from './stores/device-exporter-store.js';
 import { getDefaultConnectorDetailGapStore } from './stores/connector-detail-gap-store.js';
 import {
   createWebPushSubscriptionStore,
@@ -368,6 +368,7 @@ import {
 } from './routes/ref-connectors.ts';
 import { mountRsBlobRead, mountRsReadQueries } from './routes/rs-read.ts';
 import { mountOwnerConnectionRename, mountOwnerConnectionsList } from './routes/owner-connections.ts';
+import { mountOwnerConnectionIntent } from './routes/owner-connection-intent.ts';
 import { mountOwnerControl } from './routes/owner-control.ts';
 import {
   mountRsBlobsUpload,
@@ -3661,6 +3662,58 @@ function buildRsApp(opts = {}) {
   // `/mcp` owner-bearer rejection is untouched. See
   // openspec/changes/add-owner-agent-control-surface (task 4.4).
   mountOwnerConnectionRename(app, ownerConnectionsContext);
+
+  // POST /v1/owner/connections/intents is the bearer-authed owner-agent
+  // connection-initiation route: a trusted local owner agent asks "how do I add
+  // a new connection for connector X?" and receives a typed, auditable,
+  // owner-mediated next step instead of a silently-created connection. The route
+  // classifies the connector by its manifest `runtime_requirements.bindings`
+  // and, for proven local-collector connectors (claude-code, codex), mints a
+  // real single-use enrollment code via the SAME `deviceExporterStore`
+  // operation the cookie-authed `/_ref/device-exporters/enrollment-codes` route
+  // uses (separate owner-bearer auth adapter — no handler cloning). Browser-bound
+  // (Amazon, chase, chatgpt) and API/network-only (github, gmail) connectors get
+  // a typed `unsupported` whose reason names the exact missing primitive. Same
+  // owner-bearer guards as /v1/owner/connections; `/mcp` owner-bearer rejection
+  // is untouched. See openspec/changes/add-owner-agent-control-surface (tasks
+  // 2.3, 5.1-5.4).
+  // The device-exporter store and the enroll route live on the AS app
+  // (`buildAsApp`); the owner-agent control surface lives on the RS app. Both
+  // the AS enroll route and this RS-scoped store read the same backing DB, so a
+  // code minted here is exchangeable at the AS enroll endpoint. The enroll
+  // endpoint URL is therefore resolved against the AS issuer base (same
+  // derivation as the protected-resource-metadata / onboarding routes), never
+  // the RS base.
+  const resolveAsIssuerBase = (req) => {
+    const explicitIssuer =
+      opts.asIssuer ||
+      opts.asPublicUrl ||
+      (!opts.ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null);
+    const fallbackIssuer = `${req.protocol}://${req.hostname}:${opts.asPort || AS_PORT}`;
+    const issuerSource = shouldUseDirectRequestOrigin(req, explicitIssuer)
+      ? fallbackIssuer
+      : explicitIssuer || fallbackIssuer;
+    return resolvePublicUrl(req, issuerSource);
+  };
+  mountOwnerConnectionIntent(app, {
+    requireToken,
+    requireOwner,
+    pdppError,
+    handleError,
+    canonicalConnectorKey,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    getOwnerTokenSubjectId,
+    setReferenceTraceId,
+    deviceExporterStore: opts.deviceExporterStore || getDefaultDeviceExporterStore(),
+    generateReferenceSecret,
+    generateSpineId,
+    hashDeviceSecret,
+    getConnectorManifest: (connectorId) => getConnectorManifest(connectorId),
+    readReferenceLocalConnectorCatalogManifest,
+    resolveEnrollBaseUrl: resolveAsIssuerBase,
+  });
 
   // GET /v1/owner/control is the bearer-authed owner-agent control entrypoint:
   // a non-secret capability document that names every owner-agent control

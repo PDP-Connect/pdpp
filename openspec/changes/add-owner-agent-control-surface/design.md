@@ -54,6 +54,27 @@ The SLVP target is not "owner token can do anything silently." It is "a trusted 
 
    Owner-agent bearer acceptance should be route-family and operation scoped, not an accidental side effect of owner-session middleware. Mutating actions record actor kind (`owner_agent` vs browser owner session), client id/name, target connection id, and action outcome without logging secrets.
 
+7. **Connection-intent modality is classified from the manifest, and the route only returns a real next step for proven primitives.**
+
+   The reference has exactly three connection-creation primitives today: device-exporter (local-collector) enrollment; implicit default-account materialization on first ingest; and **no standalone browser-assistance/OAuth provider-connect route at all**. `POST /v1/owner/connections/intents` therefore classifies a connector by its manifest `runtime_requirements.bindings`:
+
+   - a `filesystem` binding → `local_collector` (`claude-code`, `codex`). The route mints a real single-use device-exporter enrollment code via the same `deviceExporterStore.createEnrollmentCode` operation the cookie-authed `/_ref/device-exporters/enrollment-codes` route uses (separate owner-bearer auth adapter — no handler cloning) and returns `next_step.kind: enroll_local_collector`. The connection materializes only when the owner's collector exchanges the code and ingests; the intent writes no `connector_instances` row.
+   - a `browser` binding → `browser_bound` (`amazon`, `chase`, `chatgpt`) → `next_step.kind: unsupported`. The reason names the exact missing primitive (Open Question 3, resolved below). Claiming `enroll_local_collector` for Amazon would assert a flow the reference does not prove; that would be a faked success, which the acceptance criteria forbid.
+   - `network` only → `api_network` (`github`, `gmail`) → `unsupported`, naming the implicit-on-ingest gap (no standalone owner-agent API-connect route exists).
+   - no manifest / no bindings → `unknown` → `unsupported`.
+
+   Every response carries `connection_active: false`. The contract enum reserves `open_url`, `complete_browser_assistance`, and `upload_file` next-step kinds that this build does not emit, so a future lane that gains those primitives can use them without a contract break. Initiation attempts emit `owner_agent.connection.initiate` spine evidence (actor kind/client, connector key, modality, next-step kind, outcome, request id; never the bearer token or the minted enrollment code).
+
+## Resolved: Amazon second-account (browser-collector) implementation packet
+
+The Amazon second-account flow is `unsupported` until the **browser-collector enrollment primitive** ships. This is the precise next implementation packet (resolves Open Question 3 for browser-bound connectors):
+
+1. A `browser_collector` source kind distinct from `local_device`, so an owner can have a local collector that drives a real browser session for a browser-bound connector and the instance binding records that it is browser-collected, not filesystem-read.
+2. Binding-aware enrollment gating at `POST /_ref/device-exporters/enrollment-codes` (and the owner-agent intent route) keyed on the manifest `runtime_requirements.bindings`: a `browser` binding must enroll as `browser_collector`, a `filesystem` binding as `local_device`. Today the enroll path hardcodes `source_kind: local_device` and does no binding-aware validation.
+3. Committed proof (test + fixture) that a local collector runs a browser connector (Amazon) end-to-end and ingests via the device-exporter path. Only with that proof may the intent route flip Amazon from `unsupported` to `enroll_local_collector` (or a new `enroll_browser_collector`) and add the Amazon second-account acceptance coverage (tasks 5.3, 8.5).
+
+Until then the route's honest output for Amazon is `unsupported` with this gap named in `next_step.reason`.
+
 ## Risks / Trade-offs
 
 - **Risk: Owner-agent credentials become too powerful by default.** Mitigation: require explicit owner approval during onboarding, publish a clear owner-agent profile, keep `/mcp` rejected, route-allowlist owner-agent mutating operations, and support revoke/status flows.
@@ -77,4 +98,4 @@ Rollback is route-level: disable the owner-agent control metadata/allowlist whil
 
 - Should the final public path remain `/_ref/*`, or should owner-agent admin get a cleaner `/v1/owner/*` route family while `/_ref/*` remains reference/debug-oriented?
 - Should owner-agent onboarding mint separate scopes/profiles for `read`, `manage_connections`, `manage_schedules`, and `manage_subscriptions`, or is a single trusted-owner profile acceptable for the reference SLVP?
-- Which connection lifecycle operations should ship first for browser-bound connectors such as Amazon versus local collectors such as Claude Code/Codex?
+- ~~Which connection lifecycle operations should ship first for browser-bound connectors such as Amazon versus local collectors such as Claude Code/Codex?~~ **Resolved:** local-collector initiation (`enroll_local_collector`) ships first because it reuses a proven primitive; browser-bound initiation (Amazon) is `unsupported` until the browser-collector enrollment primitive ships (see "Resolved: Amazon second-account implementation packet" above).

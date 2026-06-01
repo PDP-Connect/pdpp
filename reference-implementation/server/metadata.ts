@@ -471,15 +471,19 @@ export function buildOwnerAgentControlSurface({ resource }: OwnerAgentControlSur
       reason:
         "List configured connection instances with connection_id, connector identity, display_name, and label status.",
     },
-    // Owner-mediated today: the operation exists on the browser owner-session
-    // (`/_ref/*`) surface but is NOT yet served over the owner-agent bearer.
+    // Supported in this build: a trusted owner agent POSTs a typed connection
+    // intent. The route returns a real owner-mediated next step
+    // (`enroll_local_collector`) for proven local-collector connectors and a
+    // typed `unsupported` with a named-gap reason for browser-bound,
+    // API/network-only, and unknown connectors. It never marks a connection
+    // active and never bypasses a provider step.
     {
       family: "initiate_connection",
-      status: "owner_mediated",
-      method: null,
-      url: null,
+      status: "supported",
+      method: "POST",
+      url: `${rs}/v1/owner/connections/intents`,
       reason:
-        "Adding a new connection requires an owner-mediated provider step (OAuth, browser assistance, upload, or local-collector enrollment). No owner-agent bearer route serves this in the current build; use the dashboard.",
+        "Initiate a new connection as a typed, auditable, owner-mediated intent. Body: { connector_id, display_name? }. Returns next_step.kind = enroll_local_collector for proven local-collector connectors, or unsupported (with a reason naming the missing primitive) for browser-bound and API/network-only connectors. No connection is marked active by the intent.",
     },
     {
       family: "rename_connection",
