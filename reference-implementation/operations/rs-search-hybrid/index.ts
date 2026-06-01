@@ -250,7 +250,7 @@ export interface SearchHybridResultItem {
 }
 
 export interface SearchHybridEnvelopeMeta {
-  warnings?: Array<{ code: string; param?: string; message?: string }>;
+  warnings?: Array<{ code: string; param?: string; message?: string; detail?: Record<string, unknown> }>;
   [extra: string]: unknown;
 }
 
@@ -332,12 +332,14 @@ const FORBIDDEN_PARAMS: ReadonlySet<string> = new Set([
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
 
+type HybridWarning = { code: string; param?: string; message?: string; detail?: Record<string, unknown> };
+
 interface NormalizedRequestParams {
   q: string;
   limit: number;
   streams: string[] | null;
   filter: unknown;
-  warnings: Array<{ code: string; param?: string; message?: string }>;
+  warnings: HybridWarning[];
 }
 
 /**
@@ -347,9 +349,16 @@ interface NormalizedRequestParams {
  */
 export const SEARCH_CONNECTION_ALIAS_DEPRECATED_WARNING_CODE = "deprecated_alias_used";
 
+/**
+ * Canonical warning code for a `limit` clamped to the advertised maximum page
+ * size. Mirrors the records-list and lexical/semantic `limit_clamped` code so
+ * REST and MCP clients read one identical identifier across read surfaces.
+ */
+export const SEARCH_LIMIT_CLAMPED_WARNING_CODE = "limit_clamped";
+
 function deriveSearchConnectionAliasWarnings(
   query: Record<string, unknown>,
-): Array<{ code: string; param?: string; message?: string }> {
+): HybridWarning[] {
   const alias = query.connector_instance_id;
   if (typeof alias !== "string" || alias.length === 0) return [];
   return [
@@ -366,6 +375,30 @@ function clampLimit(raw: unknown): number {
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 1) return DEFAULT_LIMIT;
   return Math.min(Math.floor(n), MAX_LIMIT);
+}
+
+/**
+ * Derive the structured `limit_clamped` warning for an over-max `limit`.
+ * Returns one warning only when the raw `limit` is a finite integer strictly
+ * greater than `MAX_LIMIT`; absent / non-positive / unparseable limits fall
+ * back to the default and emit nothing. Hybrid forwards the already-clamped
+ * limit to its sub-runners, so the single warning emitted here is the only
+ * `limit_clamped` row and the existing `pushWarning` dedup keeps it to one.
+ */
+function deriveLimitClampedWarning(raw: unknown): HybridWarning[] {
+  if (raw === undefined || raw === null || raw === "") return [];
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return [];
+  const requested = Math.floor(n);
+  if (requested <= MAX_LIMIT) return [];
+  return [
+    {
+      code: SEARCH_LIMIT_CLAMPED_WARNING_CODE,
+      param: "limit",
+      detail: { requested_limit: requested, max_limit: MAX_LIMIT },
+      message: `Requested limit=${requested} exceeds the maximum page size of ${MAX_LIMIT}; returned at most ${MAX_LIMIT} hits per page.`,
+    },
+  ];
 }
 
 function normalizeStreamsParam(raw: unknown): string[] | null {
@@ -453,7 +486,10 @@ export function parseSearchHybridParams(
     limit,
     streams,
     filter: hasFilter ? query.filter : null,
-    warnings: deriveSearchConnectionAliasWarnings(query),
+    warnings: [
+      ...deriveSearchConnectionAliasWarnings(query),
+      ...deriveLimitClampedWarning(query.limit),
+    ],
   };
 }
 
@@ -658,18 +694,18 @@ export async function executeSearchHybrid(
   // `connector_instance_id` query keys, so when the alias is present, all
   // three would emit the same `deprecated_alias_used` entry. De-duplicate
   // identical (code, param) pairs so we emit one canonical row.
-  const aggregatedWarnings: Array<{ code: string; param?: string; message?: string }> = [];
+  const aggregatedWarnings: HybridWarning[] = [];
   const seenWarnings = new Set<string>();
-  const pushWarning = (w: { code: string; param?: string; message?: string }) => {
+  const pushWarning = (w: HybridWarning) => {
     const key = `${w.code}::${w.param ?? ""}`;
     if (seenWarnings.has(key)) return;
     seenWarnings.add(key);
     aggregatedWarnings.push(w);
   };
   for (const w of params.warnings) pushWarning(w);
-  const lexMeta = (lexicalOutcome.envelope as { meta?: { warnings?: Array<{ code: string; param?: string; message?: string }> } }).meta;
+  const lexMeta = (lexicalOutcome.envelope as { meta?: { warnings?: HybridWarning[] } }).meta;
   if (lexMeta?.warnings) for (const w of lexMeta.warnings) pushWarning(w);
-  const semMeta = (semanticOutcome.envelope as { meta?: { warnings?: Array<{ code: string; param?: string; message?: string }> } }).meta;
+  const semMeta = (semanticOutcome.envelope as { meta?: { warnings?: HybridWarning[] } }).meta;
   if (semMeta?.warnings) for (const w of semMeta.warnings) pushWarning(w);
 
   const envelope: SearchHybridEnvelope = {

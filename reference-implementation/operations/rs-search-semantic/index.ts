@@ -553,6 +553,14 @@ export const SEARCH_CONNECTION_ALIAS_DEPRECATED_WARNING_CODE = "deprecated_alias
  */
 export const SEARCH_SEMANTIC_SOURCE_SKIPPED_WARNING_CODE = "source_skipped_not_applicable";
 
+/**
+ * Canonical warning code for a `limit` that exceeded the advertised maximum
+ * page size and was clamped. Mirrors the records-list and lexical/hybrid
+ * `limit_clamped` code so REST and MCP clients read one identical identifier
+ * across read surfaces.
+ */
+export const SEARCH_LIMIT_CLAMPED_WARNING_CODE = "limit_clamped";
+
 function deriveSearchConnectionAliasWarnings(
   query: Record<string, unknown>,
 ): SearchSemanticWarning[] {
@@ -572,6 +580,29 @@ function clampLimit(raw: unknown): number {
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 1) return DEFAULT_LIMIT;
   return Math.min(Math.floor(n), MAX_LIMIT);
+}
+
+/**
+ * Derive the structured `limit_clamped` warning for an over-max `limit`.
+ * Returns one warning only when the raw `limit` is a finite integer strictly
+ * greater than `MAX_LIMIT`; absent / non-positive / unparseable limits fall
+ * back to the default and emit nothing (there is no clamp to report). Mirrors
+ * the records-list and lexical wire shape.
+ */
+function deriveLimitClampedWarning(raw: unknown): SearchSemanticWarning[] {
+  if (raw === undefined || raw === null || raw === "") return [];
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return [];
+  const requested = Math.floor(n);
+  if (requested <= MAX_LIMIT) return [];
+  return [
+    {
+      code: SEARCH_LIMIT_CLAMPED_WARNING_CODE,
+      param: "limit",
+      detail: { requested_limit: requested, max_limit: MAX_LIMIT },
+      message: `Requested limit=${requested} exceeds the maximum page size of ${MAX_LIMIT}; returned at most ${MAX_LIMIT} hits per page. Page forward with the returned cursor.`,
+    },
+  ];
 }
 
 function normalizeStreamsParam(raw: unknown): string[] | null {
@@ -650,7 +681,10 @@ export function parseSearchSemanticParams(
     streams,
     filter: hasFilter ? query.filter : null,
     filteredStream: hasFilter && streams && streams.length > 0 ? streams[0]! : null,
-    warnings: deriveSearchConnectionAliasWarnings(query),
+    warnings: [
+      ...deriveSearchConnectionAliasWarnings(query),
+      ...deriveLimitClampedWarning(query.limit),
+    ],
   };
 }
 

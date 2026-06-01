@@ -131,10 +131,13 @@ capped at 100 — the bound the published `/v1/search`, `/v1/search/semantic`, a
 `capabilities.{lexical,semantic,hybrid}_retrieval.max_limit`). This tool advertises `100` as
 the input maximum and rejects a larger `limit` at input validation, so the page size you
 request is the page size you get — page forward with the returned `cursor` (lexical and
-semantic; hybrid does not page) rather than asking for a bigger page. Unlike `query_records`,
-the search RS clamps an over-cap `limit` silently (no `limit_clamped` warning is defined for
-search), which is exactly why the MCP input cap is the safeguard against an agent silently
-losing the page size it asked for.
+semantic; hybrid does not page) rather than asking for a bigger page. The MCP input cap is
+the primary safeguard against an agent silently losing the page size it asked for: an over-cap
+`limit` never reaches the RS from this tool. A _direct REST_ caller that sends `limit > 100`
+is still served a bounded page, and — like `query_records` — now receives a structured
+`limit_clamped` warning in `meta.warnings[]` (carrying `detail.requested_limit` /
+`detail.max_limit`) on all three search modes, so the clamp is never silent on any read
+surface.
 
 When a response or typed `ambiguous_connection` error includes both `connection_id` and
 `grant_id`, use `connection_id` as the stable data-source selector. `grant_id` identifies

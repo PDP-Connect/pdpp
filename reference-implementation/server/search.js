@@ -753,6 +753,11 @@ export async function runLexicalSearch({
         ? { next_cursor: result.envelope.next_cursor }
         : {}),
       data: result.envelope.data,
+      // Carry the operation's canonical `meta.warnings[]` (limit_clamped,
+      // deprecated_alias_used, source_skipped_not_applicable) through to the
+      // REST response. Omitted when the operation produced no warnings so
+      // warning-free envelopes are unchanged.
+      ...(result.envelope.meta ? { meta: result.envelope.meta } : {}),
     },
     disclosureData: result.disclosureData,
   };

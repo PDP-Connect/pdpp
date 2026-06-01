@@ -174,6 +174,10 @@ export async function runHybridSearch({
       url: '/v1/search/hybrid',
       has_more: result.envelope.has_more,
       data: result.envelope.data,
+      // Carry the operation's canonical `meta.warnings[]` (limit_clamped,
+      // deprecated_alias_used, source_skipped_not_applicable) through to the
+      // REST response. Omitted when the operation produced no warnings.
+      ...(result.envelope.meta ? { meta: result.envelope.meta } : {}),
     },
     disclosureData: result.disclosureData,
   };

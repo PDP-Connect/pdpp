@@ -505,6 +505,14 @@ export const SEARCH_CONNECTION_ALIAS_DEPRECATED_WARNING_CODE = "deprecated_alias
  */
 export const SEARCH_SOURCE_SKIPPED_WARNING_CODE = "source_skipped_not_applicable";
 
+/**
+ * Canonical warning code for a `limit` that exceeded the advertised maximum
+ * page size and was clamped. Mirrors the records-list `limit_clamped` code
+ * (`connection-id-request.js#CANONICAL_WARNING_CODES.LIMIT_CLAMPED`) so REST,
+ * MCP, dashboard, and CLI all see the same identifier across read surfaces.
+ */
+export const SEARCH_LIMIT_CLAMPED_WARNING_CODE = "limit_clamped";
+
 function deriveSearchConnectionAliasWarnings(
   query: Record<string, unknown>,
 ): SearchLexicalWarning[] {
@@ -524,6 +532,33 @@ function clampLimit(raw: unknown): number {
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 1) return DEFAULT_LIMIT;
   return Math.min(Math.floor(n), MAX_LIMIT);
+}
+
+/**
+ * Derive the structured `limit_clamped` warning for an over-max `limit`.
+ *
+ * Returns a single warning only when the raw `limit` parses to a finite
+ * integer strictly greater than `MAX_LIMIT`. A non-positive, unparseable, or
+ * absent `limit` falls back to the default page size (handled by `clampLimit`)
+ * and is NOT a clamp — there is nothing to honestly report — so it emits no
+ * warning. Exactly `MAX_LIMIT` is in-range and emits no warning. The wire shape
+ * mirrors the records-list `limit_clamped` warning so a client reads one
+ * identical structure across read surfaces.
+ */
+function deriveLimitClampedWarning(raw: unknown): SearchLexicalWarning[] {
+  if (raw === undefined || raw === null || raw === "") return [];
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return [];
+  const requested = Math.floor(n);
+  if (requested <= MAX_LIMIT) return [];
+  return [
+    {
+      code: SEARCH_LIMIT_CLAMPED_WARNING_CODE,
+      param: "limit",
+      detail: { requested_limit: requested, max_limit: MAX_LIMIT },
+      message: `Requested limit=${requested} exceeds the maximum page size of ${MAX_LIMIT}; returned at most ${MAX_LIMIT} hits per page. Page forward with the returned cursor.`,
+    },
+  ];
 }
 
 function normalizeStreamsParam(raw: unknown): string[] | null {
@@ -581,7 +616,10 @@ export function parseSearchLexicalParams(
     streams,
     filter: hasFilter ? query.filter : null,
     filteredStream: hasFilter && streams && streams.length > 0 ? streams[0]! : null,
-    warnings: deriveSearchConnectionAliasWarnings(query),
+    warnings: [
+      ...deriveSearchConnectionAliasWarnings(query),
+      ...deriveLimitClampedWarning(query.limit),
+    ],
   };
 }
 

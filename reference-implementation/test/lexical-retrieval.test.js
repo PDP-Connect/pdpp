@@ -724,6 +724,51 @@ test('pagination round-trip works and search cursors are not interchangeable wit
   });
 });
 
+// ─── over-cap limit surfaces a limit_clamped warning over the wire ──────────
+//
+// Spec: openspec/changes/add-search-limit-clamp-warning/specs/
+//       reference-implementation-architecture/spec.md
+//       (#"Search-retrieval limit is clamped to the page maximum")
+//
+// This is the native-shell coverage that the operation-level warning tests
+// cannot give: it proves the `limit_clamped` warning the operation produces is
+// carried by `runLexicalSearch` through `finalizeCanonicalEnvelope` onto the
+// REST response, rather than being dropped at the host boundary.
+
+test('over-cap limit returns <=100 hits and a limit_clamped warning in meta.warnings; in-range limit does not', async () => {
+  await withHarness({}, async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorA = REDDITISH_MANIFEST_A.connector_id;
+    await ingest(rsUrl, ownerToken, connectorA, 'posts', [
+      { id: 'p1', title: 'durian delight', selftext: '', source_created_at: '2026-04-01T00:00:00Z' },
+    ]);
+
+    // limit=500 > 100 → clamped, warning present, page still bounded.
+    const over = await fetchJson(
+      `${rsUrl}/v1/search?q=durian&limit=500`,
+      { headers: { 'Authorization': `Bearer ${ownerToken}` } },
+    );
+    assert.equal(over.status, 200);
+    assert.ok(over.body.data.length <= 100, 'over-cap request is still bounded to <=100 hits');
+    const clamp = (over.body.meta?.warnings || []).find((w) => w.code === 'limit_clamped');
+    assert.ok(clamp, 'expected a limit_clamped warning to reach the REST response');
+    assert.equal(clamp.param, 'limit');
+    assert.equal(clamp.detail.requested_limit, 500);
+    assert.equal(clamp.detail.max_limit, 100);
+
+    // In-range limit (and exactly 100) → no limit_clamped warning.
+    for (const limit of [5, 100]) {
+      const ok = await fetchJson(
+        `${rsUrl}/v1/search?q=durian&limit=${limit}`,
+        { headers: { 'Authorization': `Bearer ${ownerToken}` } },
+      );
+      assert.equal(ok.status, 200);
+      const w = (ok.body.meta?.warnings || []).find((x) => x.code === 'limit_clamped');
+      assert.equal(w, undefined, `limit=${limit} must not emit a limit_clamped warning`);
+    }
+  });
+});
+
 // ─── 9.14 — /_ref/search and /v1/search are independent ─────────────────────
 
 test('/_ref/search returns spine shape, /v1/search returns list shape — they do not alias', async () => {
