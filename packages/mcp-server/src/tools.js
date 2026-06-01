@@ -805,6 +805,17 @@ function compactSchemaDocument(body) {
       ...stripSchemaStreamArrays(schema),
       connectors: connectors.map((connector) => compactSchemaConnector(connector)),
     };
+    // The hosted-MCP package fanout (server/package-rs-client.js
+    // `mergeSchemaEnvelopes`) deliberately augments the canonical
+    // `connectors[]` envelope with a flattened, source-tagged top-level
+    // `streams[]` so MCP consumers get one source-attributed stream list
+    // without walking `connectors[]`. The single-source `/v1/schema` shape
+    // has no top-level `streams[]`, so stripping it there is correct — but
+    // when the fanout provided one, preserve a compacted copy (each entry's
+    // `source` tag is already whitelisted by `compactSchemaStream`).
+    if (Array.isArray(schema.streams)) {
+      compactSchema.streams = schema.streams.map((entry) => compactSchemaStream(entry));
+    }
   } else if (Array.isArray(schema.streams)) {
     compactSchema = {
       ...schema,

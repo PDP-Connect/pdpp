@@ -186,11 +186,13 @@ test('dashboard DCR default uses the shared local reference token when env is un
   // Prove that when PDPP_DCR_INITIAL_ACCESS_TOKENS is unset, the dashboard's
   // default falls back to the shared local reference default. We read the
   // dashboard source directly to avoid bootstrapping Next.js runtime state.
+  // The operator dashboard lives in apps/console after the public-site /
+  // operator-console split (apps/web was removed).
   const DASHBOARD_FILE = join(
     REFERENCE_IMPL_DIR,
     '..',
     'apps',
-    'web',
+    'console',
     'src',
     'app',
     'dashboard',
