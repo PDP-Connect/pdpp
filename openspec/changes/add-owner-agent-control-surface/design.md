@@ -106,6 +106,127 @@ Grant-package revoke (`POST /_ref/grant-packages/:id/revoke`, cascading soft-rev
 
 The catalog advertises the destructive families honestly and typed per the "Owner-agent control SHALL advertise and enforce per-connection actions" requirement (actions are advertised "when available", unavailable ones "marked unsupported with a typed reason"). No spec requirement mandates delete/revoke routes exist; the spec requires honest advertisement, which is in place. A future lane that lands a connection-scoped delete or revoke primitive (with cascade semantics and committed proof) flips the corresponding catalog descriptor from `unsupported` to `supported` without a contract break.
 
+## The construction-first SLVP ideal for owner agents (REST / CLI / MCP)
+
+This section states the durable ideal the surface is built toward, so future lanes
+extend it by construction instead of patching one route at a time. It is the
+synthesis the `design-notes/full-context-refresh.md` "Good Construction Before
+Feature Lists" standard asks for: name the primitives and boundaries, then let the
+endpoint list fall out of them.
+
+### Three planes, one credential boundary
+
+A trusted owner agent (Daisy/Simon class) operates the owner's reference instance
+across three planes, each with a fixed role. The planes are the durable primitive;
+the route list is derived.
+
+1. **Discovery plane (no token).** `/.well-known/oauth-protected-resource`, `/llms.txt`,
+   `/.well-known/llms.txt`, and the skill catalog. An agent learns the owner-agent
+   onboarding profile, the control entrypoint, and the read/schema/cursor/subscription
+   surfaces *before* it has a credential. This plane is already normative and shipped
+   (`reference-agent-access-workflow`, archived `add-trusted-owner-agent-onboarding`);
+   this change does not redefine it, it consumes it via the
+   `pdpp_owner_agent_onboarding.control_surface` hint.
+
+2. **Owner control plane (owner-agent bearer over REST).** `GET /v1/owner/control`
+   (capability document) plus the `/v1/owner/connections*` and
+   `/v1/owner/connectors*` families. This is where administration lives: list
+   templates/instances, initiate typed connection intents, label, run-now, manage
+   schedules. Authorized by `requireToken` + `requireOwner`; **never** by owner-session
+   middleware side effect. The capability document is self-describing, so the route
+   list is discoverable, not memorized.
+
+3. **Routine data plane (scoped client grant over MCP / `/v1/*`).** Grant-scoped
+   reads for ordinary chat-hosted/third-party agents. `/mcp` rejects owner bearers by
+   construction. An owner agent that only needs to *read* the owner's data SHOULD use
+   the same scoped data plane, not its admin credential, for least privilege.
+
+The credential boundary is the load-bearing invariant: **the owner-agent bearer is a
+REST control-plane credential, and the scoped client grant is a data-plane credential.**
+Everything else (which routes exist, which actions are supported) is derived from that
+split plus the control catalog.
+
+### Is Linear-style owner-token-over-MCP part of the SLVP ideal? No — by construction.
+
+Some products (e.g. Linear's MCP) let a single owner-scoped token act over MCP as both
+a read and an admin credential. **That is explicitly not PDPP's SLVP ideal, not merely
+its current behavior.** The reason is structural, not a temporary limitation:
+
+- MCP in PDPP is the *least-privilege, grant-scoped* surface for arbitrary external
+  assistants. Its entire value is that a client token carries a narrow, revocable,
+  field/stream/time-scoped grant. Letting an owner bearer act over `/mcp` would collapse
+  that guarantee — any owner-token-bearing tool would silently hold owner authority on
+  the surface specifically designed to *withhold* it.
+- Administration is owner-mediated and auditable by design (typed intents, owner-completed
+  provider steps, per-mutation spine evidence). MCP's tool-call shape does not carry the
+  actor-kind/audit contract the control plane requires, and bolting it on would duplicate
+  the REST control plane rather than reuse it.
+- The "would this still be the right foundation for an exotic case later?" test points the
+  same way: if a future owner agent needs a new admin action, it should appear as a typed
+  family in `GET /v1/owner/control` (one catalog row), not as a new owner-privileged MCP
+  tool that re-opens the credential boundary.
+
+So the SLVP ideal keeps `/mcp` owner-bearer rejection permanent and routes all owner
+administration through the REST control plane. A future PDPP MCP *server* could expose
+owner administration **only** if it did so under a distinct owner-admin transport that
+re-asserted the same audit + owner-mediation contract — which would be the REST control
+plane reachable over a different framing, not a privilege escalation of the existing
+grant-scoped `/mcp`. This change does not pursue that; it records the rejection as
+intentional and durable.
+
+### The control catalog is the single source of truth
+
+Every supported/owner-mediated/unsupported action is one row in the shared control-action
+catalog (`server/metadata.ts`), projected into both `GET /v1/owner/control` and each
+connection's `supported_actions`. This is the construction that prevents the "one-off
+endpoint list" the acceptance criteria forbid: an agent never probes for routes, and a
+new primitive flips exactly one catalog row from `unsupported` to `supported` in the same
+reviewable unit as its proof. Connection creation is therefore **not** four separate
+primitives — it is one typed-intent primitive whose `next_step.kind` is selected from the
+connector's manifest bindings (`local_collector` proven; `browser_bound`, `api_network`,
+`unknown` typed-unsupported with a named missing primitive).
+
+### Connection-scoped vs owner-wide boundary (diagnostics, revoke, delete)
+
+The durable rule the deferred packets all obey: **an owner-agent action addressed by
+`connection_id` must affect exactly that one binding.** Owner-wide or device-subsystem
+surfaces (`GET /_ref/device-exporters/diagnostics`, `revokeDevice` cascade) are not
+sharable under a connection-scoped owner-bearer adapter, because doing so would let an
+agent addressing one connection read or mutate sibling connections. That is why
+diagnostics, revoke, and delete are `unsupported` today: not "not built yet" in a vague
+sense, but "the only existing semantic is broader than one connection, and sharing it
+would violate the connection-scoped invariant." Each needs a connection-scoped primitive
+(`per-connection health read`, `revokeSourceInstance`, `deleteConnection` with a defined
+cascade) before it can be a catalog `supported` row.
+
+### Task disposition against this ideal
+
+Every open task in `tasks.md` ties to exactly one of four states. This is the
+"close now / requires new primitive / owner-live gated / not part of SLVP" mapping the
+brief requires:
+
+| Task | State | Rationale |
+| --- | --- | --- |
+| 3.1 owner-agent bearer allowlisting | **close now (supported scope done)** | All shipped control routes are `requireToken`+`requireOwner` gated; the only "remaining" routes (delete/revoke) are typed-unsupported by design, so the supported allowlist is complete. The checkbox stays open only because it was phrased to also cover routes that the design deliberately does not build; reword to scope it to supported families and close. |
+| 3.2 share handlers across session/bearer | **close now (supported scope done)** | rename/schedule/run all share session semantics under separate adapters; delete/revoke have no session semantic to share (that is the deferred-primitive finding, not an incomplete share). Same reword-and-close as 3.1. |
+| 3.3 non-secret mutation audit | **close now (supported scope done)** | rename/schedule/run emit typed spine evidence with no secret leakage; delete/revoke audit is inapplicable until a destructive primitive exists. Reword to scope to supported mutations and close. |
+| 6.1 instance-scoped operations | **close now (supported scope done)** | rename/schedule/run are instance-scoped; diagnostics/delete/revoke are `unsupported` for the connection-scoped-boundary reason above. The instance-scoping invariant is fully realized for every *supported* family. Reword and close. |
+| 8.5 live Daisy/Simon smoke | **owner / live gated** | Requires a deployed instance and a real local agent; cannot be closed with unit evidence. Stays open as a residual-risk live gate. |
+| delete_connection | **requires new primitive** | needs `deleteConnection` + a defined cascade contract (records/dataset/spine/device source-instance) before any route or catalog flip. |
+| revoke_connection | **requires new primitive** | needs `revokeSourceInstance(connectorInstanceId)` distinct from device-scoped `revokeDevice`. |
+| inspect_diagnostics | **requires new primitive** | needs a per-connection health read keyed on `connection_id` distinct from owner-wide device-exporter diagnostics. |
+| Amazon `enroll_browser_collector` (5.3) | **requires new primitive** | gated on `add-browser-collector-enrollment-primitive`; honest `unsupported` until browser-collector enrollment proves end-to-end. |
+| API-connect `open_url` (api_network) | **requires new primitive** | needs a typed owner-agent API-connect intent emitting `open_url`/token-capture with owner-completed authorization; honest `unsupported` until then. |
+| `upload_file` modality | **not part of SLVP (no triggering connector)** | no reference connector declares an upload/import binding; stays contract-reserved with no packet until one exists. |
+| Linear-style owner-token-over-MCP | **not part of SLVP (by construction)** | see the dedicated subsection above; `/mcp` owner-bearer rejection is permanent. |
+
+The closeable tasks (3.1, 3.2, 3.3, 6.1) are bounded by a wording fix only — their
+*supported* scope is fully implemented, validated, and tested on `main`; the open
+checkboxes currently conflate "supported scope done" with "deferred-primitive scope not
+built." The next implementation lane should reword those four task lines to scope them to
+the supported families and check them, leaving delete/revoke/diagnostics tracked solely
+through their named deferred packets and the catalog descriptors.
+
 ## Risks / Trade-offs
 
 - **Risk: Owner-agent credentials become too powerful by default.** Mitigation: require explicit owner approval during onboarding, publish a clear owner-agent profile, keep `/mcp` rejected, route-allowlist owner-agent mutating operations, and support revoke/status flows.
@@ -127,7 +248,7 @@ Rollback is route-level: disable the owner-agent control metadata/allowlist whil
 
 ## Open Questions
 
-- Should the final public path remain `/_ref/*`, or should owner-agent admin get a cleaner `/v1/owner/*` route family while `/_ref/*` remains reference/debug-oriented?
-- Should owner-agent onboarding mint separate scopes/profiles for `read`, `manage_connections`, `manage_schedules`, and `manage_subscriptions`, or is a single trusted-owner profile acceptable for the reference SLVP?
+- ~~Should the final public path remain `/_ref/*`, or should owner-agent admin get a cleaner `/v1/owner/*` route family while `/_ref/*` remains reference/debug-oriented?~~ **Resolved (realized in code):** owner-agent administration ships under the cleaner `/v1/owner/*` family (`GET /v1/owner/control`, `/v1/owner/connections*`, `/v1/owner/connectors*`); `/_ref/*` remains the reference/debug owner-session surface that the `/v1/owner/*` handlers share semantics with under a separate bearer auth adapter. Task 1.4 records this; the route inventory above confirms it. No further decision needed.
+- ~~Should owner-agent onboarding mint separate scopes/profiles for `read`, `manage_connections`, `manage_schedules`, and `manage_subscriptions`, or is a single trusted-owner profile acceptable for the reference SLVP?~~ **Resolved:** the reference SLVP uses a **single trusted-owner profile** authorized by `requireToken` + `requireOwner`; there are no per-family owner scopes in the reference, and the archived `add-trusted-owner-agent-onboarding` capability already committed to a single owner-level profile. The construction that keeps this safe is not scope subdivision but the control catalog: each action family carries its own `supported`/`owner_mediated`/`unsupported` status, and destructive families stay `unsupported` until a connection-scoped primitive exists. Per-family scopes can be introduced later without a credential-model break if a deployment needs to delegate a *subset* of admin authority, but that is a future refinement, not an SLVP requirement. The `reference-agent-access-workflow` "control action is not granted" scenario already specifies the typed-authorization-error shape such a future subdivision would reuse.
 - ~~Which connection lifecycle operations should ship first for browser-bound connectors such as Amazon versus local collectors such as Claude Code/Codex?~~ **Resolved:** local-collector initiation (`enroll_local_collector`) ships first because it reuses a proven primitive; browser-bound initiation (Amazon) is `unsupported` until the browser-collector enrollment primitive ships (see "Resolved: Amazon second-account implementation packet" above).
 - ~~Do the remaining unsupported connection-creation modalities (API/network OAuth, upload/import) and per-connection diagnostics need their own named packets, or can they stay inline `unsupported`?~~ **Triaged:** each now has a named deferred packet with a precise missing-primitive description and a proof-before-flip gate — API/network OAuth ("Deferred: API/network connection initiation"), per-connection diagnostics ("Deferred: connection-scoped diagnostics"). Upload/import gets no packet because no reference connector declares an upload/import binding; `upload_file` stays purely contract-reserved until such a connector exists. This keeps every modality in the scope either proven, or `unsupported` with a reviewable construction packet — none silently absent.
