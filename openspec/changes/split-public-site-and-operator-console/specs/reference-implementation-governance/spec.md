@@ -102,3 +102,16 @@ The repository SHALL run `pnpm spec:check` in the same quality gates used to pre
 
 - **WHEN** CI runs the repository quality checks
 - **THEN** CI SHALL include `pnpm spec:check`
+
+### Requirement: Supplemental project notes stay clearly non-canonical
+
+This repository MAY surface change-local supplemental notes to help contributors and partners review the project, but those notes SHALL be clearly distinguished from official OpenSpec artifacts.
+
+#### Scenario: The website renders change-local notes
+- **WHEN** the public-site deployable (the post-split OpenSpec/planning surface) or another repository surface renders markdown from `openspec/changes/*/design-notes/`
+- **THEN** that surface SHALL label those documents as supplemental project notes rather than as official change artifacts
+- **AND** it SHALL continue to distinguish official change artifacts (`proposal.md`, `design.md`, `tasks.md`, and `specs/**`) from the supplemental note layer
+
+#### Scenario: A supplemental note conflicts with canonical artifacts
+- **WHEN** a supplemental project note conflicts with an official OpenSpec artifact, executable behavior, or the root PDPP specs
+- **THEN** contributors SHALL treat the supplemental note as stale context rather than as execution truth

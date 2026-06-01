@@ -22,6 +22,84 @@ The reference implementation's downstream consumer SHALL be split into two Next 
 - **THEN** the forkable reference substrate in `reference-implementation/` SHALL remain the authoritative runnable implementation artifact rather than becoming coupled to deployable-specific code paths
 - **AND** the other deployable SHALL be unaffected unless it explicitly shares code through the operator UI workspace package
 
+### Requirement: The reference implementation remains a forkable substrate
+
+The forkable implementation substrate SHALL live in `reference-implementation/` and SHALL remain usable without either Next deployable runtime (the public-site deployable or the operator-console deployable).
+
+#### Scenario: An implementer evaluates the reference
+- **WHEN** an implementer clones the repository to study or fork the reference implementation
+- **THEN** they SHALL be able to run and understand the core reference substrate from `reference-implementation/` without depending on the public-site or operator-console deployable
+
+#### Scenario: The website changes independently
+- **WHEN** either Next deployable changes its internal implementation
+- **THEN** the forkable reference substrate SHALL remain the authoritative runnable implementation artifact rather than becoming coupled to deployable-only code paths
+
+### Requirement: The reference SHALL realize the semantic-retrieval experimental extension over a single internal enforcement path
+
+The reference implementation SHALL realize the public `semantic-retrieval` extension defined in the `semantic-retrieval` capability through one internal helper that performs grant resolution, plan construction, embedding invocation, vector-index lookup, and grant-safe snippet generation in the same code path. The public `GET /v1/search/semantic` route handler SHALL delegate to that helper. Reference-internal callers (including the operator-console dashboard) SHALL reach semantic retrieval through the same public route over HTTP, not through a parallel direct-database path. The reference SHALL NOT define a second semantic retrieval contract.
+
+#### Scenario: The dashboard helper reaches semantic retrieval through the public route
+- **WHEN** a reference-side caller in `apps/console/src/app/dashboard/lib/rs-client.ts` requests semantic retrieval over owner records
+- **THEN** it SHALL obtain those results by calling the public `GET /v1/search/semantic` endpoint with an owner-bound bearer token
+- **AND** it SHALL NOT compute semantic results by reaching into the vector index or the embedding backend directly
+
+#### Scenario: A second internal callsite is proposed
+- **WHEN** any reference-side caller (CLI, dashboard, future operator surface) needs semantic retrieval over authorized records
+- **THEN** that caller SHALL go through `GET /v1/search/semantic` (or, in-process, the single internal helper that the route delegates to)
+- **AND** SHALL NOT reach into the vector index, the embedding backend, the manifest validator, or the grant resolver to assemble its own semantic retrieval contract
+
+### Requirement: Browser-surface substrate SHALL be isolated from reference-owned runtime integrations
+
+The reference implementation SHALL consume backend-agnostic remote-surface lease/state-machine substrate from a private internal package. That package SHALL own remote-surface types, browser-surface lease state transitions, capacity policy, fencing tokens, queue ordering, restart reconciliation policy, and backend allocator interfaces. The package SHALL NOT import reference implementation, server, Docker, dashboard/Next-deployable, or connector modules.
+
+Reference-owned code SHALL continue to own persistence adapters, spine and run events, connector launch integration, Docker Compose wiring, and allocator sidecar process implementation.
+
+#### Scenario: Reference runtime acquires a browser-surface lease
+
+- **WHEN** reference controller code needs browser-surface lease policy
+- **THEN** it SHALL use the package-backed substrate implementation
+- **AND** reference-specific storage, event emission, and connector launch env assembly SHALL remain outside the package
+
+#### Scenario: Dynamic allocator work adds backend lifecycle support
+
+- **WHEN** dynamic n.eko allocation adds allocator lifecycle behavior
+- **THEN** allocator contracts MAY be defined in the substrate package
+- **AND** Docker Engine access, Compose wiring, and the allocator sidecar process SHALL remain reference-owned
+
+#### Scenario: Package dependency boundaries are checked
+
+- **WHEN** `packages/remote-surface` is inspected
+- **THEN** it SHALL NOT import from `reference-implementation`, server modules, Docker implementation code, the public-site or operator-console deployable (`apps/site`, `apps/console`), or connector modules
+
+### Requirement: Remote-surface streaming primitives SHALL be package-owned and host-adapted
+
+The reference implementation SHALL extract backend-neutral remote-surface streaming primitives into `@pdpp/remote-surface` before treating the architecture as OSS-spinnable. The package SHALL own generic protocol shapes, session broker interfaces, client viewer interfaces, backend adapter interfaces, input/viewport/clipboard channel shapes, diagnostics schema, and allocator/session seams. The reference implementation SHALL remain the host adapter for PDPP-specific routes, run timelines, auth, persistence, and connector handoff.
+
+#### Scenario: A host creates a remote-surface session
+
+- **WHEN** reference owner auth has authorized a stream mint request for a pending run interaction
+- **THEN** the reference SHALL map that authorized request into a package remote-surface session creation call
+- **AND** the package session descriptor SHALL use generic remote-surface identity and capability fields
+- **AND** PDPP `run_id`, `interaction_id`, owner auth, spine event names, and `_ref` route paths SHALL remain host-owned metadata and routing concerns
+
+#### Scenario: The in-memory session broker is extracted
+
+- **WHEN** the package provides a default in-memory session broker
+- **THEN** it SHALL preserve token minting, idempotency replay, attach and authorize semantics, expiry, revocation, and invalidation behavior through package conformance tests
+- **AND** hosts SHALL remain able to supply a durable store or host-specific persistence adapter
+
+#### Scenario: A browser client opens a stream
+
+- **WHEN** the dashboard opens a stream through reference `_ref` routes
+- **THEN** the reference SHALL adapt the request to package attach, authorize, event-channel, input-channel, viewport-channel, clipboard-channel, and diagnostics primitives
+- **AND** the browser-visible descriptor SHALL expose only scoped remote-surface capabilities and token-scoped proxy/session information
+- **AND** it SHALL NOT expose raw CDP WebSocket URLs, allocator credentials, Docker hostnames, or connector-owned backend lifecycle authority
+
+#### Scenario: Package dependency boundaries are checked
+
+- **WHEN** `packages/remote-surface` is inspected
+- **THEN** it SHALL NOT import from `reference-implementation`, the public-site or operator-console deployable (`apps/site`, `apps/console`), `packages/polyfill-connectors`, Docker implementation code, or server route modules
+
 ## ADDED Requirements
 
 ### Requirement: The reference deployable shape SHALL be three independent artifacts
