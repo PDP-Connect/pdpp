@@ -107,6 +107,71 @@ export interface UnsupportedAddModality {
  * owner-facing reason so the copy can be honest without implying the owner can
  * complete the flow here.
  */
+/**
+ * Connector keys whose manifest declares a `browser` binding — the browser-bound
+ * class the backend intent route classifies as `browser_bound`
+ * (`classifyConnectorIntentModality`, browser binding wins over a co-present
+ * network binding). The console has no manifest `runtime_requirements.bindings`
+ * threaded to the records row, so — exactly as this module already does for the
+ * supported local-collector set — it enumerates the class by key. The list is
+ * pinned against the committed manifests by `connection-modality.test.ts` so it
+ * cannot drift from the real connector bindings. A row whose connector is in this
+ * set cannot be owner-synced from the dashboard: a browser-bound connection fills
+ * in only when a local collector drives a real logged-in browser session, so the
+ * row must point at that setup path, never a dead "Sync now".
+ */
+export const BROWSER_BOUND_CONNECTORS = [
+  "amazon",
+  "anthropic",
+  "chase",
+  "chatgpt",
+  "doordash",
+  "heb",
+  "linkedin",
+  "loom",
+  "meta",
+  "reddit",
+  "shopify",
+  "uber",
+  "usaa",
+  "wholefoods",
+] as const;
+
+export type BrowserBoundConnector = (typeof BROWSER_BOUND_CONNECTORS)[number];
+
+const FIRST_PARTY_REGISTRY_PREFIX = "https://registry.pdpp.org/connectors/";
+const TRAILING_SLASH_RE = /\/$/;
+
+/**
+ * Reduce a connector identifier to the bare canonical key the records row keys
+ * on. The RS connector summary already canonicalizes first-party ids, but the
+ * reference falls back to the raw value when canonicalization fails. Stripping
+ * the registry-URL prefix here keeps a URL-shaped fallback id from slipping a
+ * dead "Sync now" back onto a browser-bound row. Mirrors the registry-prefix
+ * handling in `reference-implementation/server/connector-key.js`.
+ */
+function bareConnectorKey(connectorId: string): string {
+  if (connectorId.startsWith(FIRST_PARTY_REGISTRY_PREFIX)) {
+    return connectorId.slice(FIRST_PARTY_REGISTRY_PREFIX.length).replace(TRAILING_SLASH_RE, "");
+  }
+  return connectorId;
+}
+
+/**
+ * True when this connector is browser-bound (manifest `browser` binding).
+ * Accepts the canonical bare key the row normally receives and the registry-URL
+ * fallback form, so a non-canonical id cannot resurrect a false Sync now.
+ */
+export function isBrowserBoundConnector(connectorId: string | null | undefined): boolean {
+  if (typeof connectorId !== "string") {
+    return false;
+  }
+  return (BROWSER_BOUND_CONNECTORS as readonly string[]).includes(bareConnectorKey(connectorId));
+}
+
+/** The browser-bound runbook path, surfaced verbatim by the empty-state too. */
+export const BROWSER_BOUND_RUNBOOK_PATH = "docs/operator/browser-collector-proof-runbook.md";
+
 export const UNSUPPORTED_ADD_MODALITIES: readonly UnsupportedAddModality[] = [
   {
     modality: "browser_bound",
@@ -116,7 +181,7 @@ export const UNSUPPORTED_ADD_MODALITIES: readonly UnsupportedAddModality[] = [
       "the browser-collector enrollment primitive (browser_collector source kind + binding-aware enrollment) already ships; what remains is committed proof that a local collector drives the browser connector end-to-end with a real logged-in session — until that lands, no one-click flow is advertised",
     ownerFacingReason:
       "the enrollment path exists, but the console does not yet offer a one-click flow: a browser-bound connection needs a real, owner-logged-in browser session running locally, which you complete yourself with the local collector",
-    runbookPath: "docs/operator/browser-collector-proof-runbook.md",
+    runbookPath: BROWSER_BOUND_RUNBOOK_PATH,
   },
   {
     modality: "api_network",

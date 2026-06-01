@@ -11,11 +11,13 @@ import {
   type ConnectionStatusDisplay,
   deriveConnectionNextStep,
   deriveConnectionStatusDisplay,
+  derivePrimaryRowAction,
   type EvidenceTone,
   formatDominantCondition,
   formatLastDurableProgress,
   formatProjectionFreshness,
   type NextStepGuidance,
+  type PrimaryRowAction,
   resolveRecordCountDisplay,
   summarizeAxisChips,
 } from "../lib/connection-evidence.ts";
@@ -176,6 +178,14 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
     health: connectionHealth,
     supportsOwnerSync: !overview.localDeviceProgress,
   });
+  // The primary row action is modality-aware: "Sync now" is only an honest
+  // affordance for owner-syncable connectors. Push-mode (local-collector) and
+  // browser-bound connections cannot be synced from a row, so the button is
+  // replaced with an honest, non-clickable next step rather than a dead action.
+  const primaryAction = derivePrimaryRowAction({
+    connectorId: connector.connector_id,
+    hasLocalDeviceProgress: Boolean(overview.localDeviceProgress),
+  });
   const durableProgress = formatLastDurableProgress({
     hasError: Boolean(overview.error),
     lastRun,
@@ -234,14 +244,13 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
             runStart={running ? effectiveStartIso : lastRun?.first_at}
             runsHref={runsHref}
           />
-          <Button
-            aria-label={running ? `Sync in progress for ${displayName}` : `Sync ${displayName} now`}
-            disabled={running || isPending}
-            onClick={handleSync}
-            size="sm"
-          >
-            {running ? "Syncing…" : "Sync now"}
-          </Button>
+          <PrimaryRowActionControl
+            action={primaryAction}
+            displayName={displayName}
+            isPending={isPending}
+            onSync={handleSync}
+            running={running}
+          />
         </div>
       </div>
 
@@ -256,6 +265,64 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
         toast={toast}
       />
     </li>
+  );
+}
+
+/**
+ * The honest primary action for the row.
+ *
+ * Owner-syncable connectors get the clickable `Sync now` button (unchanged
+ * happy path). Push-mode local-collector and browser-bound connections cannot
+ * be synced from a row, so instead of a dead button they render a compact,
+ * non-clickable next step: "waiting for the local device", or a pointer at the
+ * browser-collector runbook the empty-state already surfaces. The guidance is
+ * inert text (not a `<button>`), so it can never reach the failing
+ * `runConnectorNowAction`.
+ */
+function PrimaryRowActionControl({
+  action,
+  displayName,
+  isPending,
+  onSync,
+  running,
+}: {
+  action: PrimaryRowAction;
+  displayName: string;
+  isPending: boolean;
+  onSync: () => void;
+  running: boolean;
+}) {
+  if (action.kind === "sync") {
+    return (
+      <Button
+        aria-label={running ? `Sync in progress for ${displayName}` : `Sync ${displayName} now`}
+        disabled={running || isPending}
+        onClick={onSync}
+        size="sm"
+      >
+        {running ? "Syncing…" : "Sync now"}
+      </Button>
+    );
+  }
+  if (action.kind === "browser_runbook") {
+    return (
+      <span
+        className="pdpp-caption max-w-[16rem] text-right text-muted-foreground"
+        data-testid="row-action-browser-runbook"
+        title={action.detail}
+      >
+        {action.label} · <code className="pdpp-eyebrow font-mono text-foreground">{action.runbookPath}</code>
+      </span>
+    );
+  }
+  return (
+    <span
+      className="pdpp-caption max-w-[16rem] text-right text-muted-foreground"
+      data-testid="row-action-device-wait"
+      title={action.detail}
+    >
+      {action.label}
+    </span>
   );
 }
 

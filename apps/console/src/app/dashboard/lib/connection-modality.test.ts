@@ -11,10 +11,13 @@
  *      (matching the backend intent route's Amazon acceptance fixture).
  */
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  BROWSER_BOUND_CONNECTORS,
+  BROWSER_BOUND_RUNBOOK_PATH,
+  isBrowserBoundConnector,
   isSupportedLocalCollectorConnector,
   localCollectorConnectorLabel,
   SUPPORTED_LOCAL_COLLECTOR_CONNECTORS,
@@ -145,4 +148,89 @@ test("api/network modality names the implicit-on-ingest gap", () => {
   const apiNetwork = UNSUPPORTED_ADD_MODALITIES.find((entry) => entry.modality === "api_network");
   assert.ok(apiNetwork, "an api_network unsupported modality must exist");
   assert.match(apiNetwork.missingPrimitive, API_NETWORK_PRIMITIVE_RE);
+});
+
+// ─── browser-bound connector classification ───────────────────────────────
+//
+// The records row cannot owner-sync a browser-bound connector (the run would
+// fail), so the row classifies the class by connector key. The console has no
+// manifest bindings at the records list, so it enumerates the key set — pinned
+// against the committed manifests so it cannot drift from the real bindings.
+
+const FIRST_PARTY_REGISTRY_PREFIX = "https://registry.pdpp.org/connectors/";
+const TRAILING_SLASH_RE = /\/$/;
+
+/**
+ * Canonical connector key for a manifest's URL-shaped `connector_id`, matching
+ * `reference-implementation/server/connector-key.js` (registry prefix → bare
+ * hyphenated slug). The records row receives this canonical key from the RS
+ * connector summary (`canonicalizeConnectorId`), so the console's browser-bound
+ * key set must equal the canonical keys of the browser-binding manifests.
+ */
+function canonicalKeyFromManifestId(connectorId: string): string {
+  if (connectorId.startsWith(FIRST_PARTY_REGISTRY_PREFIX)) {
+    return connectorId.slice(FIRST_PARTY_REGISTRY_PREFIX.length).replace(TRAILING_SLASH_RE, "");
+  }
+  return connectorId;
+}
+
+test("BROWSER_BOUND_CONNECTORS exactly matches the canonical keys of browser-binding manifests", async () => {
+  // The backend intent route classifies `browser_bound` from a `browser`
+  // binding (browser wins over a co-present network binding). The console key
+  // set must equal the canonical keys of the connectors whose committed
+  // manifest declares that binding — no more (a falsely-suppressed Sync now),
+  // no less (a dead button that returns). Pinning against the manifests keeps
+  // this from drifting from the real connector bindings.
+  const repoRoot = new URL("../../../../../../", import.meta.url);
+  const manifestsDir = new URL("packages/polyfill-connectors/manifests/", repoRoot);
+  const files = await readdir(fileURLToPath(manifestsDir));
+  const browserBoundFromManifests: string[] = [];
+  for (const file of files) {
+    if (!file.endsWith(".json")) {
+      continue;
+    }
+    const raw = await readFile(fileURLToPath(new URL(file, manifestsDir)), "utf8");
+    const manifest = JSON.parse(raw) as {
+      connector_id?: string;
+      runtime_requirements?: { bindings?: Record<string, unknown> | null } | null;
+    };
+    const bindings = manifest.runtime_requirements?.bindings;
+    if (manifest.connector_id && bindings && Object.hasOwn(bindings, "browser")) {
+      browserBoundFromManifests.push(canonicalKeyFromManifestId(manifest.connector_id));
+    }
+  }
+  assert.deepEqual([...BROWSER_BOUND_CONNECTORS].sort(), browserBoundFromManifests.sort());
+});
+
+test("isBrowserBoundConnector narrows only the browser-bound keys", () => {
+  assert.equal(isBrowserBoundConnector("amazon"), true);
+  assert.equal(isBrowserBoundConnector("chase"), true);
+  assert.equal(isBrowserBoundConnector("chatgpt"), true);
+  assert.equal(isBrowserBoundConnector("claude_code"), false);
+  assert.equal(isBrowserBoundConnector("gmail"), false);
+  assert.equal(isBrowserBoundConnector(""), false);
+  assert.equal(isBrowserBoundConnector(null), false);
+  assert.equal(isBrowserBoundConnector(undefined), false);
+});
+
+test("isBrowserBoundConnector also accepts the registry-URL fallback form", () => {
+  // The RS summary canonicalizes first-party ids, but falls back to the raw
+  // value when canonicalization fails. A URL-shaped id must still classify as
+  // browser-bound so it cannot resurrect a dead Sync now.
+  assert.equal(isBrowserBoundConnector("https://registry.pdpp.org/connectors/amazon"), true);
+  assert.equal(isBrowserBoundConnector("https://registry.pdpp.org/connectors/chase/"), true);
+  assert.equal(isBrowserBoundConnector("https://registry.pdpp.org/connectors/gmail"), false);
+});
+
+test("a browser-bound connector is never in the supported local-collector set", () => {
+  for (const connectorId of BROWSER_BOUND_CONNECTORS) {
+    assert.equal(isSupportedLocalCollectorConnector(connectorId), false);
+  }
+});
+
+test("BROWSER_BOUND_RUNBOOK_PATH is the path the browser-bound modality surfaces", () => {
+  const browserBound = UNSUPPORTED_ADD_MODALITIES.find((entry) => entry.modality === "browser_bound");
+  assert.ok(browserBound);
+  assert.equal(BROWSER_BOUND_RUNBOOK_PATH, "docs/operator/browser-collector-proof-runbook.md");
+  assert.equal(browserBound.runbookPath, BROWSER_BOUND_RUNBOOK_PATH);
 });
