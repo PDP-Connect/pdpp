@@ -14,6 +14,14 @@ import {
 
 const SHA256_HEX = /^[a-f0-9]{64}$/;
 const SKILL_FRONTMATTER_NAME = /name: pdpp-data-access/;
+const OWNER_SKILL_FRONTMATTER_NAME = /name: pdpp-owner-agent/;
+const OWNER_AGENT_METADATA_PATH = /\/\.well-known\/oauth-protected-resource/;
+const OWNER_AGENT_SKILL_PATH = /\/\.well-known\/skills\/pdpp-owner-agent\/SKILL\.md/;
+const MCP_PATH = /\/mcp/;
+const MCP_OWNER_BEARER_REJECTION_COPY = /rejects owner bearers/;
+const OWNER_AGENT_REST_PATH = /\/v1\/\*\*/;
+const OWNER_AGENT_ONBOARD_COMMAND = /pdpp owner-agent onboard/;
+const DO_NOT_PASTE_TOKENS_COPY = /Do not paste tokens\./;
 const PDPP_CLI_CONNECT_COMMAND_SYMBOL = /pdppCliConnectCommand/;
 const PDPP_CLI_TOKEN_COMPLETION_UNAVAILABLE_SYMBOL = /pdppCliTokenCompletionUnavailable/;
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../..");
@@ -60,7 +68,7 @@ test("readAgentSkillFile serves only explicit skill files", async () => {
 
   const ownerSkill = await readAgentSkillFile("pdpp-owner-agent/SKILL.md");
   assert.ok(ownerSkill);
-  assert.match(ownerSkill.body.toString("utf8"), /name: pdpp-owner-agent/);
+  assert.match(ownerSkill.body.toString("utf8"), OWNER_SKILL_FRONTMATTER_NAME);
 
   assert.equal(await readAgentSkillFile("../package.json"), null);
   assert.equal(await readAgentSkillFile("pdpp-data-access/../../package.json"), null);
@@ -83,17 +91,17 @@ test("llms index points trusted owner agents at the canonical onboarding surface
   const ownerAgentSection = ownerAgentOnboardingLLMSIndex();
 
   // Canonical OAuth protected-resource metadata (the live owner-agent block).
-  assert.match(ownerAgentSection, /\/\.well-known\/oauth-protected-resource/);
+  assert.match(ownerAgentSection, OWNER_AGENT_METADATA_PATH);
   // Owner-agent onboarding / device flow guidance.
-  assert.match(ownerAgentSection, /\/\.well-known\/skills\/pdpp-owner-agent\/SKILL\.md/);
+  assert.match(ownerAgentSection, OWNER_AGENT_SKILL_PATH);
   // Grant-scoped MCP guidance, framed as the non-owner-agent path.
-  assert.match(ownerAgentSection, /\/mcp/);
-  assert.match(ownerAgentSection, /rejects owner bearers/);
+  assert.match(ownerAgentSection, MCP_PATH);
+  assert.match(ownerAgentSection, MCP_OWNER_BEARER_REJECTION_COPY);
   // REST/CLI owner-agent guidance.
-  assert.match(ownerAgentSection, /\/v1\/\*\*/);
-  assert.match(ownerAgentSection, /pdpp owner-agent onboard/);
+  assert.match(ownerAgentSection, OWNER_AGENT_REST_PATH);
+  assert.match(ownerAgentSection, OWNER_AGENT_ONBOARD_COMMAND);
   // Do-not-paste-tokens guidance.
-  assert.match(ownerAgentSection, /Do not paste tokens\./);
+  assert.match(ownerAgentSection, DO_NOT_PASTE_TOKENS_COPY);
 
   // The owner-agent section is part of the single agent-readable entrypoint.
   assert.ok(agentSkillsLLMSIndex().includes(ownerAgentSection));
@@ -104,7 +112,7 @@ test("llms index points trusted owner agents at the canonical onboarding surface
   assert.ok(servedOwnerSkill);
   const skill = readFileSync(path.join(REPO_ROOT, "docs/agent-skills/pdpp-owner-agent/SKILL.md"), "utf8");
   assert.equal(servedOwnerSkill.body.toString("utf8"), skill);
-  assert.match(skill, /name: pdpp-owner-agent/);
+  assert.match(skill, OWNER_SKILL_FRONTMATTER_NAME);
 });
 
 test("reference docs and web copy use the CLI package-info source of truth", () => {
