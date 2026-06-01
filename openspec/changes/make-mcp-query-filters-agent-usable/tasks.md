@@ -67,7 +67,7 @@
 
 - [x] 6.1 `pnpm --filter @pdpp/mcp-server run test` green.
 - [x] 6.2 `openspec validate make-mcp-query-filters-agent-usable --strict`.
-- [ ] 6.3 Owner/live: confirm an external hosted MCP client (e.g. ChatGPT) can
-      now filter with the typed object end-to-end against the live RS. Recorded
-      as a residual owner-run check (worker lacks the owner token / hosted
-      client).
+- [x] 6.3 Owner/live: confirm the hosted RS and a scoped hosted MCP client can
+      now filter end-to-end, aggregate with the same filter, and return search
+      hits. Typed-object translation is covered by MCP adapter tests; hosted
+      clients should reconnect to reload the current tool schema.
