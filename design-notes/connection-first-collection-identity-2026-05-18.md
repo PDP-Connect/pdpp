@@ -3,7 +3,7 @@
 Status: captured
 Owner: protocol / reference implementation owner
 Created: 2026-05-18
-Updated: 2026-05-18
+Updated: 2026-06-01
 Related: `design-notes/source-instances-and-multi-account-configurations-2026-04-24.md`, `design-notes/source-authority-vs-schema-identity-2026-04-30.md`, `design-notes/gmail-attachments-and-multi-instance-readiness-2026-05-15.md`, `spec-collection-profile.md`, `openspec/changes/define-connector-instances`
 
 ## Question
@@ -84,6 +84,12 @@ Examples:
 - `Claude Code on desktop` is another connection.
 - `Chase` may be one connection even if it yields multiple financial accounts, because those accounts are records/resources beneath the login unless they need independent lifecycle.
 
+## Tracked Follow-Up: Default Connection Labels
+
+Low priority: connection labels should eventually derive from connector-manifest hints instead of falling back to connector-type names or registry URLs. Examples include a Gmail account email address, a Slack workspace or org name, a browser-profile nickname, or a local source-home label.
+
+This should remain a design-note item until a change touches the manifest schema, connection summary contract, add/manage connection UI, or owner-agent control surface. The promoted design should define safe label candidates, precedence, redaction, refresh behavior, and a fallback that still distinguishes multiple connections for the same connector type.
+
 ## Promotion Trigger
 
 Promote this into OpenSpec before implementing or changing any durable contract that depends on this model, including:
@@ -98,3 +104,4 @@ Promote this into OpenSpec before implementing or changing any durable contract 
 ## Decision Log
 
 - 2026-05-18: Captured after reviewing Collection Profile runtime terminology and local collector prior art. Decision: keep `runtime` aligned with the Collection Profile executor concept; prefer first-class `connection` / internal `connector_instance` over top-level `source_instance` unless future evidence proves a binding needs independent lifecycle or authority.
+- 2026-06-01: Added low-priority follow-up for manifest-informed default connection labels. This is not yet a contract change; promote it before changing manifest fields or owner-facing label behavior.
