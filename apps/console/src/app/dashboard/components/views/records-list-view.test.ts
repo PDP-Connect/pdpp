@@ -126,7 +126,15 @@ test("records-list-view does not render raw connectorInstanceId in the caption",
 // showing only the highest-signal stream.
 
 const CHURN_DETAILS_DISCLOSURE = /<details[\s\S]*?data-testid="version-churn-notice"/;
-const CHURN_SUMMARY_ELEMENT = /<summary[\s\S]*?Show streams/;
+// The disclosure must be driven by a native <summary> (keyboard-activatable,
+// no client JS) that carries a visible owner-facing action label. The label
+// must read as an action ("Review version churn"), not a passive toggle, so the
+// banner is unmistakably actionable rather than an inert warning.
+const CHURN_SUMMARY_ELEMENT = /<summary[\s\S]*?data-testid="version-churn-review-action"/;
+const CHURN_REVIEW_ACTION_LABEL = /Review version churn/;
+// The banner must not regress to a dead JS click handler near the notice; the
+// native <summary> does the toggling, so no onClick should appear on it.
+const CHURN_NO_DEAD_CLICK_HANDLER = /version-churn-notice[\s\S]{0,400}onClick=/;
 const CHURN_DELEGATES_TO_PURE_SUMMARY = /summarizeVersionChurn\(rows\)/;
 const CHURN_RENDERS_ALL_ROWS = /buildChurnDrilldownRows\(rows\)[\s\S]*?drilldownRows\.map\(/;
 const CHURN_HAS_TABLE_HEADERS =
@@ -140,6 +148,17 @@ test("version-churn notice is a native details/summary disclosure, not a dead ba
   const src = await readFile(VIEW_FILE, "utf8");
   assert.match(src, CHURN_DETAILS_DISCLOSURE);
   assert.match(src, CHURN_SUMMARY_ELEMENT);
+});
+
+test("version-churn notice exposes a visible owner-facing 'Review version churn' action", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  // The action label must be present (visible CTA), and it must live inside the
+  // native <summary> so it is keyboard-activatable without any click handler.
+  assert.match(src, CHURN_REVIEW_ACTION_LABEL);
+  assert.match(src, CHURN_SUMMARY_ELEMENT);
+  // Guard against regressing to a dead <div onClick>-style handler: the notice
+  // must not wire a JS click handler on the banner; the <summary> does the work.
+  assert.doesNotMatch(src, CHURN_NO_DEAD_CLICK_HANDLER);
 });
 
 test("version-churn notice delegates summary + rows to the pure module", async () => {

@@ -467,8 +467,10 @@ function AddConnectionGuidance({ deviceExportersHref }: { deviceExportersHref: s
  *
  * Built on the native `<details>`/`<summary>` disclosure already used by the
  * connection diagnostics block — no client JS, keyboard-activatable, and
- * screen-reader navigable by default. The `group-open:` Tailwind idiom flips
- * the Show/Hide affordance from the open state.
+ * screen-reader navigable by default. The `<summary>` carries an explicit,
+ * button-styled "Review version churn" action so the banner reads as
+ * actionable; the `group-open:` Tailwind idiom flips it to "Hide details" when
+ * open.
  *
  * This is metadata only: counts come from `/_ref/records/version-stats`,
  * which never returns record payloads. Copy frames the warning as retained
@@ -486,14 +488,23 @@ function VersionChurnNotice({ rows }: { rows: RefRecordVersionStatsRow[] }) {
       className="group mb-6 border-[color:var(--warning)] border-l-2 bg-[color:var(--warning)]/5"
       data-testid="version-churn-notice"
     >
-      <summary className="flex cursor-pointer items-start justify-between gap-3 px-4 py-3 text-[color:var(--warning)]">
+      <summary
+        className="flex cursor-pointer items-start justify-between gap-3 px-4 py-3 text-[color:var(--warning)]"
+        data-testid="version-churn-review-action"
+      >
         <span className="min-w-0">
           <span className="pdpp-body block font-medium">{summary.headline}</span>
           <span className="pdpp-caption mt-1 block">{summary.highestSignal}</span>
         </span>
-        <span className="pdpp-caption shrink-0 whitespace-nowrap underline-offset-2 group-hover:underline">
-          <span className="group-open:hidden">Show streams →</span>
-          <span className="hidden group-open:inline">Hide streams</span>
+        {/*
+         * Explicit, button-styled owner action. The native <summary> is already
+         * keyboard-activatable and toggles the disclosure; styling it as a pill
+         * with a clear "Review version churn" label makes the banner read as
+         * actionable rather than as a static warning the owner cannot act on.
+         */}
+        <span className="pdpp-caption inline-flex shrink-0 items-center gap-1 self-center whitespace-nowrap rounded-md border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 px-2.5 py-1 font-medium underline-offset-2 group-hover:bg-[color:var(--warning)]/20">
+          <span className="group-open:hidden">Review version churn →</span>
+          <span className="hidden group-open:inline">Hide details</span>
         </span>
       </summary>
       <div className="border-[color:var(--warning)]/30 border-t px-4 py-3">
