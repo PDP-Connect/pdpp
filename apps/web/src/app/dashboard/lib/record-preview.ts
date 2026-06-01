@@ -263,7 +263,7 @@ export function buildRecordPreview(
       return buildEventPreview(data);
     case "titled":
       return buildTitledPreview(data);
-    case "generic":
+    default:
       return null;
   }
 }
