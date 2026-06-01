@@ -1113,6 +1113,34 @@ test('range filter on declared field filters records', async () => {
   });
 });
 
+test('over-max limit clamps to 100 and surfaces a limit_clamped warning on the HTTP wire', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorId = spotifyManifest.connector_id;
+    const records = Array.from({ length: 101 }, (_, i) => ({
+      id: `a${String(i).padStart(3, '0')}`,
+      name: `Artist ${i}`,
+      source_updated_at: new Date(Date.UTC(2026, 0, 1) + i * 60_000).toISOString(),
+    }));
+    await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, records);
+    const url = `${rsUrl}/v1/streams/top_artists/records`
+      + `?connector_id=${encodeURIComponent(connectorId)}`
+      + '&limit=200';
+    const { status, body } = await fetchJson(url, {
+      headers: { 'Authorization': `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 200);
+    assert.equal(body.data.length, 100, 'page is clamped to the max of 100');
+    assert.equal(body.has_more, true, 'more records remain to page');
+    const warnings = body?.meta?.warnings;
+    assert.ok(Array.isArray(warnings), 'meta.warnings[] is present on the wire');
+    const clamp = warnings.find((warning) => warning?.code === 'limit_clamped');
+    assert.ok(clamp, 'limit_clamped warning is surfaced in the HTTP body');
+    assert.equal(clamp.param, 'limit');
+    assert.deepEqual(clamp.detail, { requested_limit: 200, max_limit: 100 });
+  });
+});
+
 test('range filter on undeclared field is rejected', async () => {
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
     const ownerToken = await issueOwnerToken(asUrl);

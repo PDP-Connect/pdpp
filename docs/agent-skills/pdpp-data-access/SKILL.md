@@ -125,7 +125,7 @@ If npm is unavailable and the task still requires manual debugging, follow the s
 
 See `references/query-cookbook.md`. Quick map:
 
-- "give me the last N items": `GET /v1/streams/<stream>/records?limit=N&order=desc`
+- "give me the last N items": `GET /v1/streams/<stream>/records?limit=N&order=desc` — `limit` defaults to 25 and is capped at 100. Asking for more returns at most 100 plus a non-fatal `meta.warnings[]` entry with `code: "limit_clamped"`; page forward with the returned cursor rather than expecting a larger page. Exact/range filters use the canonical bracket syntax `filter[<field>]=<value>` and `filter[<field>][gte|gt|lte|lt]=<value>` only; flat shapes like `<field>.gte`, `<field>_gte`, or `min_<field>` are rejected with 400.
 - "show changes since cursor X": `GET /v1/streams/<stream>/records?changes_since=<cursor>` (bootstrap with `changes_since=beginning`)
 - "find records matching free text": `GET /v1/search?q=…` or, when the server advertises it, `GET /v1/search/hybrid?q=…` (experimental hybrid retrieval extension; scope with repeated `streams=` or `streams[]=` values, not CSV)
 - "fetch an attachment": follow `blob_ref.fetch_url` from the record body, never construct it
