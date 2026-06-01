@@ -188,9 +188,15 @@ The reference implementation SHALL keep the Collection boundary explicit across 
 - **WHEN** behavior concerns scheduling, retry, credential storage, webhook adaptation, batch import, or multi-connector coordination
 - **THEN** it SHALL be treated as runtime/orchestrator behavior unless and until a concrete interoperability need justifies a new profile
 
-#### Scenario: The reference makes an optimistic collection choice before the spec is fully frozen
-- **WHEN** the reference implementation enforces a strong Collection Profile behavior before the PDPP spec is fully settled
-- **THEN** that behavior SHALL be labeled as either an interoperability requirement to be pushed into the Collection Profile spec or as a reference-only choice that does not yet claim normative status
+#### Scenario: Local collector completeness is classified
+- **WHEN** behavior concerns local Claude Code or Codex source-home inventory, privacy classification, coverage diagnostics, auth-adjacent exclusions, or multi-device source-home binding
+- **THEN** it SHALL be treated as reference runtime/orchestrator behavior unless and until a concrete interoperability need promotes it into Collection Profile vocabulary
+- **AND** the reference SHALL NOT describe 100% local Claude Code or Codex collection as a PDPP Core Resource Server requirement
+
+#### Scenario: Local source homes require connector instances
+- **WHEN** the reference accepts local collector data from a Claude Code or Codex source home
+- **THEN** the source home SHALL resolve to a connector instance before records, blobs, state, schedules, run leases, diagnostics, or owner actions are written
+- **AND** `connector_id` alone SHALL NOT be used as the durable runtime key for local collection from multiple devices or source homes
 
 #### Scenario: Run assistance semantics are classified
 - **WHEN** behavior concerns the shape of owner assistance during a bounded connector run, including whether the owner must act elsewhere, provide a value, operate an attachment, or wait for retry
@@ -201,6 +207,10 @@ The reference implementation SHALL keep the Collection boundary explicit across 
 - **WHEN** behavior concerns CDP, Playwright, n.eko, WebRTC, stream-token minting, or pointer/keyboard/clipboard control
 - **THEN** the reference SHALL treat that behavior as browser-surface attachment implementation
 - **AND** it SHALL NOT imply that all owner assistance requires or provides a browser surface
+
+#### Scenario: The reference makes an optimistic collection choice before the spec is fully frozen
+- **WHEN** the reference implementation enforces a strong Collection Profile behavior before the PDPP spec is fully settled
+- **THEN** that behavior SHALL be labeled as either an interoperability requirement to be pushed into the Collection Profile spec or as a reference-only choice that does not yet claim normative status
 
 ### Requirement: Open design questions stay explicit
 The reference implementation SHALL keep unresolved design questions explicit in OpenSpec whenever implementation work materially narrows the plausible design space without fully settling the normative PDPP answer.
@@ -1569,29 +1579,42 @@ Known-gap and skip diagnostics SHALL include bounded recovery hints when the run
 - **THEN** the run timeline MAY expose a recovery hint such as `manual_action_required`
 - **AND** it SHALL NOT persist submitted credentials or browser session secrets
 
-### Requirement: Client event subscriptions are a discoverable RI extension and grant-scoped
+### Requirement: Client event subscriptions are a discoverable RI extension with explicit authority scoping
 
-The reference implementation SHALL expose outbound client event subscriptions at the canonical resource-server path `/v1/event-subscriptions`. It SHALL advertise the surface in the resource server's protected-resource metadata document under `capabilities.client_event_subscriptions`, with `supported: true`, `stability: "reference_extension"`, and `scope: "reference_implementation"`. The advertisement SHALL document the endpoint, supported event types, the signing profile and header names, delivery semantics (at-least-once, after-commit, retry schedule, max attempts), verification handshake, hint cursor field, callback-URL HTTPS requirement, and client-visible byte limits. The reference SHALL NOT widen client grants to enable subscriptions, and SHALL NOT accept owner bearer tokens or local device credentials as authorization for client subscription endpoints.
+The reference implementation SHALL expose outbound event subscriptions at the canonical resource-server path `/v1/event-subscriptions`. It SHALL advertise the surface in the resource server's protected-resource metadata document under `capabilities.client_event_subscriptions`, with `supported: true`, `stability: "reference_extension"`, `scope: "reference_implementation"`, and `authority_kinds_supported` containing `client_grant` and `trusted_owner_agent`. The advertisement SHALL document the endpoint, supported event types, the signing profile and header names, delivery semantics (at-least-once, after-commit, retry schedule, max attempts), verification handshake, hint cursor field, callback-URL HTTPS requirement, and client-visible byte limits.
 
-Subscription create, read, list, update, delete, and test-event operations SHALL require a client bearer whose grant is currently active. The persisted subscription SHALL record the bearer's `(grant_id, client_id, subject_id)` and SHALL refuse any subsequent operation by a bearer whose `(client_id, grant_id)` does not match.
+Ordinary client subscription create, read, list, update, delete, and test-event operations SHALL require a client bearer whose grant is currently active. The persisted subscription SHALL record authority kind `client_grant`, the bearer's `(grant_id, client_id, subject_id)`, and SHALL refuse any subsequent operation by a bearer whose `(client_id, grant_id)` does not match.
+
+Trusted owner-agent subscription create, read, list, update, delete, and test-event operations SHALL require an owner bearer issued to a registered client. The persisted subscription SHALL record authority kind `trusted_owner_agent`, the bearer's `(client_id, subject_id)`, and SHALL refuse any subsequent operation by a bearer whose `(client_id, subject_id)` does not match. Owner-agent subscriptions SHALL be owner-visible current/future data subscriptions; they SHALL NOT expose record bodies in pushed events; record-change events SHALL carry enough source identity (`connector_id`, stream, `connection_id` where known, and `changes_since`) for the owner agent to pull changed records through the owner REST read path; and they SHALL be disabled when the registered client is deleted.
 
 #### Scenario: A client creates a subscription with a valid bearer
 - **WHEN** an authorized client posts a subscription create request to `POST /v1/event-subscriptions` with a client bearer token whose grant is active
-- **THEN** the reference SHALL persist the subscription with the bearer's `(grant_id, client_id, subject_id)` snapshotted
+- **THEN** the reference SHALL persist the subscription with authority kind `client_grant` and the bearer's `(grant_id, client_id, subject_id)` snapshotted
 - **AND** the response SHALL include the freshly generated delivery secret exactly once
 - **AND** the secret SHALL carry the Standard Webhooks `whsec_` prefix
 
-#### Scenario: A different client attempts to read another client's subscription
-- **WHEN** a client bearer requests `GET /v1/event-subscriptions/:id` for a subscription whose stored `client_id` differs from the bearer's
+#### Scenario: A trusted owner agent creates a subscription with a registered owner bearer
+- **WHEN** a trusted owner agent posts a subscription create request to `POST /v1/event-subscriptions` with an owner bearer issued to a registered client
+- **THEN** the reference SHALL persist the subscription with authority kind `trusted_owner_agent`
+- **AND** the subscription SHALL be scoped to the bearer's `(client_id, subject_id)` rather than to a grant id
+- **AND** the response SHALL include the freshly generated delivery secret exactly once
+
+#### Scenario: A different authority attempts to read a subscription
+- **WHEN** a bearer requests `GET /v1/event-subscriptions/:id` for a subscription whose stored authority does not match the bearer's authority
 - **THEN** the reference SHALL return a not-found response without disclosing the subscription's existence
 
-#### Scenario: An owner bearer attempts to use a client subscription endpoint
-- **WHEN** an owner bearer token (not a client token) is presented to any `/v1/event-subscriptions[...]` endpoint
+#### Scenario: An unregistered owner bearer attempts to use subscriptions
+- **WHEN** an owner bearer token with no registered `client_id` is presented to any `/v1/event-subscriptions[...]` endpoint
 - **THEN** the reference SHALL reject the request with HTTP 403
 
+#### Scenario: A registered owner-agent client is deleted
+- **WHEN** the owner deletes the registered client that issued an owner-agent subscription's bearer
+- **THEN** the reference SHALL revoke the owner-agent token
+- **AND** it SHALL disable that client's pending or active event subscriptions and drop pending queue rows
+
 #### Scenario: A client reads the protected-resource metadata
-- **WHEN** a client reads `/.well-known/oauth-protected-resource` on the resource server
-- **THEN** the response SHALL include `capabilities.client_event_subscriptions` with `supported: true`, `stability: "reference_extension"`, and an `endpoint` of `/v1/event-subscriptions`
+- **WHEN** a client or owner agent reads `/.well-known/oauth-protected-resource` on the resource server
+- **THEN** the response SHALL include `capabilities.client_event_subscriptions` with `supported: true`, `stability: "reference_extension"`, an `endpoint` of `/v1/event-subscriptions`, and `authority_kinds_supported` containing `client_grant` and `trusted_owner_agent`
 - **AND** the advertisement SHALL declare the envelope as `format: "cloudevents+json"`, `specversion: "1.0"`, `pdppversion: "1"`, `content_type: "application/cloudevents+json; charset=utf-8"`, and `subscription_id_location: "data.subscription_id"`
 - **AND** the advertisement SHALL declare the signing profile as `standard-webhooks` with `algorithm: "HMAC-SHA256"`, `id_header: "webhook-id"`, `timestamp_header: "webhook-timestamp"`, `signature_header: "webhook-signature"`, `signed_payload: "{webhook-id}.{webhook-timestamp}.{body}"`, `signature_encoding: "v1,<base64>"`, and `secret_prefix: "whsec_"`
 - **AND** the advertisement SHALL include the set of supported event types (`pdpp.subscription.verify`, `pdpp.subscription.test`, `pdpp.records.changed`, `pdpp.grant.revoked`), the delivery semantics (at-least-once, after-commit, max-attempts), the verification handshake shape, and the hint cursor location
@@ -7560,3 +7583,97 @@ Route-family extractions SHALL be mechanical adapter splits over the existing op
 - **WHEN** more than one family adapter would benefit from a small helper (e.g. resolving the owner subject id from a request)
 - **THEN** that helper SHALL be either a local function inside the family adapter or an exported helper from an existing module (`owner-auth.ts`, `ref-record-utils.ts`, etc.)
 - **AND** the change SHALL NOT introduce a new global mount-context type unless multiple family adapters demonstrably need the same wide context bundle
+
+### Requirement: Flagship first-party manifests SHALL declare presentation types for the typed-card pilot
+
+The reference implementation SHALL declare an optional presentation `type` (via the `schema.properties[field].x_pdpp_type` extension already read by the resource server) on the small set of fields the Explorer dispatches record cards from, for the flagship first-party connectors selected for the typed-card pilot. The initial pilot connectors are `chase` (the `transactions` stream, dispatching a money card) and `gmail` (the `messages` stream, dispatching a message card). The declaration is additive and presentation-only: it SHALL NOT alter exact-filter, range-filter, lexical/semantic participation, aggregation, grant usability, or retrieval semantics for the declared field, and a manifest field without a declared `type` SHALL continue to surface no `type` key and fall back to the Explorer heuristic. This requirement makes the already-accepted typed-card dispatch path live on real connector data; it does not introduce a new contract field.
+
+#### Scenario: A flagship money stream declares a currency-typed amount field
+
+- **WHEN** the `chase` `transactions` stream manifest is read through `GET /v1/streams/transactions`
+- **THEN** the `amount` field's `field_capabilities` entry SHALL carry a declared `type` of `currency`
+- **AND** the stream's other declared presentation types SHALL name a `timestamp` field (the transaction date) and a `text` field (the merchant/payee display name)
+- **AND** the surfaced declared types SHALL dispatch a `money` record card through the Explorer's declared-type-preferred classification
+
+#### Scenario: A flagship message stream declares a person-and-text-typed field set
+
+- **WHEN** the `gmail` `messages` stream manifest is read through `GET /v1/streams/messages`
+- **THEN** the `from_name` field's `field_capabilities` entry SHALL carry a declared `type` of `person`
+- **AND** the stream SHALL declare at least one `text`-typed field (the subject or snippet) and a `timestamp`-typed field (the message date)
+- **AND** the surfaced declared types SHALL dispatch a `message` record card through the Explorer's declared-type-preferred classification
+
+#### Scenario: A declared presentation type changes no other capability
+
+- **WHEN** a pilot field declares a presentation `type`
+- **THEN** its exact-filter, range-filter, lexical-search, semantic-search, aggregation, and grant-usability flags SHALL be identical to those it carried before the declaration
+- **AND** a field in the same stream that does not declare a presentation `type` SHALL surface no `type` key and SHALL fall back to the Explorer's presentation-only heuristic
+
+#### Scenario: A field that does not match its stream's card is not coerced
+
+- **WHEN** a pilot stream carries a field whose value is not the presentation type of the card the stream dispatches (for example the ISO currency-code field on a money stream)
+- **THEN** the manifest SHALL NOT declare a presentation `type` that misrepresents the field
+- **AND** the declared types on the stream SHALL assert only the field shapes the card actually renders
+
+### Requirement: Trusted owner-agent metadata SHALL advertise the REST owner-agent profile
+
+When trusted owner-agent onboarding is enabled, the reference Resource Server SHALL advertise a machine-readable advisory block that identifies owner-level REST automation as a separate profile from grant-scoped MCP/client access. The advisory block SHALL be non-normative reference metadata and SHALL NOT present owner-agent onboarding as a PDPP Core requirement.
+
+#### Scenario: Metadata includes owner-agent onboarding
+- **WHEN** a caller fetches `GET /` or `GET /.well-known/oauth-protected-resource` from a deployment that supports trusted owner-agent onboarding
+- **THEN** the response SHALL include an advisory trusted-owner-agent block with the profile name, AS issuer, RS resource origin, owner approval surface, schema endpoint, stream discovery endpoint, query base, token introspection endpoint, revocation path, and event-subscription discovery link
+- **AND** the block SHALL state that `/mcp` is not the owner-agent transport
+
+#### Scenario: Metadata remains safe on unsupported deployments
+- **WHEN** owner-agent onboarding is disabled, misconfigured, or not safely available
+- **THEN** the reference SHALL omit the trusted-owner-agent advisory block
+- **AND** protected-resource metadata SHALL remain valid for ordinary grant-scoped clients
+
+### Requirement: Trusted owner-agent approval SHALL avoid bearer-token paste flows
+
+The reference implementation SHALL provide a browser-mediated owner approval path for trusted owner-agent credentials. The happy path SHALL avoid printing bearer material into chat, terminal transcripts, dashboard status tables, or logs.
+
+#### Scenario: Owner approves a local agent
+- **WHEN** a local owner agent initiates or follows the trusted owner-agent onboarding flow
+- **THEN** the owner SHALL approve the request through an owner-authenticated browser or dashboard-mediated flow
+- **AND** the flow SHALL write or hand off bearer material only through an owner-controlled local credential target
+- **AND** user-visible transcripts SHALL print non-secret metadata such as token kind, client id, expiry, and revocation handle rather than the bearer itself
+
+#### Scenario: Owner denies or revokes the local agent
+- **WHEN** the owner denies the onboarding request or revokes the issued credential
+- **THEN** the agent SHALL receive a non-secret failure or revocation status
+- **AND** subsequent owner-agent REST calls with that bearer SHALL fail as revoked or inactive
+
+### Requirement: Owner-agent bearers SHALL remain REST/control-plane credentials
+
+The reference implementation SHALL preserve the route-auth boundary for owner-agent credentials. Owner-agent bearers SHALL authorize only the owner-level REST/control-plane routes that explicitly accept owner bearers, and `/mcp` SHALL reject owner bearers.
+
+#### Scenario: Owner-agent bearer reads owner REST data
+- **WHEN** a trusted local owner agent calls an owner-bearer-supported `/v1/**` REST route with a valid owner-agent bearer
+- **THEN** the reference SHALL authorize the request according to owner-token semantics
+- **AND** the response SHALL expose owner-visible streams, records, schemas, blobs, and metadata subject to the route's existing owner behavior
+
+#### Scenario: Owner-agent bearer calls MCP
+- **WHEN** a caller sends a trusted owner-agent bearer to `/mcp`
+- **THEN** the reference SHALL reject the request
+- **AND** the error SHALL direct ordinary MCP clients toward grant-scoped MCP setup rather than owner-bearer use
+
+### Requirement: Owner-agent read guidance SHALL support current and future data efficiently
+
+The reference implementation SHALL provide a testable owner-agent access pattern that lets a local owner agent maintain an incremental view of current and future owner data without broad repeated scans.
+
+#### Scenario: Owner-agent performs initial sync
+- **WHEN** a trusted local owner agent starts with a valid owner-agent bearer
+- **THEN** it SHALL discover `/v1/schema` and `/v1/streams` before record reads
+- **AND** it SHALL use `connection_id` to attribute and disambiguate records in multi-connection deployments
+- **AND** it SHALL store local sync state per stream and connection
+
+#### Scenario: Owner-agent performs incremental sync
+- **WHEN** the trusted local owner agent refreshes its local view after initial sync
+- **THEN** it SHALL prefer `changes_since`, pagination cursors, declared filters, and schema-advertised capabilities over rescanning all records
+- **AND** it SHALL refresh schema and stream metadata periodically so newly visible streams and connections can be discovered
+- **AND** it SHALL fetch blobs by reference only when needed
+
+#### Scenario: Owner-agent chooses between callbacks and polling
+- **WHEN** the trusted local owner agent has a durable valid-TLS HTTPS callback receiver
+- **THEN** it MAY create event subscriptions for low-latency update notification where the reference advertises trusted owner-agent support
+- **AND** when it lacks such a receiver it SHALL use cursor polling instead of attempting callback delivery to an unreachable local endpoint

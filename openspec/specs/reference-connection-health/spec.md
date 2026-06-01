@@ -106,3 +106,53 @@ The change SHALL include tests or scripted checks for the primary failure modes 
 **WHEN** tests simulate a local collector connection with retained records and no scheduler run
 **THEN** the projection SHALL describe device ingest state rather than `never run` or generic failure.
 
+### Requirement: Stalled local-device outbox SHALL expose a visible operator remediation path
+
+When the owner console surfaces a connection whose local-device outbox is stalled, it SHALL render the projection's remediation as visible operator copy and a copy-pasteable local command, not as hover-only text. The console SHALL NOT imply that the dashboard or a hosted service can drain a device-local outbox remotely.
+
+The remediation command SHALL be deterministic and non-secret. It SHALL NOT include a base URL, bearer token, credential, or device-local filesystem path. It MAY be scoped by a non-secret connection identity already shown in diagnostics.
+
+The remediation SHALL appear only when the outbox is stalled or when a current condition carries a `clear_backlog` remediation. Healthy, idle, active, and unknown outbox states SHALL NOT render remediation.
+
+#### Scenario: Stalled outbox shows visible label and command
+
+- **WHEN** the console renders a connection whose projection has `axes.outbox = "stalled"` or a current `clear_backlog` condition
+- **THEN** the console SHALL render the condition's `remediation.label` as visible operator copy
+- **AND** it SHALL render a copy-pasteable local collector diagnostic command for the operator to run on the host that holds the data
+
+#### Scenario: Remediation command leaks no device-local internals
+
+- **WHEN** the console renders the stalled-outbox remediation command
+- **THEN** the command SHALL NOT contain a base URL, bearer token, credential, or local filesystem path
+- **AND** it MAY include only a non-secret connection identity to scope the local diagnostic
+
+#### Scenario: Non-stalled outboxes stay quiet
+
+- **WHEN** the console renders a connection whose outbox is healthy, idle, active, or unknown and no current `clear_backlog` remediation applies
+- **THEN** the console SHALL NOT render outbox remediation copy or a remediation command
+
+### Requirement: Dashboard health summaries SHALL expose degraded work
+
+Owner dashboard summaries that roll up connection health SHALL include degraded or cooling-off connection projections in an attention-visible summary bucket. A dashboard SHALL NOT present a zero attention-relevant summary while visible connection cards are degraded, cooling off, or have stalled local-device work.
+
+#### Scenario: Degraded card appears in the list
+
+- **WHEN** a connection card renders with dominant state `degraded`
+- **THEN** the dashboard summary SHALL include that connection in an attention-visible count or a distinct degraded count
+- **AND** the summary SHALL NOT imply that no operator-relevant work exists
+
+#### Scenario: Local outbox is stalled
+
+- **WHEN** a local-device connection projects stalled outbox work
+- **THEN** the dashboard summary SHALL make that stalled/degraded state visible without reclassifying it as a scheduler failure
+
+### Requirement: Dashboard connection counts SHALL name their population
+
+Owner dashboard connection count labels SHALL identify whether they count all registered connections or only connections with durable progress. Registered connections with no data SHALL remain visible as their own population when they are excluded from the primary count.
+
+#### Scenario: Registered no-data connections exist
+
+- **WHEN** the owner has connections with durable progress and registered connections with no durable records
+- **THEN** the dashboard summary SHALL avoid labeling only the durable-progress subset as all `Connections`
+- **AND** the no-data population SHALL remain separately visible or included in a clear total/breakdown
+
