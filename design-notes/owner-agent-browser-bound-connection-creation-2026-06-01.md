@@ -16,6 +16,8 @@ The owner-agent connection intent route can initiate proven local-collector enro
 
 This matters for shared-account workflows. A delegate such as Simon may have owner-level owner-agent access and enough context to connect a shared Amazon account, while the owner remains the only person who should approve account-trust prompts on their phone or enter sensitive challenges.
 
+The important distinction is connection creation vs. run initiation. Existing owner-agent access already covers control of existing connections and local-collector connection intents. The open question is whether that same owner-agent authority can start creation of a new browser-bound connection without requiring the owner to be the person driving the dashboard session. Manual challenges are not the hard blocker by themselves: a delegate can drive the browser surface while the owner responds to push approvals or account-trust checks out of band, as long as sensitive challenge material and session-control links remain owner-mediated and time-bounded.
+
 ## Stakes
 
 If the route stays unsupported, a delegate with owner-agent access can run and manage existing connections but cannot create an Amazon connection without an owner dashboard session. That preserves honesty but blocks useful assisted setup.
@@ -27,6 +29,7 @@ If the route emits `enroll_browser_collector` before the proof is complete, the 
 Promote this when we can implement it as an owner-mediated, auditable, least-privilege flow:
 
 - The owner-agent bearer may request creation for a browser-bound connector.
+- The owner-agent bearer does not need an owner dashboard session merely to initiate the connection intent, if the bearer was explicitly granted owner-level control.
 - The RI returns `next_step.kind = "enroll_browser_collector"` only when the connector manifest is registered and the browser collector path is operational.
 - The durable connection is created only after a browser-collector enrollment or equivalent browser-profile binding completes.
 - The delegate can drive the browser session, but owner-trust prompts remain owner-mediated.
