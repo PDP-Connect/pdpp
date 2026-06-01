@@ -46,6 +46,7 @@
 //         → "Mutation fails")
 
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
+import { codeToStatus } from "./ref-error-status.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
 // transport's `.js` ambient types. Matches the pattern established in
@@ -176,22 +177,7 @@ function auditActorKind(req: RouteRequest): "owner_agent" | "client" | "mcp_pack
 
 function httpStatusForScheduleError(err: unknown): number {
   const code = (err as { code?: unknown })?.code;
-  if (code === "invalid_request" || code === "ambiguous_connector_instance") {
-    return 400;
-  }
-  if (code === "ambiguous_connection") {
-    return 409;
-  }
-  if (code === "authentication_error") {
-    return 401;
-  }
-  if (code === "permission_error") {
-    return 403;
-  }
-  if (code === "not_found" || code === "connector_instance_not_found" || code === "connection_not_found") {
-    return 404;
-  }
-  return 500;
+  return typeof code === "string" ? (codeToStatus[code] ?? 500) : 500;
 }
 
 function buildAuditTrace(
