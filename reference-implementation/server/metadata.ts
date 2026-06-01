@@ -539,14 +539,23 @@ const OWNER_AGENT_CONTROL_ACTION_CATALOG: readonly OwnerAgentControlActionDescri
     reason:
       "Run-now is available on the browser owner-session surface; it is not yet exposed to owner-agent bearers in this build.",
   },
+  // Supported in this build: a trusted owner agent pauses or resumes a
+  // connection's schedule by connection_id. The representative URL is the pause
+  // route; the resume sibling lives at the same path with `/resume` instead of
+  // `/pause` (named in the reason so an agent discovers both without a second
+  // probe). Connector-only addressing of these routes auto-selects a single
+  // active connection or returns a typed `ambiguous_connection`. Schedule
+  // create/replace and delete remain on the browser owner-session surface.
   {
     family: "manage_schedule",
     scope: "instance",
-    status: "owner_mediated",
-    method: null,
-    urlTemplate: null,
+    status: "supported",
+    method: "POST",
+    // Templated path: the surface catalog carries the literal `{connection_id}`
+    // placeholder; the per-connection projection substitutes the concrete id.
+    urlTemplate: (rs) => `${rs}/v1/owner/connections/{connection_id}/schedule/pause`,
     reason:
-      "Schedule create/pause/resume/delete is available on the browser owner-session surface; it is not yet exposed to owner-agent bearers in this build.",
+      "Pause or resume a connection's schedule by connection_id. POST this URL to pause; POST the sibling `/v1/owner/connections/{connection_id}/schedule/resume` to resume. Use a connection_id from list_connections. Schedule create/replace and delete remain owner-session only.",
   },
   {
     family: "inspect_diagnostics",

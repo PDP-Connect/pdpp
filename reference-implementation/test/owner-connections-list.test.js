@@ -204,10 +204,22 @@ test('owner-agent bearer lists a configured connection with full identity + owne
     assert.equal(rename.method, 'PATCH');
     assert.ok(rename.url.endsWith('/v1/owner/connections/cin_amazon_personal'), rename.url);
     assert.ok(!rename.url.includes('{connection_id}'), 'placeholder must be resolved');
+    // manage_schedule is supported over the owner-agent bearer and carries THIS
+    // connection's concrete pause URL (placeholder resolved); the resume sibling
+    // is named in the reason (tasks 6.1-6.3).
+    const manageSchedule = byFamily.get('manage_schedule');
+    assert.ok(manageSchedule, 'manage_schedule action must be advertised');
+    assert.equal(manageSchedule.status, 'supported');
+    assert.equal(manageSchedule.method, 'POST');
+    assert.ok(
+      manageSchedule.url.endsWith('/v1/owner/connections/cin_amazon_personal/schedule/pause'),
+      manageSchedule.url,
+    );
+    assert.ok(!manageSchedule.url.includes('{connection_id}'), 'placeholder must be resolved');
+    assert.match(manageSchedule.reason, /resume/);
     // Not-yet-exposed instance families are named with a typed status, not omitted.
     assert.equal(byFamily.get('run_connection')?.status, 'owner_mediated');
     assert.equal(byFamily.get('run_connection')?.url, null);
-    assert.equal(byFamily.get('manage_schedule')?.status, 'owner_mediated');
     assert.equal(byFamily.get('delete_connection')?.status, 'unsupported');
     assert.equal(byFamily.get('revoke_connection')?.status, 'unsupported');
     assert.equal(byFamily.get('inspect_diagnostics')?.status, 'unsupported');

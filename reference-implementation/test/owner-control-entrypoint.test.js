@@ -198,6 +198,17 @@ test('control document marks supported families with method + absolute URL', asy
     assert.equal(initiate.status, 'supported');
     assert.equal(initiate.method, 'POST');
     assert.equal(initiate.url, `${rsUrl}/v1/owner/connections/intents`);
+
+    // Schedule pause/resume is served over the owner-agent bearer surface as of
+    // the instance-scoped schedule slice (tasks 6.1-6.3). It is templated by
+    // connection_id; the representative URL is the pause route and the reason
+    // names the resume sibling.
+    const manageSchedule = actionByFamily(body, 'manage_schedule');
+    assert.ok(manageSchedule, 'manage_schedule must be listed');
+    assert.equal(manageSchedule.status, 'supported');
+    assert.equal(manageSchedule.method, 'POST');
+    assert.equal(manageSchedule.url, `${rsUrl}/v1/owner/connections/{connection_id}/schedule/pause`);
+    assert.match(manageSchedule.reason, /resume/);
   });
 });
 
@@ -216,7 +227,6 @@ test('control document names unsupported/owner-mediated families instead of omit
     // families" test above.
     for (const family of [
       'run_connection',
-      'manage_schedule',
       'inspect_diagnostics',
       'delete_connection',
       'revoke_connection',

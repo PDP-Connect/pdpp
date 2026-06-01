@@ -1362,6 +1362,50 @@ export const referenceManifests = [
     responses: { 201: { schema: OwnerConnectionIntentResponseSchema }, ...CommonErrors },
   },
   {
+    id: "ownerPauseConnectionSchedule",
+    method: "POST",
+    path: "/v1/owner/connections/{connectionId}/schedule/pause",
+    surface: "reference",
+    tags: ["reference", "runs", "connections", "owner-agent"],
+    summary:
+      "Owner-agent bearer: pause one configured connection's schedule, addressed by `connection_id`, without deleting its config. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. Shares the controller `setScheduleEnabled` semantics with the cookie-authed `/_ref` pause route under a separate owner-bearer auth adapter.",
+    request: { params: ConnectionIdParamSchema },
+    responses: { 200: { description: "Paused" }, ...CommonErrors },
+  },
+  {
+    id: "ownerResumeConnectionSchedule",
+    method: "POST",
+    path: "/v1/owner/connections/{connectionId}/schedule/resume",
+    surface: "reference",
+    tags: ["reference", "runs", "connections", "owner-agent"],
+    summary:
+      "Owner-agent bearer: resume one paused configured connection's schedule, addressed by `connection_id`. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. Shares the controller `setScheduleEnabled` semantics with the cookie-authed `/_ref` resume route under a separate owner-bearer auth adapter.",
+    request: { params: ConnectionIdParamSchema },
+    responses: { 200: { description: "Resumed" }, ...CommonErrors },
+  },
+  {
+    id: "ownerPauseConnectorSchedule",
+    method: "POST",
+    path: "/v1/owner/connectors/{connectorId}/schedule/pause",
+    surface: "reference",
+    tags: ["reference", "runs", "owner-agent"],
+    summary:
+      "Owner-agent bearer: pause a connector's schedule addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Owner bearers only; client/mcp_package grants SHALL NOT reach this route.",
+    request: { params: ConnectorIdParamSchema },
+    responses: { 200: { description: "Paused" }, ...CommonErrors },
+  },
+  {
+    id: "ownerResumeConnectorSchedule",
+    method: "POST",
+    path: "/v1/owner/connectors/{connectorId}/schedule/resume",
+    surface: "reference",
+    tags: ["reference", "runs", "owner-agent"],
+    summary:
+      "Owner-agent bearer: resume a connector's paused schedule addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Owner bearers only; client/mcp_package grants SHALL NOT reach this route.",
+    request: { params: ConnectorIdParamSchema },
+    responses: { 200: { description: "Resumed" }, ...CommonErrors },
+  },
+  {
     id: "refGetConnection",
     method: "GET",
     path: "/_ref/connections/{connectorInstanceId}",

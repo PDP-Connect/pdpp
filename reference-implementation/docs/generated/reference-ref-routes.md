@@ -14,6 +14,10 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | **GET** | `/v1/owner/control` | `ownerControlCapabilities` | Owner-agent bearer control entrypoint: capability document naming supported, owner-mediated, and unsupported owner-agent control action families with links to supported routes. |
 | **PATCH** | `/v1/owner/connections/{connectionId}` | `ownerSetConnectionDisplayName` | Owner-agent bearer rename of the owner-meaningful `display_name` on a connection, addressed by `connection_id`. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. Shares the connector-instance store rename semantics with the cookie-authed `/_ref` PATCH; on success the returned row reports label_status owner_set. |
 | **POST** | `/v1/owner/connections/intents` | `ownerCreateConnectionIntent` | Owner-agent bearer: initiate a new connection as a typed, auditable, owner-mediated intent. Returns a typed `next_step` (`enroll_local_collector` for proven local-collector connectors; `unsupported` with a reason for browser-bound, API/network-only, and unknown connectors) and never marks a connection active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
+| **POST** | `/v1/owner/connections/{connectionId}/schedule/pause` | `ownerPauseConnectionSchedule` | Owner-agent bearer: pause one configured connection's schedule, addressed by `connection_id`, without deleting its config. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. Shares the controller `setScheduleEnabled` semantics with the cookie-authed `/_ref` pause route under a separate owner-bearer auth adapter. |
+| **POST** | `/v1/owner/connections/{connectionId}/schedule/resume` | `ownerResumeConnectionSchedule` | Owner-agent bearer: resume one paused configured connection's schedule, addressed by `connection_id`. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. Shares the controller `setScheduleEnabled` semantics with the cookie-authed `/_ref` resume route under a separate owner-bearer auth adapter. |
+| **POST** | `/v1/owner/connectors/{connectorId}/schedule/pause` | `ownerPauseConnectorSchedule` | Owner-agent bearer: pause a connector's schedule addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
+| **POST** | `/v1/owner/connectors/{connectorId}/schedule/resume` | `ownerResumeConnectorSchedule` | Owner-agent bearer: resume a connector's paused schedule addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
 | **GET** | `/_ref/connections/{connectorInstanceId}` | `refGetConnection` | Get one owner-facing configured connector connection by connector instance id. |
 | **GET** | `/_ref/connector-instances/{connectorInstanceId}` | `refGetConnectorInstance` | Compatibility alias for reading one configured connector instance behind an owner-facing connection. |
 | **PATCH** | `/_ref/connections/{connectorInstanceId}` | `refSetConnectionDisplayName` | Owner-authenticated mutation of the owner-meaningful `display_name` carried on the public read contract. Operator-only surface; grant-authorized tokens SHALL NOT reach this route. |
@@ -224,6 +228,74 @@ Owner-agent bearer: initiate a new connection as a typed, auditable, owner-media
 ### Responses
 
 - `201` — JSON body
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## ownerPauseConnectionSchedule
+
+`POST /v1/owner/connections/{connectionId}/schedule/pause`
+
+Owner-agent bearer: pause one configured connection's schedule, addressed by `connection_id`, without deleting its config. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. Shares the controller `setScheduleEnabled` semantics with the cookie-authed `/_ref` pause route under a separate owner-bearer auth adapter.
+
+### Path parameters
+
+- `connectionId` — string
+
+### Responses
+
+- `200` — Paused
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## ownerResumeConnectionSchedule
+
+`POST /v1/owner/connections/{connectionId}/schedule/resume`
+
+Owner-agent bearer: resume one paused configured connection's schedule, addressed by `connection_id`. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. Shares the controller `setScheduleEnabled` semantics with the cookie-authed `/_ref` resume route under a separate owner-bearer auth adapter.
+
+### Path parameters
+
+- `connectionId` — string
+
+### Responses
+
+- `200` — Resumed
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## ownerPauseConnectorSchedule
+
+`POST /v1/owner/connectors/{connectorId}/schedule/pause`
+
+Owner-agent bearer: pause a connector's schedule addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Owner bearers only; client/mcp_package grants SHALL NOT reach this route.
+
+### Path parameters
+
+- `connectorId` — string
+
+### Responses
+
+- `200` — Paused
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## ownerResumeConnectorSchedule
+
+`POST /v1/owner/connectors/{connectorId}/schedule/resume`
+
+Owner-agent bearer: resume a connector's paused schedule addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Owner bearers only; client/mcp_package grants SHALL NOT reach this route.
+
+### Path parameters
+
+- `connectorId` — string
+
+### Responses
+
+- `200` — Resumed
 - `400` — Invalid request
 - `404` — Not found
 - `409` — Conflict (e.g. run_already_active)

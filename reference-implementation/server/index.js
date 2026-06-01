@@ -369,6 +369,7 @@ import {
 } from './routes/ref-connectors.ts';
 import { mountRsBlobRead, mountRsReadQueries } from './routes/rs-read.ts';
 import { mountOwnerConnectionRename, mountOwnerConnectionsList } from './routes/owner-connections.ts';
+import { mountOwnerConnectionSchedule } from './routes/owner-connection-schedule.ts';
 import { mountOwnerConnectionIntent } from './routes/owner-connection-intent.ts';
 import { mountOwnerConnectorTemplates } from './routes/owner-connector-templates.ts';
 import { mountOwnerControl } from './routes/owner-control.ts';
@@ -3685,6 +3686,38 @@ function buildRsApp(opts = {}) {
   // openspec/changes/add-owner-agent-control-surface (task 4.4).
   mountOwnerConnectionRename(app, ownerConnectionsContext);
 
+  // POST /v1/owner/connections/:connectionId/schedule/{pause,resume} and
+  // POST /v1/owner/connectors/:connectorId/schedule/{pause,resume} are the
+  // bearer-authed owner-agent schedule pause/resume control routes. A trusted
+  // local owner agent pauses or resumes a connection's schedule without a
+  // browser owner session. They share the controller `setScheduleEnabled`
+  // semantics (schedule-not-found 404, automation-ineligibility 400, scheduler
+  // refresh on success) with the cookie-authed `/_ref` schedule routes under a
+  // separate owner-bearer auth adapter (`requireToken` + `requireOwner`). The
+  // connector-only routes auto-select the single active connection or reject
+  // with a typed `ambiguous_connection` (409) carrying available `connection_id`
+  // values; `/mcp` owner-bearer rejection is untouched. See
+  // openspec/changes/add-owner-agent-control-surface (tasks 6.1-6.3).
+  mountOwnerConnectionSchedule(app, {
+    AmbiguousConnectionError,
+    canonicalConnectorKey,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    getOwnerTokenSubjectId,
+    handleError,
+    listActiveBindingsForGrant,
+    onScheduleMutation: opts.onScheduleMutation,
+    pdppError,
+    projectBindingForWire,
+    requireOwner,
+    requireToken,
+    resolveOwnerConnectorNamespace,
+    setReferenceTraceId,
+    setScheduleEnabled: (connectorId, enabled, options) =>
+      opts.controller.setScheduleEnabled(connectorId, enabled, options),
+  });
+
   // POST /v1/owner/connections/intents is the bearer-authed owner-agent
   // connection-initiation route: a trusted local owner agent asks "how do I add
   // a new connection for connector X?" and receives a typed, auditable,
@@ -4201,6 +4234,12 @@ export async function startServer(opts = {}) {
     hybridRetrievalCapability: opts.hybridRetrievalCapability,
     referenceRevision: opts.referenceRevision,
     agentDiscoveryOrigin: referenceTopology.browserOrigin,
+    // Scheduler refresh hook for the owner-agent schedule pause/resume routes,
+    // the same callback `buildAsApp` receives for the cookie-authed `/_ref`
+    // schedule routes. `schedulerManager` is assigned later in startServer; the
+    // closure reads it lazily at mutation time. See
+    // openspec/changes/add-owner-agent-control-surface (tasks 6.1-6.3).
+    onScheduleMutation: () => schedulerManager?.refresh(),
   });
   const rsServer = await rsApp.listen(requestedRsPort, bindHost);
   const rsPort = rsServer.address().port;
