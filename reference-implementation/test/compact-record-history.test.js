@@ -69,6 +69,7 @@ test('COMPACTION_POLICIES exposes the registered policies (short-name canonical 
     ['slack', 'users'],
     ['slack', 'files'],
     ['ynab', 'payee_locations'],
+    ['ynab', 'budgets'],
     // exact stable-JSON identity family (codex)
     ['codex', 'messages'],
     ['codex', 'function_calls'],
@@ -258,6 +259,73 @@ test('selectRemovableVersions: workspace fetched_at-only churn does NOT collapse
   ];
   // Gmail threads policy has excludeKeys: [] — every row's fp differs.
   const removable = selectRemovableVersions(rows, 3, THREADS_POLICY);
+  assert.deepEqual(removable, []);
+});
+
+test('selectRemovableVersions: ynab budgets last_month/last_modified_on-only churn collapses under the budgets exclusion', () => {
+  // The historical offender shape: every run re-emitted the budget with a
+  // fresh last_month (calendar rollover) / last_modified_on (any in-budget
+  // edit), none of which changed the budget-summary fields. Excluding both
+  // fields, every version has the same fingerprint → intermediates collapse.
+  const BUDGETS_POLICY = findPolicy('ynab', 'budgets');
+  assert.ok(BUDGETS_POLICY, 'ynab/budgets policy must be registered');
+  assert.deepEqual(BUDGETS_POLICY.excludeKeys, ['last_month', 'last_modified_on']);
+  const budget = (lastMonth, lastModified) => ({
+    id: 'b_1',
+    name: 'My Budget',
+    first_month: '2024-01-01',
+    last_month: lastMonth,
+    last_modified_on: lastModified,
+    currency_iso_code: 'USD',
+    date_format_string: 'MM/DD/YYYY',
+    deleted: false,
+  });
+  const rows = [
+    row(1, budget('2026-01-01', '2026-01-15T00:00:00Z')),
+    row(2, budget('2026-02-01', '2026-02-03T00:00:00Z')),
+    row(3, budget('2026-03-01', '2026-03-09T00:00:00Z')),
+    row(4, budget('2026-04-01', '2026-04-21T00:00:00Z')),
+    row(5, budget('2026-05-01', '2026-05-30T00:00:00Z')),
+  ];
+  // All five share one fingerprint → collapse to the v1 anchor and the
+  // current pin (v5). No prior version differs from current, so no
+  // most-recent-differing-prior pin exists.
+  const removable = selectRemovableVersions(rows, 5, BUDGETS_POLICY);
+  assert.deepEqual(removable.sort((a, b) => a - b), [2, 3, 4]);
+});
+
+test('selectRemovableVersions: ynab budgets genuine summary edit is a fingerprint boundary, not collapsed', () => {
+  // A real edit to a projected field (rename) must remain a version
+  // transition even though the calendar fields also moved.
+  const BUDGETS_POLICY = findPolicy('ynab', 'budgets');
+  const budget = (name, lastMonth) => ({
+    id: 'b_1',
+    name,
+    first_month: '2024-01-01',
+    last_month: lastMonth,
+    last_modified_on: '2026-05-30T00:00:00Z',
+    currency_iso_code: 'USD',
+    date_format_string: 'MM/DD/YYYY',
+    deleted: false,
+  });
+  const rows = [
+    row(1, budget('Old Name', '2026-01-01')), // first → retain
+    row(2, budget('Old Name', '2026-02-01')), // calendar-only churn after v1
+    row(3, budget('New Name', '2026-03-01')), // genuine rename → boundary
+    row(4, budget('New Name', '2026-04-01')), // calendar-only churn after rename
+  ];
+  // current = v4 (New Name = FP_B).
+  //   most-recent prior with fp != FP_B is v2 ("Old Name" = FP_A) → pinned.
+  //   v1 first → retain
+  //   v2 is the most-recent-differing-prior pin → retain (NOT removable, even
+  //      though it shares FP_A with v1; the pin wins over the collapse rule)
+  //   v3 rename: predecessor surviving anchor is v2 (FP_A), v3 is FP_B,
+  //      different fp → retain
+  //   v4 current → retain
+  // The genuine rename is preserved as a boundary and no real history is
+  // collapsed; the only calendar-only intermediate (v2) is protected here by
+  // the differing-prior pin rather than removed. Removable = [].
+  const removable = selectRemovableVersions(rows, 4, BUDGETS_POLICY);
   assert.deepEqual(removable, []);
 });
 

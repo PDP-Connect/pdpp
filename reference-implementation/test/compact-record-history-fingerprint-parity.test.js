@@ -166,6 +166,44 @@ if (canonicalRecordFingerprint) {
     );
   });
 
+  test('parity: ynab budgets representative payload excludes last_month/last_modified_on', () => {
+    const policy = findPolicy('ynab', 'budgets');
+    const base = {
+      id: 'b_1',
+      name: 'My Budget',
+      first_month: '2024-01-01',
+      currency_iso_code: 'USD',
+      currency_symbol: '$',
+      currency_symbol_first: true,
+      currency_decimal_digits: 2,
+      currency_decimal_separator: '.',
+      currency_group_separator: ',',
+      date_format_string: 'MM/DD/YYYY',
+      deleted: false,
+    };
+    expectParity(
+      { ...base, last_month: '2026-01-01', last_modified_on: '2026-01-15T00:00:00Z' },
+      policy.excludeKeys,
+      'ynab/budgets month=01',
+    );
+    expectParity(
+      { ...base, last_month: '2026-05-01', last_modified_on: '2026-05-30T00:00:00Z' },
+      policy.excludeKeys,
+      'ynab/budgets month=05',
+    );
+    // The two calendar/clock fields must not change the fingerprint — this is
+    // the connector's own no-op definition (BUDGET_FINGERPRINT_EXCLUDE).
+    const h1 = scriptRecordFingerprint(
+      { ...base, last_month: '2026-01-01', last_modified_on: '2026-01-15T00:00:00Z' },
+      policy.excludeKeys,
+    );
+    const h2 = scriptRecordFingerprint(
+      { ...base, last_month: '2026-05-01', last_modified_on: '2026-05-30T00:00:00Z' },
+      policy.excludeKeys,
+    );
+    assert.equal(h1, h2, 'last_month/last_modified_on delta must not change the budgets fingerprint');
+  });
+
   test('parity: nested objects with mixed key order', () => {
     const a = {
       id: 'x',
@@ -427,6 +465,7 @@ if (canonicalRecordFingerprint) {
       'slack/users',
       'slack/files',
       'ynab/payee_locations',
+      'ynab/budgets',
       // exact stable-JSON identity family (codex)
       'codex/messages',
       'codex/function_calls',

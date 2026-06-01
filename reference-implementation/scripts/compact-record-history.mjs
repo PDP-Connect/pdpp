@@ -131,6 +131,25 @@ export const COMPACTION_POLICIES = [
     connectorSource:
       'packages/polyfill-connectors/connectors/ynab/index.ts:openPayeeLocationCursor → openFingerprintCursor → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
   },
+  {
+    // `/budgets` is a full-collection refetch with no server_knowledge
+    // delta, so before 8eb2a31a every run re-emitted every budget. YNAB
+    // advances `last_month` on calendar rollover and `last_modified_on`
+    // on any in-budget edit, neither of which changes the budget-summary
+    // fields this stream projects — ~273 versions/budget accumulated in
+    // the 2026-05-26 churn report. The connector now gates emit through
+    // openBudgetCursor with BUDGET_FINGERPRINT_EXCLUDE = ["last_month",
+    // "last_modified_on"]; this policy mirrors that exclusion one-for-one
+    // so a "removable historical version" here equals the connector's own
+    // "no-op emit." Historical rows from the pre-gate window differ only
+    // in those two excluded fields and collapse to their fingerprint
+    // boundaries.
+    connectorIds: ['ynab', 'https://registry.pdpp.org/connectors/ynab'],
+    stream: 'budgets',
+    excludeKeys: ['last_month', 'last_modified_on'],
+    connectorSource:
+      'packages/polyfill-connectors/connectors/ynab/index.ts:BUDGET_FINGERPRINT_EXCLUDE (["last_month","last_modified_on"]) → openBudgetCursor → openFingerprintCursor → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
+  },
 
   // ─── Exact stable-JSON identity family ────────────────────────────────
   //
