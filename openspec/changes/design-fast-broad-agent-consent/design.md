@@ -147,6 +147,80 @@ These are the questions to put to the owner verbatim. Each is phrased so it can 
 - **O7 — Incremental linkage.** "When an agent comes back later to add one more source, should that create a new package linked to the prior one (`parent_package_id`) with the dashboard showing the agent's cumulative access, or should each addition stand alone? (Recommended: linked package + cumulative dashboard view.)"
 - **O8 — Permission-set storage (only when C opens).** "When we build Option C, should permission sets live in your local instance storage, be declarable as manifest templates, or both — and how should a client reference one during registration? (Recommended: owner-local with optional manifest templates; defer until C starts.)"
 
+## Recommended Decision Packet
+
+This section is the single decision-ready summary for owner review. It does **not** record that any decision has been made, and it does **not** change `tasks.md` checkboxes; it states one coherent recommended path so the eight owner-gated questions (O1–O8) can be answered in one pass. Approving it would authorize writing a *follow-up* implementation OpenSpec change — not editing `/oauth/par`, consent storage, consent UI issuance, or grant issuance. Until that follow-up change is written and owner-reviewed, the "Do Not Implement Yet" guards below remain in force.
+
+### One recommended SLVP path
+
+The recommended path is **Option B (batch consent ceremony issuing independent source-bounded grants) as the first and only near-term primitive**, with Option C (owner-authored permission sets) kept on the roadmap as the next OpenSpec change after B lands, Option D (agent roles) off the track, and consent-level predicate filters deferred. This is the minimum viable design that removes the "5–12 ceremonies to set up a useful agent" friction without normalizing a client-authored "all data" bundle or an owner-token shortcut. It adds no new enforcement primitive: `package_id` and `parent_package_id` are grouping aids; every issued grant stays source-bounded and individually revocable.
+
+The recommendation chooses, for each owner-gated question, the option already carried as the design-leaning recommendation in the Decision Matrix. They are collected here so the owner can ratify, amend, or reject them as a set.
+
+| # | Question | Recommended answer | One-line rationale |
+| --- | --- | --- | --- |
+| O1 | First fast-setup primitive | **Option B first** | D is prior-art-ruled-out as a consent primitive; B removes the friction with the least new surface. |
+| O2 | B-only or B+C roadmap | **Both; B first, C as the next OpenSpec change (not parallel)** | Apple/Android + AWS evidence: B alone long-term normalizes client-authored bundles; owner-authored sets are the safer repeat path. |
+| O3 | Soft cap / warning threshold | **Warn at 6, soft cap 8, no hard cap** (drop to 5 if the target is the common email/finance/Slack/GitHub/calendar set) | UX guard, not a protocol limit; Slack/Plaid document no cap. |
+| O4 | Approve-all gate | **Hidden whenever (continuous + all streams), (no time bound + sensitive source), or N≥3 sensitive sources; default presentation requires per-source confirmation** | Slack v2 + Apple/Android anti-bundling. |
+| O5 | Sensitivity classification ownership | **Manifest-declared `sensitivity: "standard" \| "sensitive"` now; central registry as a later hardening step; do not hardcode a source list** | Ships fast; registry is harder to game but not blocking. |
+| O6 | Package audit + revoke-package (B ceremony) | **Package id groups child grants in timeline + dashboard; per-grant revocation primary; revoke-package as convenience that dispatches one revoke per child and surfaces partial failure** | Mirrors the already-merged hosted MCP package model; keeps revocation granular. |
+| O7 | Incremental add-a-source linkage | **New ceremony issues a new package linked via `parent_package_id`; dashboard renders a cumulative per-client view** | Google `include_granted_scopes` precedent; PDPP gets the property for free if the dashboard surfaces the cumulative picture. |
+| O8 | Permission-set storage (Option C) | **Owner-local storage with optional manifest-declared templates; decide only when C opens** | Out of MVP; AWS IAM Identity Center precedent. |
+
+### Why this is the SLVP path, not a maximal one
+
+- **Simple.** It reuses the source-bounded grant object unchanged and adds two nullable grouping ids. No cross-source grant, no new token authority, no AS-side enrichment.
+- **Lossless.** The owner sees *more* of what the agent will hold than today (a cumulative-risk header across the batch), not less. Coverage of high-risk dimensions (continuous, all-streams, no time bound, no field projection, sensitive sources) is surfaced rather than hidden behind a single button.
+- **Verifiable.** Each constraint maps to a spec scenario in the follow-up change (per-entry partial approval, independent issued grants, no-widen, approve-all gating, package-vs-grant revocation). The reference's existing one-entry behavior remains the safety baseline until the follow-up change is accepted.
+- **Polished.** It matches the production shape of Plaid Multi-Item Link, Slack optional scopes, Google granular/incremental consent, and GitHub App installation — one ceremony, N independent per-source credentials, partial approval — and adds the one thing none of them ship: cumulative cross-source risk legibility.
+
+### Boundary map for the recommended path
+
+Keeping the Core / Collection Profile / reference-implementation split explicit is load-bearing here, because batch consent is easy to over-promote into Core.
+
+| Layer | What the recommended path does (and does not) put here |
+| --- | --- |
+| **PDPP Core** (`spec-*.md`) | **No change required by this packet.** The only Core-adjacent fact is "an issued grant binds one source boundary," which is already normative-by-implication via the grant field shape and is restated in the capability spec. Promoting that sentence into `spec-core.md` is an *optional* later owner call (Decision Matrix D5), not part of this packet. Batch *ceremony* semantics are explicitly **not** Core. |
+| **Collection Profile** (`spec-collection-profile.md`) | **No change.** Batch consent is an authorization/disclosure-ceremony concern, not a connector-runtime concern. The Collection Profile stays agnostic to how grants were approved. |
+| **Reference implementation** (`agent-consent-bundling` capability spec + reference code) | **All net-new behavior lands here, behind a reference-experimental label.** The follow-up change extends `agent-consent-bundling` with: multi-entry staged-request acceptance (relaxing the reference-policy `authorization_details.maxItems = 1`), the grouped review ceremony, the cumulative-risk header, the approve-all gate, the soft cap/warning, manifest `sensitivity`, and `package_id`/`parent_package_id` grouping + dashboard/timeline surfaces. The already-merged hosted MCP package model is the precedent these reuse. |
+
+The reference's current `authorization_details.maxItems = 1` is a **reference policy choice, not an RFC 9396 requirement and not PDPP Core**. Relaxing it to a soft cap is a follow-up-change reference-contract edit, not a protocol change.
+
+### Acceptance criteria for the follow-up implementation OpenSpec change
+
+These criteria are written so the follow-up change can be specified the moment the owner ratifies (or amends) the packet above. They are **not** authorization to implement now. The follow-up change SHOULD:
+
+1. **Be its own OpenSpec change** (e.g. `implement-batch-consent-ceremony`), extending the `agent-consent-bundling` capability spec. It SHALL NOT edit `spec-core.md` unless the owner separately decides to promote the source-bounded rule (D5).
+2. **Preserve source-bounded issued grants.** Each approved source SHALL issue one independent, source-bounded, independently revocable PDPP grant. No cross-source grant object is created. (Already normative; the follow-up restates it as the batch-ceremony invariant.)
+3. **Forbid AS-side widening.** The AS SHALL NOT enrich or widen any `authorization_details` entry beyond what the owner reviewed; AS-side *narrowing* of an over-broad request is allowed. (Already decided D2.)
+4. **Relax the staged-request cap to a soft cap.** The reference contract SHALL accept up to the owner-chosen soft cap (recommended 8) of source-bounded `authorization_details[]` entries per staged request, SHALL warn at the owner-chosen threshold (recommended 6), and SHALL NOT impose a hard cap. Each entry SHALL still carry exactly one source binding. The cap value SHALL be a reference-contract policy constant, not a protocol limit.
+5. **Render grouped per-source review with a cumulative-risk header.** The ceremony SHALL show one card per source (source, requested streams, fields/projection, time range, access mode, per-card risk) plus an aggregated header summarizing the cumulative breadth (sensitive-source count, continuous-access count, no-time-bound count, no-field-projection count, total stream count).
+6. **Support per-source partial approval.** The owner SHALL be able to approve, deny, defer ("skip for now"), narrow time range down, and reduce stream/field set — never widen — per source before approval.
+7. **Gate approve-all by risk.** A single "approve all" affordance SHALL NOT appear when the batch combines (continuous + all streams), (no time bound + sensitive source), or N≥3 sensitive sources. When shown, it SHALL require one confirmation that re-asserts the per-source list. Default presentation requires per-source confirmation.
+8. **Classify sensitivity by manifest field.** Connector manifests SHALL declare `sensitivity: "standard" | "sensitive"`. The ceremony SHALL read sensitivity from the manifest. A central registry MAY be added as a later hardening step; the follow-up change SHALL NOT hardcode a source list.
+9. **Group by package without weakening revocation.** Approval SHALL record a `package_id` grouping the issued child grants. The timeline and dashboard SHALL group by package. Per-grant revocation SHALL remain primary. A "revoke package" affordance MAY be offered as convenience; it SHALL dispatch one revoke per still-active child grant and SHALL surface partial failure. (Mirrors the merged hosted MCP package scenarios.)
+10. **Link incremental additions.** A later same-client ceremony adding a source SHALL create a new package linked to the prior via `parent_package_id`. The dashboard SHALL render a cumulative per-client view across that client's packages.
+11. **Label reference-experimental.** The grouped review screen, generated docs/OpenAPI metadata, and any skill text SHALL carry a reference-experimental label until a further OpenSpec change promotes batch consent out of experimental status. (Already required by the capability spec.)
+12. **Defer skill guidance.** `docs/agent-skills/pdpp-data-access/**` SHALL NOT recommend batched setup until the reference UI ships behind the experimental label; it SHALL be updated only as the follow-up change lands, not before.
+13. **Be reversible.** Every added concept (`package_id`, `parent_package_id`, `sensitivity`, the soft cap, the risk header, the approve-all gate) SHALL be a grouping/presentation/policy aid that can be tightened or removed without a spec retraction. The follow-up change SHALL NOT change RS per-grant enforcement, grant object shape, or revocation semantics.
+14. **Validate strictly.** The follow-up change SHALL pass `openspec validate <change> --strict` and `openspec validate --all --strict`, and its new behavior SHALL be pinned by spec scenarios and regression tests before any code is claimed complete.
+
+Explicit non-goals for the follow-up change (each its own later track if ever pursued): owner-authored permission sets (Option C), agent roles (Option D), consent-level predicate filters, cross-source grant objects, AS-side enrichment, default approve-all for high-risk bundles, and per-source access-mode mixing within one package (see Residual Risks).
+
+### Do Not Implement Yet
+
+Until the owner ratifies this packet **and** a follow-up implementation OpenSpec change is written and owner-reviewed, the following remain frozen (consistent with `tasks.md` §4 and the v2 closeout triage):
+
+- Do not modify `/oauth/par`, pending-consent storage, the consent UI issuance path, or grant issuance.
+- Do not relax `authorization_details.maxItems = 1` in the reference contract.
+- Do not add `package_id` / `parent_package_id` storage, manifest `sensitivity`, the grouped review screen, the cumulative-risk header, the approve-all gate, or the soft cap to reference code.
+- Do not update the `pdpp-data-access` skill or CLI to recommend batched setup.
+- Do not edit `spec-core.md` to promote the source-bounded rule; that is a separate optional owner call (D5).
+- Do not treat this packet as owner approval. It is a recommendation requiring sign-off.
+
+The already-landed hosted MCP picker repairs (streams narrowing, package access-mode, picker UX repair — `tasks.md` §4 checked items) are **not** affected by these guards; they shipped under prior owner approval and are the precedent the follow-up change reuses.
+
 ## Current-State Audit
 
 Reference PAR behavior remains intentionally one-entry-only:
