@@ -290,13 +290,7 @@ const OwnerConnectionIntentNextStepSchema = {
   properties: {
     kind: {
       type: "string",
-      enum: [
-        "open_url",
-        "complete_browser_assistance",
-        "upload_file",
-        "enroll_local_collector",
-        "unsupported",
-      ],
+      enum: ["open_url", "complete_browser_assistance", "upload_file", "enroll_local_collector", "unsupported"],
     },
     reason: { type: ["string", "null"] },
     url: { type: "string" },

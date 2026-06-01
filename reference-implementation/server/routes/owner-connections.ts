@@ -99,8 +99,8 @@ export interface MountOwnerConnectionsContext {
   // document. Supported instance actions carry the connection's concrete URL.
   buildOwnerConnectionSupportedActions(input: { connectionId: string; resource: string }): OwnerAgentControlAction[];
   canonicalConnectorKey(value: string | null | undefined): string | null;
-  createTraceContext(input?: { scenarioId?: string }): TraceContext;
   createRequestConnectorInstanceStore(): ConnectorInstanceStore;
+  createTraceContext(input?: { scenarioId?: string }): TraceContext;
   emitSpineEvent(event: Record<string, unknown>): Promise<unknown>;
   ensureRequestId(res: RouteResponse): string;
   getOwnerTokenSubjectId(req: unknown): string;
@@ -399,7 +399,7 @@ export function mountOwnerConnectionRename(app: AppLike, ctx: MountOwnerConnecti
           err.param = "display_name";
           await emitOwnerConnectionRenameAudit(ctx, req, res, {
             connectionId,
-            displayNameSupplied: Object.prototype.hasOwnProperty.call(body, "display_name"),
+            displayNameSupplied: Object.hasOwn(body, "display_name"),
             error: err,
             outcome: "failed",
             ownerSubjectId: ctx.getOwnerTokenSubjectId(req),

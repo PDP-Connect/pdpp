@@ -468,12 +468,12 @@ export interface OwnerAgentControlSurfaceInput {
 // catalog; the per-connection projection substitutes the concrete id.
 interface OwnerAgentControlActionDescriptor {
   family: string;
+  method: string | null;
   reason: string;
   // "surface" — a control-plane entrypoint not bound to one connection.
   // "instance" — operates on a single configured connection (`connection_id`).
   scope: "surface" | "instance";
   status: OwnerAgentControlActionStatus;
-  method: string | null;
   urlTemplate: ((rs: string) => string) | null;
 }
 
