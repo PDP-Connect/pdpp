@@ -138,3 +138,10 @@
 - [x] 17.4 Add deterministic coverage for viewport authority, bounded capture target selection, keyboard reacquire wiring, and n.eko CSS-vs-capture backend behavior.
 - [ ] 17.5 Re-run affected checks, rebuild/recreate the n.eko Docker overlay, and run public desktop plus real-phone smoke focused on keyboard reacquire, rotation settle, and visual sharpness. Affected checks re-run green via `pnpm stream:no-human-verify` (viewport-authority, bounded-capture, keyboard-reacquire, and CSS-vs-capture coverage in remote-surface units; live-CDP smoke proves frame/input/resize against real Chromium). Public raw-CDP desktop and mobile-emulated smokes passed previously with clean rotation/visual-quality/pointer telemetry; physical real-phone smoke remains. Re-confirmed green 2026-06-01. Docker rebuild sub-gate now CLOSED (see 12.8 — patchright-chromium build hang fixed; `PDPP_DOCKER_DYNAMIC_NEKO_ALLOCATOR_SMOKE=1 pnpm stream:no-human-verify` rebuilds/recreates the overlay green); physical real-phone keyboard/rotation/sharpness smoke remains owner-run.
 - [x] 17.6 Add an automated owner-surface Docker/public smoke command for the n.eko stream playground that skips without a configured public URL and proves display, remote counter click, remote input, and telemetry capture when enabled.
+
+## 18. Browser Step Instruction Usability
+
+- [x] 18.1 Add a non-terminal hide/show control for browser-step instructions so the panel can move out of the way without resolving the interaction.
+- [x] 18.2 Rename the manual browser-step submit action so it is clear that the run will continue only after the browser page accepts the step.
+- [x] 18.3 Add console favicon metadata and a `/favicon.ico` redirect to remove noisy 404s from live-run debugging.
+- [x] 18.4 Re-run focused console checks and strict OpenSpec validation.

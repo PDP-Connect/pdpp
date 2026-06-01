@@ -4812,6 +4812,7 @@ function StreamInteractionDock({
 }) {
   const router = useRouter();
   const [code, setCode] = useState("");
+  const [collapsed, setCollapsed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
@@ -4853,12 +4854,29 @@ function StreamInteractionDock({
     submitInteraction();
   }
 
-  let submitLabel = "I'm done";
+  let submitLabel = "Mark browser step complete";
   if (interactionKind === "otp") {
     submitLabel = "Submit code";
   }
   if (isPending) {
     submitLabel = "Continuing...";
+  }
+
+  if (collapsed) {
+    return (
+      <div className="pdpp-stream-toast-zone" data-pdpp-stream-ui data-slot="interaction">
+        <Button
+          aria-expanded="false"
+          className="pdpp-stream-toast-bubble"
+          onClick={() => setCollapsed(false)}
+          size="sm"
+          type="button"
+          variant="outline"
+        >
+          Show step instructions
+        </Button>
+      </div>
+    );
   }
 
   return (
@@ -4869,7 +4887,20 @@ function StreamInteractionDock({
         className="pdpp-stream-toast-bubble flex w-full flex-col gap-2 text-left"
         onSubmit={handleSubmit}
       >
-        <p className="pdpp-caption font-medium text-foreground">{message}</p>
+        <div className="flex items-start justify-between gap-3">
+          <p className="pdpp-caption font-medium text-foreground">{message}</p>
+          <Button
+            aria-expanded="true"
+            aria-label="Hide connector step instructions"
+            className="shrink-0"
+            onClick={() => setCollapsed(true)}
+            size="sm"
+            type="button"
+            variant="ghost"
+          >
+            Hide instructions
+          </Button>
+        </div>
         {interactionKind === "otp" ? (
           <Input
             autoComplete="one-time-code"
@@ -4879,6 +4910,12 @@ function StreamInteractionDock({
             placeholder="6-digit code"
             value={code}
           />
+        ) : null}
+        {interactionKind === "manual_action" ? (
+          <p className="pdpp-caption text-muted-foreground">
+            Hide this panel if it covers the browser. Only mark the step complete after the browser page accepts the
+            action.
+          </p>
         ) : null}
         {error ? (
           <p className="pdpp-caption text-destructive" role="alert">

@@ -49,6 +49,11 @@ const nextConfig = {
   transpilePackages: ['pdpp-reference-implementation', '@pdpp/brand', '@pdpp/operator-ui'],
   async redirects() {
     return [
+      {
+        source: '/favicon.ico',
+        destination: '/brand/pdpp-favicon.svg',
+        permanent: false,
+      },
       // Console root → dashboard. The standards/docs site lives in apps/site.
       // Dashboard IA migration: connector browsing lives under /dashboard/records/
       // and the standalone /dashboard/timeline route is now /dashboard/records/timeline.

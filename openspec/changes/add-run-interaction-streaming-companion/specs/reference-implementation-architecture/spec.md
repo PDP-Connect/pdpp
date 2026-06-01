@@ -120,3 +120,20 @@ place where stream control decisions can be observed or tested.
   otherwise upscale the decoded media
 - **AND** it SHOULD avoid treating the stream as visually settled until those
   facts agree or a degraded state is diagnosed
+
+### Requirement: Browser-step instructions avoid accidental interaction resolution
+
+The reference implementation SHALL keep browser-step guidance visible enough for an owner to complete the pending
+connector step without making a non-terminal panel control look like the completion action. If the guidance can cover
+the browser surface, the viewer SHALL provide a non-terminal way to hide and restore it.
+
+#### Scenario: Browser-step guidance covers an interactive page element
+
+- **WHEN** the owner is using the stream viewer to complete a pending browser step
+- **THEN** the viewer SHALL provide a hide or minimize affordance that does not resolve the interaction
+- **AND** the viewer SHALL provide a way to restore the guidance without changing the run state
+
+#### Scenario: The owner completes the browser step
+
+- **WHEN** the owner uses the action that resumes or resolves the pending browser step
+- **THEN** the action label SHALL make it clear that the run will continue after the current browser step
