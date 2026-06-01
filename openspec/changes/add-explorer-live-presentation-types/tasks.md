@@ -26,5 +26,5 @@
 
 ## 4. Follow-up handoff (NOT in this change)
 
-- [ ] Record that the commit-anchored browser/UAT pass (the >95% gate criteria 4–5 in `design.md`) is a separate lane; this change ships the manifest + harness only.
-- [ ] Record the residual designer-parity gap (photo/activity/reader/location cards, per-stream view switcher, grant-projection toggle) as known-and-scoped-out so ">95% live fidelity" is claimed against the money + message card axis, not full designer parity.
+- [x] Record that the commit-anchored browser/UAT pass (the >95% gate criteria 4–5 in `design.md`) is a separate lane; this change ships the manifest + harness only. (`design.md` includes the follow-up Browser/UAT runbook and acceptance gates.)
+- [x] Record the residual designer-parity gap (photo/activity/reader/location cards, per-stream view switcher, grant-projection toggle) as known-and-scoped-out so ">95% live fidelity" is claimed against the money + message card axis, not full designer parity. (`design.md` records this under the designer-artifact findings and >95% criteria.)
