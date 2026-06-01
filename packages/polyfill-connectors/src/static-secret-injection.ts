@@ -43,6 +43,11 @@ interface StaticSecretConnectorDescriptor {
   readonly secretEnvVars: readonly string[];
 }
 
+function freezeStaticSecretDescriptor(descriptor: StaticSecretConnectorDescriptor): StaticSecretConnectorDescriptor {
+  Object.freeze(descriptor.secretEnvVars);
+  return Object.freeze(descriptor);
+}
+
 /**
  * Registry of static-secret connectors and the env vars each reads its secret
  * from. The env var names are the ground truth in each connector's code:
@@ -54,14 +59,14 @@ interface StaticSecretConnectorDescriptor {
  */
 export const STATIC_SECRET_CONNECTOR_REGISTRY: Readonly<Record<string, StaticSecretConnectorDescriptor>> =
   Object.freeze({
-    gmail: {
+    gmail: freezeStaticSecretDescriptor({
       credentialKind: "app_password",
       secretEnvVars: ["GOOGLE_APP_PASSWORD_PDPP", "GMAIL_APP_PASSWORD"],
-    },
-    github: {
+    }),
+    github: freezeStaticSecretDescriptor({
       credentialKind: "personal_access_token",
       secretEnvVars: ["GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_TOKEN"],
-    },
+    }),
   });
 
 export class StaticSecretInjectionError extends Error {

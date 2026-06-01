@@ -87,6 +87,14 @@ test("injection refuses an empty recovered secret", () => {
 
 test("registry is frozen so the env var ground truth cannot be mutated at runtime", () => {
   assert.ok(Object.isFrozen(STATIC_SECRET_CONNECTOR_REGISTRY));
+  const gmail = STATIC_SECRET_CONNECTOR_REGISTRY.gmail;
+  const github = STATIC_SECRET_CONNECTOR_REGISTRY.github;
+  assert.ok(gmail);
+  assert.ok(github);
+  assert.ok(Object.isFrozen(gmail));
+  assert.ok(Object.isFrozen(gmail.secretEnvVars));
+  assert.ok(Object.isFrozen(github));
+  assert.ok(Object.isFrozen(github.secretEnvVars));
 });
 
 // ---------------------------------------------------------------------------
