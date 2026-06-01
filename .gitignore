@@ -18,6 +18,8 @@ agent-access.md
 *.yml
 __pycache__/
 *.pyc
+# Commit-anchored Explorer UAT evidence is durable proof, not a working artifact.
+!docs/explorer/uat/**/*.png
 !lefthook.yml
 !.github/**/*.yml
 !docker-compose.yml
