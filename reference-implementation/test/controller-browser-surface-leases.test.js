@@ -121,14 +121,19 @@ function createMemoryBrowserSurfaceLeaseStore({ surfaces = [], leases = [] } = {
 }
 
 function createManager(options = {}) {
-  const { surfaceCap = 1, leaseWaitTimeoutMs = 300_000, now = () => new Date("2026-05-12T12:00:00.000Z") } = options;
+  const {
+    managedConnectors = new Set(["managed", "other-managed"]),
+    surfaceCap = 1,
+    leaseWaitTimeoutMs = 300_000,
+    now = () => new Date("2026-05-12T12:00:00.000Z"),
+  } = options;
   const staticProfileKey = Object.hasOwn(options, "staticProfileKey") ? options.staticProfileKey : "managed-profile";
   let leaseSeq = 0;
   let surfaceSeq = 0;
   let tokenSeq = 0;
   return new BrowserSurfaceLeaseManager({
     config: {
-      managedConnectors: new Set(["managed", "other-managed"]),
+      managedConnectors,
       surfaceCap,
       staticProfileKey,
       staticCdpHttpUrl: "http://127.0.0.1:9222/json/version",
@@ -343,6 +348,34 @@ test("managed free surface leases and spawns with browser-surface env", async (t
   assert.equal(calls.runConnectorOpts[0].browserSurfaceEnv.PDPP_BROWSER_SURFACE_LEASE_ID, "lease_1");
   assert.equal(calls.runConnectorOpts[0].browserSurfaceEnv.PDPP_BROWSER_SURFACE_PROFILE_KEY, "managed-profile");
   assert.equal(manager.getLease("lease_1").status, "released");
+});
+
+test("canonical-url configured managed connector leases short-id run", async (t) => {
+  const manager = createManager({
+    managedConnectors: new Set(["https://registry.pdpp.org/connectors/chatgpt", "chatgpt"]),
+    staticProfileKey: "chatgpt",
+  });
+  const { calls, controller, manager: leases } = setup(t, { manager });
+  const manifest = {
+    ...MANIFEST,
+    connector_id: "chatgpt",
+    name: "ChatGPT",
+    capabilities: {},
+  };
+
+  const result = await controller.runNow("chatgpt", {
+    manifest,
+    ownerToken: "owner-token",
+    runId: "run_canonical_url_short_id",
+  });
+  await controller.drainActiveRuns(1000);
+
+  assert.equal(result.status, "started");
+  assert.equal(calls.runConnector, 1);
+  assert.equal(calls.runConnectorOpts[0].browserSurfaceEnv.PDPP_BROWSER_SURFACE_REQUIRED, "neko");
+  assert.equal(calls.runConnectorOpts[0].browserSurfaceEnv.PDPP_BROWSER_SURFACE_PROFILE_KEY, "chatgpt");
+  assert.equal(leases.getLease("lease_1").connector_id, "chatgpt");
+  assert.ok(listRunEventTypes("run_canonical_url_short_id").includes("run.browser_surface_requested"));
 });
 
 test("managed run emits browser-surface requested before starting before leased", async (t) => {

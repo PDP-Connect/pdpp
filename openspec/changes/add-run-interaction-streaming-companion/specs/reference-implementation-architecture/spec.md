@@ -52,6 +52,13 @@ The reference implementation SHALL refuse to mint a streaming session token when
 
 When the reference implementation uses n.eko as a streaming backend, it SHALL keep the sidecar behind the same stream-token lifecycle while presenting the owner with an embedded browser-control surface rather than a general n.eko room UI. The n.eko surface SHOULD use direct n.eko client integration when available so the reference can preserve native input, clipboard, focus, and geometry behavior without exposing n.eko product controls.
 
+#### Scenario: A managed connector is configured by canonical connector URL
+
+- **WHEN** `PDPP_NEKO_MANAGED_CONNECTORS` names a connector by its canonical `/connectors/{connector_id}` URL
+- **AND** the run source identifies the same connector by short `connector_id`
+- **THEN** the reference SHALL treat the run as managed by the n.eko browser-surface pool
+- **AND** it SHALL acquire or queue a browser-surface lease before spawning the connector child
+
 #### Scenario: The owner opens a n.eko-backed stream
 
 - **WHEN** the stream companion selects the n.eko backend for a pending manual action

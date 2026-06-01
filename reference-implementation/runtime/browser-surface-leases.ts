@@ -11,6 +11,8 @@ import {
   DEFAULT_NEKO_PRIORITY_RANKS,
 } from "@opendatalabs/remote-surface/leases";
 
+import { canonicalConnectorKey } from "../server/connector-key.js";
+
 export const DEFAULT_NEKO_READINESS_TIMEOUT_MS = 120_000;
 
 export type NekoProfileStoragePolicy = "persistent";
@@ -55,7 +57,7 @@ interface ParsedNekoEnvShape {
 
 function readNekoEnvShape(env: NodeJS.ProcessEnv): ParsedNekoEnvShape {
   const managedConnectorIds = splitCsv(env.PDPP_NEKO_MANAGED_CONNECTORS);
-  const managedConnectors = new Set(managedConnectorIds);
+  const managedConnectors = new Set(managedConnectorIds.flatMap(managedConnectorAliases));
   const requestedSurfaceMode = parseSurfaceMode(env.PDPP_NEKO_SURFACE_MODE);
   const surfaceCap = parseIntegerEnv(
     env.PDPP_NEKO_SURFACE_CAP,
@@ -167,13 +169,40 @@ function splitCsv(value: string | undefined): string[] {
   ];
 }
 
+function managedConnectorAliases(connectorId: string): string[] {
+  const aliases = new Set<string>([connectorId]);
+  const normalizedUrl = normalizeConnectorUrl(connectorId);
+  if (normalizedUrl) {
+    aliases.add(normalizedUrl);
+  }
+  const canonicalKey = canonicalConnectorKey(connectorId);
+  if (canonicalKey) {
+    aliases.add(canonicalKey);
+  }
+  return [...aliases];
+}
+
+function normalizeConnectorUrl(connectorId: string): string | undefined {
+  try {
+    const parsed = new URL(connectorId);
+    return parsed.href.endsWith("/") ? parsed.href.slice(0, -1) : parsed.href;
+  } catch {
+    return;
+  }
+}
+
 function emptyToUndefined(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
 }
 
 function defaultStaticProfileKey(managedConnectorIds: readonly string[]): string | undefined {
-  return managedConnectorIds.length === 1 ? managedConnectorIds[0] : undefined;
+  const [connectorId] = managedConnectorIds;
+  return connectorId && managedConnectorIds.length === 1 ? defaultProfileKeyForManagedConnectorId(connectorId) : undefined;
+}
+
+function defaultProfileKeyForManagedConnectorId(connectorId: string): string {
+  return canonicalConnectorKey(connectorId) ?? connectorId;
 }
 
 function parseSurfaceMode(value: string | undefined): BrowserSurfaceMode | undefined {

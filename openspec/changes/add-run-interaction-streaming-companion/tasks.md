@@ -145,3 +145,9 @@
 - [x] 18.2 Rename the manual browser-step submit action so it is clear that the run will continue only after the browser page accepts the step.
 - [x] 18.3 Add console favicon metadata and a `/favicon.ico` redirect to remove noisy 404s from live-run debugging.
 - [x] 18.4 Re-run focused console checks and strict OpenSpec validation.
+
+## 19. Managed n.eko Connector Identity
+
+- [x] 19.1 Canonicalize configured managed connector URLs to match short runtime `connector_id` values without broad URL last-segment matching.
+- [x] 19.2 Add parser/controller coverage proving `https://registry.pdpp.org/connectors/chatgpt` and `chatgpt` select the same managed n.eko path.
+- [x] 19.3 Re-run focused reference checks and strict OpenSpec validation.

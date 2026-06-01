@@ -55,6 +55,26 @@ test('n.eko dynamic runtime config builds allocator and readiness controller opt
   assert.deepEqual(allocatorOptions, [{ baseUrl: 'http://allocator.test/api' }]);
 });
 
+test('n.eko runtime config treats canonical connector URLs as matching short connector ids', async () => {
+  const store = createEmptyLeaseStore();
+  const options = await resolveNekoBrowserSurfaceControllerOptions({
+    env: {
+      PDPP_NEKO_MANAGED_CONNECTORS: 'https://registry.pdpp.org/connectors/chatgpt',
+      PDPP_NEKO_SURFACE_MODE: 'dynamic',
+      PDPP_NEKO_SURFACE_CAP: '2',
+      PDPP_NEKO_ALLOCATOR_URL: 'http://allocator.test/api',
+      PDPP_NEKO_PROFILE_STORAGE_POLICY: 'persistent',
+      PDPP_NEKO_PROFILE_STORAGE_ROOT: '/var/lib/pdpp/neko-profiles',
+    },
+    getBrowserSurfaceLeaseStore: () => store,
+    createBrowserSurfaceAllocator: () => ({ ensureSurface: async () => undefined }),
+  });
+
+  assert.ok(options.browserSurfaceLeaseManager);
+  assert.equal(options.browserSurfaceLeaseManager.isManagedConnector('chatgpt'), true);
+  assert.equal(options.browserSurfaceLeaseManager.isManagedConnector('https://registry.pdpp.org/connectors/chatgpt'), true);
+});
+
 test('n.eko explicit dynamic runtime config fails fast without allocator settings', async () => {
   await assert.rejects(
     resolveNekoBrowserSurfaceControllerOptions({
