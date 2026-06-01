@@ -7,10 +7,13 @@
 // These are the owner-agent (bearer) connection-scoped DELETE siblings of the
 // run/schedule/revoke control routes. Unlike revoke (a zero-cascade soft-flip),
 // delete is the destructive connection-scoped purge: it erases ONE connection's
-// records/history/blobs/search/attention, its schedule and active-run lease,
+// records/history/blobs/search/attention and its schedule,
 // clears its device source-instance back-reference, and removes the
 // connector_instances row — all keyed strictly on one connector_instance_id
-// (== connection_id). It PRESERVES the audit spine, disclosure grants, sibling
+// (== connection_id), all in one all-or-nothing transaction (the search-index
+// teardown is a rebuildable projection cleaned up after that commit). It does
+// NOT erase an in-flight run's active-run lease — a connection with an active
+// run is REFUSED, not deleted. It PRESERVES the audit spine, disclosure grants, sibling
 // connections, and the device edge itself.
 //
 // What delete is (and is NOT):

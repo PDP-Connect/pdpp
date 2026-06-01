@@ -96,7 +96,13 @@ import {
   listAttemptsForSubscription,
 } from './stores/client-event-subscription-store.ts';
 import { getDefaultDeliveryWorker } from './client-event-delivery-worker.ts';
-import { deleteConnectionData, setClientEventEnqueueHook } from './records.js';
+import {
+  deleteConnectionRecordRowsPostgres,
+  deleteConnectionRecordRowsSqlite,
+  enumerateConnectionStreams,
+  setClientEventEnqueueHook,
+  teardownConnectionSearchProjection,
+} from './records.js';
 import { DeviceBatchConflictError, createDeviceExporterStore, getDefaultDeviceExporterStore } from './stores/device-exporter-store.js';
 import { getDefaultConnectorDetailGapStore } from './stores/connector-detail-gap-store.js';
 import {
@@ -3798,21 +3804,25 @@ function buildRsApp(opts = {}) {
   // DELETE /v1/owner/connections/:connectionId and
   // DELETE /v1/owner/connectors/:connectorId are the bearer-authed owner-agent
   // connection-DELETE routes: a trusted local owner agent DESTRUCTIVELY purges
-  // ONE connection — its records/history/blobs/search/attention, its schedule
-  // and active-run lease, the device source-instance back-reference, and the
-  // connector_instances row — keyed strictly on one connection_id. Unlike revoke
-  // (zero-cascade soft-flip preserving the past), delete erases the past and
-  // removes the configuration. It PRESERVES the audit spine (appending an
+  // ONE connection — its records/history/blobs/search/attention and its
+  // schedule, the device source-instance back-reference, and the
+  // connector_instances row — keyed strictly on one connection_id. An in-flight
+  // run's active-run lease is REFUSED, never erased. Unlike revoke (zero-cascade
+  // soft-flip preserving the past), delete erases the past and removes the
+  // configuration. It PRESERVES the audit spine (appending an
   // owner_agent.connection.delete event), disclosure grants, sibling
   // connections, and the device edge. Ownership is verified in the store BEFORE
-  // any mutation (foreign/unknown/repeat → connection_not_found 404, no
-  // existence leak); an in-flight run → connection_run_active (409); a
+  // any mutation (foreign/unknown/repeat → connector_instance_not_found 404, no
+  // existence leak — the same code the sibling owner-agent instance-control
+  // routes raise); an in-flight run → connection_run_active (409); a
   // default-account binding → default_account_delete_unsupported (409, no silent
   // re-materialization). The connector-only route auto-selects a single active
-  // connection or returns a typed ambiguous_connection (409). The data deletion
-  // is all-or-nothing per backend; search-index teardown is a rebuildable
-  // projection torn down after the data commit. `/mcp` owner-bearer rejection is
-  // untouched. See openspec/changes/add-owner-connection-delete-contract.
+  // connection or returns a typed ambiguous_connection (409). The durable
+  // source-of-truth cascade (records-family + schedule + device back-ref +
+  // connector_instances row) is ONE all-or-nothing transaction per backend;
+  // search-index teardown is a rebuildable projection torn down after that
+  // commit. `/mcp` owner-bearer rejection is untouched. See
+  // openspec/changes/add-owner-connection-delete-contract.
   mountOwnerConnectionDelete(app, {
     AmbiguousConnectionError,
     canonicalConnectorKey,
@@ -3820,7 +3830,16 @@ function buildRsApp(opts = {}) {
     deleteConnection: (connectorInstanceId, options) =>
       createRequestConnectorInstanceStore().deleteConnection(connectorInstanceId, {
         ...options,
-        purgeConnectionData: (storageTarget) => deleteConnectionData(storageTarget),
+        // The records-side cascade is injected as discrete phases so the store
+        // can run the source-of-truth record purge INSIDE its own transaction
+        // (atomic with schedule/device/row cleanup — invariant I8). Search
+        // teardown stays a post-commit rebuildable-projection cleanup.
+        purge: {
+          enumerateStreams: (storageTarget) => enumerateConnectionStreams(storageTarget),
+          deleteRecordRowsSqlite: (id) => deleteConnectionRecordRowsSqlite(id),
+          deleteRecordRowsPostgres: (client, id) => deleteConnectionRecordRowsPostgres(client, id),
+          teardownProjection: (args) => teardownConnectionSearchProjection(args),
+        },
       }),
     emitSpineEvent,
     ensureRequestId,

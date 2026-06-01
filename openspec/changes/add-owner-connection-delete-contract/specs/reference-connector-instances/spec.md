@@ -2,12 +2,13 @@
 
 ### Requirement: Connection delete SHALL erase one connection's data and configuration without affecting siblings
 
-The reference implementation SHALL define a connection-scoped delete operation that removes the configured connection identified by one `connector_instance_id` AND erases the data, history, derived state, blob bindings, schedule, and active-run lease for exactly that connection. The operation SHALL be keyed strictly on the single `connector_instance_id` and SHALL NOT affect any other connection, device, or owner. Connection delete SHALL be distinct from connection revoke: revoke stops future collection and preserves previously collected records, whereas delete erases the connection's records.
+The reference implementation SHALL define a connection-scoped delete operation that removes the configured connection identified by one `connector_instance_id` AND erases the data, history, derived state, blob bindings, and schedule for exactly that connection. The operation SHALL be keyed strictly on the single `connector_instance_id` and SHALL NOT affect any other connection, device, or owner. The operation SHALL NOT erase an in-flight collection run's `controller_active_runs` lease; a connection with an active run SHALL be refused, not deleted. Connection delete SHALL be distinct from connection revoke: revoke stops future collection and preserves previously collected records, whereas delete erases the connection's records.
 
 #### Scenario: Delete erases only the targeted connection's data
 
-- **WHEN** the owner deletes a connection that has collected records across one or more streams, record-change history, blob bindings, a schedule, and an active-run lease that is not currently running
-- **THEN** the reference SHALL erase that connection's records, record-change history, version counters, blob bindings, search-index derivatives, attention records, schedule, and active-run lease, all keyed on the connection's `connector_instance_id`
+- **WHEN** the owner deletes a connection that has collected records across one or more streams, record-change history, blob bindings, and a schedule, and that has no collection run currently in flight
+- **THEN** the reference SHALL erase that connection's records, record-change history, version counters, blob bindings, search-index derivatives, attention records, and schedule, all keyed on the connection's `connector_instance_id`
+- **AND** the erasure of the records, record-change history, version counters, blob bindings, attention records, schedule, the `device_source_instances` back-reference clear, and the `connector_instances` row removal SHALL commit as one all-or-nothing transaction keyed on that single `connector_instance_id`; the search-index derivatives MAY be torn down as a rebuildable projection after that commit
 - **AND** it SHALL remove the connection's configured `connector_instances` row
 - **AND** records previously readable for that connection through the grant-scoped read surface SHALL no longer be readable
 
@@ -47,9 +48,9 @@ Connection delete SHALL execute as a single all-or-nothing transaction, SHALL re
 
 #### Scenario: Delete is transactional
 
-- **WHEN** a failure occurs partway through the delete cascade
-- **THEN** the reference SHALL roll back the entire operation
-- **AND** the connection and all of its data SHALL remain present, with no partially-erased state
+- **WHEN** a failure occurs partway through the delete cascade, whether during the record-family purge OR during the schedule / device-back-ref / `connector_instances`-row cleanup after the record-family purge has already executed
+- **THEN** the reference SHALL roll back the entire durable cascade as one transaction
+- **AND** the connection and all of its data SHALL remain present, with no partially-erased state — in particular a failure after the record-family purge has run SHALL still leave the connection's records present
 
 #### Scenario: Delete refuses while a run is active
 

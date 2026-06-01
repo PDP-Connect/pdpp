@@ -9,7 +9,37 @@ import {
   makeDefaultAccountConnectorInstanceId,
   resolveOwnerConnectorInstanceNamespace,
 } from '../server/stores/connector-instance-store.js';
+import {
+  deleteConnectionRecordRowsSqlite,
+  enumerateConnectionStreams,
+  teardownConnectionSearchProjection,
+} from '../server/records.js';
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from '../server/postgres-storage.js';
+
+// The real records-side cascade phases, wired the way the host injects them in
+// `server/index.js`. Tests that want to assert real record-purge atomicity use
+// this; tests that only exercise the store's schedule/device/row arm can pass a
+// `purge` that stubs out the record phase (see `stubPurge`).
+const realSqlitePurge = {
+  enumerateStreams: (storageTarget) => enumerateConnectionStreams(storageTarget),
+  deleteRecordRowsSqlite: (id) => deleteConnectionRecordRowsSqlite(id),
+  teardownProjection: (args) => teardownConnectionSearchProjection(args),
+};
+
+// A purge whose record phase is a counted no-op returning a fixed count, used by
+// the store-arm tests that don't seed real records but want to assert the
+// schedule/device/row cascade and the deletion summary. `enumerateStreams` and
+// `teardownProjection` are real (harmless on an empty record set).
+function stubPurge({ deletedRecordCount = 0, onDeleteRows = () => {} } = {}) {
+  return {
+    enumerateStreams: () => Promise.resolve({ streams: [] }),
+    deleteRecordRowsSqlite: (id) => {
+      onDeleteRows(id);
+      return deletedRecordCount;
+    },
+    teardownProjection: () => Promise.resolve(),
+  };
+}
 
 const NOW = '2026-05-15T12:00:00.000Z';
 const LATER = '2026-05-15T12:01:00.000Z';
@@ -375,16 +405,17 @@ test('SQLite deleteConnection erases schedule + row + device back-ref and refuse
       .run(NOW, NOW);
 
     let purgeCalls = 0;
+    let purgedId = null;
     const summary = await store.deleteConnection('cin_del', {
       ownerSubjectId: 'owner_1',
       now: LATER,
-      purgeConnectionData: (target) => {
-        purgeCalls += 1;
-        assert.equal(target.connector_instance_id, 'cin_del');
-        return Promise.resolve({ deletedRecordCount: 4, deletedStreamCount: 2 });
-      },
+      purge: stubPurge({
+        deletedRecordCount: 4,
+        onDeleteRows: (id) => { purgeCalls += 1; purgedId = id; },
+      }),
     });
-    assert.equal(purgeCalls, 1, 'purgeConnectionData invoked exactly once');
+    assert.equal(purgeCalls, 1, 'record purge invoked exactly once');
+    assert.equal(purgedId, 'cin_del', 'record purge keyed on the target connection id');
     assert.equal(summary.connection_id, 'cin_del');
     assert.equal(summary.deleted_record_count, 4);
     assert.equal(summary.schedule_deleted, true);
@@ -398,7 +429,7 @@ test('SQLite deleteConnection erases schedule + row + device back-ref and refuse
 
     // Repeat delete → typed not-found (idempotency I4).
     await assert.rejects(
-      () => store.deleteConnection('cin_del', { ownerSubjectId: 'owner_1', now: LATER, purgeConnectionData: () => Promise.resolve({}) }),
+      () => store.deleteConnection('cin_del', { ownerSubjectId: 'owner_1', now: LATER, purge: stubPurge() }),
       (err) => err instanceof ConnectorInstanceResolutionError && err.code === 'connector_instance_not_found',
     );
 
@@ -407,7 +438,7 @@ test('SQLite deleteConnection erases schedule + row + device back-ref and refuse
     getDb().prepare(`UPDATE connector_instances SET owner_subject_id='owner_2' WHERE connector_instance_id='cin_foreign'`).run();
     let foreignPurge = 0;
     await assert.rejects(
-      () => store.deleteConnection('cin_foreign', { ownerSubjectId: 'owner_1', now: LATER, purgeConnectionData: () => { foreignPurge += 1; return Promise.resolve({}); } }),
+      () => store.deleteConnection('cin_foreign', { ownerSubjectId: 'owner_1', now: LATER, purge: stubPurge({ onDeleteRows: () => { foreignPurge += 1; } }) }),
       (err) => err.code === 'connector_instance_not_found',
     );
     assert.equal(foreignPurge, 0, 'foreign delete never reaches purge');
@@ -420,11 +451,18 @@ test('SQLite deleteConnection erases schedule + row + device back-ref and refuse
       .run(NOW);
     let runPurge = 0;
     await assert.rejects(
-      () => store.deleteConnection('cin_run', { ownerSubjectId: 'owner_1', now: LATER, purgeConnectionData: () => { runPurge += 1; return Promise.resolve({}); } }),
+      () => store.deleteConnection('cin_run', { ownerSubjectId: 'owner_1', now: LATER, purge: stubPurge({ onDeleteRows: () => { runPurge += 1; } }) }),
       (err) => err.code === 'connection_run_active',
     );
     assert.equal(runPurge, 0, 'run-active delete never reaches purge');
     assert.ok(store.get('cin_run'), 'run-active connection not erased');
+    // The active-run row itself is REFUSED, never erased: it survives the failed
+    // delete (delete does not race / clear a live run's lease).
+    assert.equal(
+      getDb().prepare('SELECT COUNT(*) n FROM controller_active_runs WHERE connector_instance_id=?').get('cin_run').n,
+      1,
+      'active-run row preserved, not erased, on refusal',
+    );
 
     // Default-account binding → typed default_account_delete_unsupported, no
     // purge, row untouched (I6 / Decision 1 fallback).
@@ -432,7 +470,7 @@ test('SQLite deleteConnection erases schedule + row + device back-ref and refuse
     await store.ensureDefaultAccountConnection({ ownerSubjectId: 'owner_1', connectorId: 'reddit', displayName: 'Reddit', now: NOW });
     let defaultPurge = 0;
     await assert.rejects(
-      () => store.deleteConnection(defaultId, { ownerSubjectId: 'owner_1', now: LATER, purgeConnectionData: () => { defaultPurge += 1; return Promise.resolve({}); } }),
+      () => store.deleteConnection(defaultId, { ownerSubjectId: 'owner_1', now: LATER, purge: stubPurge({ onDeleteRows: () => { defaultPurge += 1; } }) }),
       (err) => err.code === 'default_account_delete_unsupported',
     );
     assert.equal(defaultPurge, 0, 'default-account delete never reaches purge');
@@ -442,37 +480,119 @@ test('SQLite deleteConnection erases schedule + row + device back-ref and refuse
   }
 });
 
-test('SQLite deleteConnection is all-or-nothing: a purge failure leaves the row, schedule, and device back-ref intact (I8)', async () => {
+// Shared setup for the I8 atomicity tests: a deletable connection with REAL
+// seeded records/history/version_counter, a schedule, and a device back-ref.
+// Returns helpers to assert the whole cascade survived a rollback.
+async function seedAtomicFixture(store, cin) {
+  await seedSqliteConnector('reddit');
+  await seedDeletableInstance(store, { connectorInstanceId: cin, connectorId: 'reddit', sourceBindingKey: cin });
+  seedScheduleRow(cin, 'reddit');
+  getDb()
+    .prepare(`INSERT OR IGNORE INTO device_exporters(device_id, owner_subject_id, display_name, status, created_at, updated_at) VALUES('dev_a','owner_1','dev_a','active',?,?)`)
+    .run(NOW, NOW);
+  getDb()
+    .prepare(`INSERT INTO device_source_instances(source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, status, created_at, updated_at) VALUES('dsi_a','dev_a','reddit',?,'lb_a','active',?,?)`)
+    .run(cin, NOW, NOW);
+  // Real source rows seeded directly (no manifest/search dependency) so we can
+  // prove the SOURCE DATA — not just the connector_instances row — survives a
+  // rollback now that the record purge shares the cascade transaction.
+  const db = getDb();
+  for (const [v, key] of [[1, 'r1'], [2, 'r2']]) {
+    db.prepare(`INSERT INTO records(connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version) VALUES('reddit',?,'s',?,?,?,?)`)
+      .run(cin, key, JSON.stringify({ id: key }), NOW, v);
+    db.prepare(`INSERT INTO record_changes(connector_id, connector_instance_id, stream, record_key, version, record_json, emitted_at) VALUES('reddit',?,'s',?,?,?,?)`)
+      .run(cin, key, v, JSON.stringify({ id: key }), NOW);
+  }
+  db.prepare(`INSERT INTO version_counter(connector_id, connector_instance_id, stream, max_version) VALUES('reddit',?,'s',2)`).run(cin);
+  const count = (table) => getDb().prepare(`SELECT COUNT(*) n FROM ${table} WHERE connector_instance_id=?`).get(cin).n;
+  assert.equal(count('records'), 2, 'records seeded');
+  assert.equal(count('connector_schedules'), 1, 'schedule seeded');
+  return {
+    assertFullyIntact() {
+      assert.ok(store.get(cin), 'connector_instances row still present after rollback');
+      assert.equal(count('records'), 2, 'records still present after rollback');
+      assert.ok(count('record_changes') >= 2, 'record_changes still present after rollback');
+      assert.equal(count('version_counter'), 1, 'version_counter still present after rollback');
+      assert.equal(count('connector_schedules'), 1, 'schedule still present after rollback');
+      const dsi = getDb().prepare('SELECT connector_instance_id FROM device_source_instances WHERE source_instance_id=?').get('dsi_a');
+      assert.equal(dsi.connector_instance_id, cin, 'device back-ref still intact after rollback');
+    },
+  };
+}
+
+test('SQLite deleteConnection is all-or-nothing: a record-purge failure rolls back the WHOLE cascade — row, schedule, device, and source data intact (I8)', async () => {
   initDb();
   try {
     const store = createSqliteConnectorInstanceStore();
-    await seedSqliteConnector('reddit');
-    await seedDeletableInstance(store, { connectorInstanceId: 'cin_atomic', connectorId: 'reddit', sourceBindingKey: 'atom' });
-    seedScheduleRow('cin_atomic', 'reddit');
-    getDb()
-      .prepare(`INSERT OR IGNORE INTO device_exporters(device_id, owner_subject_id, display_name, status, created_at, updated_at) VALUES('dev_a','owner_1','dev_a','active',?,?)`)
-      .run(NOW, NOW);
-    getDb()
-      .prepare(`INSERT INTO device_source_instances(source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, status, created_at, updated_at) VALUES('dsi_a','dev_a','reddit','cin_atomic','lb_a','active',?,?)`)
-      .run(NOW, NOW);
+    const fixture = await seedAtomicFixture(store, 'cin_atomic');
 
-    // The data purge runs FIRST and fails. Because it owns its own atomic
-    // transaction and the schedule/device/row deletes only run AFTER a
-    // successful purge, the failure leaves the connection fully present: row,
-    // schedule, and device back-reference all intact (no half-deleted state).
+    // The record purge throws INSIDE the cascade transaction. Because the record
+    // purge and the schedule/device/row deletes now share ONE transaction, the
+    // failure rolls EVERYTHING back: the connection is fully present afterward.
     await assert.rejects(
       () => store.deleteConnection('cin_atomic', {
         ownerSubjectId: 'owner_1',
         now: LATER,
-        purgeConnectionData: () => Promise.reject(new Error('injected mid-cascade failure')),
+        purge: {
+          enumerateStreams: () => Promise.resolve({ streams: ['s'] }),
+          deleteRecordRowsSqlite: () => { throw new Error('injected record-purge failure'); },
+          teardownProjection: () => Promise.resolve(),
+        },
       }),
-      /injected mid-cascade failure/,
+      /injected record-purge failure/,
     );
 
-    assert.ok(store.get('cin_atomic'), 'connector_instances row still present after purge failure');
-    assert.equal(getDb().prepare('SELECT COUNT(*) n FROM connector_schedules WHERE connector_instance_id=?').get('cin_atomic').n, 1, 'schedule still present');
-    const dsi = getDb().prepare('SELECT connector_instance_id FROM device_source_instances WHERE source_instance_id=?').get('dsi_a');
-    assert.equal(dsi.connector_instance_id, 'cin_atomic', 'device back-ref still intact');
+    fixture.assertFullyIntact();
+  } finally {
+    closeDb();
+  }
+});
+
+test('SQLite deleteConnection is all-or-nothing: a schedule/device/row failure AFTER the record purge ran rolls the purge back too — source data intact (I8 regression)', async () => {
+  initDb();
+  try {
+    const store = createSqliteConnectorInstanceStore();
+    const fixture = await seedAtomicFixture(store, 'cin_atomic');
+
+    // This is the failure mode Codex flagged: the record-purge DELETEs have
+    // ALREADY executed inside the cascade transaction, and THEN the
+    // schedule/device/row cleanup fails. With the old two-transaction
+    // construction the record purge would have committed independently, leaving
+    // the connection half-deleted (data gone, row present). With the single
+    // transaction, a post-purge failure rolls the record DELETEs back too, so
+    // the seeded records survive fully.
+    //
+    // To exercise exactly that ordering we run the REAL record-family DELETEs
+    // (proving, mid-transaction, that records are gone at that instant), then
+    // throw — simulating the schedule/device/row-cleanup step failing after the
+    // purge already ran. The store's single transaction must roll the purge
+    // back.
+    let purgeRan = false;
+    await assert.rejects(
+      () => store.deleteConnection('cin_atomic', {
+        ownerSubjectId: 'owner_1',
+        now: LATER,
+        purge: {
+          enumerateStreams: realSqlitePurge.enumerateStreams,
+          deleteRecordRowsSqlite: (id) => {
+            // Run the REAL record-family DELETEs inside the transaction...
+            const n = deleteConnectionRecordRowsSqlite(id);
+            purgeRan = true;
+            assert.equal(getDb().prepare('SELECT COUNT(*) n FROM records WHERE connector_instance_id=?').get(id).n, 0, 'records deleted mid-transaction');
+            // ...then throw to simulate a schedule/device/row-cleanup failure
+            // that happens AFTER the record purge already executed.
+            throw new Error('injected post-purge cleanup failure');
+          },
+          teardownProjection: realSqlitePurge.teardownProjection,
+        },
+      }),
+      /injected post-purge cleanup failure/,
+    );
+
+    assert.equal(purgeRan, true, 'the record purge DID run before the failure');
+    // The whole transaction rolled back, so the records the purge deleted
+    // mid-transaction are restored — no half-deleted connection.
+    fixture.assertFullyIntact();
   } finally {
     closeDb();
   }

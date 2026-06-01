@@ -3039,109 +3039,134 @@ async function postgresDeleteAllRecordsForConnector(connectorId) {
 }
 
 /**
- * Erase ALL of one connection's collected data and derived state, keyed
- * STRICTLY on a single connector_instance_id.
+ * Records-side building blocks for the owner-agent connection-delete cascade
+ * (`add-owner-connection-delete-contract`), keyed STRICTLY on a single
+ * connector_instance_id. Unlike `deleteAllRecords` (one stream) and
+ * `deleteAllRecordsForConnector` (connector-WIDE, across sibling connections),
+ * these erase every stream for exactly one connection and NEVER widen to
+ * connector_id — deleting one connection leaves sibling connections of the same
+ * connector type fully intact (invariant I1).
  *
- * This is the records-side of the owner-agent connection-delete cascade
- * (`add-owner-connection-delete-contract`). Unlike `deleteAllRecords` (one
- * stream) and `deleteAllRecordsForConnector` (connector-WIDE, across sibling
- * connections), this erases every stream for exactly one connection and NEVER
- * widens to connector_id — deleting one connection leaves sibling connections
- * of the same connector type fully intact (invariant I1).
+ * The cascade is split into three explicit phases so the STORE can run the
+ * source-of-truth row deletes in the SAME transaction as its own row/schedule/
+ * device cleanup — making the whole durable cascade atomic (invariant I8),
+ * not two independently-committed transactions:
  *
- * What it erases (all by connector_instance_id):
+ *   1. enumerateConnectionStreams(target)            — pre-commit bounded read
+ *   2. deleteConnectionRecordRows{Sqlite,Postgres}() — the record-family DELETEs,
+ *      run INSIDE the store's transaction (no transaction of their own)
+ *   3. teardownConnectionSearchProjection(...)       — post-commit projection
+ *      teardown + dirty markers
+ *
+ * What phase 2 erases (all by connector_instance_id):
  *   - records, record_changes, version_counter   (the record + history spine)
  *   - blob_bindings, blobs                        (this connection's blobs)
  *   - connector_attention_records                 (open attention for it)
- *   - lexical + semantic search indices           (derived; see note below)
  *
- * What it does NOT touch: connector_instances row, connector_schedules,
- * controller_active_runs, device_source_instances, spine_events, grants — those
- * are the store/route's responsibility (the row + schedule + active-run lease +
- * device back-ref) or are deliberately preserved (audit spine + grants). This
- * function owns ONLY the records-family + blobs + attention + search teardown.
+ * What these helpers do NOT touch: connector_instances row, connector_schedules,
+ * controller_active_runs, device_source_instances, spine_events, grants. The
+ * store owns the row + schedule + device back-ref (now in the SAME transaction);
+ * controller_active_runs is never erased (an in-flight run is REFUSED, not
+ * deleted); the audit spine + grants are deliberately preserved.
  *
- * Transactionality (invariant I8): the source-of-truth row deletes
- * (records/record_changes/version_counter/blob_bindings/blobs/attention) run in
- * ONE transaction per backend, so a mid-cascade failure rolls them ALL back —
- * no half-erased connection data. The search indices are a REBUILDABLE
- * projection of `records` (the SQLite semantic path maintains a vec0 rowid
- * sidecar that a flat by-instance DELETE cannot tear down correctly), so they
- * are torn down per-stream AFTER the data commit through the proven
- * stream-scoped helpers. A search-teardown failure after the data commit leaves
- * orphaned index rows pointing at gone records — a derived-cache inconsistency
- * (the records are gone, so a lookup returns nothing), recoverable by reindex,
- * not a data-integrity loss. The data deletion itself is all-or-nothing.
+ * Transactionality (invariant I8): phase 2's record-family deletes carry NO
+ * transaction of their own. The store calls them inside its single
+ * `writeTransaction` / `withPostgresTransaction`, alongside the schedule +
+ * device back-ref + connector_instances row deletes, so the ENTIRE
+ * source-of-truth cascade commits or rolls back as one unit. A failure anywhere
+ * in the cascade — record purge OR schedule/device/row cleanup — leaves the
+ * connection fully intact: row present, data present, schedule present.
  *
- * Returns a non-secret summary `{ deletedRecordCount, deletedStreamCount }` for
- * the deletion audit event and route response. No record contents, no secrets.
+ * Phase 3 (search indices) is a REBUILDABLE projection of `records` (the SQLite
+ * semantic path maintains a vec0 rowid sidecar that a flat by-instance DELETE
+ * cannot tear down correctly), so it is torn down per-stream AFTER the durable
+ * commit through the proven stream-scoped helpers. A phase-3 failure after the
+ * commit leaves orphaned index rows pointing at gone records — a derived-cache
+ * inconsistency (the records are gone, so a lookup returns nothing), recoverable
+ * by reindex, NOT a data-integrity loss and NOT a reason to report the committed
+ * source-of-truth delete as failed. The durable delete is already committed.
  */
-export async function deleteConnectionData(storageTarget) {
+
+/**
+ * Phase 1: enumerate the (instance) streams so the post-commit search teardown
+ * knows which (instance, stream) pairs to clear. Backend-aware bounded read.
+ * Returns `{ connectorId, connectorInstanceId, streams }`.
+ */
+export async function enumerateConnectionStreams(storageTarget) {
   const connectorId = resolveStorageConnectorId(storageTarget);
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
-
   if (isPostgresStorageBackend()) {
-    // Discover streams BEFORE the delete so the post-commit search teardown
-    // knows which (instance, stream) pairs to clear.
     const streamRows = await postgresQuery(
       `SELECT DISTINCT stream FROM records WHERE connector_instance_id = $1 ORDER BY stream ASC`,
       [connectorInstanceId],
     );
-    const streams = streamRows.rows.map((row) => row.stream);
-    const deletedRecordCount = await withPostgresTransaction(async (client) => {
-      const countResult = await client.query(
-        `SELECT COUNT(*)::int AS count FROM records WHERE connector_instance_id = $1`,
-        [connectorInstanceId],
-      );
-      const count = Number(countResult.rows[0]?.count || 0);
-      await client.query(`DELETE FROM record_changes WHERE connector_instance_id = $1`, [connectorInstanceId]);
-      await client.query(`DELETE FROM version_counter WHERE connector_instance_id = $1`, [connectorInstanceId]);
-      await client.query(`DELETE FROM blob_bindings WHERE connector_instance_id = $1`, [connectorInstanceId]);
-      await client.query(`DELETE FROM blobs WHERE connector_instance_id = $1`, [connectorInstanceId]);
-      await client.query(`DELETE FROM connector_attention_records WHERE connector_instance_id = $1`, [connectorInstanceId]);
-      await client.query(`DELETE FROM records WHERE connector_instance_id = $1`, [connectorInstanceId]);
-      return count;
-    });
-    for (const stream of streams) {
-      await lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
-      await semanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
-    }
-    if (deletedRecordCount > 0) {
-      await markRetainedSizeConnectionDirty({ connectorInstanceId: null });
-    }
-    return { deletedRecordCount, deletedStreamCount: streams.length };
+    return { connectorId, connectorInstanceId, streams: streamRows.rows.map((row) => row.stream) };
   }
-
-  // SQLite: enumerate streams first (bounded read), then erase every
-  // record-family + blob + attention row for the instance in one
-  // BEGIN IMMEDIATE transaction so the data deletion is all-or-nothing.
   const streamRows = allowUnboundedReadAcknowledged(
     referenceQueries.recordsDeleteListStreamsByInstance,
     [connectorInstanceId],
   );
-  const streams = streamRows.map((row) => row.stream);
-  const deletedRecordCount = writeTransaction(() => {
-    const countRow = getOne(referenceQueries.recordsDeleteCountRecordsByInstance, [connectorInstanceId]);
-    const count = countRow?.count || 0;
-    exec(referenceQueries.recordsDeleteDeleteRecordChangesByInstance, [connectorInstanceId]);
-    exec(referenceQueries.recordsDeleteDeleteVersionCounterByInstance, [connectorInstanceId]);
-    exec(referenceQueries.recordsDeleteDeleteBlobBindingsByInstance, [connectorInstanceId]);
-    exec(referenceQueries.recordsDeleteDeleteBlobsByInstance, [connectorInstanceId]);
-    exec(referenceQueries.recordsDeleteDeleteAttentionRecordsByInstance, [connectorInstanceId]);
-    exec(referenceQueries.recordsDeleteDeleteRecordsByInstance, [connectorInstanceId]);
-    return count;
-  });
-  // Search index teardown runs per-stream after the data commit (vec0 sidecar
-  // teardown lives in the semantic helper). Idempotent if a stream had no index.
+  return { connectorId, connectorInstanceId, streams: streamRows.map((row) => row.stream) };
+}
+
+/**
+ * Phase 2 (SQLite): erase the record-family + blobs + attention rows for one
+ * connection. Runs INSIDE the caller's `writeTransaction` — it opens NO
+ * transaction of its own, so it composes atomically with the store's schedule /
+ * device / row deletes. Synchronous (better-sqlite3 idiom). Returns the deleted
+ * record count.
+ */
+export function deleteConnectionRecordRowsSqlite(connectorInstanceId) {
+  const countRow = getOne(referenceQueries.recordsDeleteCountRecordsByInstance, [connectorInstanceId]);
+  const count = countRow?.count || 0;
+  exec(referenceQueries.recordsDeleteDeleteRecordChangesByInstance, [connectorInstanceId]);
+  exec(referenceQueries.recordsDeleteDeleteVersionCounterByInstance, [connectorInstanceId]);
+  exec(referenceQueries.recordsDeleteDeleteBlobBindingsByInstance, [connectorInstanceId]);
+  exec(referenceQueries.recordsDeleteDeleteBlobsByInstance, [connectorInstanceId]);
+  exec(referenceQueries.recordsDeleteDeleteAttentionRecordsByInstance, [connectorInstanceId]);
+  exec(referenceQueries.recordsDeleteDeleteRecordsByInstance, [connectorInstanceId]);
+  return count;
+}
+
+/**
+ * Phase 2 (Postgres): same as the SQLite arm, but binds against the explicit
+ * transaction `client` the store opened, so the record-family deletes run in
+ * the SAME BEGIN/COMMIT as the store's schedule / device / row deletes. Returns
+ * the deleted record count.
+ */
+export async function deleteConnectionRecordRowsPostgres(client, connectorInstanceId) {
+  const countResult = await client.query(
+    `SELECT COUNT(*)::int AS count FROM records WHERE connector_instance_id = $1`,
+    [connectorInstanceId],
+  );
+  const count = Number(countResult.rows[0]?.count || 0);
+  await client.query(`DELETE FROM record_changes WHERE connector_instance_id = $1`, [connectorInstanceId]);
+  await client.query(`DELETE FROM version_counter WHERE connector_instance_id = $1`, [connectorInstanceId]);
+  await client.query(`DELETE FROM blob_bindings WHERE connector_instance_id = $1`, [connectorInstanceId]);
+  await client.query(`DELETE FROM blobs WHERE connector_instance_id = $1`, [connectorInstanceId]);
+  await client.query(`DELETE FROM connector_attention_records WHERE connector_instance_id = $1`, [connectorInstanceId]);
+  await client.query(`DELETE FROM records WHERE connector_instance_id = $1`, [connectorInstanceId]);
+  return count;
+}
+
+/**
+ * Phase 3: tear down the per-stream search-index projection AFTER the durable
+ * cascade has committed, and mark the derived dashboard projections dirty. This
+ * is a rebuildable derived-cache cleanup — it runs post-commit and its failure
+ * does NOT mean the committed source-of-truth delete failed (see the cascade
+ * doc above). Idempotent if a stream had no index.
+ */
+export async function teardownConnectionSearchProjection({ connectorId, connectorInstanceId, streams, deletedRecordCount }) {
   for (const stream of streams) {
     await lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
     await semanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
   }
   if (deletedRecordCount > 0) {
-    markDatasetSummaryProjectionStale('connection delete erased a connection\'s records across all streams');
+    if (!isPostgresStorageBackend()) {
+      markDatasetSummaryProjectionStale('connection delete erased a connection\'s records across all streams');
+    }
     await markRetainedSizeConnectionDirty({ connectorInstanceId: null });
   }
-  return { deletedRecordCount, deletedStreamCount: streams.length };
 }
 
 /**

@@ -10,9 +10,10 @@
  *
  *   - cascade completeness: a connection's records, record_changes, version
  *     counters, blobs, blob bindings, lexical search index, attention records,
- *     schedule, and active-run lease (when not running) are all erased, the
- *     connector_instances row is gone, and a device source-instance back-ref is
- *     cleared (set null) while the device row itself survives;
+ *     and schedule are all erased, the connector_instances row is gone, and a
+ *     device source-instance back-ref is cleared (set null) while the device row
+ *     itself survives (the controller_active_runs lease is never erased — an
+ *     in-flight run is refused, not deleted);
  *   - no-sibling-overreach (I1): a sibling connection of the same connector type
  *     and a sibling connection on the same device keep their row + records +
  *     collectability;
@@ -20,7 +21,7 @@
  *     connection's records are physically gone, not merely status-flipped;
  *   - audit preserved (I3): prior spine events survive and a non-secret
  *     owner_agent.connection.delete event is appended with the deletion summary;
- *   - idempotency (I4): first delete 200, second 404 connection_not_found;
+ *   - idempotency (I4): first delete 200, second 404 connector_instance_not_found;
  *   - foreign / unknown (I5): foreign-owner and unknown ids → 404, no
  *     cross-owner deletion, no existence leak;
  *   - default-account no-resurrection (I6 / Decision 1 fallback): a
@@ -499,7 +500,7 @@ test('owner-agent delete refuses a default-account connection (I6) so its determ
   });
 });
 
-test('owner-agent delete is idempotent-by-typed-error: first 200, second 404 connection_not_found (I4)', async () => {
+test('owner-agent delete is idempotent-by-typed-error: first 200, second 404 connector_instance_not_found (I4)', async () => {
   await withServer(async ({ asUrl, rsUrl }) => {
     const manifest = await registerConnector(asUrl, loadReferenceManifest('spotify'));
     const connectorKey = canonicalConnectorKey(manifest.connector_id);

@@ -439,49 +439,69 @@ export function createSqliteConnectorInstanceStore() {
 
     // Connection-scoped destructive delete of ONE connection, keyed strictly on
     // connector_instance_id. Erases the connection's records/history/blobs/
-    // attention/search (via the injected `purgeConnectionData`), its schedule
-    // and active-run lease, clears its device source-instance back-reference,
-    // and removes the connector_instances row LAST. Preserves the audit spine,
-    // disclosure grants, sibling connections, and the device edge itself.
+    // attention/search, its schedule, clears its device source-instance
+    // back-reference, and removes the connector_instances row LAST. Preserves
+    // the audit spine, disclosure grants, sibling connections, the device edge
+    // itself, and any controller_active_runs row (an in-flight run is REFUSED,
+    // never erased).
     //
     // Order (matches the contract's store-primitive section):
     //   1. resolve + verify ownership, refuse active-run, refuse default-account
     //      (assertDeletableConnection) — BEFORE any mutation (I5/I6/I7).
-    //   2. purge the connection's records-family data (its own all-or-nothing
-    //      transaction inside `purgeConnectionData`) — runs first so a failure
-    //      here leaves the row + data fully intact (I8: no orphaned readable
-    //      records).
-    //   3. in one writeTransaction: delete the schedule, clear the device
-    //      back-reference, and delete the connector_instances row LAST.
+    //   2. enumerate the connection's streams (pre-commit read) so the
+    //      post-commit search teardown knows what to clear.
+    //   3. in ONE writeTransaction: erase the record-family/blob/attention rows
+    //      (`purge.deleteRecordRowsSqlite`, which opens NO transaction of its
+    //      own), then delete the schedule, clear the device back-reference, and
+    //      delete the connector_instances row LAST. The ENTIRE durable cascade
+    //      is one transaction (I8): a failure in EITHER the record purge OR the
+    //      schedule/device/row cleanup rolls the whole cascade back, leaving the
+    //      connection fully intact — no half-deleted connection.
+    //   4. AFTER the durable commit: tear down the rebuildable search-index
+    //      projection (`purge.teardownProjection`). Its failure does NOT undo or
+    //      invalidate the committed source-of-truth delete.
     //
-    // `purgeConnectionData(storageTarget)` is injected (rather than imported)
-    // to avoid a records.js ↔ store import cycle; the caller passes
-    // `(t) => deleteConnectionData(t)`.
-    async deleteConnection(connectorInstanceId, { ownerSubjectId, now, purgeConnectionData }) {
+    // `purge` is injected (rather than imported) to avoid a records.js ↔ store
+    // import cycle. It exposes `enumerateStreams`, `deleteRecordRowsSqlite`, and
+    // `teardownProjection`; the host wires these to the `records.js` phases.
+    async deleteConnection(connectorInstanceId, { ownerSubjectId, now, purge }) {
       const instance = this.get(connectorInstanceId);
       const activeRuns = allowUnboundedReadAcknowledged(referenceQueries.controllerListActiveRuns);
       const hasActiveRun = activeRuns.some((run) => run.connector_instance_id === connectorInstanceId);
       assertDeletableConnection(instance, { connectorInstanceId, ownerSubjectId, hasActiveRun });
 
-      const purgeSummary = await purgeConnectionData({
-        connector_id: instance.connectorId,
-        connector_instance_id: connectorInstanceId,
-      });
+      const storageTarget = { connector_id: instance.connectorId, connector_instance_id: connectorInstanceId };
+      const { streams } = await purge.enumerateStreams(storageTarget);
 
       const stamp = now ?? new Date().toISOString();
-      const { scheduleDeleted, deviceRefsCleared } = writeTransaction(() => {
+      const { deletedRecordCount, scheduleDeleted, deviceRefsCleared } = writeTransaction(() => {
+        // Record-family + blob + attention purge runs INSIDE this transaction
+        // (no inner transaction of its own), so it is atomic with the schedule /
+        // device / row deletes below.
+        const recordCount = purge.deleteRecordRowsSqlite(connectorInstanceId);
         const schedule = exec(referenceQueries.controllerDeleteSchedule, [connectorInstanceId]);
         const device = exec(referenceQueries.deviceExportersClearSourceInstanceConnectorRef, [stamp, connectorInstanceId]);
         exec(referenceQueries.connectorInstancesDeleteById, [connectorInstanceId]);
         return {
+          deletedRecordCount: recordCount,
           scheduleDeleted: (schedule?.changes ?? 0) > 0,
           deviceRefsCleared: device?.changes ?? 0,
         };
       });
 
+      // Post-commit, rebuildable projection teardown. A failure here leaves
+      // orphaned (but unreachable — the records are gone) index rows; it does
+      // NOT mean the committed delete failed.
+      await purge.teardownProjection({
+        connectorId: instance.connectorId,
+        connectorInstanceId,
+        streams,
+        deletedRecordCount,
+      });
+
       return buildDeleteSummary(instance, {
-        deletedRecordCount: purgeSummary?.deletedRecordCount ?? 0,
-        deletedStreamCount: purgeSummary?.deletedStreamCount ?? 0,
+        deletedRecordCount,
+        deletedStreamCount: streams.length,
         scheduleDeleted,
         deviceRefsCleared,
       });
@@ -671,11 +691,12 @@ export function createPostgresConnectorInstanceStore() {
 
     // Postgres connection-scoped delete. Mirrors the SQLite arm exactly: resolve
     // + verify ownership, refuse active-run (I7) and default-account (I6/Decision
-    // 1), purge the connection's data through the injected `purgeConnectionData`
-    // (its own transaction), then delete schedule + clear device back-reference +
-    // delete the connector_instances row LAST inside one withPostgresTransaction.
+    // 1), enumerate streams, then erase the record-family rows AND the schedule +
+    // device back-ref + connector_instances row inside ONE withPostgresTransaction
+    // — the record purge binds against the SAME `client`, so the whole durable
+    // cascade is one BEGIN/COMMIT (I8). Search-index teardown runs post-commit.
     // See the SQLite `deleteConnection` for the full ordering rationale.
-    async deleteConnection(connectorInstanceId, { ownerSubjectId, now, purgeConnectionData }) {
+    async deleteConnection(connectorInstanceId, { ownerSubjectId, now, purge }) {
       const instance = await this.get(connectorInstanceId);
       const activeRuns = await postgresQuery(
         `SELECT connector_instance_id FROM controller_active_runs WHERE connector_instance_id = $1`,
@@ -684,13 +705,14 @@ export function createPostgresConnectorInstanceStore() {
       const hasActiveRun = activeRuns.rows.length > 0;
       assertDeletableConnection(instance, { connectorInstanceId, ownerSubjectId, hasActiveRun });
 
-      const purgeSummary = await purgeConnectionData({
-        connector_id: instance.connectorId,
-        connector_instance_id: connectorInstanceId,
-      });
+      const storageTarget = { connector_id: instance.connectorId, connector_instance_id: connectorInstanceId };
+      const { streams } = await purge.enumerateStreams(storageTarget);
 
       const stamp = now ?? new Date().toISOString();
-      const { scheduleDeleted, deviceRefsCleared } = await withPostgresTransaction(async (client) => {
+      const { deletedRecordCount, scheduleDeleted, deviceRefsCleared } = await withPostgresTransaction(async (client) => {
+        // Record-family + blob + attention purge runs against the SAME client,
+        // so it is atomic with the schedule / device / row deletes below.
+        const recordCount = await purge.deleteRecordRowsPostgres(client, connectorInstanceId);
         const schedule = await client.query(
           `DELETE FROM connector_schedules WHERE connector_instance_id = $1`,
           [connectorInstanceId],
@@ -704,14 +726,23 @@ export function createPostgresConnectorInstanceStore() {
           [connectorInstanceId],
         );
         return {
+          deletedRecordCount: recordCount,
           scheduleDeleted: (schedule?.rowCount ?? 0) > 0,
           deviceRefsCleared: device?.rowCount ?? 0,
         };
       });
 
+      // Post-commit, rebuildable projection teardown (see SQLite arm).
+      await purge.teardownProjection({
+        connectorId: instance.connectorId,
+        connectorInstanceId,
+        streams,
+        deletedRecordCount,
+      });
+
       return buildDeleteSummary(instance, {
-        deletedRecordCount: purgeSummary?.deletedRecordCount ?? 0,
-        deletedStreamCount: purgeSummary?.deletedStreamCount ?? 0,
+        deletedRecordCount,
+        deletedStreamCount: streams.length,
         scheduleDeleted,
         deviceRefsCleared,
       });
