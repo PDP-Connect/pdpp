@@ -343,9 +343,30 @@ test('owner-agent initiating an API/network-only connector (gmail) gets a typed 
       /add this connection from the dashboard/i,
       'must not point the owner at a dashboard that lists API/network as unsupported',
     );
+    // Honesty: gmail/github authenticate with a STATIC provider secret the owner
+    // supplies locally (app password / personal access token), NOT an OAuth
+    // authorization-code flow. The reason must name that credential model so a
+    // future lane does not mistakenly wire these connectors to an OAuth `open_url`
+    // redirect they cannot consume. The verified credential paths are
+    // gmail/index.ts:463-498 (Google app password over IMAP) and
+    // github/index.ts:406-409 (PAT). See design.md "Deferred: API/network
+    // connection initiation" -> "The actual reference credential model".
+    assert.match(
+      body.next_step.reason,
+      /static provider secret/i,
+      'reason must name the static-secret credential model, not imply OAuth',
+    );
+    assert.match(body.next_step.reason, /app password|personal access token|token/i);
+    // The reason must affirm these connectors are NOT OAuth-backed (it may mention
+    // OAuth only to negate it), so a future reader cannot conclude open_url applies.
+    assert.match(
+      body.next_step.reason,
+      /none of the current ones are|no OAuth authorization URL/i,
+      'reason must explicitly state no current connector is OAuth-backed',
+    );
     // The reason names the eventual next-step kind but the route must NOT yet
-    // advertise it: no real provider-connect URL exists, so emitting open_url
-    // would be a faked success the acceptance criteria forbid.
+    // advertise it: no real provider-connect URL or owner-mediated capture route
+    // exists, so emitting open_url would be a faked success the criteria forbid.
     assert.notEqual(body.next_step.kind, 'open_url');
   });
 });
