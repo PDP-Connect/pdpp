@@ -15,13 +15,15 @@
  *   3. `GET /_ref/grant-packages/:id` returns a typed `not_found` 404
  *      envelope for unknown ids.
  *   4. `POST /_ref/grant-packages/:id/revoke` revokes every child,
- *      flips the package to `revoked`, and returns the revoke-result
- *      envelope.
+ *      flips the package to `revoked`, and names every revoked child in
+ *      the revoke-result envelope.
  *   5. The same revoke endpoint returns `409 already_revoked` on a
  *      second call.
  *   6. `GET /_ref/grants` rows whose grant id is a package member
  *      surface `grant_package_id` on the spine row; non-package grants
  *      omit the field.
+ *   7. Partial package-revoke failure returns a non-2xx envelope naming
+ *      which child grant revoked and which did not.
  */
 
 import assert from 'node:assert/strict';
@@ -32,6 +34,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { canonicalConnectorKeyFromManifest } from '../server/connector-key.js';
+import { getDb } from '../server/db.js';
 import { encodeHostedMcpSelection } from '../server/hosted-mcp-selection.js';
 import { startServer } from '../server/index.js';
 
@@ -328,14 +331,13 @@ test('POST /_ref/grant-packages/:id/revoke cascades revocation; second call retu
     assert.equal(revoke.body.status, 'revoked');
     assert.ok(revoke.body.revoked_at);
     assert.equal(revoke.body.revoked_child_count, 2);
+    assert.equal(revoke.body.not_revoked_child_count, 0);
+    assert.equal(revoke.body.revoked_child_grants.length, 2);
+    assert.deepEqual(revoke.body.not_revoked_child_grants, []);
     assertNoSecretMaterial(revoke.body);
 
     // Detail now shows revoked status on the package row and on every
-    // member binding. The underlying `grants.status` column is not
-    // flipped by package revocation — enforcement runs through the
-    // revoked package-bound token + revoked `grant_package_members` row
-    // — so the operator-visible cascade lives on `member_status` and the
-    // member's `revoked_at`.
+    // child grant and member binding.
     const detail = await fetchJson(
       `${asUrl}/_ref/grant-packages/${encodeURIComponent(packageId)}`,
     );
@@ -343,6 +345,7 @@ test('POST /_ref/grant-packages/:id/revoke cascades revocation; second call retu
     assert.equal(detail.body.status, 'revoked');
     assert.ok(detail.body.revoked_at);
     for (const child of detail.body.children) {
+      assert.equal(child.grant_status, 'revoked');
       assert.equal(child.member_status, 'revoked');
       assert.ok(child.revoked_at, 'revoked member must carry a revoked_at');
     }
@@ -353,6 +356,64 @@ test('POST /_ref/grant-packages/:id/revoke cascades revocation; second call retu
     );
     assert.equal(again.status, 409);
     assert.equal(again.body.error.code ?? again.body.error, 'already_revoked');
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('POST /_ref/grant-packages/:id/revoke surfaces partial child failure without reporting success', async () => {
+  const server = await startTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const spotify = await registerConnector(asUrl, 'spotify');
+    const github = await registerConnector(asUrl, 'github');
+    const client = await registerAuthCodeClient(asUrl);
+    const { packageId } = await completeMultiSourcePackageFlow({
+      asUrl,
+      client,
+      connectorIds: [spotify.connector_id, github.connector_id],
+    });
+
+    const before = await fetchJson(
+      `${asUrl}/_ref/grant-packages/${encodeURIComponent(packageId)}`,
+    );
+    assert.equal(before.status, 200);
+    assert.equal(before.body.children.length, 2);
+    const [brokenChild, healthyChild] = before.body.children;
+    assert.ok(brokenChild?.grant_id);
+    assert.ok(healthyChild?.grant_id);
+
+    getDb()
+      .prepare('UPDATE grants SET grant_json = ? WHERE grant_id = ?')
+      .run('{"not":"a valid persisted grant"}', brokenChild.grant_id);
+
+    const revoke = await fetchJson(
+      `${asUrl}/_ref/grant-packages/${encodeURIComponent(packageId)}/revoke`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+    );
+    assert.equal(revoke.status, 500);
+    assert.equal(revoke.body.object, 'grant_package_revoke_result');
+    assert.equal(revoke.body.package_id, packageId);
+    assert.equal(revoke.body.status, 'partial_failure');
+    assert.equal(revoke.body.revoked_at, null);
+    assert.deepEqual(revoke.body.revoked_child_grants, [healthyChild.grant_id]);
+    assert.equal(revoke.body.revoked_child_count, 1);
+    assert.equal(revoke.body.not_revoked_child_count, 1);
+    assert.equal(revoke.body.not_revoked_child_grants[0].grant_id, brokenChild.grant_id);
+    assert.equal(revoke.body.not_revoked_child_grants[0].error.code, 'grant_invalid');
+    assertNoSecretMaterial(revoke.body);
+
+    const detail = await fetchJson(
+      `${asUrl}/_ref/grant-packages/${encodeURIComponent(packageId)}`,
+    );
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.status, 'active');
+    const childrenByGrant = new Map(detail.body.children.map((child) => [child.grant_id, child]));
+    assert.equal(childrenByGrant.get(healthyChild.grant_id).grant_status, 'revoked');
+    assert.equal(childrenByGrant.get(healthyChild.grant_id).member_status, 'revoked');
+    assert.equal(childrenByGrant.get(brokenChild.grant_id).grant_status, 'active');
+    assert.equal(childrenByGrant.get(brokenChild.grant_id).member_status, 'active');
   } finally {
     await closeServer(server);
   }

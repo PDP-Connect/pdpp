@@ -84,6 +84,22 @@ export interface GrantPackageListPage {
   readonly next_cursor: string | null;
 }
 
+export interface GrantPackageRevokeFailure {
+  readonly error: {
+    readonly code: string;
+    readonly message: string;
+  };
+  readonly grant_id: string;
+}
+
+export interface GrantPackageRevokeResult {
+  readonly not_revoked_child_grants: readonly GrantPackageRevokeFailure[];
+  readonly package_id: string;
+  readonly revoked_at: string | null;
+  readonly revoked_child_grants: readonly string[];
+  readonly status: "revoked" | "partial_failure";
+}
+
 export interface MountRefGrantsContext {
   readonly getClientEventSubscriptionStore: () => ClientEventSubscriptionStore;
   readonly getGrantPackageForOwner: (id: string) => Promise<GrantPackageSummaryRow | null>;
@@ -103,7 +119,7 @@ export interface MountRefGrantsContext {
   readonly nowIso: () => string;
   readonly pdppError: PdppErrorFn;
   readonly requireOwnerSession: MiddlewareHandler;
-  readonly revokeGrantPackage: (id: string, opts: { request_id?: string }) => Promise<void>;
+  readonly revokeGrantPackage: (id: string, opts: { request_id?: string }) => Promise<GrantPackageRevokeResult>;
 }
 
 // Preserves the original inline validation, error codes, and defaults.
@@ -222,15 +238,23 @@ export function mountRefGrantPackagesRevoke(app: AppLike, ctx: MountRefGrantsCon
         }
         const xRequestId = req.headers["x-request-id"];
         const revokeOpts: { request_id?: string } = typeof xRequestId === "string" ? { request_id: xRequestId } : {};
-        await ctx.revokeGrantPackage(id, revokeOpts);
+        const result = await ctx.revokeGrantPackage(id, revokeOpts);
         const after = await ctx.getGrantPackageForOwner(id);
-        res.json({
+        const body = {
           object: "grant_package_revoke_result",
           package_id: id,
-          status: after?.status ?? "revoked",
-          revoked_at: after?.revoked_at ?? new Date().toISOString(),
-          revoked_child_count: after ? after.children.length : 0,
-        });
+          status: result.status,
+          revoked_at: result.revoked_at ?? after?.revoked_at ?? null,
+          revoked_child_count: result.revoked_child_grants.length,
+          not_revoked_child_count: result.not_revoked_child_grants.length,
+          revoked_child_grants: result.revoked_child_grants,
+          not_revoked_child_grants: result.not_revoked_child_grants,
+        };
+        if (result.status === "partial_failure") {
+          res.status(500).json(body);
+          return;
+        }
+        res.json(body);
       } catch (err) {
         ctx.handleError(res, err);
       }

@@ -1804,7 +1804,13 @@ export async function deleteRegisteredClient(clientId, { actingSubjectId, reques
   const revokedPackageIds = [];
   for (const row of packageRows) {
     try {
-      await revokeGrantPackage(row.package_id, { request_id: requestId, trace_id: traceId });
+      const result = await revokeGrantPackage(row.package_id, { request_id: requestId, trace_id: traceId });
+      if (result.status !== 'revoked') {
+        const err = new Error(`Failed to revoke every child grant in package ${row.package_id}`);
+        err.code = 'grant_package_revoke_partial';
+        err.result = result;
+        throw err;
+      }
       revokedPackageIds.push(row.package_id);
     } catch (err) {
       if (err?.code === 'already_revoked' || err?.code === 'not_found') {
@@ -4223,19 +4229,116 @@ export async function getGrantPackageIdForGrant(grantId) {
   return row?.package_id ?? null;
 }
 
-export async function revokeGrantPackage(packageId, context = {}) {
-  const now = nowIso();
+async function listActiveGrantPackageMembersForRevocation(packageId) {
+  if (!isNonEmptyString(packageId)) return [];
   if (isPostgresStorageBackend()) {
-    await pgExec("UPDATE grant_packages SET status = 'revoked', revoked_at = $1 WHERE package_id = $2 AND status = 'active'", [now, packageId]);
-    await pgExec("UPDATE tokens SET revoked = TRUE WHERE package_id = $1", [packageId]);
-    await pgExec("UPDATE grant_package_members SET status = 'revoked', revoked_at = $1 WHERE package_id = $2 AND status = 'active'", [now, packageId]);
-    await pgExec("UPDATE oauth_refresh_tokens SET status = 'revoked', revoked_at = $1 WHERE package_id = $2 AND status = 'active'", [now, packageId]);
-  } else {
-    exec(referenceQueries.authGrantPackagesMarkRevoked, [now, packageId]);
-    exec(referenceQueries.authTokensRevokeByPackage, [packageId]);
-    exec(referenceQueries.authGrantPackageMembersMarkRevokedByPackage, [now, packageId]);
-    exec(referenceQueries.authOauthRefreshTokensRevokeByPackage, [now, packageId]);
+    return (await postgresQuery(
+      `SELECT gm.package_id, gm.grant_id, gm.token_id, gm.source_json::text AS source_json,
+              gm.status, gm.added_at, gm.revoked_at,
+              g.status AS grant_status, g.grant_json::text AS grant_json,
+              g.storage_binding_json::text AS storage_binding_json,
+              t.revoked AS token_revoked, t.expires_at AS token_expires_at
+         FROM grant_package_members gm
+         JOIN grants g ON gm.grant_id = g.grant_id
+         JOIN tokens t ON gm.token_id = t.token_id
+         WHERE gm.package_id = $1
+           AND gm.status = 'active'
+         ORDER BY gm.added_at, gm.grant_id`,
+      [packageId],
+    )).rows;
   }
+  return allowUnboundedReadAcknowledged(referenceQueries.authGrantPackageMembersListActiveByPackage, [packageId]);
+}
+
+async function markGrantPackageMemberRevoked(packageId, grantId, revokedAt) {
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      `UPDATE grant_package_members
+       SET status = 'revoked', revoked_at = $1
+       WHERE package_id = $2 AND grant_id = $3 AND status = 'active'`,
+      [revokedAt, packageId, grantId],
+    );
+    return;
+  }
+  exec(referenceQueries.authGrantPackageMembersMarkRevokedByGrant, [revokedAt, packageId, grantId]);
+}
+
+async function markGrantPackageRevoked(packageId, revokedAt) {
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      "UPDATE grant_packages SET status = 'revoked', revoked_at = $1 WHERE package_id = $2 AND status = 'active'",
+      [revokedAt, packageId],
+    );
+    await pgExec("UPDATE tokens SET revoked = TRUE WHERE package_id = $1", [packageId]);
+    await pgExec(
+      "UPDATE grant_package_members SET status = 'revoked', revoked_at = $1 WHERE package_id = $2 AND status = 'active'",
+      [revokedAt, packageId],
+    );
+    await pgExec(
+      "UPDATE oauth_refresh_tokens SET status = 'revoked', revoked_at = $1 WHERE package_id = $2 AND status = 'active'",
+      [revokedAt, packageId],
+    );
+    return;
+  }
+  exec(referenceQueries.authGrantPackagesMarkRevoked, [revokedAt, packageId]);
+  exec(referenceQueries.authTokensRevokeByPackage, [packageId]);
+  exec(referenceQueries.authGrantPackageMembersMarkRevokedByPackage, [revokedAt, packageId]);
+  exec(referenceQueries.authOauthRefreshTokensRevokeByPackage, [revokedAt, packageId]);
+}
+
+function normalizePackageRevokeError(grantId, err) {
+  const code = isNonEmptyString(err?.code) ? err.code : 'revoke_failed';
+  const message = isNonEmptyString(err?.message) ? err.message : 'Child grant revoke failed';
+  return {
+    grant_id: grantId,
+    error: { code, message },
+  };
+}
+
+export async function revokeGrantPackage(packageId, context = {}) {
+  const activeMembers = await listActiveGrantPackageMembersForRevocation(packageId);
+  const revokedChildGrants = [];
+  const notRevokedChildGrants = [];
+
+  for (const member of activeMembers) {
+    if (member.grant_status !== 'active') continue;
+    try {
+      await revokeGrant(member.grant_id, context);
+      const childRevokedAt = nowIso();
+      await markGrantPackageMemberRevoked(packageId, member.grant_id, childRevokedAt);
+      revokedChildGrants.push(member.grant_id);
+    } catch (err) {
+      notRevokedChildGrants.push(normalizePackageRevokeError(member.grant_id, err));
+    }
+  }
+
+  if (notRevokedChildGrants.length) {
+    await emitSpineEvent({
+      event_type: 'grant_package.revoke_partial',
+      trace_id: context.trace_id || undefined,
+      scenario_id: context.scenario_id || undefined,
+      request_id: context.request_id || undefined,
+      actor_type: 'authorization_server',
+      actor_id: 'pdpp_as',
+      object_type: 'grant_package',
+      object_id: packageId,
+      status: 'failed',
+      data: {
+        revoked_child_grants: revokedChildGrants,
+        not_revoked_child_grants: notRevokedChildGrants,
+      },
+    });
+    return {
+      status: 'partial_failure',
+      package_id: packageId,
+      revoked_at: null,
+      revoked_child_grants: revokedChildGrants,
+      not_revoked_child_grants: notRevokedChildGrants,
+    };
+  }
+
+  const now = nowIso();
+  await markGrantPackageRevoked(packageId, now);
 
   await emitSpineEvent({
     event_type: 'grant_package.revoked',
@@ -4247,8 +4350,17 @@ export async function revokeGrantPackage(packageId, context = {}) {
     object_type: 'grant_package',
     object_id: packageId,
     status: 'succeeded',
-    data: {},
+    data: {
+      revoked_child_grants: revokedChildGrants,
+    },
   });
+  return {
+    status: 'revoked',
+    package_id: packageId,
+    revoked_at: now,
+    revoked_child_grants: revokedChildGrants,
+    not_revoked_child_grants: [],
+  };
 }
 
 export async function issueOAuthAuthorizationCodeForPackageDeviceCode(deviceCode, { packageId, token }) {
