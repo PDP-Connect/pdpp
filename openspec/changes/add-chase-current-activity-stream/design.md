@@ -52,6 +52,17 @@ If Chase exposes a UI/native transaction ID, use `account_id|ui_transaction_id`.
 
 ## Open Questions
 
-- Does Chase expose stable UI transaction IDs or network payload IDs for the account activity table in all relevant account types?
 - Should the reference implementation emit tombstones for current activity rows missing from a later scrape, or rely on `fetched_at` freshness initially?
 - Should a later cross-bank capability define generic pending/current financial activity semantics, or should this remain connector-specific until more banks are implemented?
+
+## Residual Risks
+
+### Stable native ID availability (live-only, owner-gated)
+
+Existing raw Chase captures and network traces did not include a current-activity surface with native row IDs. The fixture-backed implementation therefore operates under the assumption that stable UI or network transaction IDs may not be reliably present, and uses a deterministic fallback key scoped to `account_id`, `status`, visible date, amount, and normalized description.
+
+Whether the live Chase account activity surface exposes stable native IDs (in DOM attributes, JSON payloads, or XHR responses), and whether such IDs survive pending-to-posted transitions, has not been confirmed. This requires a live Chase session, which is an owner-only check outside the fixture-backed implementation scope.
+
+**Architectural response already in place:** The connector prefers `account_id|ui_transaction_id` when a UI ID is present, and falls back to the deterministic composite key otherwise. The `current_activity` stream is modeled as `mutable_state` volatile visibility data, not as a settled ledger. Durable posted identity remains in QFX `transactions` keyed by `account_id|fitid`.
+
+**Action if native IDs are discovered:** If a live investigation confirms that Chase exposes stable native transaction IDs for the current-activity surface, the connector key strategy in `packages/polyfill-connectors/` should be updated to prefer those IDs, and this residual risk should be retired. No protocol or schema change is required — the `ui_transaction_id` field already exists in the schema to hold such a value.

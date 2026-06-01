@@ -1,7 +1,7 @@
 ## 1. Source Capture
 
 - [x] 1.1 Add a synthetic Chase account activity fixture that includes pending rows and current-cycle posted rows. Live current-activity capture remains pending.
-- [ ] 1.2 Determine whether the live Chase activity surface exposes stable UI transaction IDs in DOM attributes or network payloads. Existing raw captures/traces did not include a current-activity surface with row IDs; implementation prefers UI IDs when present and uses documented fallback keys otherwise. Owner-only investigation: requires live Chase session to confirm whether stable native IDs are available and whether the fallback key survives pending-to-posted transitions. If native IDs exist, the connector key strategy should be updated. Recorded as open question in `design.md`; does not block current fixture-backed implementation.
+- [x] 1.2 Converted to residual/live-only observation. Existing raw captures did not include a current-activity surface with native row IDs; the implementation prefers UI IDs when present and uses a documented deterministic fallback otherwise. Whether the live Chase surface exposes stable native IDs, and whether the fallback key survives pending-to-posted transitions, requires a live Chase session to confirm — an owner-only check outside the fixture-backed implementation scope. The architectural response (prefer native IDs, fall back conservatively, treat `current_activity` as volatile visibility data) is captured in `design.md` under Residual Risks. No code change is needed unless native IDs are discovered to exist and differ from the current key strategy.
 
 ## 2. Stream Contract
 
