@@ -31,6 +31,7 @@ import {
 import { canonicalConnectorKey } from './connector-key.js';
 import {
   compileRequestFilters,
+  nonNullSchemaTypes,
   passesRequestFilters,
   passesTimeRange,
 } from './record-filters.js';
@@ -398,29 +399,55 @@ function decorateRecordWithConnectionIdentity(record, identity) {
   }
 }
 
-function buildFilterClause(filter, params) {
-  if (!filter || typeof filter !== 'object' || Array.isArray(filter)) return '';
+function postgresRangeCastForField(fieldSchema) {
+  const types = nonNullSchemaTypes(fieldSchema);
+  if (types.size !== 1) return 'text';
+  const [only] = [...types];
+  if (only === 'integer' || only === 'number') return 'numeric';
+  if (only === 'string' && fieldSchema?.format === 'date') return 'date';
+  if (only === 'string' && fieldSchema?.format === 'date-time') return 'timestamptz';
+  return 'text';
+}
+
+function buildFilterClause(compiledFilters, rawFilter, params) {
+  if (!Array.isArray(compiledFilters) || compiledFilters.length === 0) return '';
   const clauses = [];
-  for (const [field, raw] of Object.entries(filter)) {
-    if (!/^[A-Za-z0-9_]+$/.test(field)) {
-      const err = new Error(`Invalid filter field: ${field}`);
-      err.code = 'invalid_request';
-      throw err;
-    }
-    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-      clauses.push(`record_json ? '${field}'`);
-      for (const [op, value] of Object.entries(raw)) {
+  for (const filter of compiledFilters) {
+    assertSafeJsonField(filter.field, 'filter');
+    const fieldExpr = jsonStringExpr(filter.field);
+    if (filter.kind === 'range') {
+      const rawOperators = rawFilter?.[filter.field];
+      const rawOperatorMap = rawOperators && typeof rawOperators === 'object' && !Array.isArray(rawOperators)
+        ? rawOperators
+        : {};
+      const cast = postgresRangeCastForField(filter.fieldSchema);
+      const lhs = `${fieldExpr}::${cast}`;
+      clauses.push(`record_json ? '${filter.field}'`);
+      clauses.push(`${fieldExpr} IS NOT NULL`);
+      for (const op of ['gte', 'gt', 'lte', 'lt']) {
+        if (!Object.hasOwn(filter.operators, op)) continue;
         const operator = { gt: '>', gte: '>=', lt: '<', lte: '<=' }[op];
-        if (!operator) continue;
+        const value = Object.hasOwn(rawOperatorMap, op)
+          ? rawOperatorMap[op]
+          : filter.operators[op];
         params.push(value);
-        clauses.push(`record_json->>'${field}' ${operator} $${params.length}`);
+        clauses.push(`${lhs} ${operator} $${params.length}::${cast}`);
       }
-    } else {
-      params.push(String(raw));
-      clauses.push(`record_json->>'${field}' = $${params.length}`);
+      continue;
     }
+    params.push(filter.value);
+    clauses.push(`${fieldExpr} = $${params.length}`);
   }
   return clauses.length > 0 ? ` AND ${clauses.join(' AND ')}` : '';
+}
+
+export function __buildPostgresFilterClauseForTest(filter, streamGrant, manifestStream) {
+  const compiledFilters = compileRequestFilters(filter, streamGrant, manifestStream);
+  const params = [];
+  return {
+    clause: buildFilterClause(compiledFilters, filter, params),
+    params,
+  };
 }
 
 function appendGrantVisibilityClauses(whereParts, params, effective, manifestStream) {
@@ -990,7 +1017,7 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
   const whereParts = ['connector_instance_id = $1', 'stream = $2', 'deleted = FALSE'];
   appendGrantVisibilityClauses(whereParts, params, effective, manifestStream);
   let where = `WHERE ${whereParts.join(' AND ')}`;
-  where += buildFilterClause(requestParams.filter, params);
+  where += buildFilterClause(compiledFilters, requestParams.filter, params);
   // Snapshot the filter-only WHERE clause / params for the graded-count
   // query. The count MUST reflect matching visible rows BEFORE pagination
   // or the cursor — matching the SQLite semantics in
