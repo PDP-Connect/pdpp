@@ -1,12 +1,16 @@
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { EmptyState } from "@pdpp/operator-ui/components/empty-state";
-import { DataList, MetaPill, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
+import { Callout, DataList, MetaPill, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { formatConnectorKeyForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import Link from "next/link";
 import { Button } from "@/components/ui/button.tsx";
 import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
 import { formatSourceOutboxState } from "../lib/connection-evidence.ts";
-import { isSupportedLocalCollectorConnector } from "../lib/connection-modality.ts";
+import {
+  BROWSER_BOUND_RUNBOOK_PATH,
+  isBrowserBoundConnector,
+  isSupportedLocalCollectorConnector,
+} from "../lib/connection-modality.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
   type DeviceExporter,
@@ -49,6 +53,14 @@ export default async function DeviceExportersPage({
   const connectorParam = resolvedSearchParams?.connector;
   const requestedConnector = Array.isArray(connectorParam) ? connectorParam[0] : connectorParam;
   const defaultConnectorId = isSupportedLocalCollectorConnector(requestedConnector) ? requestedConnector : undefined;
+  // A deep-link to a *browser-bound* connector (e.g. `?connector=amazon`) is an
+  // intentful request this filesystem-collector form cannot fulfill. Silently
+  // dropping it to an empty form is the owner-reported "no obvious way to add a
+  // second Amazon" dead-end. Detect that case via the shared modality classifier
+  // (no scattered key checks) and surface an honest notice that names the
+  // connector and points at the owner-run runbook — never a faked enroll flow.
+  const browserBoundRequest =
+    !defaultConnectorId && isBrowserBoundConnector(requestedConnector) ? (requestedConnector as string) : undefined;
 
   try {
     const [diagnostics, sourceInstances, referenceBaseUrl] = await Promise.all([
@@ -71,6 +83,8 @@ export default async function DeviceExportersPage({
           }
           title="Local device exporters"
         />
+
+        {browserBoundRequest ? <BrowserBoundEnrollmentNotice connectorId={browserBoundRequest} /> : null}
 
         <Section>
           <EnrollmentForm defaultConnectorId={defaultConnectorId} referenceBaseUrl={referenceBaseUrl} />
@@ -105,6 +119,43 @@ export default async function DeviceExportersPage({
     }
     throw err;
   }
+}
+
+/**
+ * Honest notice for a browser-bound connector deep-link.
+ *
+ * This enrollment form completes the *filesystem-collector* path only
+ * (claude_code/codex). A browser-bound connector (Amazon/Chase/ChatGPT) cannot be
+ * enrolled here: it needs a real, owner-logged-in browser session driven locally
+ * by the collector. Rather than silently swallowing the `?connector=` intent and
+ * leaving the owner on a blank form, name the requested connector and point at the
+ * owner-run runbook (the same path the records-list `AddConnectionGuidance`
+ * surfaces, from the shared `connection-modality` source of truth). This is honest
+ * discoverability, not an advertised next step — there is no "enroll" button here,
+ * because the reference does not yet prove a one-click browser-bound flow.
+ */
+function BrowserBoundEnrollmentNotice({ connectorId }: { connectorId: string }) {
+  return (
+    <Callout
+      className="mb-4"
+      description={`${formatConnectorKeyForDisplay(connectorId)} is a browser-bound source. It cannot be enrolled from this local-device (filesystem) collector form — it needs a real, owner-logged-in browser session that you run locally with the local collector.`}
+      surface="human"
+      title="This connector needs a browser session"
+    >
+      <p className="pdpp-caption text-muted-foreground">
+        To add it today, follow the owner-run procedure in{" "}
+        <code className="pdpp-eyebrow font-mono text-foreground" data-testid="browser-bound-runbook-path">
+          {BROWSER_BOUND_RUNBOOK_PATH}
+        </code>
+        . The console does not yet offer a one-click flow for browser-bound connectors; see the full add-connection
+        guidance on the{" "}
+        <Link className="underline underline-offset-2 hover:text-foreground" href="/dashboard/records">
+          Connections
+        </Link>{" "}
+        page.
+      </p>
+    </Callout>
+  );
 }
 
 function DeviceRow({ device }: { device: DeviceExporter }) {
