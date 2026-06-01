@@ -29,6 +29,11 @@ import {
   resolveRequestConnectionId,
 } from './connection-id-request.js';
 import { canonicalConnectorKey } from './connector-key.js';
+import {
+  compileRequestFilters,
+  passesRequestFilters,
+  passesTimeRange,
+} from './record-filters.js';
 
 /**
  * Resolve `(connection_id, display_name)` identity for a postgres-backed
@@ -418,6 +423,62 @@ function buildFilterClause(filter, params) {
   return clauses.length > 0 ? ` AND ${clauses.join(' AND ')}` : '';
 }
 
+function appendGrantVisibilityClauses(whereParts, params, effective, manifestStream) {
+  const consentTimeField = manifestStream?.consent_time_field || null;
+  if (effective.timeRange && consentTimeField) {
+    assertSafeJsonField(consentTimeField, 'consent_time_field');
+    const ctExpr = jsonStringExpr(consentTimeField);
+    whereParts.push(`${ctExpr} IS NOT NULL`);
+    if (effective.timeRange.since != null) {
+      params.push(new Date(effective.timeRange.since).toISOString());
+      whereParts.push(`${ctExpr} >= $${params.length}`);
+    }
+    if (effective.timeRange.until != null) {
+      params.push(new Date(effective.timeRange.until).toISOString());
+      whereParts.push(`${ctExpr} < $${params.length}`);
+    }
+  }
+
+  if (effective.resources && effective.resources.length > 0) {
+    params.push(effective.resources);
+    whereParts.push(`record_key = ANY($${params.length}::text[])`);
+  }
+}
+
+function isVisiblePostgresSnapshot(snapshot, effective, consentTimeField) {
+  if (!snapshot || snapshot.deleted || !snapshot.data) return false;
+  if (effective.resources && !effective.resources.includes(snapshot.record_key)) return false;
+  if (effective.timeRange && consentTimeField && !passesTimeRange(snapshot.data, effective.timeRange, consentTimeField)) return false;
+  return true;
+}
+
+async function getPostgresSnapshotAtVersion(connectorInstanceId, stream, recordKey, version) {
+  if (!Number.isInteger(version) || version < 0) return null;
+  const result = await postgresQuery(
+    `SELECT version, record_json, emitted_at, deleted, deleted_at
+       FROM record_changes
+      WHERE connector_instance_id = $1
+        AND stream = $2
+        AND record_key = $3
+        AND version <= $4
+      ORDER BY version DESC
+      LIMIT 1`,
+    [connectorInstanceId, stream, recordKey, version],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  return {
+    record_key: recordKey,
+    version: Number(row.version),
+    data: row.record_json && typeof row.record_json === 'string'
+      ? JSON.parse(row.record_json)
+      : row.record_json,
+    emitted_at: row.emitted_at,
+    deleted: row.deleted === true,
+    deleted_at: row.deleted_at,
+  };
+}
+
 function safeJsonField(field) {
   if (!field || !/^[A-Za-z0-9_]+$/.test(field)) return null;
   return field;
@@ -791,6 +852,9 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
   const streamGrant = getStreamGrant(grant, stream);
   const manifestStream = getManifestStream(manifest, stream);
   const fields = fieldsFor(streamGrant, requestParams.fields, requiredFieldsFor(manifestStream));
+  const effective = buildEffectiveFilter(streamGrant, {}, requiredFieldsFor(manifestStream));
+  effective.fields = fields;
+  const compiledFilters = compileRequestFilters(requestParams.filter, streamGrant, manifestStream);
   const { cursorSql, primarySql } = recordOrderExpressions(manifestStream);
 
   // Canonical contract enforcement: `count` and `sort` go through the same
@@ -848,6 +912,20 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
       [connectorInstanceId, stream],
     );
     const sessionMax = maxResult.rows[0] ? Number(maxResult.rows[0].max_version) : 0;
+    const minChangeResult = await postgresQuery(
+      `SELECT MIN(version)::bigint AS min_version
+         FROM record_changes
+        WHERE connector_instance_id = $1 AND stream = $2`,
+      [connectorInstanceId, stream],
+    );
+    const minVersion = minChangeResult.rows[0]?.min_version == null
+      ? null
+      : Number(minChangeResult.rows[0].min_version);
+    if (minVersion !== null && decoded.v < (minVersion - 1)) {
+      const err = new Error('changes_since cursor is too old; full re-sync required');
+      err.code = 'cursor_expired';
+      throw err;
+    }
     const rows = await postgresQuery(
       `SELECT DISTINCT ON (record_key)
               record_key, record_json, deleted, deleted_at, emitted_at, version
@@ -858,12 +936,40 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
       [connectorInstanceId, stream, decoded.v, sessionMax],
     );
     const sorted = [...rows.rows].sort((a, b) => Number(a.version) - Number(b.version));
+    const consentTimeField = manifestStream?.consent_time_field || null;
+    const visibleChanges = [];
+    for (const row of sorted) {
+      const previous = await getPostgresSnapshotAtVersion(connectorInstanceId, stream, row.record_key, decoded.v);
+      const current = await getPostgresSnapshotAtVersion(connectorInstanceId, stream, row.record_key, Number(row.version));
+
+      const previousVisible = isVisiblePostgresSnapshot(previous, effective, consentTimeField);
+      const currentVisible = isVisiblePostgresSnapshot(current, effective, consentTimeField);
+
+      if (row.deleted) {
+        if (!previousVisible || !passesRequestFilters(previous.data, compiledFilters)) continue;
+        visibleChanges.push(deletedResponseRecord({ stream, row, identity }));
+        continue;
+      }
+
+      if (!currentVisible || !passesRequestFilters(current.data, compiledFilters)) continue;
+      const previousProjection = previousVisible ? projectFields(previous.data, effective.fields) : null;
+      const currentProjection = projectFields(current.data, effective.fields);
+      if (previousProjection && JSON.stringify(previousProjection) === JSON.stringify(currentProjection)) continue;
+
+      visibleChanges.push(responseRecord({
+        stream,
+        row: {
+          ...row,
+          record_json: currentProjection,
+        },
+        fields: null,
+        identity,
+      }));
+    }
     const changesResponse = {
       object: 'list',
       has_more: false,
-      data: sorted.map((row) => row.deleted
-        ? deletedResponseRecord({ stream, row, identity })
-        : responseRecord({ stream, row, fields, identity })),
+      data: visibleChanges,
       next_changes_since: encodeCursor({ v: sessionMax }),
     };
     attachRequestWarningsToResponse(changesResponse, requestWarnings);
@@ -881,7 +987,9 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
   }
 
   const params = [connectorInstanceId, stream];
-  let where = 'WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE';
+  const whereParts = ['connector_instance_id = $1', 'stream = $2', 'deleted = FALSE'];
+  appendGrantVisibilityClauses(whereParts, params, effective, manifestStream);
+  let where = `WHERE ${whereParts.join(' AND ')}`;
   where += buildFilterClause(requestParams.filter, params);
   // Snapshot the filter-only WHERE clause / params for the graded-count
   // query. The count MUST reflect matching visible rows BEFORE pagination
@@ -1022,6 +1130,8 @@ export async function postgresGetRecord(storageTarget, stream, recordId, grant, 
   const streamGrant = getStreamGrant(grant, stream);
   const manifestStream = getManifestStream(manifest, stream);
   const fields = fieldsFor(streamGrant, null, requiredFieldsFor(manifestStream));
+  const effective = buildEffectiveFilter(streamGrant, {}, requiredFieldsFor(manifestStream));
+  effective.fields = fields;
   const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
   enforceConnectionNarrowing(requestParams, connectorInstanceId);
   // Single-record fetch does not support changes_since, so only validate
@@ -1038,6 +1148,21 @@ export async function postgresGetRecord(storageTarget, stream, recordId, grant, 
     const err = new Error('Record not found');
     err.code = 'not_found';
     throw err;
+  }
+  if (effective.resources && !effective.resources.includes(row.record_key)) {
+    const err = new Error('Record not found');
+    err.code = 'not_found';
+    throw err;
+  }
+  if (effective.timeRange && manifestStream?.consent_time_field) {
+    const rawData = typeof row.record_json === 'string'
+      ? JSON.parse(row.record_json)
+      : row.record_json;
+    if (!passesTimeRange(rawData, effective.timeRange, manifestStream.consent_time_field)) {
+      const err = new Error('Record not found');
+      err.code = 'not_found';
+      throw err;
+    }
   }
   const identity = await resolveRecordIdentityForBinding(connectorInstanceId, connectorId);
   const response = responseRecord({ stream, row, fields, identity });

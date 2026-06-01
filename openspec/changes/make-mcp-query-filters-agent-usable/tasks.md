@@ -27,6 +27,8 @@
       `expand_limit[relation]=N`, not as JSON-in-a-query-param.
 - [x] 3.2 Reject empty `expand_limit` objects and relation keys that embed
       bracket syntax before any RS call.
+- [x] 3.3 Make `RsClient` reject object-valued query parameters so future
+      nested REST query shapes must be encoded explicitly by tool handlers.
 
 ## 4. Tests
 
@@ -46,6 +48,13 @@
 - [x] 4.8 `query_records` and `fetch` typed `expand_limit` forward as bracket
       params; malformed shapes are rejected.
 - [x] 4.9 All pre-existing MCP server tests stay green.
+- [x] 4.10 Postgres-backed aggregate count reads from the active record backend
+      and applies exact filters under the same grant semantics as record-list
+      reads.
+- [x] 4.11 Postgres-backed record list, detail, and `changes_since` reads
+      enforce grant `resources` and `time_range` visibility.
+- [x] 4.12 `RsClient` rejects object-valued query params before fetch, preventing
+      accidental JSON-in-query forwarding.
 
 ## 5. Docs + discovery guidance
 

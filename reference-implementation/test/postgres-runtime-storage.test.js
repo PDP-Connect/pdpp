@@ -56,6 +56,7 @@ import {
   startServer,
 } from '../server/index.js';
 import {
+  aggregateRecords,
   deleteRecord,
   getDatasetBlobBytes,
   getDatasetRecordChangesBytes,
@@ -253,6 +254,142 @@ if (!POSTGRES_URL) {
       await postgresQuery('DELETE FROM semantic_search_backfill_progress WHERE connector_id = $1', [connectorId]);
       await postgresQuery('DELETE FROM records WHERE connector_id = $1', [connectorId]);
       configureSemanticBackend(null);
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+
+  test('postgres public reads enforce grant visibility and aggregate over active storage', async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `pg_visibility_${suffix}`;
+    const stream = 'events';
+    const manifest = {
+      protocol_version: '0.1.0',
+      connector_id: connectorId,
+      version: '1.0.0',
+      display_name: 'Postgres Visibility Test',
+      streams: [
+        {
+          name: stream,
+          primary_key: ['id'],
+          cursor_field: 'created_at',
+          consent_time_field: 'created_at',
+          schema: {
+            type: 'object',
+            required: ['id'],
+            properties: {
+              id: { type: 'string' },
+              title: { type: 'string' },
+              created_at: { type: 'string', format: 'date-time' },
+            },
+          },
+          query: {
+            aggregations: { count: true },
+          },
+        },
+      ],
+    };
+    const fields = ['id', 'title', 'created_at'];
+    const fullGrant = { streams: [{ name: stream, fields }] };
+    const resourceGrant = { streams: [{ name: stream, fields, resources: ['a'] }] };
+    const timeGrant = {
+      streams: [
+        {
+          name: stream,
+          fields,
+          time_range: {
+            since: '2026-04-02T00:00:00.000Z',
+            until: '2026-04-03T00:00:00.000Z',
+          },
+        },
+      ],
+    };
+
+    initDb(':memory:');
+    await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+
+    try {
+      await ingestRecord(connectorId, {
+        stream,
+        key: 'a',
+        data: {
+          id: 'a',
+          title: 'Alpha launch',
+          created_at: '2026-04-01T00:00:00.000Z',
+        },
+      });
+      await ingestRecord(connectorId, {
+        stream,
+        key: 'b',
+        data: {
+          id: 'b',
+          title: 'Beta proof',
+          created_at: '2026-04-02T00:00:00.000Z',
+        },
+      });
+
+      const filteredAggregate = await aggregateRecords(
+        connectorId,
+        stream,
+        fullGrant,
+        { metric: 'count', filter: { title: 'Alpha launch' } },
+        manifest,
+      );
+      assert.equal(filteredAggregate.value, 1);
+      assert.equal(filteredAggregate.filtered_record_count, 1);
+
+      const wrongAggregate = await aggregateRecords(
+        connectorId,
+        stream,
+        fullGrant,
+        { metric: 'count', filter: { title: 'Missing title' } },
+        manifest,
+      );
+      assert.equal(wrongAggregate.value, 0);
+      assert.equal(wrongAggregate.filtered_record_count, 0);
+
+      const resourcePage = await queryRecords(connectorId, stream, resourceGrant, { limit: 10 }, manifest);
+      assert.deepEqual(resourcePage.data.map((row) => row.id), ['a']);
+      await assert.rejects(
+        () => getRecord(connectorId, stream, 'b', resourceGrant, manifest),
+        { code: 'not_found' },
+      );
+      const resourceChanges = await queryRecords(
+        connectorId,
+        stream,
+        resourceGrant,
+        { changes_since: 'beginning' },
+        manifest,
+      );
+      assert.deepEqual(resourceChanges.data.map((row) => row.id), ['a']);
+
+      const timePage = await queryRecords(connectorId, stream, timeGrant, { limit: 10 }, manifest);
+      assert.deepEqual(timePage.data.map((row) => row.id), ['b']);
+      await assert.rejects(
+        () => getRecord(connectorId, stream, 'a', timeGrant, manifest),
+        { code: 'not_found' },
+      );
+      const timeChanges = await queryRecords(
+        connectorId,
+        stream,
+        timeGrant,
+        { changes_since: 'beginning' },
+        manifest,
+      );
+      assert.deepEqual(timeChanges.data.map((row) => row.id), ['b']);
+
+      await postgresQuery(
+        'DELETE FROM record_changes WHERE connector_id = $1 AND stream = $2 AND version = 1',
+        [connectorId, stream],
+      );
+      await assert.rejects(
+        () => queryRecords(connectorId, stream, fullGrant, { changes_since: 'beginning' }, manifest),
+        { code: 'cursor_expired' },
+      );
+    } finally {
+      await postgresQuery('DELETE FROM record_changes WHERE connector_id = $1', [connectorId]);
+      await postgresQuery('DELETE FROM records WHERE connector_id = $1', [connectorId]);
+      await postgresQuery('DELETE FROM version_counter WHERE connector_id = $1', [connectorId]);
       await closePostgresStorage();
       closeDb();
     }

@@ -101,8 +101,9 @@ function appendQuery(url, key, value) {
     return;
   }
   if (typeof value === 'object') {
-    url.searchParams.append(key, JSON.stringify(value));
-    return;
+    throw new TypeError(
+      `query parameter '${key}' must be a scalar or array; encode nested query shapes explicitly before calling RsClient`,
+    );
   }
   url.searchParams.append(key, String(value));
 }

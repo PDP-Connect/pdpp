@@ -64,6 +64,11 @@ nested query vocabulary. Empty objects and object keys that embed bracket syntax
 are rejected as `invalid_expand` before any RS call. `expand[]` itself remains a
 plain repeated scalar query key and needs no translation.
 
+`RsClient` now rejects object-valued query parameters instead of JSON-stringifying
+them. Query handlers must encode any nested REST query vocabulary into explicit
+bracket keys before calling the client. This turns future same-class mistakes
+into local test failures rather than hosted no-ops.
+
 ### Aggregate gets a dedicated result formatter
 
 `aggregate` switches from the generic `toToolResult` (which emits
@@ -73,6 +78,20 @@ plain repeated scalar query key and needs no translation.
 Numbers render unquoted so the text reads as the numeric answer; the canonical
 `structuredContent.data` envelope is unchanged and still validates against the
 output schema.
+
+### Owner live checks cover the active storage backend
+
+The hosted reference deployment runs with Postgres-backed record storage. The
+owner/live aggregate check therefore also verifies that the aggregate path reads
+from the active record backend before applying the same grant and filter
+semantics as record listing. This is still a semantic-floor scan, not a new
+aggregate index.
+
+The same owner audit also covers Postgres public-read parity for grant
+visibility. Postgres-backed record list, detail, and `changes_since` reads must
+apply grant `resources` and `time_range` constraints before returning data, so
+the hosted MCP smoke is not proving filter usability on top of a divergent
+authorization path.
 
 ## Risks / Trade-offs
 
@@ -100,3 +119,7 @@ output schema.
 - `search` forwards `q` and the typed filter as bracket params and surfaces a
   readable hit count.
 - All pre-existing MCP server tests stay green.
+- Postgres-backed aggregate count uses the active record backend and applies the
+  same exact filter semantics as the record-list path.
+- Postgres-backed record list, detail, and `changes_since` reads enforce grant
+  `resources` and `time_range` visibility.

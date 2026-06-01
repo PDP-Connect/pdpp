@@ -37,6 +37,28 @@ test('attaches bearer token and forwards query params', async () => {
   assert.equal(calls[0].init.headers.Authorization, 'Bearer scoped-abc');
 });
 
+test('rejects object-valued query params instead of JSON-stringifying them', async () => {
+  let called = false;
+  const fetch = async () => {
+    called = true;
+    return jsonResponse(200, { ok: true });
+  };
+
+  const rs = new RsClient({
+    providerUrl: 'https://provider.test',
+    accessToken: 'scoped-abc',
+    fetch,
+  });
+
+  await assert.rejects(
+    () => rs.getJson('/v1/streams/orders/records', {
+      query: { filter: { amount: { gte: 100 } } },
+    }),
+    /encode nested query shapes explicitly/,
+  );
+  assert.equal(called, false);
+});
+
 test('preserves RS error envelope on 401', async () => {
   const fetch = async () =>
     new Response(

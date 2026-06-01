@@ -2487,6 +2487,31 @@ function attachRequestWarningsToResponse(response, warnings) {
   };
 }
 
+async function listRowsForAggregation(connectorInstanceId, stream) {
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery(
+      `SELECT record_key, record_json
+         FROM records
+        WHERE connector_instance_id = $1
+          AND stream = $2
+          AND deleted = FALSE
+        ORDER BY record_key ASC`,
+      [connectorInstanceId, stream],
+    );
+    return result.rows.map((row) => ({
+      record_key: row.record_key,
+      record_json: typeof row.record_json === 'string'
+        ? row.record_json
+        : JSON.stringify(row.record_json),
+    }));
+  }
+
+  return iterate(
+    referenceQueries.recordsAggregateIterateStreamRecordsForAggregation,
+    [connectorInstanceId, stream],
+  );
+}
+
 /**
  * Aggregate records for one stream under the same grant and filter semantics
  * used by record listing. This first surface deliberately scans visible rows
@@ -2517,10 +2542,7 @@ export async function aggregateRecords(storageTarget, stream, grant, requestPara
   const effective = buildEffectiveFilter(streamGrant, {});
   const consentTimeField = manifestStream?.consent_time_field || null;
 
-  const rows = iterate(
-    referenceQueries.recordsAggregateIterateStreamRecordsForAggregation,
-    [connectorInstanceId, stream],
-  );
+  const rows = await listRowsForAggregation(connectorInstanceId, stream);
 
   let visibleCount = 0;
   let sum = 0;
