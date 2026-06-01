@@ -272,7 +272,9 @@ function parseBatchApproveSelection(body: Readonly<Record<string, unknown>> | un
     const indexes: number[] = [];
     for (const value of values) {
       const index = typeof value === "number" ? value : Number(value);
-      if (Number.isInteger(index)) indexes.push(index);
+      if (Number.isInteger(index)) {
+        indexes.push(index);
+      }
     }
     out.approvedSourceIndexes = indexes;
   }

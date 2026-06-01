@@ -516,35 +516,35 @@ export interface PendingGrantRequest {
 }
 
 export interface PendingGrant {
+  approveAllGate?: { approve_all_suppressed: boolean; suppression_reasons: string[] } | null;
   batch?: boolean;
   cards?: PendingConsentCard[];
   cumulativeRisk?: PendingConsentCumulativeRisk | null;
-  approveAllGate?: { approve_all_suppressed: boolean; suppression_reasons: string[] } | null;
-  softCapWarning?: boolean;
   manifestStreamNames?: string[] | null;
   request: PendingGrantRequest;
+  softCapWarning?: boolean;
   userCode?: string | null;
 }
 
 type StreamItem = NonNullable<NonNullable<PendingGrantRequest["selection"]>["streams"]>[number];
 
 interface PendingConsentCard {
-  index: number;
-  source?: { id?: string | null; kind?: string | null } | null;
-  sensitivity?: "standard" | "sensitive" | string | null;
   access_mode?: string | null;
-  purpose_code?: string | null;
-  retention?: { max_duration?: string | null; on_expiry?: string | null } | null;
-  resolvedStreams?: StreamItem[] | null;
+  index: number;
   manifestStreamNames?: string[] | null;
+  purpose_code?: string | null;
+  resolvedStreams?: StreamItem[] | null;
+  retention?: { max_duration?: string | null; on_expiry?: string | null } | null;
+  sensitivity?: "standard" | "sensitive" | string | null;
+  source?: { id?: string | null; kind?: string | null } | null;
 }
 
 interface PendingConsentCumulativeRisk {
-  source_count?: number;
-  sensitive_source_count?: number;
   continuous_access_count?: number;
-  no_time_bound_count?: number;
   no_field_projection_count?: number;
+  no_time_bound_count?: number;
+  sensitive_source_count?: number;
+  source_count?: number;
   total_stream_count?: number;
 }
 
@@ -725,7 +725,9 @@ function renderBatchConsentHtml(
     buildPerSourceConfirmForm(cards, requestUri, csrfToken, csrfFieldName, ui),
     approveAllSuppressed ? "" : buildApproveAllForm(cards, requestUri, csrfToken, csrfFieldName, ui),
     denyForm,
-  ].filter(Boolean).join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   const body = [
     ui.renderPageIntro({
@@ -737,7 +739,9 @@ function renderBatchConsentHtml(
     buildBatchRiskHeader(pending.cumulativeRisk, ui),
     buildBatchSourceCards(cards, ui),
     ui.renderSurface({ surface: "human", ariaLabel: "Consent actions", children: actions }),
-  ].filter(Boolean).join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   return ui.renderHostedDocument({
     title: `${providerName} — Batch consent request`,
