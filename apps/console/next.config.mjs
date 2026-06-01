@@ -21,6 +21,23 @@ const nextConfig = {
   ...(allowedDevOrigins.length > 0 ? { allowedDevOrigins } : {}),
   output: 'standalone',
   outputFileTracingRoot: path.join(__dirname, '../..'),
+  outputFileTracingIncludes: {
+    '/well-known/skills/**': [
+      '../../docs/agent-skills/**/*.md',
+      '../../openspec/README.md',
+      '../../pnpm-workspace.yaml',
+    ],
+    '/llms-full.txt': [
+      '../../docs/agent-skills/**/*.md',
+      '../../openspec/README.md',
+      '../../pnpm-workspace.yaml',
+    ],
+    '/llms.txt': [
+      '../../docs/agent-skills/**/*.md',
+      '../../openspec/README.md',
+      '../../pnpm-workspace.yaml',
+    ],
+  },
   reactStrictMode: true,
   experimental: {
     cpus: buildWorkers,
@@ -108,6 +125,14 @@ const nextConfig = {
       {
         source: '/.well-known/oauth-protected-resource',
         destination: '/well-known/oauth-protected-resource',
+      },
+      {
+        source: '/.well-known/skills/:path*',
+        destination: '/well-known/skills/:path*',
+      },
+      {
+        source: '/.well-known/llms.txt',
+        destination: '/llms.txt',
       },
     ];
   },
