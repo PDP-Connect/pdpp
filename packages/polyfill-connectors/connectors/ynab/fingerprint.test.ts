@@ -26,7 +26,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { RecordData } from "../../src/connector-runtime.ts";
-import { openPayeeLocationCursor, payeeLocationRecord } from "./index.ts";
+import { budgetRecord, openBudgetCursor, openPayeeLocationCursor, payeeLocationRecord } from "./index.ts";
 
 interface PayeeLocationInput {
   deleted: boolean;
@@ -198,4 +198,180 @@ test("legacy / malformed prior state is tolerated and yields one full re-emit", 
     locations
   );
   assert.equal(partial.emitted.length, 2, "all malformed entries treated as missing");
+});
+
+// ─── budgets ──────────────────────────────────────────────────────────────
+//
+// `/budgets` is a single full-collection fetch with no server_knowledge
+// delta, so every run re-returns every budget. Without the gate each run
+// appended a new version per budget (~273/budget in the 2026-05-26 churn
+// report). The fingerprint excludes `last_month` and `last_modified_on`
+// because YNAB advances both without a corresponding change to the
+// budget-summary fields this stream projects.
+
+interface BudgetInput {
+  currency_format?: {
+    iso_code?: string | null;
+    currency_symbol?: string | null;
+    symbol_first?: boolean | null;
+    decimal_digits?: number | null;
+    decimal_separator?: string | null;
+    group_separator?: string | null;
+  } | null;
+  date_format?: { format?: string | null } | null;
+  first_month?: string | null;
+  id: string;
+  last_modified_on?: string | null;
+  last_month?: string | null;
+  name: string;
+}
+
+function budget(overrides: Partial<BudgetInput> = {}): BudgetInput {
+  return {
+    id: "B1",
+    name: "My Budget",
+    last_modified_on: "2026-01-01T00:00:00+00:00",
+    first_month: "2024-01-01",
+    last_month: "2026-01-01",
+    currency_format: {
+      iso_code: "USD",
+      currency_symbol: "$",
+      symbol_first: true,
+      decimal_digits: 2,
+      decimal_separator: ".",
+      group_separator: ",",
+    },
+    date_format: { format: "MM/DD/YYYY" },
+    ...overrides,
+  };
+}
+
+interface BudgetPassResult {
+  emitted: RecordData[];
+  state: Record<string, unknown>;
+}
+
+/**
+ * Drive a single `budgets` pass: gate every budget through the cursor,
+ * prune, and return what would have been emitted plus the next STATE shape.
+ * Mirrors the production caller in `index.ts`.
+ */
+function runBudgetPass(priorState: Record<string, unknown>, budgets: readonly BudgetInput[]): BudgetPassResult {
+  const cursor = openBudgetCursor(priorState);
+  const emitted: RecordData[] = [];
+  for (const b of budgets) {
+    const record = budgetRecord(b);
+    if (cursor.shouldEmit(record)) {
+      emitted.push(record);
+    }
+  }
+  cursor.pruneStale();
+  return {
+    emitted,
+    state: { ...priorState, budgets: { fetched_at: "2026-01-01T00:00:00.000Z", fingerprints: cursor.toState() } },
+  };
+}
+
+test("budgets: two identical passes emit each budget exactly once — load-bearing churn fix", () => {
+  const budgets = [budget({ id: "B1", name: "Personal" }), budget({ id: "B2", name: "Business" })];
+
+  const run1 = runBudgetPass({}, budgets);
+  assert.equal(run1.emitted.length, 2, "first run emits every budget");
+
+  const run2 = runBudgetPass(run1.state, budgets);
+  assert.equal(run2.emitted.length, 0, "second run with unchanged source emits nothing");
+
+  const run3 = runBudgetPass(run2.state, budgets);
+  assert.equal(run3.emitted.length, 0, "subsequent runs continue to no-op");
+});
+
+test("budgets: last_month calendar rollover does NOT re-emit", () => {
+  const initial = [budget({ id: "B1", last_month: "2026-01-01" })];
+  const run1 = runBudgetPass({}, initial);
+  assert.equal(run1.emitted.length, 1);
+
+  // The 1st of the next month: YNAB advances last_month automatically with
+  // no user edit to any emitted budget-summary field.
+  const rolled = [budget({ id: "B1", last_month: "2026-02-01" })];
+  const run2 = runBudgetPass(run1.state, rolled);
+  assert.equal(run2.emitted.length, 0, "calendar rollover of last_month is not a budget change");
+});
+
+test("budgets: last_modified_on tick alone does NOT re-emit", () => {
+  const initial = [budget({ id: "B1", last_modified_on: "2026-01-01T00:00:00+00:00" })];
+  const run1 = runBudgetPass({}, initial);
+  assert.equal(run1.emitted.length, 1);
+
+  // A transaction or category edit elsewhere in the budget bumps
+  // last_modified_on but changes none of the emitted budget-summary fields.
+  const touched = [budget({ id: "B1", last_modified_on: "2026-03-15T12:34:56+00:00" })];
+  const run2 = runBudgetPass(run1.state, touched);
+  assert.equal(run2.emitted.length, 0, "last_modified_on tick without a summary-field change is a no-op");
+});
+
+test("budgets: a real summary-field change re-emits only the changed budget", () => {
+  const original = [budget({ id: "B1", name: "Personal" }), budget({ id: "B2", name: "Business" })];
+  const run1 = runBudgetPass({}, original);
+  assert.equal(run1.emitted.length, 2);
+
+  // B1 is renamed (a genuine budget-summary edit); B2 is untouched.
+  const renamed = [budget({ id: "B1", name: "Household" }), budget({ id: "B2", name: "Business" })];
+  const run2 = runBudgetPass(run1.state, renamed);
+  assert.equal(run2.emitted.length, 1, "only the renamed budget re-emits");
+  assert.equal(run2.emitted[0]?.id, "B1");
+});
+
+test("budgets: a currency-locale change re-emits the budget", () => {
+  const original = [budget({ id: "B1", currency_format: { iso_code: "USD", currency_symbol: "$" } })];
+  const run1 = runBudgetPass({}, original);
+  assert.equal(run1.emitted.length, 1);
+
+  const reCurrencied = [budget({ id: "B1", currency_format: { iso_code: "EUR", currency_symbol: "€" } })];
+  const run2 = runBudgetPass(run1.state, reCurrencied);
+  assert.equal(run2.emitted.length, 1, "currency change is a real source fact and re-emits");
+});
+
+test("budgets: carry-forward keeps a skipped budget gated across a third run", () => {
+  const budgets = [budget({ id: "B1" }), budget({ id: "B2" })];
+  const run1 = runBudgetPass({}, budgets);
+  const run2 = runBudgetPass(run1.state, budgets);
+
+  const fps = (run2.state.budgets as { fingerprints?: Record<string, string> }).fingerprints;
+  assert.ok(fps);
+  assert.equal(Object.keys(fps).length, 2, "both ids carried forward despite zero emits this run");
+
+  const run3 = runBudgetPass(run2.state, budgets);
+  assert.equal(run3.emitted.length, 0, "third no-op pass still emits zero");
+});
+
+test("budgets: a budget that disappears from the source is pruned and re-emits if resurrected", () => {
+  const seeded = [budget({ id: "B1" }), budget({ id: "B2" })];
+  const run1 = runBudgetPass({}, seeded);
+
+  // B2 removed at the source (budget deleted / collaboration ended).
+  const reduced = [budget({ id: "B1" })];
+  const run2 = runBudgetPass(run1.state, reduced);
+  assert.equal(run2.emitted.length, 0, "remaining B1 is unchanged — no emit");
+
+  const fps = (run2.state.budgets as { fingerprints?: Record<string, string> }).fingerprints;
+  assert.ok(fps);
+  assert.equal(fps.B1 !== undefined, true);
+  assert.equal(fps.B2, undefined, "disappeared budget pruned from cursor");
+
+  const recreated = [budget({ id: "B1" }), budget({ id: "B2" })];
+  const run3 = runBudgetPass(run2.state, recreated);
+  assert.equal(run3.emitted.length, 1, "resurrected B2 re-emits");
+  assert.equal(run3.emitted[0]?.id, "B2");
+});
+
+test("budgets: legacy state with only fetched_at (no fingerprints) yields one full re-emit", () => {
+  const budgets = [budget({ id: "B1" }), budget({ id: "B2" })];
+
+  // Pre-fingerprint cursor shape: { fetched_at } with no fingerprints key.
+  const legacy = runBudgetPass({ budgets: { fetched_at: "2025-12-31T00:00:00.000Z" } }, budgets);
+  assert.equal(legacy.emitted.length, 2, "legacy fetched_at-only state → full re-emit");
+
+  // After the first run the fingerprints are seeded, so the next run no-ops.
+  const next = runBudgetPass(legacy.state, budgets);
+  assert.equal(next.emitted.length, 0, "subsequent run no-ops once fingerprints exist");
 });

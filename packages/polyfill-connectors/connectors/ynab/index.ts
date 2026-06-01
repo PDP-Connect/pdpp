@@ -291,7 +291,35 @@ export function rewindOneMonth(monthIso: string): string {
 
 // ─── Record builders ────────────────────────────────────────────────────
 
-function budgetRecord(b: YnabBudget): RecordData {
+/**
+ * Fields excluded from the `budgets` fingerprint.
+ *
+ * `last_month` and `last_modified_on` move without a corresponding change to
+ * the budget-summary content this stream actually projects:
+ *
+ *   - `last_month` is the most-recent budget month YNAB has materialized.
+ *     YNAB rolls active budgets forward automatically, so this advances on
+ *     the 1st of every calendar month even when the owner has touched
+ *     nothing. It is a clock, not a user edit to a budget-summary field.
+ *   - `last_modified_on` is the budget's last-modified timestamp. It ticks
+ *     on *any* edit anywhere in the budget — a single transaction, a
+ *     category assignment, a memo — none of which change the fields this
+ *     stream emits (name, currency locale, date format, first month).
+ *     Those edits surface in their own streams (`transactions`,
+ *     `categories`, …); re-emitting the budget summary for them is the
+ *     unbounded forward churn this gate removes (~273 versions/budget in the
+ *     2026-05-26 churn report).
+ *
+ * Every remaining field — name, currency locale, date format, `first_month`,
+ * `deleted` — is a real budget-summary source fact, so a genuine edit to any
+ * of them still re-emits the budget. This matches the design-note rule
+ * "exclude volatile collection-time fields from durable record identity
+ * unless those fields are source facts"
+ * (design-notes/record-version-churn-and-noop-semantics-2026-05-26.md).
+ */
+export const BUDGET_FINGERPRINT_EXCLUDE = ["last_month", "last_modified_on"] as const;
+
+export function budgetRecord(b: YnabBudget): RecordData {
   return {
     id: b.id,
     name: b.name,
@@ -307,6 +335,24 @@ function budgetRecord(b: YnabBudget): RecordData {
     date_format_string: b.date_format?.format ?? null,
     deleted: false,
   };
+}
+
+/**
+ * Open the per-record fingerprint cursor for the `budgets` stream.
+ *
+ * Unlike the per-budget streams, `/budgets` is a single full-collection
+ * fetch keyed by budget id, so there is one cursor for the whole stream
+ * rather than one per budget. The prior fingerprints live alongside the
+ * existing `fetched_at` marker under `state.budgets.fingerprints`; the
+ * cursor's tolerant decoder ignores `fetched_at` and any legacy shape.
+ *
+ * `BUDGET_FINGERPRINT_EXCLUDE` drops the two calendar/clock fields so an
+ * unchanged budget no-ops across runs (see the constant's doc comment).
+ */
+export function openBudgetCursor(state: Record<string, unknown>): FingerprintCursor {
+  return openFingerprintCursor(state.budgets, {
+    excludeFromFingerprint: BUDGET_FINGERPRINT_EXCLUDE,
+  });
 }
 
 function accountRecord(a: YnabAccount, budgetId: string): RecordData {
@@ -928,15 +974,31 @@ if (isMainModule(import.meta.url)) {
       });
 
       if (requested.has("budgets")) {
+        // Gate each budget through a per-record fingerprint so an unchanged
+        // budget is not re-emitted every run. `/budgets` re-returns the full
+        // collection with no server_knowledge delta, so without this gate
+        // each run appended a new version per budget (~273/budget in the
+        // 2026-05-26 churn report). The two calendar/clock fields are
+        // excluded; see `BUDGET_FINGERPRINT_EXCLUDE`.
+        const cursor = openBudgetCursor(state);
         for (const b of budgets) {
-          await trackAndEmit("budgets", budgetRecord(b));
+          const record = budgetRecord(b);
+          if (!cursor.shouldEmit(record)) {
+            continue;
+          }
+          await trackAndEmit("budgets", record);
         }
-        await emit({
-          type: "STATE",
-          stream: "budgets",
-          cursor: { fetched_at: nowIso() },
-        });
-        newState.budgets = { fetched_at: nowIso() };
+        // `/budgets` is a full-collection endpoint, so any id known to the
+        // prior cursor but absent this run was deleted at the source. Prune
+        // so a future re-creation triggers a fresh emit instead of silently
+        // no-opping against a stale fingerprint.
+        cursor.pruneStale();
+        const budgetsCursor = {
+          fetched_at: nowIso(),
+          fingerprints: cursor.toState(),
+        };
+        await emit({ type: "STATE", stream: "budgets", cursor: budgetsCursor });
+        newState.budgets = budgetsCursor;
       }
 
       for (const budgetId of budgetIds) {
