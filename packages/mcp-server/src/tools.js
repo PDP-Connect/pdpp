@@ -66,6 +66,9 @@ const CONNECTOR_INSTANCE_ID_DESCRIPTION =
 const LIMIT_DESCRIPTION =
   'Records per page. Omit for the default page of 25; the maximum is 100 (the spec-core §8 contract). Values above 100 are rejected here rather than silently clamped, so the page size you request is always the page size you get. Page forward with the returned `cursor` instead of asking for a larger page.';
 
+const SEARCH_LIMIT_DESCRIPTION =
+  'Hits per page. Omit for the default page of 25; the maximum is 100 — the bound the published `/v1/search`, `/v1/search/semantic`, and `/v1/search/hybrid` contract declares and every mode honors (mirrored as `capabilities.{lexical,semantic,hybrid}_retrieval.max_limit` in `/.well-known/oauth-protected-resource` and `GET /v1/schema`). Values above 100 are rejected here rather than forwarded to be silently clamped by the RS, so the page size you request is always the page size you get. Page forward with the returned `cursor` (lexical and semantic page; hybrid does not) instead of asking for a larger page.';
+
 const FIELDS_DESCRIPTION =
   'Field allowlist for projection. Field paths must be declared by the stream; advertised by `GET /v1/schema` (`field_capabilities`). Unknown paths are rejected by the RS rather than silently widened.';
 
@@ -378,13 +381,13 @@ export function buildTools({ rs, providerUrl }) {
       name: 'search',
       title: 'Search PDPP records',
       description:
-        'Search records via `GET /v1/search` (lexical), `/v1/search/semantic`, or `/v1/search/hybrid` per the `mode` argument. Returns the RS search envelope plus ChatGPT-compatible flattened `results`. Hits carry `connection_id` and `display_name`; package-source metadata uses canonical `connector_key` for connector type. Pass `connection_id` to scope, omit to fan in. Per-mode pagination, filter, and capability support are advertised by `GET /v1/schema` and the protected-resource metadata `capabilities` block — hybrid mode does not currently support cursors. If the deployment does not advertise search, the RS error envelope is preserved in the tool result. Read-only.',
+        'Search records via `GET /v1/search` (lexical), `/v1/search/semantic`, or `/v1/search/hybrid` per the `mode` argument. Returns the RS search envelope plus ChatGPT-compatible flattened `results`. Hits carry `connection_id` and `display_name`; package-source metadata uses canonical `connector_key` for connector type. Pass `connection_id` to scope, omit to fan in. The page is bounded: omitting `limit` returns at most 25 hits and `limit` is capped at 100 — the bound the published search contract declares and every mode honors (advertised as `capabilities.{lexical,semantic,hybrid}_retrieval.max_limit`). This tool enforces that cap at input validation, so a `limit` above 100 is rejected here rather than forwarded to be silently clamped by the RS. Page forward with the returned `cursor` (lexical and semantic; hybrid does not page) instead of asking for a larger page. Per-mode pagination, filter, and capability support are advertised by `GET /v1/schema` and the protected-resource metadata `capabilities` block. If the deployment does not advertise search, the RS error envelope is preserved in the tool result. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({
           q: z.string().min(1).describe('Search query string.'),
           streams: z.array(z.string()).optional(),
-          limit: z.number().int().positive().max(200).optional(),
+          limit: z.number().int().positive().max(100).optional().describe(SEARCH_LIMIT_DESCRIPTION),
           cursor: z.string().optional(),
           mode: z.enum(['lexical', 'semantic', 'hybrid']).optional(),
           filter: z.string().optional().describe(FILTER_DESCRIPTION),

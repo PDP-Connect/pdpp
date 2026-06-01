@@ -155,7 +155,12 @@ test('query_records prose stays bounded while the canonical envelope remains ver
 test('search prose stays bounded; structuredContent carries both the envelope and the flattened results', async () => {
   const { client, server } = await connectClient(makeFatFetch());
 
-  const result = await client.callTool({ name: 'search', arguments: { q: 'invoice', limit: 200 } });
+  // `limit: 100` is the in-contract maximum (the published search contract caps
+  // `limit` at 100); the fat fetch returns its 200-hit body regardless of the
+  // requested limit, so this still exercises the prose-boundedness lever while
+  // staying within the MCP input cap. (Was `limit: 200`, an out-of-contract
+  // value the input schema now rejects before the handler runs.)
+  const result = await client.callTool({ name: 'search', arguments: { q: 'invoice', limit: 100 } });
   assert.equal(result.isError, undefined);
 
   const proseBytes = byteLength(result.content[0].text);

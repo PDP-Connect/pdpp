@@ -359,6 +359,97 @@ test('5.4 search forwards mode to the correct RS endpoint (lexical/semantic/hybr
   await server.close();
 });
 
+test('5.1 search input schema caps `limit` at 100, matching the published search contract', async () => {
+  // The published `/v1/search`, `/v1/search/semantic`, and `/v1/search/hybrid`
+  // contract (packages/reference-contract -> OpenAPI) declares `limit`
+  // `{minimum:1, maximum:100}` and all three RS modes honor MAX_LIMIT=100
+  // (advertised as `capabilities.*_retrieval.max_limit`). The MCP search tool
+  // previously advertised `max(200)`, over-promising a page size the RS would
+  // silently clamp. The bound here mirrors the contract so the page size an
+  // agent asks for is the page size it gets.
+  const { fetch } = recordingFetch();
+  const { client, server } = await connectClient(fetch);
+
+  const tools = await client.listTools();
+  const searchTool = tools.tools.find((t) => t.name === 'search');
+  assert.ok(searchTool, 'search tool must be exposed');
+  assert.equal(
+    searchTool.inputSchema.properties.limit.maximum,
+    100,
+    'search limit input must advertise the contract maximum of 100, not a larger value the RS would clamp',
+  );
+  assert.ok(
+    searchTool.inputSchema.properties.limit.exclusiveMaximum === undefined,
+    'the maximum must be inclusive so limit=100 is accepted',
+  );
+
+  await client.close();
+  await server.close();
+});
+
+test('5.4 search rejects an over-max `limit` at input validation rather than forwarding it to be clamped', async () => {
+  const { fetch, calls } = recordingFetch();
+  const { client, server } = await connectClient(fetch);
+
+  const overMax = await client.callTool({
+    name: 'search',
+    arguments: { q: 'a', limit: 200 },
+  });
+  assert.equal(overMax.isError, true, 'an over-max search limit must be an error result');
+  const overMaxText = overMax.content?.map((c) => c.text ?? '').join('\n') ?? '';
+  assert.match(
+    overMaxText,
+    /validation|too_big|less than or equal to 100/i,
+    'the error must be an input-validation rejection of the over-max limit',
+  );
+  // It must NOT have reached any search endpoint — the cap is enforced before forwarding.
+  assert.equal(
+    calls.some((c) => new URL(c.url).pathname.startsWith('/v1/search')),
+    false,
+    'over-max limit must be rejected at the MCP input boundary, not forwarded to the RS to be silently clamped',
+  );
+
+  // The inclusive boundary value is accepted and forwarded verbatim.
+  const atMax = await client.callTool({
+    name: 'search',
+    arguments: { q: 'a', limit: 100 },
+  });
+  assert.equal(atMax.isError, undefined, 'limit=100 is a valid argument against the published schema');
+  const searchCall = calls.find((c) => new URL(c.url).pathname === '/v1/search');
+  assert.ok(searchCall, 'limit=100 search must reach the RS');
+  assert.equal(new URL(searchCall.url).searchParams.get('limit'), '100', 'the at-max limit is forwarded verbatim');
+
+  await client.close();
+  await server.close();
+});
+
+test('search description teaches the 100 cap and safe paging so agents stay token-efficient', async () => {
+  const { fetch } = recordingFetch();
+  const { client, server } = await connectClient(fetch);
+
+  const tools = await client.listTools();
+  const searchTool = tools.tools.find((t) => t.name === 'search');
+  assert.ok(searchTool, 'search tool must be exposed');
+  assert.match(
+    searchTool.description,
+    /capped at 100/,
+    'description must state the limit cap (100)',
+  );
+  assert.match(
+    searchTool.description,
+    /cursor/,
+    'description must teach paging with the returned cursor instead of asking for a larger page',
+  );
+  assert.doesNotMatch(
+    searchTool.description,
+    /\b200\b/,
+    'description must not advertise the stale 200 cap',
+  );
+
+  await client.close();
+  await server.close();
+});
+
 test('7.4 token-efficiency: prose content[] is far smaller than structuredContent JSON', async () => {
   const { fetch } = recordingFetch();
   const { client, server } = await connectClient(fetch);
