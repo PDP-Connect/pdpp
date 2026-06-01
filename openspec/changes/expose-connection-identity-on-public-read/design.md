@@ -215,16 +215,25 @@ the `apps/web` → `apps/site` + `apps/console` split
    `rs-search-{lexical,semantic,hybrid}-fan-in.test.js` +
    `search-fan-in-host-shell.test.js` (36 tests). See tasks.md Section 8.
 
-2. **Operator grant-request flow per-connection scope.** **OPEN
-   (product decision).** The grant-evaluation runtime already honors
-   `grant.streams[].connection_id` (covered by
-   `storage-fan-in-read-contract.test.js`); the operator-side UI to
-   *issue* a grant constrained to a single connection lives post-split at
-   `apps/console/src/app/dashboard/lib/operator-grant-request.ts` and
-   `apps/console/src/app/dashboard/grants/request/page.tsx` (confirmed
-   connection-unaware today). The blocker is a product/UX decision (which
-   connections to enumerate, default selection, multi-select semantics),
-   not infra. Tracked under tasks.md Section 4.
+2. **Operator grant-request flow per-connection scope.** **DONE** —
+   shipped in lane `ri-operator-grant-connection-scope-v1`. The operator
+   flow at `apps/console/src/app/dashboard/grants/request/page.tsx` now
+   offers a "Connection" control: for a connector source with more than one
+   active connection it renders a `<select>` with an explicit
+   `All connections (fan-in)` default plus one owner-meaningfully-labelled
+   option per connection; pinning one stamps `streams[].connection_id` on
+   the staged PAR (the existing grant field the runtime already enforces),
+   while a single-connection / provider-native source collapses to a static
+   fan-in note. Connections are enumerated from the already-wired
+   `listConnectorSummaries()` (`GET /_ref/connectors`) and labelled through
+   the shared `formatConnectorNameForDisplay` / `isFallbackConnectionLabel`.
+   The pure projection + stream-selection logic lives in
+   `apps/console/src/app/dashboard/lib/grant-request-connection-pin.ts` and
+   is behaviorally tested by
+   `apps/console/src/app/dashboard/grants/request/connection-pin.test.ts`.
+   No new storage field and no spec delta change — this realizes the
+   existing "Grant with connection constraint" scenario for the operator
+   surface. Tracked under tasks.md Section 4.
 
 3. **Dashboard rename UI.** **DONE** — shipped in `apps/console`
    (lane `ri-console-connection-rename-v1`): inline `RenameConnection`
@@ -278,11 +287,13 @@ shapes, the error envelope, or the consent surface — those are
 contract-frozen and now runtime-honest end-to-end on the reference
 implementation. After lane `ri-connection-identity-consent-labels-v1`
 closed the consent-props mapping gap (owner-meaningful default labels) and
-the consent-card test gap, the only remaining work is one product/UX
-decision: the per-connection grant-request *selection* UI (which
-connections to enumerate per stream, fan-in vs. pin default, multi-select
-semantics). The runtime already enforces `grant.streams[].connection_id`,
-so that UI is purely additive.
+the consent-card test gap, and lane `ri-operator-grant-connection-scope-v1`
+shipped the per-connection grant-request *selection* UI (the operator flow
+now offers an explicit `All connections (fan-in)` default plus a pin per
+connection, stamping `streams[].connection_id` on the staged PAR), every
+in-repo item under this change is landed end-to-end. The only residual is
+the external, out-of-repo hosted MCP gateway tool-description update
+(item 6), which in-repo validation does not gate.
 
 ## MCP schema token-efficiency (2026-05-31)
 

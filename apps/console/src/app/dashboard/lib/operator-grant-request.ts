@@ -4,6 +4,11 @@
  */
 
 import { DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN } from "pdpp-reference-implementation/reference-local-defaults";
+import {
+  buildConnectionPinOptions,
+  type ConnectionPinOption,
+  streamSelectionFromDraft,
+} from "./grant-request-connection-pin.ts";
 import { approveConsentRequest, denyConsentRequest } from "./operator-approvals.ts";
 import {
   getAsInternalUrl,
@@ -11,6 +16,9 @@ import {
   ReferenceServerUnreachableError,
   withOwnerSessionCookie,
 } from "./owner-token.ts";
+import { listConnectorSummaries } from "./ref-client.ts";
+
+export type { ConnectionPinOption } from "./grant-request-connection-pin.ts";
 
 export const DEFAULT_DCR_INITIAL_ACCESS_TOKEN =
   (process.env.PDPP_DCR_INITIAL_ACCESS_TOKENS || "")
@@ -23,6 +31,16 @@ export interface GrantRequestDraft {
   clientId: string;
   clientName: string;
   clientUri: string;
+  /**
+   * Optional per-connection pin for the addressed stream. Empty string ⇒
+   * fan-in: the issued grant omits `streams[].connection_id` and reads union
+   * across every connection the grant authorizes for the stream. A non-empty
+   * value ⇒ the staged PAR pins `streams[0].connection_id` to exactly that
+   * connection (an existing supported grant field — no new storage shape).
+   * The form only ever offers a value the owner saw labelled, satisfying the
+   * "consent surface SHALL have shown the per-connection constraint" scenario.
+   */
+  connectionId: string;
   fields: string;
   initialAccessToken: string;
   purposeCode: string;
@@ -62,14 +80,6 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function normalizeFields(value: string): string[] | undefined {
-  const fields = value
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
-  return fields.length ? fields : undefined;
-}
-
 function trim(value: string | undefined): string {
   return (value ?? "").trim();
 }
@@ -83,6 +93,24 @@ function sourceFromDraft(draft: GrantRequestDraft) {
     kind: draft.sourceKind,
     id: draft.sourceId,
   };
+}
+
+/**
+ * Load the pinnable connections for the draft's current source. Returns `[]`
+ * for non-connector or empty sources, and degrades to `[]` (fan-in only) if
+ * the connector listing is unreachable — the page must never block staging on
+ * connection enumeration.
+ */
+export async function loadConnectionPinOptions(draft: GrantRequestDraft): Promise<ConnectionPinOption[]> {
+  if (draft.sourceKind !== "connector" || !trim(draft.sourceId)) {
+    return [];
+  }
+  try {
+    const response = await listConnectorSummaries();
+    return buildConnectionPinOptions({ id: draft.sourceId, kind: draft.sourceKind }, response.data);
+  } catch {
+    return [];
+  }
 }
 
 export function createDefaultGrantRequestDraft(): GrantRequestDraft {
@@ -99,6 +127,7 @@ export function createDefaultGrantRequestDraft(): GrantRequestDraft {
     accessMode: "single_use",
     retention: "P30D",
     streamName: "",
+    connectionId: "",
     fields: "",
     view: "",
     subjectId: "owner_local",
@@ -120,6 +149,7 @@ function sanitizeDraft(input: Partial<GrantRequestDraft> = {}): GrantRequestDraf
     accessMode: trim(input.accessMode) || base.accessMode,
     retention: trim(input.retention) || base.retention,
     streamName: trim(input.streamName),
+    connectionId: trim(input.connectionId),
     fields: trim(input.fields),
     view: trim(input.view),
     subjectId: trim(input.subjectId) || base.subjectId,
@@ -310,13 +340,7 @@ export async function stageGrantRequest(
         purpose_description: workspace.draft.purposeDescription,
         access_mode: workspace.draft.accessMode,
         retention: workspace.draft.retention,
-        streams: [
-          {
-            name: workspace.draft.streamName,
-            ...(normalizeFields(workspace.draft.fields) ? { fields: normalizeFields(workspace.draft.fields) } : {}),
-            ...(workspace.draft.view ? { view: workspace.draft.view } : {}),
-          },
-        ],
+        streams: [streamSelectionFromDraft(workspace.draft, workspace.draft.streamName)],
       },
     ],
   };
@@ -375,11 +399,7 @@ export async function denyGrantRequestWorkspace(workspaceId: string): Promise<Gr
 
 export async function buildGrantRequestExamples(workspace: GrantRequestWorkspace) {
   const asUrl = await getReferencePublicOrigin();
-  const streamSelection = {
-    name: workspace.draft.streamName || "<stream>",
-    ...(normalizeFields(workspace.draft.fields) ? { fields: normalizeFields(workspace.draft.fields) } : {}),
-    ...(workspace.draft.view ? { view: workspace.draft.view } : {}),
-  };
+  const streamSelection = streamSelectionFromDraft(workspace.draft, workspace.draft.streamName || "<stream>");
   const request = {
     client_id:
       workspace.draft.clientId ||

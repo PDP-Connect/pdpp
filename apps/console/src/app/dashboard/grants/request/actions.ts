@@ -33,6 +33,7 @@ function readDraft(formData: FormData) {
     accessMode: asString(formData.get("access_mode")),
     retention: asString(formData.get("retention")),
     streamName: asString(formData.get("stream_name")),
+    connectionId: asString(formData.get("connection_id")),
     fields: asString(formData.get("fields")),
     view: asString(formData.get("view")),
     subjectId: asString(formData.get("subject_id")),

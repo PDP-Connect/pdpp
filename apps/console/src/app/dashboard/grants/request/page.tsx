@@ -8,8 +8,10 @@ import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { DashboardShell } from "../../components/shell.tsx";
 import {
   buildGrantRequestExamples,
+  type ConnectionPinOption,
   createDefaultGrantRequestDraft,
   getGrantRequestWorkspace,
+  loadConnectionPinOptions,
 } from "../../lib/operator-grant-request.ts";
 import { getOwnerLoginPath } from "../../lib/owner-token.ts";
 import {
@@ -75,7 +77,7 @@ const ACCESS_MODE_OPTIONS = [
   { value: "ongoing", label: "ongoing" },
 ];
 
-function DraftFormFields({ draft }: { draft: Draft }) {
+function DraftFormFields({ connectionOptions, draft }: { connectionOptions: ConnectionPinOption[]; draft: Draft }) {
   return (
     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
       <FormField defaultValue={draft.initialAccessToken} label="Initial access token" name="initial_access_token" />
@@ -115,6 +117,7 @@ function DraftFormFields({ draft }: { draft: Draft }) {
       />
       <FormField defaultValue={draft.retention} label="Retention" name="retention" />
       <FormField defaultValue={draft.streamName} label="Stream name" name="stream_name" />
+      <ConnectionPinField connectionOptions={connectionOptions} draft={draft} />
       <FormField defaultValue={draft.fields} label="Fields (comma-separated)" name="fields" placeholder="id, name" />
       <FormField defaultValue={draft.view} label="View" name="view" />
       <label className="flex flex-col gap-1 md:col-span-2 xl:col-span-3" htmlFor="grant-request-purpose-description">
@@ -127,6 +130,54 @@ function DraftFormFields({ draft }: { draft: Draft }) {
         />
       </label>
     </div>
+  );
+}
+
+const FAN_IN_OPTION_VALUE = "";
+const FAN_IN_OPTION_LABEL = "All connections (fan-in)";
+
+/**
+ * Per-connection pin for the addressed stream. The default option is an
+ * explicit "All connections (fan-in)" — never a silent fan-in and never a
+ * silent pin. When the source is a connector with more than one active
+ * connection, the owner may pin one; the chosen `connection_id` rides on
+ * `streams[].connection_id` (an existing grant field the read path enforces).
+ *
+ * For a single-connection or provider-native source there is nothing to
+ * disambiguate, so the control collapses to a static "fan-in" note and posts
+ * the empty (fan-in) value — preserving the prior single-connection shape.
+ */
+function ConnectionPinField({ connectionOptions, draft }: { connectionOptions: ConnectionPinOption[]; draft: Draft }) {
+  if (connectionOptions.length <= 1) {
+    return (
+      <label className="flex min-w-0 flex-col gap-1" htmlFor="grant-request-connection_id">
+        <span className="pdpp-eyebrow">Connection</span>
+        <input name="connection_id" type="hidden" value={FAN_IN_OPTION_VALUE} />
+        <span
+          className="pdpp-caption rounded-md border border-border/80 border-dashed bg-muted/20 px-3 py-2 text-muted-foreground"
+          data-testid="connection-pin-fan-in-only"
+          id="grant-request-connection_id"
+        >
+          {connectionOptions.length === 1 ? "One connection — reads cover it (fan-in)." : "All connections (fan-in)."}
+        </span>
+      </label>
+    );
+  }
+  return (
+    <label className="flex min-w-0 flex-col gap-1" htmlFor="grant-request-connection_id">
+      <span className="pdpp-eyebrow">Connection</span>
+      <Select defaultValue={draft.connectionId} id="grant-request-connection_id" name="connection_id">
+        <option value={FAN_IN_OPTION_VALUE}>{FAN_IN_OPTION_LABEL}</option>
+        {connectionOptions.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
+          </option>
+        ))}
+      </Select>
+      <span className="pdpp-caption text-muted-foreground">
+        Pin to one connection, or fan in across all the grant authorizes.
+      </span>
+    </label>
   );
 }
 
@@ -146,7 +197,15 @@ function DraftFormActions() {
   );
 }
 
-function DraftSection({ draft, workspace }: { draft: Draft; workspace: Workspace | null }) {
+function DraftSection({
+  connectionOptions,
+  draft,
+  workspace,
+}: {
+  connectionOptions: ConnectionPinOption[];
+  draft: Draft;
+  workspace: Workspace | null;
+}) {
   return (
     <Section
       description="Fill out the PAR parameters, save the draft, then register the client against the AS."
@@ -154,7 +213,7 @@ function DraftSection({ draft, workspace }: { draft: Draft; workspace: Workspace
     >
       <form className="space-y-4">
         <input name="workspace_id" type="hidden" value={workspace?.workspaceId ?? ""} />
-        <DraftFormFields draft={draft} />
+        <DraftFormFields connectionOptions={connectionOptions} draft={draft} />
         <DraftFormActions />
       </form>
     </Section>
@@ -274,6 +333,7 @@ export default async function GrantRequestPage({ searchParams }: { searchParams:
   const workspace = params.workspace ? getGrantRequestWorkspace(params.workspace) : null;
   const draft = workspace?.draft ?? createDefaultGrantRequestDraft();
   const examples = workspace ? await buildGrantRequestExamples(workspace) : null;
+  const connectionOptions = await loadConnectionPinOptions(draft);
   const error = params.error ?? workspace?.lastError ?? null;
   const ownerLoginUrl = getOwnerLoginPath();
 
@@ -289,7 +349,7 @@ export default async function GrantRequestPage({ searchParams }: { searchParams:
 
       {error ? <WorkspaceError message={error} /> : null}
 
-      <DraftSection draft={draft} workspace={workspace} />
+      <DraftSection connectionOptions={connectionOptions} draft={draft} workspace={workspace} />
       <WorkspaceStateSection workspace={workspace} />
       {workspace?.stagedRequest ? <DriveConsentSection ownerLoginUrl={ownerLoginUrl} workspace={workspace} /> : null}
       {examples ? <EquivalentsSection examples={examples} /> : null}
