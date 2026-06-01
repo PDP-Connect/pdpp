@@ -4,26 +4,38 @@
 Define the durable architecture and boundary rules for the PDPP reference implementation in this repository without competing with the normative PDPP protocol specs.
 ## Requirements
 ### Requirement: The reference implementation remains a forkable substrate
-The forkable implementation substrate SHALL live in `reference-implementation/` and SHALL remain usable without the website runtime.
+
+The forkable implementation substrate SHALL live in `reference-implementation/` and SHALL remain usable without either Next deployable runtime (the public-site deployable or the operator-console deployable).
 
 #### Scenario: An implementer evaluates the reference
 - **WHEN** an implementer clones the repository to study or fork the reference implementation
-- **THEN** they SHALL be able to run and understand the core reference substrate from `reference-implementation/` without depending on `apps/web`
+- **THEN** they SHALL be able to run and understand the core reference substrate from `reference-implementation/` without depending on the public-site or operator-console deployable
 
 #### Scenario: The website changes independently
-- **WHEN** the website or docs application changes its internal implementation
-- **THEN** the forkable reference substrate SHALL remain the authoritative runnable implementation artifact rather than becoming coupled to website-only code paths
+- **WHEN** either Next deployable changes its internal implementation
+- **THEN** the forkable reference substrate SHALL remain the authoritative runnable implementation artifact rather than becoming coupled to deployable-only code paths
 
 ### Requirement: The website is a downstream consumer
-`apps/web` SHALL act as a downstream consumer of the reference implementation and SHALL not define the primary reference contract.
 
-#### Scenario: A bridge route exists for the website
-- **WHEN** `apps/web` exposes a bridge route to the reference implementation
+The reference implementation's downstream consumer SHALL be split into two Next deployables — a public-site deployable (`apps/site` or its successor) and an operator-console deployable (`apps/console` or its successor) — that consume the reference implementation independently. Neither deployable SHALL define the primary reference contract. The public-site deployable SHALL NOT depend on a running reference-implementation AS/RS. The operator-console deployable SHALL act as the BFF in front of a co-deployed reference-implementation AS/RS for the operator's `/dashboard/**` experience.
+
+#### Scenario: A bridge route exists for the operator console
+
+- **WHEN** the operator-console deployable exposes a bridge route to the reference implementation
 - **THEN** that bridge SHALL reflect the current reference contract honestly and SHALL not invent a stronger or different protocol contract than the underlying reference implementation exposes
+- **AND** the bridge SHALL be owned by the operator-console deployable rather than by the public-site deployable
 
-#### Scenario: The website needs traces or examples
-- **WHEN** the website renders traces, examples, or demos derived from the reference implementation
+#### Scenario: The public site renders documentation and demos
+
+- **WHEN** the public-site deployable renders protocol docs, the reference explainer, the mock sandbox, the OpenSpec viewer, the contributor workbench, or LLM index files
 - **THEN** those artifacts SHALL be treated as derived explanatory surfaces rather than as the implementation boundary itself
+- **AND** the public-site deployable SHALL build and serve without a running reference-implementation AS/RS process
+
+#### Scenario: A downstream deployable changes independently
+
+- **WHEN** the public-site deployable or the operator-console deployable changes its internal implementation
+- **THEN** the forkable reference substrate in `reference-implementation/` SHALL remain the authoritative runnable implementation artifact rather than becoming coupled to deployable-specific code paths
+- **AND** the other deployable SHALL be unaffected unless it explicitly shares code through the operator UI workspace package
 
 ### Requirement: Native and polyfill realizations stay honest
 The reference implementation SHALL support both native-provider and polyfill realizations over one engine substrate while keeping their public source identity honest. Public artifacts SHALL identify the data source with a single discriminated **source object** of shape `{ kind: 'connector' | 'provider_native', id: string }` rather than with parallel top-level `connector_id` and `provider_id` scalars. The kind discriminator names the realization; the `id` field carries the kind-keyed identifier (a registered connector id when `kind = 'connector'`, a registered native provider id when `kind = 'provider_native'`).
@@ -554,10 +566,10 @@ The reference SHALL NOT alias `/_ref/search` to `/v1/search`, SHALL NOT serve th
 
 ### Requirement: The reference SHALL realize the semantic-retrieval experimental extension over a single internal enforcement path
 
-The reference implementation SHALL realize the public `semantic-retrieval` extension defined in the `semantic-retrieval` capability through one internal helper that performs grant resolution, plan construction, embedding invocation, vector-index lookup, and grant-safe snippet generation in the same code path. The public `GET /v1/search/semantic` route handler SHALL delegate to that helper. Reference-internal callers (including the website dashboard) SHALL reach semantic retrieval through the same public route over HTTP, not through a parallel direct-database path. The reference SHALL NOT define a second semantic retrieval contract.
+The reference implementation SHALL realize the public `semantic-retrieval` extension defined in the `semantic-retrieval` capability through one internal helper that performs grant resolution, plan construction, embedding invocation, vector-index lookup, and grant-safe snippet generation in the same code path. The public `GET /v1/search/semantic` route handler SHALL delegate to that helper. Reference-internal callers (including the operator-console dashboard) SHALL reach semantic retrieval through the same public route over HTTP, not through a parallel direct-database path. The reference SHALL NOT define a second semantic retrieval contract.
 
 #### Scenario: The dashboard helper reaches semantic retrieval through the public route
-- **WHEN** a reference-side caller in `apps/web/src/app/dashboard/lib/rs-client.ts` requests semantic retrieval over owner records
+- **WHEN** a reference-side caller in `apps/console/src/app/dashboard/lib/rs-client.ts` requests semantic retrieval over owner records
 - **THEN** it SHALL obtain those results by calling the public `GET /v1/search/semantic` endpoint with an owner-bound bearer token
 - **AND** it SHALL NOT compute semantic results by reaching into the vector index or the embedding backend directly
 
@@ -5242,7 +5254,7 @@ The reference implementation SHALL gate every canonical reference operation modu
 
 #### Scenario: An operation module imports a forbidden concrete
 
-- **WHEN** any operation module under `reference-implementation/operations/<name>/index.ts` introduces a static import that resolves a specifier of `fastify`, `express`, `next/`, `better-sqlite3`, `pg`, `./db`, `../db`, `../lib/db`, `../server/db`, `../server/records`, `../server/auth`, `../server/index`, `apps/web`, `_demo/`, `node:process`, or `process`
+- **WHEN** any operation module under `reference-implementation/operations/<name>/index.ts` introduces a static import that resolves a specifier of `fastify`, `express`, `next/`, `better-sqlite3`, `pg`, `./db`, `../db`, `../lib/db`, `../server/db`, `../server/records`, `../server/auth`, `../server/index`, `apps/site`, `_demo/`, `node:process`, or `process`
 - **AND** the import takes any standard ES static-import shape — bare side-effect (`import "<x>";`), default (`import x from "<x>";`), namespace (`import * as x from "<x>";`), named (`import { x } from "<x>";`), type-only (`import type { X } from "<x>";`), or re-export (`export { x } from "<x>";`, `export * from "<x>";`)
 - **THEN** the discovery-based boundary test SHALL fail with a message that names the module and the forbidden import
 
@@ -5874,7 +5886,7 @@ runs in long-lived local and Docker deployments.
 
 ### Requirement: Browser-surface substrate SHALL be isolated from reference-owned runtime integrations
 
-The reference implementation SHALL consume backend-agnostic remote-surface lease/state-machine substrate from a private internal package. That package SHALL own remote-surface types, browser-surface lease state transitions, capacity policy, fencing tokens, queue ordering, restart reconciliation policy, and backend allocator interfaces. The package SHALL NOT import reference implementation, server, Docker, dashboard, or connector modules.
+The reference implementation SHALL consume backend-agnostic remote-surface lease/state-machine substrate from a private internal package. That package SHALL own remote-surface types, browser-surface lease state transitions, capacity policy, fencing tokens, queue ordering, restart reconciliation policy, and backend allocator interfaces. The package SHALL NOT import reference implementation, server, Docker, dashboard/Next-deployable, or connector modules.
 
 Reference-owned code SHALL continue to own persistence adapters, spine and run events, connector launch integration, Docker Compose wiring, and allocator sidecar process implementation.
 
@@ -5893,7 +5905,7 @@ Reference-owned code SHALL continue to own persistence adapters, spine and run e
 #### Scenario: Package dependency boundaries are checked
 
 - **WHEN** `packages/remote-surface` is inspected
-- **THEN** it SHALL NOT import from `reference-implementation`, server modules, Docker implementation code, `apps/web`, or connector modules
+- **THEN** it SHALL NOT import from `reference-implementation`, server modules, Docker implementation code, the public-site or operator-console deployable (`apps/site`, `apps/console`), or connector modules
 
 ### Requirement: n.eko browser surfaces SHALL be leased before connector launch
 
@@ -6096,7 +6108,7 @@ The reference implementation SHALL extract backend-neutral remote-surface stream
 #### Scenario: Package dependency boundaries are checked
 
 - **WHEN** `packages/remote-surface` is inspected
-- **THEN** it SHALL NOT import from `reference-implementation`, `apps/web`, `packages/polyfill-connectors`, Docker implementation code, or server route modules
+- **THEN** it SHALL NOT import from `reference-implementation`, the public-site or operator-console deployable (`apps/site`, `apps/console`), `packages/polyfill-connectors`, Docker implementation code, or server route modules
 
 ### Requirement: Remote-surface client behavior SHALL be reusable outside the dashboard
 
@@ -7747,3 +7759,31 @@ the schema response.
 - **THEN** it SHALL be a pure transform applied to the response the canonical `rs.schema.get` operation already produced, after the operation runs and before envelope finalization
 - **AND** it SHALL NOT recompute visibility, grant scope, or disclosure totals
 - **AND** the route contract and generated artifacts SHALL describe the compact selector and response marker without making compact the default
+
+### Requirement: The reference deployable shape SHALL be three independent artifacts
+
+The reference implementation SHALL produce three independently buildable and deployable artifacts from this repository: the public-site deployable, the operator-console deployable, and the reference-implementation AS/RS service. Each SHALL be deployable without the others. Shared UI between the public-site sandbox and the operator-console dashboard SHALL live in a workspace package consumed by both rather than being duplicated.
+
+#### Scenario: Three deployable artifacts exist
+
+- **WHEN** the repository is built for release
+- **THEN** the build SHALL produce a public-site deployable, an operator-console deployable, and a reference-implementation AS/RS deployable
+- **AND** each artifact SHALL be deployable in isolation
+
+#### Scenario: Sandbox and dashboard share UI
+
+- **WHEN** the public-site sandbox and the operator-console dashboard render the same feature surface (records, search, grants, runs, traces, deployment, timelines, or related operator UI)
+- **THEN** the shared feature components SHALL live in a workspace package (e.g. `packages/operator-ui`) imported by both deployables
+- **AND** neither deployable SHALL duplicate those feature components in its own source tree
+
+#### Scenario: The operator deploys console + reference only
+
+- **WHEN** an operator runs `docker compose up` (or the equivalent local deploy) for a self-hosted PDPP reference instance
+- **THEN** the operator-console deployable and the reference-implementation AS/RS service SHALL be sufficient to serve `/dashboard/**` and the AS/RS routes
+- **AND** the public-site deployable SHALL NOT be required for that deployment to function
+
+#### Scenario: The reference-implementation service stays a substrate
+
+- **WHEN** the public-site deployable or the operator-console deployable evolves
+- **THEN** the reference-implementation service SHALL remain runnable on its own (its existing CLI entrypoints, AS/RS HTTP routes, and `hosted-ui.js`-served `/consent`, `/device`, `/owner/login` pages SHALL keep working without the operator-console deployable)
+- **AND** the reference-implementation service SHALL NOT acquire build-time or runtime dependencies on either Next deployable

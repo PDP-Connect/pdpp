@@ -45,7 +45,7 @@ The dashboard route family SHALL be treated as stateful live-instance operation.
 - **THEN** `/dashboard/**` and the BFF/proxy routes (`/_ref/**`, `/v1/**`, `/oauth/**`, `/.well-known/**`, `/consent`, `/device`, `/owner/**`, `/__pdpp/**`, `/connectors/**`, `/neko/**`, `/agent-connect`) SHALL be owned by the operator-console deployable
 - **AND** the BFF/proxy SHALL terminate at the co-deployed AS/RS over the internal operator network rather than over the public internet
 
-### Requirement: A sandbox surface SHALL be mock-backed and pedagogical
+### Requirement: A sandbox surface SHALL be mock-backed and clearly distinct from live operation
 
 Any public sandbox surface SHALL be mock-backed, resettable, and clearly labeled as simulated. It SHALL teach protocol flows and API shapes without collecting real platform credentials or presenting itself as a live owner reference instance. The sandbox SHALL be owned by the public-site deployable so it remains reachable from `pdpp.dev` without any reference-implementation runtime.
 

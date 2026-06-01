@@ -1,10 +1,10 @@
 # Public Site Vs Reference Server Surface Split
 
-Status: sprint-needed
+Status: decided
 Owner: reference implementation owner
 Created: 2026-05-21
-Updated: 2026-05-21
-Related: openspec/specs/reference-surface-topology/spec.md, openspec/specs/reference-implementation-architecture/spec.md, openspec/changes/standardize-pdpp-package-publishing, design-notes/full-context-refresh.md, docs/package-release-policy.md
+Updated: 2026-06-01
+Related: openspec/specs/reference-surface-topology/spec.md, openspec/specs/reference-implementation-architecture/spec.md, openspec/changes/archive/2026-06-01-split-public-site-and-operator-console, openspec/changes/standardize-pdpp-package-publishing, design-notes/full-context-refresh.md, docs/package-release-policy.md
 
 ## Question
 
@@ -259,3 +259,4 @@ The recommended sequence is: open `split-public-site-and-operator-console` first
 ## Decision Log
 
 - 2026-05-21: Captured. Inspected `apps/web/src/app/**`, `apps/web/src/proxy.ts`, `reference-implementation/server/index.js` (and `hosted-ui.js`), `pnpm-workspace.yaml`, `docker-compose.yml`, `docs/package-release-policy.md`, `openspec/specs/reference-surface-topology/spec.md`, current Next.js Multi-Zones docs, and current Turborepo docs. Current conclusion: split `apps/web` into `apps/site` (public) and `apps/console` (operator + BFF), keep `reference-implementation` as the AS/RS Node service, extract a `packages/operator-ui` for sandbox/dashboard component sharing, and adopt Turborepo as a follow-up change after the split lands. Multi-Zones is available as an optional operator-deployment composition primitive but is not the default. Two OpenSpec changes are required before implementation, plus an optional `reference-implementation/` → `apps/reference/` rename later.
+- 2026-06-01: Decided and implemented through OpenSpec change `split-public-site-and-operator-console`, archived at `openspec/changes/archive/2026-06-01-split-public-site-and-operator-console`. Final shape: public `apps/site`, operator `apps/console`, shared `packages/operator-ui`, and the existing `reference-implementation` AS/RS service. Turborepo adoption and any future `reference-implementation/` relocation remain separate follow-ups, not blockers for this decision.

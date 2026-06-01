@@ -1,6 +1,6 @@
 ## MODIFIED Requirements
 
-### Requirement: Root spec files SHALL be canonical for any spec with both a root and a public-site copy
+### Requirement: Root spec files SHALL be canonical for any spec with both a root and a web copy
 
 For any spec that exists at both `spec-*.md` at the repository root and `apps/site/content/docs/spec-*.md`, the root file SHALL be the canonical source. The public-site copy SHALL be treated as a derived publication artifact, not as a parallel source of truth.
 
@@ -16,7 +16,7 @@ For any spec that exists at both `spec-*.md` at the repository root and `apps/si
 - **WHEN** the root spec file and its public-site counterpart disagree on body content
 - **THEN** the reviewer SHALL treat the root file as authoritative and the public-site copy as the file requiring correction
 
-### Requirement: Public-site copies of canonical-root specs SHALL surface the root Status and Date
+### Requirement: Web copies of canonical-root specs SHALL surface the root Status and Date
 
 The public-site copy of any canonical-root spec SHALL surface the root file's `Status:` and `Date:` text in a form a public reader can see, so a public reader sees the same normative posture a forking implementer sees.
 
@@ -31,7 +31,7 @@ The public-site copy of any canonical-root spec SHALL surface the root file's `S
 - **WHEN** a root `spec-*.md` is marked superseded
 - **THEN** the public-site copy SHALL display the superseded status above the body, before any normative-flavored content the reader could mistake for current guidance
 
-### Requirement: Public-site-only extension specs SHALL be limited to a named allowlist
+### Requirement: Web-only extension specs SHALL be limited to a named allowlist
 
 A `spec-*.md` file MAY exist only under `apps/site/content/docs/` (with no root counterpart) only if it is an opt-in extension explicitly listed in this requirement. Any other public-site-only spec is drift and SHALL be either given a root counterpart or removed.
 
@@ -52,7 +52,7 @@ The current public-site-only extension allowlist:
 - **THEN** the drift check SHALL fail
 - **AND** the contributor SHALL either add a root counterpart, remove the public-site file, or extend the allowlist via OpenSpec
 
-### Requirement: A drift-check gate SHALL fail when canonical-root specs disagree with their public-site copies
+### Requirement: A drift-check gate SHALL fail when canonical-root specs disagree with their web copies
 
 The repository SHALL provide an automated check (for example `pnpm spec:check`) that fails when a canonical-root spec disagrees with its public-site counterpart in the body content, after normalising publication-format-only differences such as frontmatter, the leading Status/Date callout, document-title heading level, and Markdown anchor IDs.
 
