@@ -50,7 +50,11 @@ If Chase exposes a UI/native transaction ID, use `account_id|ui_transaction_id`.
 - Consumers may double count if they combine `current_activity` and `transactions` naively. Mitigation: stream descriptions and fields must clearly label status and source.
 - Pending bank data may change after collection. Mitigation: include `status`, `source`, and `fetched_at`; do not advertise rows as settled.
 
-## Open Questions
+## Deferred Questions
+
+These questions remain outside this change and do not block archive because the
+accepted stream contract already treats `current_activity` as volatile
+visibility data rather than a settled ledger.
 
 - Should the reference implementation emit tombstones for current activity rows missing from a later scrape, or rely on `fetched_at` freshness initially?
 - Should a later cross-bank capability define generic pending/current financial activity semantics, or should this remain connector-specific until more banks are implemented?
@@ -65,4 +69,4 @@ Whether the live Chase account activity surface exposes stable native IDs (in DO
 
 **Architectural response already in place:** The connector prefers `account_id|ui_transaction_id` when a UI ID is present, and falls back to the deterministic composite key otherwise. The `current_activity` stream is modeled as `mutable_state` volatile visibility data, not as a settled ledger. Durable posted identity remains in QFX `transactions` keyed by `account_id|fitid`.
 
-**Action if native IDs are discovered:** If a live investigation confirms that Chase exposes stable native transaction IDs for the current-activity surface, the connector key strategy in `packages/polyfill-connectors/` should be updated to prefer those IDs, and this residual risk should be retired. No protocol or schema change is required — the `ui_transaction_id` field already exists in the schema to hold such a value.
+**Action if native IDs are discovered:** If a live investigation confirms that Chase exposes stable native transaction IDs for the current-activity surface, the connector key strategy in `packages/polyfill-connectors/` should be updated to prefer those IDs, and this residual risk should be retired. No protocol or schema change is required; the `ui_transaction_id` field already exists in the schema to hold such a value.
