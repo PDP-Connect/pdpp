@@ -32,9 +32,9 @@ fingerprint already in production.
 - Add pure-helper and fingerprint-parity test coverage for the new policy.
 
 No new HTTP route, schedule, or automatic job. No change to the retention
-rule, backup/apply safety, dry-run default, or any public read path. No live
-data is mutated by this change; running `--apply` against live data remains an
-owner-gated manual step.
+rule, backup/apply safety, dry-run default, or any public read path. The live
+owner apply was completed on 2026-06-01 after dry-run validation; rollback is
+available through the per-run backup table recorded in `design.md`.
 
 ## Capabilities
 

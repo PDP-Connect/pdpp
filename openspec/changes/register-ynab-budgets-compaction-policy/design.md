@@ -89,15 +89,22 @@ the retained-size projection dirty and the rebuild runs, the `budgets`
   passes, including the new `ynab/budgets` parity fixture and the static guard
   that every registered policy has a parity fixture.
 
+## Live Closeout
+
+- 2026-06-01: Owner ran the policy against the live `ynab/budgets` scope after
+  a read-only dry-run reported `scannedVersions=1095`,
+  `removableVersions=1086`, `retainedVersionsAfter=9`, and an estimated 437,986
+  removable JSON bytes. `--apply` deleted 1,086 rows and backed them up into
+  `compact_record_history_backup_1780286991290_636117`.
+- A post-apply dry-run reported `scannedVersions=9`, `removableVersions=0`,
+  `retainedVersionsAfter=9`, and `estimatedRemovedBytes=0`.
+- The retained-size projection was reconciled through the existing dirty-row
+  path. It repaired 1 stream and 1 connection; the live projection now reports
+  4 `budgets` records, 9 retained history rows, 3,629 history JSON bytes, 2.25
+  versions per record, and zero dirty retained-size flags.
+
 ## Residual Risks
 
-- **Historical live compaction is still owner-gated.** This change makes the
-  `budgets` policy *available*; it does not run it. The dashboard churn notice
-  for `ynab / budgets` persists until an owner runs the tool with `--apply`
-  against the live database (which creates a per-run backup table as the
-  rollback handle). That is the named human/live gate.
-- **Selector behavior on real budgets history is exercised only by seeded
-  fixtures here.** The Postgres-backed integration tests in the test file would
-  cover an end-to-end seed, but require `PDPP_TEST_POSTGRES_URL`; they are not
-  run in this lane. A dry-run against live data (read-only, no `--apply`) is the
-  recommended first owner validation before any apply.
+- **The backup table remains the rollback handle.** The live compaction is
+  complete, but the per-run backup table should not be dropped until the owner
+  is satisfied with downstream dashboard and query behavior.

@@ -37,6 +37,12 @@
   — pass.
 - [x] `pnpm exec openspec validate register-ynab-budgets-compaction-policy --strict`
   — pass.
-- [ ] (owner/live, deferred) Dry-run the tool against the live `ynab/budgets`
-  scope to confirm a non-zero `removableVersions`, then `--apply` with the
-  per-run backup table as the rollback handle. Owner-gated; not run in this lane.
+- [x] Dry-run the tool against the live `ynab/budgets` scope, apply with the
+  per-run backup table as the rollback handle, and reconcile the retained-size
+  projection. Owner live evidence captured 2026-06-01:
+  `scannedVersions=1095`, `removableVersions=1086`,
+  `retainedVersionsAfter=9`; `--apply` backed up 1,086 rows into
+  `compact_record_history_backup_1780286991290_636117`; post-apply dry-run
+  reported `removableVersions=0`; retained-size reconcile repaired 1 stream and
+  1 connection; live projection now reports 4 records, 9 history rows, 2.25
+  versions per record, and zero dirty retained-size flags.
