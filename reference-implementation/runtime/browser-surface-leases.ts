@@ -198,7 +198,9 @@ function emptyToUndefined(value: string | undefined): string | undefined {
 
 function defaultStaticProfileKey(managedConnectorIds: readonly string[]): string | undefined {
   const [connectorId] = managedConnectorIds;
-  return connectorId && managedConnectorIds.length === 1 ? defaultProfileKeyForManagedConnectorId(connectorId) : undefined;
+  return connectorId && managedConnectorIds.length === 1
+    ? defaultProfileKeyForManagedConnectorId(connectorId)
+    : undefined;
 }
 
 function defaultProfileKeyForManagedConnectorId(connectorId: string): string {
