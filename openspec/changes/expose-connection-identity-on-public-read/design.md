@@ -24,7 +24,7 @@ A 2026-05-24 read-only audit (`tmp/workstreams/rh-item2-mcp-disambiguation-audit
 - PDPP's public read contract addresses data by stream name. No grant-authorized read endpoint (`rs-streams-list`, `rs-records-list`, `rs-streams-detail`, `rs-records-detail`, `rs-search-lexical`, `rs-search-semantic`, `rs-search-hybrid`, `rs-blobs-read`) carries a connection dimension on input, output, grant scope, or typed error.
 - `connector_instance_id` is already first-class in storage (`reference-implementation/server/postgres-*.js`, `connector-instance-store.js`) and on operator-only surfaces (`ref-connectors-list/index.ts:43-46` returns `connector_display_name`, `connector_instance_id`, and per-instance `display_name`). But `ref/*` is operator-scoped and is not reachable by MCP clients or grant-authorized callers.
 - The only user-reachable `ambiguous_connector_instance` error today is scheduler-side, at `reference-implementation/runtime/controller.ts:1994`. Users mis-attribute that error to MCP calls.
-- Consent UI (`apps/web/src/components/pdpp/consent-card.tsx`, `apps/web/src/app/dashboard/grants/request/page.tsx`) has no connection dimension. A grant covering two Gmail accounts cannot distinguish them on the consent card.
+- Consent UI (at the time this gap was identified, `apps/web/src/components/pdpp/consent-card.tsx` and `apps/web/src/app/dashboard/grants/request/page.tsx`; post-split these live at `apps/site/src/components/pdpp/consent-card.tsx` and `apps/console/src/app/dashboard/grants/request/page.tsx`) had no connection dimension. A grant covering two Gmail accounts cannot distinguish them on the consent card.
 
 The standing principle in `openspec/changes/define-connector-instances/specs/reference-implementation-architecture/spec.md` makes connector instance identity reference-runtime-only until a concrete interoperability need promotes it. MCP disambiguation is that need.
 
@@ -95,11 +95,11 @@ The HTTP/JSON-RPC mapping SHALL be defined alongside existing typed RS errors.
 
 ### Owner-Editable Display Name
 
-`ref-connectors-list` already reads `display_name`. This change adds an owner-authenticated mutation to write it. The mutation SHALL live on the same operator surface as the existing connector-instance read; it SHALL NOT be exposed to grant-authorized clients. Promoting `display_name` to the public read contract without making it editable would freeze inherited labels (including the `legacy (pre-header)` string at `apps/web/src/app/dashboard/components/views/deployment-diagnostics-view.tsx:94`) onto a protocol surface, which would be a worse outcome than the current opacity.
+`ref-connectors-list` already reads `display_name`. This change adds an owner-authenticated mutation to write it. The mutation SHALL live on the same operator surface as the existing connector-instance read; it SHALL NOT be exposed to grant-authorized clients. Promoting `display_name` to the public read contract without making it editable would freeze inherited labels (including the `legacy (pre-header)` string that shipped at `apps/web/src/app/dashboard/components/views/deployment-diagnostics-view.tsx:94`, since replaced with `"unknown (pre-header)"` and, post-split, living at `apps/console/.../views/deployment-diagnostics-view.tsx` and `apps/site/.../views/deployment-diagnostics-view.tsx`) onto a protocol surface, which would be a worse outcome than the current opacity.
 
 ### Consent UI
 
-`consent-card.tsx` props SHALL gain a connection dimension. The card SHALL render scope rows grouped by connector type with per-connection sub-rows showing `display_name` when more than one connection falls under the grant. The request flow under `apps/web/src/app/dashboard/grants/request/` SHALL pass the dimension through. User-visible `legacy`/`default_account` text SHALL be removed from the primary label position; the rendered default for a never-renamed connection SHALL be an owner-meaningful string derived from connector type plus a stable disambiguator.
+`consent-card.tsx` props SHALL gain a connection dimension. The card SHALL render scope rows grouped by connector type with per-connection sub-rows showing `display_name` when more than one connection falls under the grant. (Landed post-split in `apps/site/src/components/pdpp/consent-card.tsx`: `ConsentCardStream.connections?: ConsentCardConnection[]`, `ConnectionScopeList`, `hasMultipleConnections`.) The request flow — post-split at `apps/console/src/app/dashboard/grants/request/` — SHALL pass the dimension through; that per-connection selection UI remains open as a product decision (the grant-evaluation runtime already enforces the constraint). User-visible `legacy`/`default_account` text SHALL be removed from the primary label position; the rendered default for a never-renamed connection SHALL be an owner-meaningful string derived from connector type plus a stable disambiguator.
 
 ### `connector_instance_id` Compatibility
 
@@ -199,42 +199,55 @@ so the AS app crashed at boot under any test that called
 and removes the unregistered `{ contract: 'refSetConnectionDisplayName' }`
 opt (no contract manifest existed for it).
 
-## Deferred Items (as of branch `complete-storage-fan-in-read-contract`, 2026-05-26)
+## Deferred Items (as of branch `complete-storage-fan-in-read-contract`, 2026-05-26; tail-reconciled 2026-06-01)
 
 The contract, MCP server, consent-card, server-side rs-\* fan-in
 threading, identifier-ambiguity emission, grant-scope `connection_id`
-enforcement, and owner-mode `display_name` mutation now land end-to-end
-in this tranche. The following items remain intentionally **deferred**;
-each has a single safe pickup point:
+enforcement, and owner-mode `display_name` mutation land end-to-end
+in this tranche. The items below were re-checked on 2026-06-01 against
+the `apps/web` → `apps/site` + `apps/console` split
+(`split-public-site-and-operator-console`):
 
-1. **Cross-binding search fan-in.** Lexical / semantic / hybrid search
-   currently runs a ranked snapshot per binding and the snapshot builder
-   pins the binding at index time. Union search across bindings requires
-   the snapshot/builder topology change — orthogonal to the records /
-   list / detail / blob fan-in that this tranche delivers. The single-
-   binding search path already carries `connection_id` per hit
-   (`search-connection-identity.test.js`), so it interoperates with the
-   fan-in resolver via explicit `connection_id` narrowing.
+1. **Cross-binding search fan-in.** **DONE** — landed in `df137aad`
+   ("feat(ref): cross-binding search fan-in for lexical/semantic/hybrid").
+   The snapshot builder now emits one connector plan per binding and the
+   `plan_hash` covers the binding set. Covered by
+   `rs-search-{lexical,semantic,hybrid}-fan-in.test.js` +
+   `search-fan-in-host-shell.test.js` (36 tests). See tasks.md Section 8.
 
-2. **Operator grant-request flow per-connection scope.** The
-   grant-evaluation runtime already honors `grant.streams[].connection_id`
-   (covered by `storage-fan-in-read-contract.test.js`); the
-   operator-side UI to *issue* a grant constrained to a single
-   connection still lives in `apps/web/src/app/dashboard/lib/
-   operator-grant-request.ts`. Tracked under Section 4.
+2. **Operator grant-request flow per-connection scope.** **OPEN
+   (product decision).** The grant-evaluation runtime already honors
+   `grant.streams[].connection_id` (covered by
+   `storage-fan-in-read-contract.test.js`); the operator-side UI to
+   *issue* a grant constrained to a single connection lives post-split at
+   `apps/console/src/app/dashboard/lib/operator-grant-request.ts` and
+   `apps/console/src/app/dashboard/grants/request/page.tsx` (confirmed
+   connection-unaware today). The blocker is a product/UX decision (which
+   connections to enumerate, default selection, multi-select semantics),
+   not infra. Tracked under tasks.md Section 4.
 
-3. **Dashboard rename UI.** The owner can rename a connection via
-   `PATCH /_ref/connections/:connectorInstanceId`. The corresponding
-   inline rename control in
-   `apps/web/src/app/dashboard/components/views/ref-connectors-view.tsx`
-   is the safe next slice — backend mutation + grant evaluation are in
-   place and verified to propagate to subsequent reads.
+3. **Dashboard rename UI.** **DONE** — shipped in `apps/console`
+   (lane `ri-console-connection-rename-v1`): inline `RenameConnection`
+   control on `records/[connector]/page.tsx` → `renameConnectionAction`
+   → `setConnectionDisplayName` → `PATCH /_ref/connections/:connectorInstanceId`,
+   with a `label-needed` hint on the list row via `isFallbackConnectionLabel`.
+   Covered by `connector-display.test.ts` and
+   `records/[connector]/rename-connection.test.ts`. (The old "next slice"
+   pointer at `apps/web/.../ref-connectors-view.tsx` is superseded — that
+   file no longer exists.) See tasks.md Section 6.
 
-4. **Multi-connection consent-card render test.** Requires React testing
-   infra in `apps/web` (Vitest + `@testing-library/react`). Out of scope
-   for this branch; placeholder-rejection guards already live in the
-   operation tests and the contract tests so the behavior is locked
-   structurally while the visual harness catches up.
+4. **Multi-connection consent-card render test.** **OPEN (blocker
+   corrected).** The connection-aware card moved to
+   `apps/site/src/components/pdpp/consent-card.tsx`. A render test needs
+   React DOM infra (Vitest + `@testing-library/react`) that neither
+   `apps/site` nor `apps/console` has — and, more to the point, the
+   standard CI suites don't execute either app's co-located `node:test`
+   files (`reference-implementation/scripts/run-tests.js` discovers only
+   `reference-implementation/test/**` + `server/streaming`), so a new
+   consent-card test would not gate without first wiring a runner. The
+   no-placeholder contract is gated server-side by
+   `reference-implementation/test/rs-streams-list-operation.test.js:132`.
+   Tracked under tasks.md Sections 5 + 8.
 
 5. **Hosted MCP gateway tool descriptions.** External, out-of-repo. The
    in-repo MCP server (`packages/mcp-server`) is fully aligned and can
@@ -243,11 +256,12 @@ each has a single safe pickup point:
    409) envelope with `available_connections` + `retry_with` that the
    gateway needs to forward verbatim through MCP error semantics.
 
-None of the deferred items invalidate the canonical noun, the field
+None of the open items invalidate the canonical noun, the field
 shapes, the error envelope, or the consent surface — those are
 contract-frozen and now runtime-honest end-to-end on the reference
-implementation. The deferred work is pure UI / cross-binding search /
-external-coordination plumbing against a stable contract.
+implementation. The remaining work is one product decision
+(per-connection grant-request UI) and one render-test infra gap against
+a stable contract.
 
 ## MCP schema token-efficiency (2026-05-31)
 
