@@ -111,10 +111,26 @@ test("closeBrowserPage ignores remote target cleanup errors", async () => {
       return Promise.reject(new Error("Target page has been closed"));
     },
     isClosed: () => false,
-  } as Page;
+  };
 
   assert.equal(await closeBrowserPage(page), false);
   assert.equal(closeCalls, 1);
+});
+
+test("closeBrowserPage abandons a wedged remote target close after the deadline", async () => {
+  let closeCalls = 0;
+  const page = {
+    close: () => {
+      closeCalls++;
+      return new Promise<never>(() => undefined);
+    },
+    isClosed: () => false,
+  };
+
+  const startedAt = Date.now();
+  assert.equal(await closeBrowserPage(page, 20), false);
+  assert.equal(closeCalls, 1);
+  assert.ok(Date.now() - startedAt < 1000);
 });
 
 test("resolveBrowserRuntimeVisibility defaults browser connectors to headless unless env disables it", () => {

@@ -43,7 +43,7 @@ import { createInterface } from "node:readline";
 import type { Browser, BrowserContext, CDPSession, Page } from "playwright";
 
 import { type AuthConfig, resolveAuth } from "./auth.ts";
-import { manualAction, prepareBrowserInteractionTarget, withDeadline } from "./browser-handoff.ts";
+import { DEADLINE_TIMEOUT, manualAction, prepareBrowserInteractionTarget, withDeadline } from "./browser-handoff.ts";
 import { flushAndExitAfterRuntimeAck } from "./connector-exit.ts";
 import type {
   AssistanceCompletionStatus,
@@ -215,6 +215,8 @@ export interface BrowserConnectorConfig extends BaseRunConnectorConfig {
 export type RunConnectorConfig = NonBrowserConnectorConfig | BrowserConnectorConfig;
 
 // ─── Primitive helpers (exported for connector convenience) ─────────────
+
+type ClosableBrowserPage = Pick<Page, "close" | "isClosed">;
 
 const DEFAULT_RETRYABLE_PATTERN = /ECONN|ETIMEDOUT|timeout/i;
 const TRACE_TIMESTAMP_UNSAFE = /[:.]/g;
@@ -709,6 +711,7 @@ async function runInBrowser(args: {
 // timeout. Bound the whole capture so a diagnostic snapshot during teardown of
 // a wedged run cannot itself re-hang the teardown.
 const CAPTURE_DOM_DEADLINE_MS = 10_000;
+const PAGE_CLOSE_DEADLINE_MS = 10_000;
 
 export async function captureBrowserPage(
   capture: CaptureSession | null,
@@ -741,10 +744,11 @@ export async function captureBrowserPage(
 }
 
 export async function closeBrowserContextPagesExcept(
-  context: Pick<BrowserContext, "pages">,
-  keepPage: Page
+  context: { pages: () => ClosableBrowserPage[] },
+  keepPage: ClosableBrowserPage,
+  deadlineMs = PAGE_CLOSE_DEADLINE_MS
 ): Promise<number> {
-  let pages: Page[];
+  let pages: ClosableBrowserPage[];
   try {
     pages = context.pages();
   } catch {
@@ -756,24 +760,29 @@ export async function closeBrowserContextPagesExcept(
     if (page === keepPage || page.isClosed()) {
       continue;
     }
-    try {
-      await page.close();
+    if (await closeBrowserPage(page, deadlineMs)) {
       closed++;
-    } catch {
-      // Stale remote-CDP pages are best-effort cleanup. Keep the working page
-      // open so n.eko always has a live target while older tabs are pruned.
     }
   }
   return closed;
 }
 
-export async function closeBrowserPage(page: Page | null): Promise<boolean> {
+export async function closeBrowserPage(
+  page: ClosableBrowserPage | null,
+  deadlineMs = PAGE_CLOSE_DEADLINE_MS
+): Promise<boolean> {
   if (!page || page.isClosed()) {
     return false;
   }
   try {
-    await page.close();
-    return true;
+    const closeWork = page.close();
+    closeWork.catch((): undefined => undefined);
+    const result = await withDeadline(closeWork, deadlineMs, () => {
+      process.stderr.write(
+        `[browser-runtime] page.close() exceeded ${String(deadlineMs)}ms (wedged renderer?); abandoning close.\n`
+      );
+    });
+    return result !== DEADLINE_TIMEOUT;
   } catch {
     // Remote-CDP targets can disappear underneath us during banking OTP/manual
     // waits. Cleanup must never mask the connector's real terminal reason.
