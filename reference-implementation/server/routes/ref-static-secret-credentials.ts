@@ -76,6 +76,7 @@ export interface MountRefStaticSecretCredentialsContext {
     connectorId: string | null,
     options?: {
       readonly allowDefaultAccount?: boolean;
+      readonly allowStatuses?: readonly string[];
       readonly connectorInstanceId?: string | null;
       readonly ownerSubjectId?: string;
     }
@@ -83,10 +84,17 @@ export interface MountRefStaticSecretCredentialsContext {
   setReferenceTraceId(res: RouteResponse, traceId: string): void;
 }
 
-const STATIC_SECRET_CREDENTIAL_KIND_BY_CONNECTOR: Readonly<Record<string, string>> = Object.freeze({
+// The static-secret connectors and the credential kind each expects. Exported
+// so the owner-session draft-create route shares one source of truth for "which
+// connectors are static-secret" rather than duplicating the list.
+export const STATIC_SECRET_CREDENTIAL_KIND_BY_CONNECTOR: Readonly<Record<string, string>> = Object.freeze({
   gmail: "app_password",
   github: "personal_access_token",
 });
+
+export function expectedStaticSecretCredentialKind(connectorId: string): string | null {
+  return STATIC_SECRET_CREDENTIAL_KIND_BY_CONNECTOR[connectorId] ?? null;
+}
 
 const MAX_SECRET_LENGTH = 64 * 1024;
 
@@ -95,7 +103,7 @@ function errWithCode(code: string): { code: string } {
 }
 
 function expectedCredentialKindForConnector(connectorId: string): string | null {
-  return STATIC_SECRET_CREDENTIAL_KIND_BY_CONNECTOR[connectorId] ?? null;
+  return expectedStaticSecretCredentialKind(connectorId);
 }
 
 function projectCredentialMetadata(meta: CredentialMetadata): Record<string, unknown> {
@@ -230,6 +238,11 @@ export function mountRefStaticSecretCredentialCapture(app: AppLike, ctx: MountRe
         namespace = await ctx.resolveOwnerConnectorNamespace(req, null, {
           ownerSubjectId,
           allowDefaultAccount: false,
+          // Admit a `draft` target so the owner can seal a credential onto a
+          // not-yet-ingested first static-secret connection. This is owner-
+          // session-only; no bearer/agent path passes allowStatuses. See
+          // add-static-secret-owner-session-connect-path design Decisions 3 & 5.
+          allowStatuses: ["active", "draft"],
           connectorInstanceId,
         });
         const expectedKind = expectedCredentialKindForConnector(namespace.connectorId);

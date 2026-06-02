@@ -381,6 +381,7 @@ import {
   mountRefConnectorsList,
 } from './routes/ref-connectors.ts';
 import { mountRefStaticSecretCredentialCapture } from './routes/ref-static-secret-credentials.ts';
+import { mountRefStaticSecretDraftConnection } from './routes/ref-static-secret-draft-connection.ts';
 import { mountRsBlobRead, mountRsReadQueries } from './routes/rs-read.ts';
 import { mountOwnerConnectionRename, mountOwnerConnectionsList } from './routes/owner-connections.ts';
 import { mountOwnerConnectionSchedule } from './routes/owner-connection-schedule.ts';
@@ -1297,6 +1298,10 @@ async function resolveOwnerConnectorNamespace(req, connectorId, options = {}) {
     connectorInstanceId: explicitConnectorInstanceId,
     connectorInstanceStore: createRequestConnectorInstanceStore(),
     allowDefaultAccount: options.allowDefaultAccount ?? true,
+    // Only the owner-session capture path and the owner-authenticated
+    // first-ingest path pass `['active','draft']` to reach a static-secret
+    // draft. Every other caller inherits the active-only default.
+    ...(options.allowStatuses ? { allowStatuses: options.allowStatuses } : {}),
     displayName: options.displayName ?? connectorId,
     now: options.now,
   });
@@ -3241,6 +3246,20 @@ function buildAsApp(opts = {}) {
     setReferenceTraceId,
   });
 
+  mountRefStaticSecretDraftConnection(app, {
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    handleError,
+    pdppError,
+    canonicalConnectorKey,
+    createRequestConnectorInstanceStore,
+    resolveRegisteredConnectorManifest,
+    getOwnerSubjectId,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    setReferenceTraceId,
+  });
+
   mountRefDeployment(app, refAdminContext);
 
   // `/_ref/device-exporters` route family extracted to
@@ -3568,6 +3587,11 @@ function buildRsApp(opts = {}) {
     deleteAllRecords,
     deleteRecord,
     ingestRecord: (target, record) => ingestRecord(target, record),
+    // First-ingest activation for static-secret drafts: flip draft → active
+    // once a record lands. No-op on a non-draft row. See
+    // add-static-secret-owner-session-connect-path design Decision 5.
+    activateDraftConnection: (connectorInstanceId) =>
+      createRequestConnectorInstanceStore().activateDraft(connectorInstanceId),
     getSyncState,
     putSyncState,
     resolveGrantScopedStateGrant,

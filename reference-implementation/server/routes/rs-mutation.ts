@@ -100,6 +100,27 @@ function canonicalizeConnectorId(connectorId: string | null): string | null {
   return canonicalConnectorKey(connectorId) ?? connectorId;
 }
 
+// First-ingest activation: a static-secret draft flips to active once it has
+// accepted at least one record. A zero-record ingest leaves it draft and
+// invisible — no phantom active connection. `activateDraftConnection` is a
+// no-op on a non-draft row, so a re-run of an already-active connection is
+// harmless. Extracted from the ingest handler to keep its cognitive complexity
+// in bounds. See add-static-secret-owner-session-connect-path design Decision 5.
+async function maybeActivateDraftAfterIngest(
+  ctx: MountRsMutationContext,
+  storageNamespace: ConnectorNamespaceLike | null,
+  recordsAccepted: number
+): Promise<void> {
+  if (!ctx.activateDraftConnection || recordsAccepted <= 0) {
+    return;
+  }
+  const resolvedStatus = storageNamespace?.status;
+  const resolvedInstanceId = storageNamespace?.connectorInstanceId;
+  if (resolvedStatus === "draft" && typeof resolvedInstanceId === "string") {
+    await ctx.activateDraftConnection(resolvedInstanceId);
+  }
+}
+
 interface TokenInfo {
   readonly client_id?: string | null;
   readonly grant?: GrantLike | null;
@@ -171,6 +192,11 @@ interface StateContext {
 // Context injected by `buildRsApp` at the `mountRsMutation` call site. Every
 // capability the mutation routes need that is not directly importable.
 export interface MountRsMutationContext {
+  // Capability: flip a static-secret draft connection to active on its first
+  // successful ingest. Optional — hosts that do not support drafts omit it; the
+  // ingest path then never activates. No-op when the row is not a draft. See
+  // add-static-secret-owner-session-connect-path design Decision 5.
+  readonly activateDraftConnection?: (connectorInstanceId: string) => Promise<unknown> | unknown;
   // Instrumentation context builders (closures in index.js)
   readonly buildMutationContext: (
     req: RouteRequest,
@@ -257,7 +283,7 @@ export interface MountRsMutationContext {
   readonly resolveOwnerConnectorNamespace: (
     req: RouteRequest,
     connectorId: string,
-    opts?: { connectorInstanceId?: string | null }
+    opts?: { allowStatuses?: readonly string[]; connectorInstanceId?: string | null }
   ) => Promise<ConnectorNamespaceLike>;
 
   // Capability: resolve a connector manifest by id
@@ -838,12 +864,22 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
     });
     try {
       let storageNamespace: ConnectorNamespaceLike | null = null;
+      // A static-secret first connection is addressed by an explicit
+      // connector_instance_id while still `draft`; admit that status so first
+      // ingest can write into the draft. The connector-only path
+      // (no explicit instance id) stays active-only — `allowStatuses` is only
+      // consulted when an instance is addressed explicitly. See Decision 5.
+      // Draft admission is only added when an explicit instance id addresses the
+      // target; the connector-only path stays active-only. `allowStatuses` is
+      // omitted (not set to undefined) so it doesn't trip exactOptionalPropertyTypes.
+      const draftAdmission = (cin: string | null) => (cin ? { allowStatuses: ["active", "draft"] as const } : {});
       const dependencies = {
         hasManifestStream: async (cid: string, streamName: string) => {
           const manifest = await ctx.resolveRegisteredConnectorManifest(cid);
           const visible = Boolean((manifest.streams || []).find((stream) => stream.name === streamName));
           if (visible) {
             storageNamespace = await ctx.resolveOwnerConnectorNamespace(req, cid, {
+              ...draftAdmission(connectorInstanceId),
               connectorInstanceId,
             });
           }
@@ -853,6 +889,7 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
           const namespace =
             storageNamespace ??
             (await ctx.resolveOwnerConnectorNamespace(req, cid, {
+              ...draftAdmission(cin),
               connectorInstanceId: cin,
             }));
           return ctx.ingestRecord(ctx.storageTargetForConnectorNamespace(namespace), record);
@@ -893,6 +930,7 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
         }
         throw opErr;
       }
+      await maybeActivateDraftAfterIngest(ctx, storageNamespace, output.envelope.records_accepted);
       await ctx.emitMutationEvent(req, mutationContext, "mutation.completed", "succeeded", {
         records_accepted: output.envelope.records_accepted,
         records_rejected: output.envelope.records_rejected,

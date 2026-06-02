@@ -217,7 +217,7 @@ export async function bootstrapPostgresSchema() {
         owner_subject_id TEXT NOT NULL,
         connector_id TEXT NOT NULL REFERENCES connectors(connector_id) ON DELETE RESTRICT,
         display_name TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'revoked')),
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'revoked', 'draft')),
         source_kind TEXT NOT NULL CHECK (source_kind IN ('account', 'local_device', 'browser_collector', 'manual')),
         source_binding_key TEXT NOT NULL,
         source_binding_json JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -228,6 +228,43 @@ export async function bootstrapPostgresSchema() {
       );
       CREATE INDEX IF NOT EXISTS idx_pg_connector_instances_owner_connector_status
         ON connector_instances(owner_subject_id, connector_id, status);
+
+      -- Existing Postgres deployments may have been bootstrapped before the
+      -- static-secret draft lifecycle existed. Widen the status CHECK in place
+      -- so the live reference runtime can create invisible draft connections.
+      DO $$
+      DECLARE
+        status_constraint_name TEXT;
+        status_constraint_def TEXT;
+      BEGIN
+        FOR status_constraint_name, status_constraint_def IN
+          SELECT conname, pg_get_constraintdef(oid)
+            FROM pg_constraint
+           WHERE conrelid = 'connector_instances'::regclass
+             AND contype = 'c'
+             AND pg_get_constraintdef(oid) LIKE '%status%'
+             AND pg_get_constraintdef(oid) LIKE '%active%'
+             AND pg_get_constraintdef(oid) LIKE '%paused%'
+             AND pg_get_constraintdef(oid) LIKE '%revoked%'
+        LOOP
+          IF status_constraint_def NOT LIKE '%draft%' THEN
+            EXECUTE format('ALTER TABLE connector_instances DROP CONSTRAINT %I', status_constraint_name);
+          END IF;
+        END LOOP;
+
+        IF NOT EXISTS (
+          SELECT 1
+            FROM pg_constraint
+           WHERE conrelid = 'connector_instances'::regclass
+             AND contype = 'c'
+             AND pg_get_constraintdef(oid) LIKE '%status%'
+             AND pg_get_constraintdef(oid) LIKE '%draft%'
+        ) THEN
+          ALTER TABLE connector_instances
+            ADD CONSTRAINT connector_instances_status_check
+            CHECK (status IN ('active', 'paused', 'revoked', 'draft'));
+        END IF;
+      END $$;
 
       CREATE TABLE IF NOT EXISTS connector_instance_credentials (
         connector_instance_id TEXT PRIMARY KEY
