@@ -499,6 +499,14 @@ async function acquireRemoteCdpBrowser(cdpUrl: string, profileName: string): Pro
   const attachStartedAt = Date.now();
   const redactedUrl = redactCdpUrl(cdpUrl);
   process.stderr.write(`[browser-launch] remote CDP attach start profile=${profileName} url=${redactedUrl}\n`);
+  // Remote profiles persist cookies; stale page targets do not need to persist.
+  // Close pages before attach so Patchright does not auto-attach to a wedged renderer.
+  const cleanup = await closeRemoteCdpPageTargets({ cdpUrl, profileName });
+  process.stderr.write(
+    `[browser-launch] remote CDP page-target cleanup profile=${profileName} closed=${cleanup.closed} remaining=${cleanup.remaining} skipped=${String(
+      cleanup.skipped
+    )}\n`
+  );
   const browser = await connectOverCdpWithRetry<Browser>({
     connect: () => localChromium.connectOverCDP(cdpUrl),
     // If the floated `setRequestInterception` race rejects AFTER this attempt's
@@ -870,8 +878,154 @@ async function readDevToolsActivePort({
 }
 
 interface DevToolsTarget {
+  readonly id?: string;
   readonly type?: string;
   readonly webSocketDebuggerUrl?: string;
+}
+
+export interface RemoteCdpPageTargetCleanupResult {
+  readonly closed: number;
+  readonly remaining: number;
+  readonly skipped: boolean;
+}
+
+export async function closeRemoteCdpPageTargets({
+  cdpUrl,
+  fetchImpl = globalThis.fetch,
+  profileName,
+  timeoutMs = 2000,
+  pollMs = 100,
+}: {
+  cdpUrl: string;
+  fetchImpl?: typeof fetch;
+  profileName?: string;
+  timeoutMs?: number;
+  pollMs?: number;
+}): Promise<RemoteCdpPageTargetCleanupResult> {
+  if (typeof fetchImpl !== "function") {
+    return { closed: 0, remaining: 0, skipped: true };
+  }
+  const baseUrl = devToolsHttpBaseUrl(cdpUrl);
+  if (!baseUrl) {
+    return { closed: 0, remaining: 0, skipped: true };
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  const targets = await fetchRemoteDevToolsTargets({ baseUrl, deadline, fetchImpl });
+  if (!targets) {
+    return { closed: 0, remaining: 0, skipped: true };
+  }
+
+  const pageTargets = targets.filter((target) => target?.type === "page" && typeof target.id === "string");
+  let closed = 0;
+  for (const target of pageTargets) {
+    if (!target.id || Date.now() >= deadline) {
+      break;
+    }
+    const ok = await closeRemoteDevToolsTarget({ baseUrl, deadline, fetchImpl, targetId: target.id });
+    if (ok) {
+      closed += 1;
+    }
+  }
+
+  let remaining = countPageTargets(targets) - closed;
+  while (Date.now() < deadline) {
+    const latestTargets = await fetchRemoteDevToolsTargets({ baseUrl, deadline, fetchImpl });
+    if (!latestTargets) {
+      break;
+    }
+    remaining = countPageTargets(latestTargets);
+    if (remaining === 0) {
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, Math.max(1, deadline - Date.now()))));
+  }
+
+  if (profileName && remaining > 0) {
+    process.stderr.write(
+      `[browser-launch] remote CDP page-target cleanup incomplete profile=${profileName} remaining=${remaining}\n`
+    );
+  }
+  return { closed, remaining, skipped: false };
+}
+
+function devToolsHttpBaseUrl(cdpUrl: string): URL | null {
+  try {
+    const parsed = new URL(cdpUrl);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return new URL("/", parsed);
+    }
+    if (parsed.protocol === "ws:" || parsed.protocol === "wss:") {
+      parsed.protocol = parsed.protocol === "ws:" ? "http:" : "https:";
+      return new URL("/", parsed);
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function fetchRemoteDevToolsTargets({
+  baseUrl,
+  deadline,
+  fetchImpl,
+}: {
+  baseUrl: URL;
+  deadline: number;
+  fetchImpl: typeof fetch;
+}): Promise<DevToolsTarget[] | null> {
+  const response = await fetchWithDeadline(new URL("/json", baseUrl).toString(), deadline, fetchImpl);
+  if (!response?.ok) {
+    return null;
+  }
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    return null;
+  }
+  return Array.isArray(body) ? (body as DevToolsTarget[]) : null;
+}
+
+async function closeRemoteDevToolsTarget({
+  baseUrl,
+  deadline,
+  fetchImpl,
+  targetId,
+}: {
+  baseUrl: URL;
+  deadline: number;
+  fetchImpl: typeof fetch;
+  targetId: string;
+}): Promise<boolean> {
+  const url = new URL(`/json/close/${encodeURIComponent(targetId)}`, baseUrl).toString();
+  const response = await fetchWithDeadline(url, deadline, fetchImpl);
+  return response?.ok === true;
+}
+
+async function fetchWithDeadline(url: string, deadline: number, fetchImpl: typeof fetch): Promise<Response | null> {
+  const remainingMs = Math.max(1, deadline - Date.now());
+  const controller = new AbortController();
+  let timeout: NodeJS.Timeout | null = null;
+  try {
+    const timeoutPromise = new Promise<null>((resolve) => {
+      timeout = setTimeout(() => {
+        controller.abort();
+        resolve(null);
+      }, remainingMs);
+    });
+    return await Promise.race([fetchImpl(url, { signal: controller.signal }), timeoutPromise]);
+  } catch {
+    return null;
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+function countPageTargets(targets: readonly DevToolsTarget[]): number {
+  return targets.filter((target) => target?.type === "page").length;
 }
 
 export async function fetchPageTargetWsUrl({

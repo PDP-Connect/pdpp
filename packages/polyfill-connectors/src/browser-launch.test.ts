@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   acquireBrowserForConnector,
+  closeRemoteCdpPageTargets,
   configuredBrowserChannel,
   connectOverCdpWithRetry,
   decideContainerHeadedBrowserGate,
@@ -296,6 +297,59 @@ test("fetchPageTargetWsUrl returns null on non-JSON body (does not throw)", asyn
     fetchImpl: ((): Promise<Response> => Promise.resolve(new Response("not json", { status: 200 }))) as typeof fetch,
   });
   assert.equal(wsUrl, null);
+});
+
+test("closeRemoteCdpPageTargets closes only page targets and polls until none remain", async () => {
+  const seenUrls: string[] = [];
+  let listCalls = 0;
+  const fetchImpl = ((input: string | URL | Request): Promise<Response> => {
+    const url = urlOf(input);
+    seenUrls.push(url);
+    if (url.endsWith("/json")) {
+      listCalls += 1;
+      const body =
+        listCalls === 1
+          ? [
+              { id: "PAGE_TARGET_ID", type: "page", url: "https://www.amazon.com/your-orders/orders" },
+              { id: "IFRAME_TARGET_ID", type: "iframe", url: "https://www.amazon.com/frame" },
+              { id: "SERVICE_WORKER_ID", type: "service_worker", url: "https://www.amazon.com/sw.js" },
+            ]
+          : [
+              { id: "IFRAME_TARGET_ID", type: "iframe", url: "https://www.amazon.com/frame" },
+              { id: "SERVICE_WORKER_ID", type: "service_worker", url: "https://www.amazon.com/sw.js" },
+            ];
+      return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+    }
+    return Promise.resolve(new Response("Target is closing", { status: 200 }));
+  }) as typeof fetch;
+
+  const result = await closeRemoteCdpPageTargets({
+    cdpUrl: "http://neko.example.test:9223/devtools/browser/browser-id",
+    fetchImpl,
+    timeoutMs: 500,
+    pollMs: 1,
+  });
+
+  assert.deepEqual(result, { closed: 1, remaining: 0, skipped: false });
+  assert.deepEqual(seenUrls, [
+    "http://neko.example.test:9223/json",
+    "http://neko.example.test:9223/json/close/PAGE_TARGET_ID",
+    "http://neko.example.test:9223/json",
+  ]);
+});
+
+test("closeRemoteCdpPageTargets skips when the CDP URL cannot expose an HTTP target list", async () => {
+  let called = false;
+  const result = await closeRemoteCdpPageTargets({
+    cdpUrl: "unix:/tmp/chrome.sock",
+    fetchImpl: (() => {
+      called = true;
+      return Promise.resolve(new Response("unexpected", { status: 200 }));
+    }) as typeof fetch,
+  });
+
+  assert.deepEqual(result, { closed: 0, remaining: 0, skipped: true });
+  assert.equal(called, false);
 });
 
 test("resolvePageTargetWsUrl reads DevToolsActivePort then queries /json with the parsed port", async () => {
