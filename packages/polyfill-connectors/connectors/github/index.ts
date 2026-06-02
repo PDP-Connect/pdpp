@@ -50,10 +50,24 @@ import type {
 
 const USER_AGENT = "pdpp-connector-github/0.1";
 
+interface ProgressExtra {
+  count?: number;
+  cursor_present?: boolean;
+  item_count?: number;
+  page_index?: number;
+  phase?: string;
+  rate_limit_pressure?: number;
+  stream?: string;
+  total?: number;
+  total_seen?: number;
+}
+
 async function gh<T>(
   path: string,
   token: string,
-  { accept = "application/vnd.github+json" }: GhFetchOptions = {}
+  { accept = "application/vnd.github+json" }: GhFetchOptions = {},
+  progress?: (message: string, extra?: ProgressExtra) => Promise<void>,
+  extra?: ProgressExtra
 ): Promise<GhResult<T>> {
   const res = await fetch(`${BASE}${path}`, {
     headers: {
@@ -67,6 +81,11 @@ async function gh<T>(
     throw new Error("github_auth_failed");
   }
   if (res.status === 403 && res.headers.get("x-ratelimit-remaining") === "0") {
+    await progress?.("GitHub request rate limited", {
+      ...extra,
+      phase: "rate_limit",
+      rate_limit_pressure: 1,
+    });
     throw new Error("github_rate_limited");
   }
   if (!res.ok) {
@@ -84,7 +103,7 @@ async function gh<T>(
 interface StreamCtx {
   emit: (msg: { type: "STATE"; stream: string; cursor: unknown }) => Promise<void>;
   emitRecord: (stream: string, data: Record<string, unknown>) => Promise<void>;
-  progress: (message: string, extra?: { count?: number; stream?: string; total?: number }) => Promise<void>;
+  progress: (message: string, extra?: ProgressExtra) => Promise<void>;
   requested: Map<string, { time_range?: { since?: string; until?: string } }>;
   state: Record<string, unknown>;
   token: string;
@@ -124,18 +143,38 @@ async function emitRepositoriesPage(
 }
 
 async function collectRepositories(ctx: StreamCtx): Promise<void> {
-  await ctx.progress("Fetching repositories", { stream: "repositories" });
+  await ctx.progress("Fetching repositories", { stream: "repositories", phase: "start" });
   let path: string | null = "/user/repos?per_page=100&sort=pushed&direction=desc";
   const repoState = ctx.state.repositories as { last_pushed_at?: string } | undefined;
   const priorPushed = repoState?.last_pushed_at;
   let latestPushed: string | null | undefined = priorPushed;
   let stop = false;
+  let pageIndex = 0;
+  let totalSeen = 0;
   while (path && !stop) {
-    const page: GhResult<GitHubRepo[]> = await gh<GitHubRepo[]>(path, ctx.token);
+    const pageExtra = {
+      stream: "repositories",
+      phase: "fetch",
+      page_index: pageIndex,
+      total_seen: totalSeen,
+      cursor_present: pageIndex > 0,
+    };
+    await ctx.progress("Fetching GitHub repositories page", pageExtra);
+    const page: GhResult<GitHubRepo[]> = await gh<GitHubRepo[]>(path, ctx.token, {}, ctx.progress, pageExtra);
+    totalSeen += page.data.length;
+    await ctx.progress("Fetched GitHub repositories page", {
+      stream: "repositories",
+      phase: "page",
+      page_index: pageIndex,
+      item_count: page.data.length,
+      total_seen: totalSeen,
+      cursor_present: Boolean(page.nextUrl),
+    });
     const result = await emitRepositoriesPage(ctx, page.data, priorPushed, latestPushed);
     latestPushed = result.latest;
     stop = result.stop;
     path = page.nextUrl;
+    pageIndex++;
   }
   await ctx.emit({
     type: "STATE",
@@ -172,21 +211,47 @@ async function emitStarredPage(
 }
 
 async function collectStarred(ctx: StreamCtx): Promise<void> {
-  await ctx.progress("Fetching starred repositories", { stream: "starred" });
+  await ctx.progress("Fetching starred repositories", { stream: "starred", phase: "start" });
   const starredState = ctx.state.starred as { last_starred_at?: string } | undefined;
   const priorStarred = starredState?.last_starred_at;
   let latestStarred: string | null | undefined = priorStarred;
   let path: string | null = "/user/starred?per_page=100&sort=created&direction=desc";
   let stop = false;
+  let pageIndex = 0;
+  let totalSeen = 0;
   while (path && !stop) {
     // Use star:timestamp media type to get starred_at
-    const page: GhResult<GitHubStarredEntry[]> = await gh<GitHubStarredEntry[]>(path, ctx.token, {
-      accept: "application/vnd.github.star+json",
+    const pageExtra = {
+      stream: "starred",
+      phase: "fetch",
+      page_index: pageIndex,
+      total_seen: totalSeen,
+      cursor_present: pageIndex > 0,
+    };
+    await ctx.progress("Fetching GitHub starred page", pageExtra);
+    const page: GhResult<GitHubStarredEntry[]> = await gh<GitHubStarredEntry[]>(
+      path,
+      ctx.token,
+      {
+        accept: "application/vnd.github.star+json",
+      },
+      ctx.progress,
+      pageExtra
+    );
+    totalSeen += page.data.length;
+    await ctx.progress("Fetched GitHub starred page", {
+      stream: "starred",
+      phase: "page",
+      page_index: pageIndex,
+      item_count: page.data.length,
+      total_seen: totalSeen,
+      cursor_present: Boolean(page.nextUrl),
     });
     const result = await emitStarredPage(ctx, page.data, priorStarred, latestStarred);
     latestStarred = result.latest;
     stop = result.stop;
     path = page.nextUrl;
+    pageIndex++;
   }
   await ctx.emit({
     type: "STATE",
@@ -213,7 +278,7 @@ async function emitIssuesPage(
 }
 
 async function collectIssues(ctx: StreamCtx): Promise<void> {
-  await ctx.progress("Fetching issues", { stream: "issues" });
+  await ctx.progress("Fetching issues", { stream: "issues", phase: "start" });
   const req = ctx.requested.get("issues");
   const issuesState = ctx.state.issues as { last_updated_at?: string } | undefined;
   const priorUpdated = issuesState?.last_updated_at;
@@ -226,10 +291,30 @@ async function collectIssues(ctx: StreamCtx): Promise<void> {
     qs.push(`since=${encodeURIComponent(sinceParam)}`);
   }
   let path: string | null = `/issues?${qs.join("&")}`;
+  let pageIndex = 0;
+  let totalSeen = 0;
   while (path) {
-    const page: GhResult<GitHubIssue[]> = await gh<GitHubIssue[]>(path, ctx.token);
+    const pageExtra = {
+      stream: "issues",
+      phase: "fetch",
+      page_index: pageIndex,
+      total_seen: totalSeen,
+      cursor_present: pageIndex > 0 || Boolean(sinceParam),
+    };
+    await ctx.progress("Fetching GitHub issues page", pageExtra);
+    const page: GhResult<GitHubIssue[]> = await gh<GitHubIssue[]>(path, ctx.token, {}, ctx.progress, pageExtra);
+    totalSeen += page.data.length;
+    await ctx.progress("Fetched GitHub issues page", {
+      stream: "issues",
+      phase: "page",
+      page_index: pageIndex,
+      item_count: page.data.length,
+      total_seen: totalSeen,
+      cursor_present: Boolean(page.nextUrl),
+    });
     latestUpdated = await emitIssuesPage(ctx, page.data, until, latestUpdated);
     path = page.nextUrl;
+    pageIndex++;
   }
   await ctx.emit({
     type: "STATE",
@@ -320,7 +405,7 @@ async function emitPullRequestPage(
 }
 
 async function collectPullRequests(ctx: StreamCtx): Promise<void> {
-  await ctx.progress("Fetching pull requests", { stream: "pull_requests" });
+  await ctx.progress("Fetching pull requests", { stream: "pull_requests", phase: "start" });
   const req = ctx.requested.get("pull_requests");
   const prState = ctx.state.pull_requests as { last_updated_at?: string } | undefined;
   const priorUpdated = prState?.last_updated_at;
@@ -333,19 +418,40 @@ async function collectPullRequests(ctx: StreamCtx): Promise<void> {
   let path: string | null = buildPrSearchPath(me.login, sinceParam);
   let stop = false;
   let fetchedCount = 0;
+  let pageIndex = 0;
   while (path && !stop) {
-    const page: GhResult<GitHubSearchResponse> = await gh<GitHubSearchResponse>(path, ctx.token);
+    const pageExtra = {
+      stream: "pull_requests",
+      phase: "fetch",
+      page_index: pageIndex,
+      total_seen: fetchedCount,
+      cursor_present: pageIndex > 0 || Boolean(sinceParam),
+    };
+    await ctx.progress("Fetching GitHub pull requests page", pageExtra);
+    const page: GhResult<GitHubSearchResponse> = await gh<GitHubSearchResponse>(
+      path,
+      ctx.token,
+      {},
+      ctx.progress,
+      pageExtra
+    );
     const items = page.data.items || [];
     const result = await emitPullRequestPage(ctx, items, sinceParam, until, latestUpdated);
     latestUpdated = result.latest;
     stop = result.stop;
     fetchedCount += items.length;
-    await ctx.progress(`Fetched pull request page (${items.length} item(s))`, {
+    await ctx.progress("Fetched GitHub pull requests page", {
       stream: "pull_requests",
+      phase: "page",
+      page_index: pageIndex,
+      item_count: items.length,
+      total_seen: fetchedCount,
+      cursor_present: Boolean(page.nextUrl),
       count: Math.min(fetchedCount, page.data.total_count ?? fetchedCount),
       ...(page.data.total_count === undefined ? {} : { total: page.data.total_count }),
     });
     path = page.nextUrl;
+    pageIndex++;
   }
   await ctx.emit({
     type: "STATE",
@@ -372,7 +478,7 @@ async function emitGistsPage(
 }
 
 async function collectGists(ctx: StreamCtx): Promise<void> {
-  await ctx.progress("Fetching gists", { stream: "gists" });
+  await ctx.progress("Fetching gists", { stream: "gists", phase: "start" });
   const req = ctx.requested.get("gists");
   const gistState = ctx.state.gists as { last_updated_at?: string } | undefined;
   const priorUpdated = gistState?.last_updated_at;
@@ -384,10 +490,30 @@ async function collectGists(ctx: StreamCtx): Promise<void> {
     qs.push(`since=${encodeURIComponent(sinceParam)}`);
   }
   let path: string | null = `/gists?${qs.join("&")}`;
+  let pageIndex = 0;
+  let totalSeen = 0;
   while (path) {
-    const page: GhResult<GitHubGist[]> = await gh<GitHubGist[]>(path, ctx.token);
+    const pageExtra = {
+      stream: "gists",
+      phase: "fetch",
+      page_index: pageIndex,
+      total_seen: totalSeen,
+      cursor_present: pageIndex > 0 || Boolean(sinceParam),
+    };
+    await ctx.progress("Fetching GitHub gists page", pageExtra);
+    const page: GhResult<GitHubGist[]> = await gh<GitHubGist[]>(path, ctx.token, {}, ctx.progress, pageExtra);
+    totalSeen += page.data.length;
+    await ctx.progress("Fetched GitHub gists page", {
+      stream: "gists",
+      phase: "page",
+      page_index: pageIndex,
+      item_count: page.data.length,
+      total_seen: totalSeen,
+      cursor_present: Boolean(page.nextUrl),
+    });
     latestUpdated = await emitGistsPage(ctx, page.data, until, latestUpdated);
     path = page.nextUrl;
+    pageIndex++;
   }
   await ctx.emit({
     type: "STATE",

@@ -41,10 +41,22 @@ const ACTIVITIES_URL = "https://www.strava.com/api/v3/athlete/activities";
 const PAGE_SIZE = 100;
 const MAX_PAGES = 200;
 
+interface ProgressExtra {
+  cursor_present?: boolean;
+  item_count?: number;
+  page_index?: number;
+  phase?: string;
+  rate_limit_pressure?: number;
+  stream?: string;
+  total_seen?: number;
+}
+
 async function fetchActivitiesPage(
   token: string,
   page: number,
-  afterEpoch: number | undefined
+  afterEpoch: number | undefined,
+  progress?: (message: string, extra?: ProgressExtra) => Promise<void>,
+  extra?: ProgressExtra
 ): Promise<StravaActivity[]> {
   const url = new URL(ACTIVITIES_URL);
   url.searchParams.set("per_page", String(PAGE_SIZE));
@@ -59,6 +71,11 @@ async function fetchActivitiesPage(
     throw new Error("strava_auth_failed");
   }
   if (res.status === 429) {
+    await progress?.("Strava request rate limited", {
+      ...extra,
+      phase: "rate_limit",
+      rate_limit_pressure: 1,
+    });
     throw new Error("strava_rate_limited");
   }
   if (!res.ok) {
@@ -99,6 +116,7 @@ runConnector({
   retryablePattern: /ECONN|fetch failed|rate_limited/i,
   auth: { kind: "env", required: ["STRAVA_ACCESS_TOKEN"] },
   async collect({ state, requested, credentials, emit, emitRecord, progress }) {
+    const progressWithSignals = progress as (message: string, extra?: ProgressExtra) => Promise<void>;
     const token = credentials.STRAVA_ACCESS_TOKEN;
     if (!token) {
       throw new Error("strava_auth_failed");
@@ -107,13 +125,32 @@ runConnector({
     if (!requested.has("activities")) {
       return;
     }
-    await progress("Fetching activities", { stream: "activities" });
+    await progressWithSignals("Fetching activities", { stream: "activities", phase: "start" });
     const activitiesState = state.activities as { last_start_epoch?: number } | undefined;
     const lastEpoch = activitiesState?.last_start_epoch;
     let page = 1;
     let latest = lastEpoch || 0;
+    let totalSeen = 0;
     while (page <= MAX_PAGES) {
-      const acts = await fetchActivitiesPage(token, page, lastEpoch);
+      const pageIndex = page - 1;
+      const pageExtra = {
+        stream: "activities",
+        phase: "fetch",
+        page_index: pageIndex,
+        total_seen: totalSeen,
+        cursor_present: Boolean(lastEpoch),
+      };
+      await progressWithSignals("Fetching Strava activities page", pageExtra);
+      const acts = await fetchActivitiesPage(token, page, lastEpoch, progressWithSignals, pageExtra);
+      totalSeen += acts.length;
+      await progressWithSignals("Fetched Strava activities page", {
+        stream: "activities",
+        phase: "page",
+        page_index: pageIndex,
+        item_count: acts.length,
+        total_seen: totalSeen,
+        cursor_present: acts.length === PAGE_SIZE,
+      });
       if (!acts.length) {
         break;
       }

@@ -1159,13 +1159,13 @@ export async function emitTransactionsStateIfAny(deps: EmitDeps): Promise<void> 
 
 export async function emitNoActivityProgress(
   deps: Pick<EmitDeps, "emit">,
-  account: ChaseAccount,
+  _account: ChaseAccount,
   activity: ActivityKind
 ): Promise<void> {
   await deps.emit({
     type: "PROGRESS",
     stream: "transactions",
-    message: `${account.name}: no activity found for QFX download (activity=${activity})`,
+    message: `QFX download complete: no activity found (activity=${activity})`,
   });
 }
 
@@ -1189,6 +1189,20 @@ async function emitNoAccountsDiagnostic(page: Page, emit: EmitFn): Promise<void>
   });
 }
 
+function accountProgressLabel(accountProgress?: { index: number; total: number }): string {
+  return accountProgress ? `${accountProgress.index}/${accountProgress.total}` : "?/?";
+}
+
+function accountProgressDiagnostic(accountProgress?: { index: number; total: number }): {
+  account_index: number | null;
+  account_total: number | null;
+} {
+  return {
+    account_index: accountProgress?.index ?? null,
+    account_total: accountProgress?.total ?? null,
+  };
+}
+
 async function processAccountDownload(
   deps: EmitDeps,
   page: Page,
@@ -1201,10 +1215,11 @@ async function processAccountDownload(
     deps.wantsTransactions ? "transactions" : "balances",
     account.internal_id
   );
+  const progressLabel = accountProgressLabel(accountProgress);
   const progressMsg = {
     type: "PROGRESS",
     stream: "transactions",
-    message: `${account.name}: downloading QFX (activity=${activityChoice.activity})`,
+    message: `Downloading QFX for account ${progressLabel} (activity=${activityChoice.activity})`,
     ...(accountProgress ? { count: accountProgress.index, total: accountProgress.total } : {}),
   } as const;
   await deps.emit(progressMsg);
@@ -1222,8 +1237,11 @@ async function processAccountDownload(
       type: "SKIP_RESULT",
       stream: "transactions",
       reason: "qfx_download_failed",
-      message: `${account.name}: ${result.error}`,
-      diagnostics: { error: result.error, account_name: account.name },
+      message: `QFX download failed for account ${progressLabel}: ${result.error}`,
+      diagnostics: {
+        error: result.error,
+        ...accountProgressDiagnostic(accountProgress),
+      },
     });
     return;
   }
@@ -1236,11 +1254,11 @@ async function processAccountDownload(
       type: "SKIP_RESULT",
       stream: "transactions",
       reason: "qfx_parse_failed",
-      message: `${account.name}: ${truncate(errMessage(err), ERROR_MESSAGE_SLICE_LONG)}`,
+      message: `QFX parse failed for account ${progressLabel}: ${truncate(errMessage(err), ERROR_MESSAGE_SLICE_LONG)}`,
       diagnostics: {
         error_class: err instanceof Error ? err.constructor.name : "unknown",
         message: truncate(errMessage(err), ERROR_MESSAGE_SLICE_LONG),
-        qfx_path: result.qfxPath,
+        artifact: "qfx",
       },
     });
     return;
@@ -1266,7 +1284,7 @@ async function processAccountDownload(
   await deps.emit({
     type: "PROGRESS",
     stream: "transactions",
-    message: `${account.name}: emitted ${transactions.length} transactions`,
+    message: `Parsed account ${progressLabel}: emitted ${transactions.length} transaction(s)`,
   });
 }
 
@@ -1350,7 +1368,7 @@ export async function runCurrentActivity(
   const progressMsg = {
     type: "PROGRESS",
     stream: "current_activity",
-    message: `${account.name}: parsing dashboard overview MDS activity rows`,
+    message: "Parsing current_activity dashboard overview rows for account 1/1",
     count: 1,
     total: 1,
   } as const;
@@ -1362,14 +1380,15 @@ export async function runCurrentActivity(
       type: "SKIP_RESULT",
       stream: "current_activity",
       reason: "selectors_pending",
-      message: `${account.name}: no parseable MDS activity rows (tr.mds-activity-table__row[data-values]) found in the Chase dashboard overview DOM; either the dashboard rendered without the recent-activity table or the row markup has drifted — see captured fixture for this run`,
-      diagnostics: { account_name: account.name },
+      message:
+        "No parseable current_activity rows found in the Chase dashboard overview DOM; either the dashboard rendered without the recent-activity table or the row markup has drifted — see captured fixture for this run",
+      diagnostics: { account_count: 1 },
     });
   } else {
     await deps.emit({
       type: "PROGRESS",
       stream: "current_activity",
-      message: `${account.name}: emitted ${emitted} current_activity row(s) from dashboard overview`,
+      message: `Emitted ${emitted} current_activity row(s) from dashboard overview`,
     });
   }
 
@@ -1406,7 +1425,7 @@ async function processStatementRow(
     await deps.emit({
       type: "PROGRESS",
       stream: "statements",
-      message: `Downloading ${row.title}`,
+      message: "Downloading statement PDF",
     });
 
     const dlResult = await downloadStatementPdf(page, row, accountId, deps.capture);
@@ -1415,8 +1434,8 @@ async function processStatementRow(
         type: "SKIP_RESULT",
         stream: "statements",
         reason: "pdf_download_failed",
-        message: `${row.title}: ${dlResult.error}`,
-        diagnostics: { error: dlResult.error, title: row.title, account_id: accountId },
+        message: `Statement PDF download failed: ${dlResult.error}`,
+        diagnostics: { error: dlResult.error, account_matched: Boolean(accountId) },
       });
       // Still emit the index row so the owner has a record the statement
       // exists, just without hydrated bytes.
@@ -1440,11 +1459,10 @@ async function processStatementRow(
       type: "SKIP_RESULT",
       stream: "statements",
       reason: "row_exception",
-      message: `${row.title}: ${truncate(errMessage(rowErr), ERROR_MESSAGE_SLICE_LONG)}`,
+      message: `Statement row processing failed: ${truncate(errMessage(rowErr), ERROR_MESSAGE_SLICE_LONG)}`,
       diagnostics: {
         error_class: rowErr instanceof Error ? rowErr.constructor.name : "unknown",
         message: truncate(errMessage(rowErr), ERROR_MESSAGE_SLICE_LONG),
-        title: row.title,
       },
     });
   }

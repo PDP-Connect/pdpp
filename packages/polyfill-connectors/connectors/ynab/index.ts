@@ -230,7 +230,13 @@ interface YnabMonthDetailResponse {
   data: { month: YnabMonth };
 }
 
-async function ynab<T>(path: string, token: string, { knowledge, sinceDate }: YnabFetchOptions = {}): Promise<T> {
+async function ynab<T>(
+  path: string,
+  token: string,
+  { knowledge, sinceDate }: YnabFetchOptions = {},
+  progress?: ProgressFn,
+  extra?: Parameters<ProgressFn>[1]
+): Promise<T> {
   const url = new URL(`${API_BASE}${path}`);
   if (knowledge != null) {
     url.searchParams.set("last_knowledge_of_server", String(knowledge));
@@ -245,6 +251,11 @@ async function ynab<T>(path: string, token: string, { knowledge, sinceDate }: Yn
     throw new Error("ynab_auth_failed");
   }
   if (res.status === 429) {
+    await progress?.("YNAB request rate limited", {
+      ...extra,
+      phase: "rate_limit",
+      rate_limit_pressure: 1,
+    });
     throw new Error("ynab_rate_limited");
   }
   if (!res.ok) {
@@ -541,10 +552,24 @@ type EmitFn = (msg: { type: "STATE"; stream: string; cursor: unknown }) => Promi
 
 type TrackedEmitRecord = (stream: string, data: RecordData) => Promise<void>;
 
-type ProgressFn = (message: string, extra?: { count?: number; stream?: string; total?: number }) => Promise<void>;
+type ProgressFn = (
+  message: string,
+  extra?: {
+    count?: number;
+    cursor_present?: boolean;
+    item_count?: number;
+    offset_ordinal?: number;
+    phase?: string;
+    rate_limit_pressure?: number;
+    stream?: string;
+    total?: number;
+    total_seen?: number;
+  }
+) => Promise<void>;
 
 export interface BudgetCtx {
   budgetId: string;
+  budgetOrdinal?: number;
   emit: EmitFn;
   newState: Record<string, unknown>;
   progress: ProgressFn;
@@ -555,16 +580,36 @@ export interface BudgetCtx {
 }
 
 async function collectAccounts(ctx: BudgetCtx): Promise<void> {
-  const { budgetId, token, state, newState, emit, trackAndEmit, progress } = ctx;
-  await progress(`Fetching accounts for budget ${budgetId}`, {
-    stream: "accounts",
-  });
+  const { budgetId, budgetOrdinal = 0, token, state, newState, emit, trackAndEmit, progress } = ctx;
   const knowledge = priorKnowledge(state, "accounts", budgetId);
-  const res = await ynab<YnabAccountsResponse>(`/budgets/${budgetId}/accounts`, token, {
-    ...(knowledge === undefined ? {} : { knowledge }),
-  });
-  await progress(`Fetched ${res.data.accounts.length} accounts for budget ${budgetId}`, {
+  await progress("Fetching YNAB accounts window", {
     stream: "accounts",
+    phase: "fetch",
+    offset_ordinal: budgetOrdinal,
+    cursor_present: knowledge !== undefined,
+  });
+  const requestExtra = {
+    stream: "accounts",
+    phase: "fetch",
+    offset_ordinal: budgetOrdinal,
+    cursor_present: knowledge !== undefined,
+  };
+  const res = await ynab<YnabAccountsResponse>(
+    `/budgets/${budgetId}/accounts`,
+    token,
+    {
+      ...(knowledge === undefined ? {} : { knowledge }),
+    },
+    progress,
+    requestExtra
+  );
+  await progress("Fetched YNAB accounts window", {
+    stream: "accounts",
+    phase: "page",
+    offset_ordinal: budgetOrdinal,
+    item_count: res.data.accounts.length,
+    total_seen: res.data.accounts.length,
+    cursor_present: true,
     count: res.data.accounts.length,
     total: res.data.accounts.length,
   });
@@ -578,23 +623,40 @@ async function collectAccounts(ctx: BudgetCtx): Promise<void> {
 }
 
 async function collectCategoriesAndGroups(ctx: BudgetCtx): Promise<void> {
-  const { budgetId, token, state, newState, requested, emit, trackAndEmit, progress } = ctx;
-  await progress(`Fetching categories for budget ${budgetId}`, {
-    stream: "categories",
-  });
+  const { budgetId, budgetOrdinal = 0, token, state, newState, requested, emit, trackAndEmit, progress } = ctx;
   const knowledge = priorKnowledge(state, "categories", budgetId);
-  const res = await ynab<YnabCategoriesResponse>(`/budgets/${budgetId}/categories`, token, {
-    ...(knowledge === undefined ? {} : { knowledge }),
+  await progress("Fetching YNAB categories window", {
+    stream: "categories",
+    phase: "fetch",
+    offset_ordinal: budgetOrdinal,
+    cursor_present: knowledge !== undefined,
   });
-  const categoryCount = res.data.category_groups.reduce((sum, group) => sum + (group.categories?.length ?? 0), 0);
-  await progress(
-    `Fetched ${categoryCount} categories in ${res.data.category_groups.length} groups for budget ${budgetId}`,
+  const requestExtra = {
+    stream: "categories",
+    phase: "fetch",
+    offset_ordinal: budgetOrdinal,
+    cursor_present: knowledge !== undefined,
+  };
+  const res = await ynab<YnabCategoriesResponse>(
+    `/budgets/${budgetId}/categories`,
+    token,
     {
-      stream: "categories",
-      count: categoryCount,
-      total: categoryCount,
-    }
+      ...(knowledge === undefined ? {} : { knowledge }),
+    },
+    progress,
+    requestExtra
   );
+  const categoryCount = res.data.category_groups.reduce((sum, group) => sum + (group.categories?.length ?? 0), 0);
+  await progress("Fetched YNAB categories window", {
+    stream: "categories",
+    phase: "page",
+    offset_ordinal: budgetOrdinal,
+    item_count: categoryCount,
+    total_seen: categoryCount,
+    cursor_present: true,
+    count: categoryCount,
+    total: categoryCount,
+  });
   for (const group of res.data.category_groups) {
     if (requested.has("category_groups")) {
       await trackAndEmit("category_groups", categoryGroupRecord(group, budgetId));
@@ -616,16 +678,36 @@ async function collectCategoriesAndGroups(ctx: BudgetCtx): Promise<void> {
 }
 
 async function collectPayees(ctx: BudgetCtx): Promise<void> {
-  const { budgetId, token, state, newState, emit, trackAndEmit, progress } = ctx;
-  await progress(`Fetching payees for budget ${budgetId}`, {
-    stream: "payees",
-  });
+  const { budgetId, budgetOrdinal = 0, token, state, newState, emit, trackAndEmit, progress } = ctx;
   const knowledge = priorKnowledge(state, "payees", budgetId);
-  const res = await ynab<YnabPayeesResponse>(`/budgets/${budgetId}/payees`, token, {
-    ...(knowledge === undefined ? {} : { knowledge }),
-  });
-  await progress(`Fetched ${res.data.payees.length} payees for budget ${budgetId}`, {
+  await progress("Fetching YNAB payees window", {
     stream: "payees",
+    phase: "fetch",
+    offset_ordinal: budgetOrdinal,
+    cursor_present: knowledge !== undefined,
+  });
+  const requestExtra = {
+    stream: "payees",
+    phase: "fetch",
+    offset_ordinal: budgetOrdinal,
+    cursor_present: knowledge !== undefined,
+  };
+  const res = await ynab<YnabPayeesResponse>(
+    `/budgets/${budgetId}/payees`,
+    token,
+    {
+      ...(knowledge === undefined ? {} : { knowledge }),
+    },
+    progress,
+    requestExtra
+  );
+  await progress("Fetched YNAB payees window", {
+    stream: "payees",
+    phase: "page",
+    offset_ordinal: budgetOrdinal,
+    item_count: res.data.payees.length,
+    total_seen: res.data.payees.length,
+    cursor_present: true,
     count: res.data.payees.length,
     total: res.data.payees.length,
   });
@@ -664,13 +746,26 @@ export function openPayeeLocationCursor(state: Record<string, unknown>, budgetId
 }
 
 async function collectPayeeLocations(ctx: BudgetCtx): Promise<void> {
-  const { budgetId, token, state, newState, emit, trackAndEmit, progress } = ctx;
-  await progress(`Fetching payee locations for budget ${budgetId}`, {
+  const { budgetId, budgetOrdinal = 0, token, state, newState, emit, trackAndEmit, progress } = ctx;
+  await progress("Fetching YNAB payee locations window", {
     stream: "payee_locations",
+    phase: "fetch",
+    offset_ordinal: budgetOrdinal,
+    cursor_present: false,
   });
-  const res = await ynab<YnabPayeeLocationsResponse>(`/budgets/${budgetId}/payee_locations`, token);
-  await progress(`Fetched ${res.data.payee_locations.length} payee locations for budget ${budgetId}`, {
+  const res = await ynab<YnabPayeeLocationsResponse>(`/budgets/${budgetId}/payee_locations`, token, {}, progress, {
     stream: "payee_locations",
+    phase: "fetch",
+    offset_ordinal: budgetOrdinal,
+    cursor_present: false,
+  });
+  await progress("Fetched YNAB payee locations window", {
+    stream: "payee_locations",
+    phase: "page",
+    offset_ordinal: budgetOrdinal,
+    item_count: res.data.payee_locations.length,
+    total_seen: res.data.payee_locations.length,
+    cursor_present: true,
     count: res.data.payee_locations.length,
     total: res.data.payee_locations.length,
   });
@@ -699,10 +794,7 @@ async function collectPayeeLocations(ctx: BudgetCtx): Promise<void> {
 }
 
 async function collectTransactions(ctx: BudgetCtx): Promise<void> {
-  const { budgetId, token, state, newState, requested, emit, trackAndEmit, progress } = ctx;
-  await progress(`Fetching transactions for budget ${budgetId}`, {
-    stream: "transactions",
-  });
+  const { budgetId, budgetOrdinal = 0, token, state, newState, requested, emit, trackAndEmit, progress } = ctx;
   const stream = requested.get("transactions");
   const knowledge = priorKnowledge(state, "transactions", budgetId);
   const txnState = state.transactions as Record<string, { server_knowledge?: number; since_date?: string }> | undefined;
@@ -710,12 +802,23 @@ async function collectTransactions(ctx: BudgetCtx): Promise<void> {
   const scopeSince = stream?.time_range?.since?.slice(0, 10);
   // Use server-side since_date only on first run (no delta cursor yet).
   const sinceDate = knowledge == null ? scopeSince || priorSinceDate || undefined : undefined;
+  await progress("Fetching YNAB transactions window", {
+    stream: "transactions",
+    phase: "fetch",
+    offset_ordinal: budgetOrdinal,
+    cursor_present: knowledge !== undefined || sinceDate !== undefined,
+  });
 
   // Build account_id → account_type map for convenience enrichment.
   const accountTypeById = new Map<string, string>();
   // Always re-fetch accounts summary for the type map. Small payload, negligible cost.
   try {
-    const aRes = await ynab<YnabAccountsResponse>(`/budgets/${budgetId}/accounts`, token);
+    const aRes = await ynab<YnabAccountsResponse>(`/budgets/${budgetId}/accounts`, token, {}, progress, {
+      stream: "transactions",
+      phase: "fetch",
+      offset_ordinal: budgetOrdinal,
+      cursor_present: knowledge !== undefined || sinceDate !== undefined,
+    });
     for (const a of aRes.data.accounts) {
       accountTypeById.set(a.id, a.type);
     }
@@ -723,10 +826,21 @@ async function collectTransactions(ctx: BudgetCtx): Promise<void> {
     /* non-fatal */
   }
 
-  const res = await ynab<YnabTransactionsResponse>(`/budgets/${budgetId}/transactions`, token, {
-    ...(knowledge === undefined ? {} : { knowledge }),
-    ...(sinceDate === undefined ? {} : { sinceDate }),
-  });
+  const res = await ynab<YnabTransactionsResponse>(
+    `/budgets/${budgetId}/transactions`,
+    token,
+    {
+      ...(knowledge === undefined ? {} : { knowledge }),
+      ...(sinceDate === undefined ? {} : { sinceDate }),
+    },
+    progress,
+    {
+      stream: "transactions",
+      phase: "fetch",
+      offset_ordinal: budgetOrdinal,
+      cursor_present: knowledge !== undefined || sinceDate !== undefined,
+    }
+  );
   let emittedTransactions = 0;
   for (const t of res.data.transactions) {
     if (!withinTimeRange(t.date, stream?.time_range)) {
@@ -735,14 +849,16 @@ async function collectTransactions(ctx: BudgetCtx): Promise<void> {
     await trackAndEmit("transactions", transactionRecord(t, budgetId, accountTypeById));
     emittedTransactions++;
   }
-  await progress(
-    `Processed ${res.data.transactions.length} transactions for budget ${budgetId}; emitted ${emittedTransactions}`,
-    {
-      stream: "transactions",
-      count: res.data.transactions.length,
-      total: res.data.transactions.length,
-    }
-  );
+  await progress("Processed YNAB transactions window", {
+    stream: "transactions",
+    phase: "page",
+    offset_ordinal: budgetOrdinal,
+    item_count: res.data.transactions.length,
+    total_seen: res.data.transactions.length,
+    cursor_present: true,
+    count: emittedTransactions,
+    total: res.data.transactions.length,
+  });
   const txns =
     (newState.transactions as Record<string, { server_knowledge: number; since_date?: string }> | undefined) ?? {};
   const storedSince = sinceDate || priorSinceDate || scopeSince;
@@ -759,16 +875,35 @@ async function collectTransactions(ctx: BudgetCtx): Promise<void> {
 }
 
 async function collectScheduledTransactions(ctx: BudgetCtx): Promise<void> {
-  const { budgetId, token, state, newState, emit, trackAndEmit, progress } = ctx;
-  await progress(`Fetching scheduled transactions for budget ${budgetId}`, {
-    stream: "scheduled_transactions",
-  });
+  const { budgetId, budgetOrdinal = 0, token, state, newState, emit, trackAndEmit, progress } = ctx;
   const knowledge = priorKnowledge(state, "scheduled_transactions", budgetId);
-  const res = await ynab<YnabScheduledTransactionsResponse>(`/budgets/${budgetId}/scheduled_transactions`, token, {
-    ...(knowledge === undefined ? {} : { knowledge }),
-  });
-  await progress(`Fetched ${res.data.scheduled_transactions.length} scheduled transactions for budget ${budgetId}`, {
+  await progress("Fetching YNAB scheduled transactions window", {
     stream: "scheduled_transactions",
+    phase: "fetch",
+    offset_ordinal: budgetOrdinal,
+    cursor_present: knowledge !== undefined,
+  });
+  const res = await ynab<YnabScheduledTransactionsResponse>(
+    `/budgets/${budgetId}/scheduled_transactions`,
+    token,
+    {
+      ...(knowledge === undefined ? {} : { knowledge }),
+    },
+    progress,
+    {
+      stream: "scheduled_transactions",
+      phase: "fetch",
+      offset_ordinal: budgetOrdinal,
+      cursor_present: knowledge !== undefined,
+    }
+  );
+  await progress("Fetched YNAB scheduled transactions window", {
+    stream: "scheduled_transactions",
+    phase: "page",
+    offset_ordinal: budgetOrdinal,
+    item_count: res.data.scheduled_transactions.length,
+    total_seen: res.data.scheduled_transactions.length,
+    cursor_present: true,
     count: res.data.scheduled_transactions.length,
     total: res.data.scheduled_transactions.length,
   });
@@ -789,17 +924,36 @@ async function fetchMonthsIfNeeded(ctx: BudgetCtx, shouldFetch: boolean): Promis
   if (!shouldFetch) {
     return null;
   }
-  const { budgetId, token, state, newState, requested, emit, trackAndEmit, progress } = ctx;
-  await progress(`Fetching months for budget ${budgetId}`, {
-    stream: "months",
-  });
+  const { budgetId, budgetOrdinal = 0, token, state, newState, requested, emit, trackAndEmit, progress } = ctx;
   const knowledge = priorKnowledge(state, "months", budgetId);
-  const res = await ynab<YnabMonthsResponse>(`/budgets/${budgetId}/months`, token, {
-    ...(knowledge === undefined ? {} : { knowledge }),
-  });
-  const monthList = res.data.months;
-  await progress(`Fetched ${monthList.length} months for budget ${budgetId}`, {
+  await progress("Fetching YNAB months window", {
     stream: "months",
+    phase: "fetch",
+    offset_ordinal: budgetOrdinal,
+    cursor_present: knowledge !== undefined,
+  });
+  const res = await ynab<YnabMonthsResponse>(
+    `/budgets/${budgetId}/months`,
+    token,
+    {
+      ...(knowledge === undefined ? {} : { knowledge }),
+    },
+    progress,
+    {
+      stream: "months",
+      phase: "fetch",
+      offset_ordinal: budgetOrdinal,
+      cursor_present: knowledge !== undefined,
+    }
+  );
+  const monthList = res.data.months;
+  await progress("Fetched YNAB months window", {
+    stream: "months",
+    phase: "page",
+    offset_ordinal: budgetOrdinal,
+    item_count: monthList.length,
+    total_seen: monthList.length,
+    cursor_present: true,
     count: monthList.length,
     total: monthList.length,
   });
@@ -828,7 +982,7 @@ export async function collectMonthCategories(
   monthCategoriesStream: { time_range?: TimeRange },
   fetchMonth: MonthDetailFetcher = fetchMonthDetail
 ): Promise<void> {
-  const { budgetId, token, state, newState, emit, trackAndEmit, progress } = ctx;
+  const { budgetId, budgetOrdinal = 0, token, state, newState, emit, trackAndEmit, progress } = ctx;
   const mcState = state.month_categories as Record<string, { last_fetched_month?: string }> | undefined;
   const priorCutoff = mcState?.[budgetId]?.last_fetched_month;
   const scopeSince = monthCategoriesStream.time_range?.since?.slice(0, 10);
@@ -862,10 +1016,14 @@ export async function collectMonthCategories(
     if (!m) {
       continue;
     }
-    await progress(`Fetching categories for budget ${budgetId} month ${m.month}`, {
+    await progress("Fetching YNAB month categories window", {
       stream: "month_categories",
+      phase: "fetch",
+      offset_ordinal: budgetOrdinal,
       count: i + 1,
       total: activeMonths.length,
+      total_seen: i,
+      cursor_present: Boolean(priorCutoff || scopeSince),
     });
     const monthDetail = await fetchMonth(budgetId, m.month, token);
     for (const c of monthDetail.categories ?? []) {
@@ -875,8 +1033,13 @@ export async function collectMonthCategories(
       highestMonth = m.month;
     }
   }
-  await progress(`Fetched month categories for ${activeMonths.length} months in budget ${budgetId}`, {
+  await progress("Fetched YNAB month categories windows", {
     stream: "month_categories",
+    phase: "page",
+    offset_ordinal: budgetOrdinal,
+    item_count: activeMonths.length,
+    total_seen: activeMonths.length,
+    cursor_present: Boolean(highestMonth),
     count: activeMonths.length,
     total: activeMonths.length,
   });
@@ -963,12 +1126,20 @@ if (isMainModule(import.meta.url)) {
       const progressWithCounters: ProgressFn = progress;
 
       // 1. Budgets — always fetched; needed to enumerate downstream streams.
-      await progressWithCounters("Fetching budgets", { stream: "budgets" });
-      const budgetsRes = await ynab<YnabBudgetsResponse>("/budgets", token);
+      await progressWithCounters("Fetching budgets", { stream: "budgets", phase: "fetch", cursor_present: false });
+      const budgetsRes = await ynab<YnabBudgetsResponse>("/budgets", token, {}, progressWithCounters, {
+        stream: "budgets",
+        phase: "fetch",
+        cursor_present: false,
+      });
       const budgets = budgetsRes.data.budgets;
       const budgetIds = budgets.map((b) => b.id);
-      await progressWithCounters(`Fetched ${budgets.length} budgets`, {
+      await progressWithCounters("Fetched budgets", {
         stream: "budgets",
+        phase: "page",
+        item_count: budgets.length,
+        total_seen: budgets.length,
+        cursor_present: true,
         count: budgets.length,
         total: budgets.length,
       });
@@ -1001,9 +1172,14 @@ if (isMainModule(import.meta.url)) {
         newState.budgets = budgetsCursor;
       }
 
-      for (const budgetId of budgetIds) {
+      for (let budgetOrdinal = 0; budgetOrdinal < budgetIds.length; budgetOrdinal++) {
+        const budgetId = budgetIds[budgetOrdinal];
+        if (!budgetId) {
+          continue;
+        }
         await collectForBudget({
           budgetId,
+          budgetOrdinal,
           token,
           state,
           newState,

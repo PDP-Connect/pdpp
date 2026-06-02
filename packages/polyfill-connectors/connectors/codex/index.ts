@@ -328,11 +328,10 @@ const THREADS_QUERY = `
 function openThreadsDb(dbPath: string): DatabaseSync | null {
   try {
     return new DatabaseSync(dbPath, { readOnly: true });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+  } catch {
     emit({
       type: "PROGRESS",
-      message: `state_5.sqlite unreadable (${msg}); falling back to rollouts only`,
+      message: "Codex phase=index pass=index state_db_readable=false fallback=rollouts_only",
     });
     return null;
   }
@@ -342,11 +341,10 @@ function queryThreadsRows(db: DatabaseSync): ThreadRow[] {
   try {
     const rawRows: unknown = db.prepare(THREADS_QUERY).all();
     return rawRows as ThreadRow[];
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+  } catch {
     emit({
       type: "PROGRESS",
-      message: `threads query failed (${msg}); falling back to rollouts only`,
+      message: "Codex phase=index pass=index state_db_query_failed=true fallback=rollouts_only",
     });
     return [];
   }
@@ -685,10 +683,10 @@ export function shouldDeferActiveRolloutFile(input: { mtimeMs: number; nowMs: nu
  * files. Timestamps extend the first/last range on every line regardless
  * of dispatch, so the session aggregate covers the full file span.
  */
-export function processRolloutLine({ deps, file, obj, state }: ProcessRolloutLineArgs): void {
+export function processRolloutLine({ deps, obj, state }: ProcessRolloutLineArgs): void {
   state.lineCount++;
   if (state.lineCount % PROGRESS_EVERY === 0) {
-    deps.progress(`  ${file}: ${state.lineCount} lines parsed`);
+    deps.progress(`Codex phase=emit pass=emit lines_parsed=${state.lineCount}`);
   }
   const ts = obj.timestamp || null;
   const range: TimestampRange = { firstTs: state.firstTimestamp, lastTs: state.lastTimestamp };
@@ -921,7 +919,8 @@ interface ScanRolloutsResult {
 
 async function processRolloutEntry(
   entry: { path: string; year: string; month: string; day: string; file: string },
-  args: ScanRolloutsArgs
+  args: ScanRolloutsArgs,
+  rolloutOrdinal: number
 ): Promise<"missing" | "parsed" | "skipped"> {
   let st: Stats;
   try {
@@ -938,14 +937,14 @@ async function processRolloutEntry(
   if (shouldDeferActiveRolloutFile({ mtimeMs: mtime, nowMs: args.scanStartedAtMs, quietMs: args.activeQuietMs })) {
     emit({
       type: "PROGRESS",
-      message: `Deferring active rollout ${entry.year}/${entry.month}/${entry.day}/${entry.file}`,
+      message: `Codex phase=index pass=index item=${rolloutOrdinal} backpressure=active_rollout_deferred`,
     });
     await waitForEmitDrain();
     return "skipped";
   }
   emit({
     type: "PROGRESS",
-    message: `Parsing ${entry.year}/${entry.month}/${entry.day}/${entry.file} (${(st.size / 1024 / 1024).toFixed(1)}MB)`,
+    message: `Codex phase=emit pass=emit item=${rolloutOrdinal} file_size_mb=${(st.size / 1024 / 1024).toFixed(1)}`,
   });
   await waitForEmitDrain();
   await parseRolloutFile({
@@ -964,25 +963,25 @@ async function scanRollouts(args: ScanRolloutsArgs): Promise<ScanRolloutsResult>
   if (!baseExists) {
     emit({
       type: "PROGRESS",
-      message: `${args.baseDir} not readable`,
+      message: "Codex phase=index pass=index sessions_dir_readable=false",
     });
     await waitForEmitDrain();
     return { parsedFiles: 0 };
   }
-  let fileCount = 0;
-  let parsedFiles = 0;
+  let totalRollouts = 0;
+  let parsedRollouts = 0;
   for await (const entry of walkRollouts(args.baseDir)) {
-    fileCount++;
-    if ((await processRolloutEntry(entry, args)) === "parsed") {
-      parsedFiles++;
+    totalRollouts++;
+    if ((await processRolloutEntry(entry, args, totalRollouts)) === "parsed") {
+      parsedRollouts++;
     }
   }
   emit({
     type: "PROGRESS",
-    message: `Scanned ${fileCount} rollout files`,
+    message: `Codex phase=index pass=index total_items=${totalRollouts} parsed_items=${parsedRollouts}`,
   });
   await waitForEmitDrain();
-  return { parsedFiles };
+  return { parsedFiles: parsedRollouts };
 }
 
 // ─── Session emission ───────────────────────────────────────────────────

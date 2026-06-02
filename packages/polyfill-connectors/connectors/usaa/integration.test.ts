@@ -316,8 +316,13 @@ test("emitExportFailure: exhausted ladder with diagnostic emits SKIP_RESULT carr
   assert.equal(skip.stream, "transactions", "export failure is charged to the transactions stream");
   assert.equal(skip.reason, "export_no_download", "non-credit-card account uses export_no_download");
   assert.match(skip.message, /no_export_affordance/, "message carries the last diagnostic phase");
-  assert.match(skip.message, /page=https:\/\/www\.usaa\.com\/my\/checking/, "message carries a redacted page location");
-  assert.equal(skip.diagnostics, diag, "last diagnostic threads through as structured context");
+  assert.match(skip.message, /page=captured/, "message reports whether page diagnostics were captured");
+  assert.doesNotMatch(skip.message, /accountId=|https?:\/\//, "message omits page URLs and URL identifiers");
+  assert.notEqual(skip.diagnostics, diag, "diagnostic context is sanitized before emission");
+  const emittedDiag = skip.diagnostics as DiagnosticInfo;
+  assert.equal(emittedDiag.phase, diag.phase, "diagnostic phase threads through as structured context");
+  assert.equal(emittedDiag.diag?.url, "", "diagnostic URL is redacted before emission");
+  assert.equal(emittedDiag.diag?.title, "", "diagnostic page title is redacted before emission");
 });
 
 test("emitExportFailure: artifact diagnostics are summarized when page diagnostics are unavailable", async () => {
@@ -360,15 +365,17 @@ test("emitExportFailure: artifact diagnostics are summarized when page diagnosti
   assert.match(skip.message, /page=unavailable/);
   assert.match(skip.message, /artifact cdpReady=true candidates=2 matched=0 bodyErrors=1/);
   assert.match(skip.message, /firstCandidate=cdp,200,not_expected_body,128B,text\/plain/);
-  assert.match(skip.message, /url=https:\/\/www.usaa.com\/export/);
+  assert.doesNotMatch(skip.message, /url=https?:\/\//);
   assert.match(skip.message, /body_response_timeout/);
+  const emittedDiag = skip.diagnostics as DiagnosticInfo;
+  assert.equal(emittedDiag.artifact?.candidates[0]?.url, "", "artifact candidate URL is redacted before emission");
 });
 
-test("emitExportFailure: download diagnostics surface URL, byte count, and remote failure when present", async () => {
+test("emitExportFailure: download diagnostics surface non-PII wait evidence when present", async () => {
   // Live-run regression: when `download_empty` fires under remote n.eko,
   // the candidates list is dominated by Adobe analytics beacons and the
-  // real export URL is invisible. This test confirms the download-side
-  // evidence (URL, suggestedFilename, source path, downloadFailure)
+  // real export URL is invisible. This test confirms non-PII download-side
+  // evidence (byte count, source path, downloadFailure)
   // reaches the SKIP_RESULT message text so the next run can be triaged
   // offline without a second human OTP cycle.
   const { deps, messages } = makeHarness();
@@ -395,15 +402,14 @@ test("emitExportFailure: download diagnostics surface URL, byte count, and remot
   const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
   assert.ok(skip);
   assert.match(skip.message, /export_artifact_wait_failed/);
-  assert.match(
-    skip.message,
-    /download .*url=https:\/\/www\.usaa\.com\/inet\/ent_logon\/bnk\/dmd\/chk\/transactionDownload/
-  );
-  assert.match(skip.message, /name=transaction_history\.csv/);
+  assert.doesNotMatch(skip.message, /https?:\/\/|transaction_history\.csv/);
   assert.match(skip.message, /bytes=0/);
   assert.match(skip.message, /source=createReadStream/);
   assert.match(skip.message, /saveAsError=saveAs_returned_zero_bytes/);
   assert.match(skip.message, /downloadFailure=Download canceled by remote/);
+  const emittedDiag = skip.diagnostics as DiagnosticInfo;
+  assert.equal(emittedDiag.download?.url, null, "download URL is redacted before emission");
+  assert.equal(emittedDiag.download?.suggestedFilename, null, "download filename is redacted before emission");
 });
 
 test("emitExportFailure: credit-card account uses credit_card_export_unverified reason", async () => {

@@ -109,3 +109,43 @@ test("collectMonthCategories: applies range/cutoff gates, emits records, and sto
   assert.ok(stateMessage, "month_categories state cursor should be emitted");
   assert.deepEqual(stateMessage.cursor, ctx.newState.month_categories);
 });
+
+test("collectMonthCategories: progress omits budget ids and month values", async () => {
+  const progressEvents: Array<{ message: string; extra?: Record<string, unknown> }> = [];
+  const { ctx } = makeCtx({
+    budgetId: "budget-main",
+    budgetOrdinal: 7,
+    progress: (message, extra) => {
+      progressEvents.push(extra === undefined ? { message } : { message, extra });
+      return Promise.resolve();
+    },
+  });
+
+  await collectMonthCategories(
+    ctx,
+    [{ activity: 0, budgeted: 0, deleted: false, income: 0, month: "2026-04-01", to_be_budgeted: 0 }],
+    {},
+    (_budgetId, month) =>
+      Promise.resolve({
+        activity: 0,
+        budgeted: 0,
+        categories: [monthCategoryFixture({ id: `cat-${month}`, name: `Category ${month}` })],
+        deleted: false,
+        income: 0,
+        month,
+        to_be_budgeted: 0,
+      })
+  );
+
+  const serialized = JSON.stringify(progressEvents);
+  assert.equal(serialized.includes("budget-main"), false, "budget id must not appear in progress");
+  assert.equal(serialized.includes("2026-04-01"), false, "month value must not appear in progress");
+  assert.equal(
+    progressEvents.some((event) => event.extra?.offset_ordinal === 7),
+    true
+  );
+  assert.equal(
+    progressEvents.some((event) => event.extra?.cursor_present === true),
+    true
+  );
+});

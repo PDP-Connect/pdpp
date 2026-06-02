@@ -18,6 +18,16 @@ const NOTION_VERSION = "2022-06-28";
 const PAGE_SIZE = 100;
 const POLITE_DELAY_MS = 400;
 
+interface ProgressExtra {
+  cursor_present?: boolean;
+  item_count?: number;
+  page_index?: number;
+  phase?: string;
+  rate_limit_pressure?: number;
+  stream?: string;
+  total_seen?: number;
+}
+
 interface NotionTitlePart {
   plain_text?: string;
 }
@@ -66,7 +76,13 @@ interface NotionSearchBody {
   start_cursor?: string;
 }
 
-async function ntn(path: string, token: string, body: NotionSearchBody): Promise<NotionSearchResponse> {
+async function ntn(
+  path: string,
+  token: string,
+  body: NotionSearchBody,
+  progress?: (message: string, extra?: ProgressExtra) => Promise<void>,
+  extra?: ProgressExtra
+): Promise<NotionSearchResponse> {
   const res = await fetch(`${API}${path}`, {
     method: "POST",
     headers: {
@@ -80,6 +96,11 @@ async function ntn(path: string, token: string, body: NotionSearchBody): Promise
     throw new Error("notion_auth_failed");
   }
   if (res.status === 429) {
+    await progress?.("Notion search rate limited", {
+      ...extra,
+      phase: "rate_limit",
+      rate_limit_pressure: 1,
+    });
     throw new Error("notion_rate_limited");
   }
   if (!res.ok) {
@@ -119,9 +140,15 @@ function parentId(parent: NotionParent | null | undefined): string | null {
   return null;
 }
 
-async function searchAll(token: string, filter: NotionSearchFilter | undefined): Promise<NotionObject[]> {
+async function searchAll(
+  token: string,
+  filter: NotionSearchFilter | undefined,
+  progress: (message: string, extra?: ProgressExtra) => Promise<void>,
+  streamName: string
+): Promise<NotionObject[]> {
   const results: NotionObject[] = [];
   let cursor: string | undefined;
+  let pageIndex = 0;
   while (true) {
     const body: NotionSearchBody = {
       sort: { direction: "descending", timestamp: "last_edited_time" },
@@ -133,12 +160,29 @@ async function searchAll(token: string, filter: NotionSearchFilter | undefined):
     if (cursor) {
       body.start_cursor = cursor;
     }
-    const json = await ntn("/search", token, body);
+    const pageExtra = {
+      stream: streamName,
+      phase: "fetch",
+      page_index: pageIndex,
+      total_seen: results.length,
+      cursor_present: Boolean(cursor),
+    };
+    await progress("Fetching Notion search page", pageExtra);
+    const json = await ntn("/search", token, body, progress, pageExtra);
     results.push(...(json.results || []));
+    await progress("Fetched Notion search page", {
+      stream: streamName,
+      phase: "page",
+      page_index: pageIndex,
+      item_count: json.results?.length ?? 0,
+      total_seen: results.length,
+      cursor_present: Boolean(json.has_more && json.next_cursor),
+    });
     if (!(json.has_more && json.next_cursor)) {
       break;
     }
     cursor = json.next_cursor;
+    pageIndex++;
     await politeDelay(POLITE_DELAY_MS);
   }
   return results;
@@ -178,7 +222,7 @@ interface RunStreamArgs {
   emit: (msg: { type: "STATE"; stream: string; cursor: unknown }) => Promise<void>;
   emitRecord: (stream: string, data: Record<string, unknown>) => Promise<void>;
   filter: NotionSearchFilter;
-  progress: (message: string, extra?: { stream?: string }) => Promise<void>;
+  progress: (message: string, extra?: ProgressExtra) => Promise<void>;
   state: Record<string, unknown>;
   streamName: string;
   token: string;
@@ -187,8 +231,8 @@ interface RunStreamArgs {
 
 async function runStream(args: RunStreamArgs): Promise<void> {
   const { streamName, filter, toRecord, state, token, emit, emitRecord, progress } = args;
-  await progress(`Searching ${streamName}`, { stream: streamName });
-  const items = await searchAll(token, filter);
+  await progress(`Searching ${streamName}`, { stream: streamName, phase: "start" });
+  const items = await searchAll(token, filter, progress, streamName);
   const streamState = state[streamName] as { last_edited_time?: string } | undefined;
   const prior = streamState?.last_edited_time;
   let latest = prior;
@@ -201,6 +245,13 @@ async function runStream(args: RunStreamArgs): Promise<void> {
       latest = item.last_edited_time;
     }
   }
+  await progress(`Emitted ${streamName}`, {
+    stream: streamName,
+    phase: "emit",
+    item_count: items.length,
+    total_seen: items.length,
+    cursor_present: Boolean(latest || prior),
+  });
   await emit({
     type: "STATE",
     stream: streamName,

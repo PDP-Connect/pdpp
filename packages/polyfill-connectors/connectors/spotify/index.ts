@@ -22,6 +22,17 @@ import { validateRecord } from "./schemas.ts";
 const API = "https://api.spotify.com/v1";
 const MAX_PAGES = 200;
 
+interface ProgressExtra {
+  cursor_present?: boolean;
+  item_count?: number;
+  offset_ordinal?: number;
+  page_index?: number;
+  phase?: string;
+  rate_limit_pressure?: number;
+  stream?: string;
+  total_seen?: number;
+}
+
 interface SpotifyArtist {
   followers?: { total?: number | null };
   genres?: string[];
@@ -67,7 +78,12 @@ interface PagedResponse<T> {
   next?: string | null;
 }
 
-async function sp<T>(path: string, token: string): Promise<T> {
+async function sp<T>(
+  path: string,
+  token: string,
+  progress?: (message: string, extra?: ProgressExtra) => Promise<void>,
+  extra?: ProgressExtra
+): Promise<T> {
   const res = await fetch(`${API}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
@@ -75,6 +91,11 @@ async function sp<T>(path: string, token: string): Promise<T> {
     throw new Error("spotify_auth_failed");
   }
   if (res.status === 429) {
+    await progress?.("Spotify request rate limited", {
+      ...extra,
+      phase: "rate_limit",
+      rate_limit_pressure: 1,
+    });
     throw new Error("spotify_rate_limited");
   }
   if (!res.ok) {
@@ -83,16 +104,41 @@ async function sp<T>(path: string, token: string): Promise<T> {
   return (await res.json()) as T;
 }
 
-async function paginate<T>(path: string, token: string): Promise<T[]> {
+async function paginate<T>(
+  path: string,
+  token: string,
+  progress: (message: string, extra?: ProgressExtra) => Promise<void>,
+  stream: string
+): Promise<T[]> {
   const all: T[] = [];
   let next: string | null = path;
   let guard = MAX_PAGES;
+  let pageIndex = 0;
   while (next && guard-- > 0) {
-    const json: PagedResponse<T> = await sp<PagedResponse<T>>(next, token);
+    const pageExtra = {
+      stream,
+      phase: "fetch",
+      page_index: pageIndex,
+      offset_ordinal: pageIndex,
+      total_seen: all.length,
+      cursor_present: pageIndex > 0,
+    };
+    await progress("Fetching Spotify page", pageExtra);
+    const json: PagedResponse<T> = await sp<PagedResponse<T>>(next, token, progress, pageExtra);
     if (Array.isArray(json.items)) {
       all.push(...json.items);
     }
+    await progress("Fetched Spotify page", {
+      stream,
+      phase: "page",
+      page_index: pageIndex,
+      offset_ordinal: pageIndex,
+      item_count: json.items?.length ?? 0,
+      total_seen: all.length,
+      cursor_present: Boolean(json.next),
+    });
     next = json.next ? json.next.replace(API, "") : null;
+    pageIndex++;
   }
   return all;
 }
@@ -100,10 +146,10 @@ async function paginate<T>(path: string, token: string): Promise<T[]> {
 async function collectPlaylists(
   token: string,
   emitRecord: (stream: string, data: Record<string, unknown>) => Promise<void>,
-  progress: (message: string, extra?: { stream?: string }) => Promise<void>
+  progress: (message: string, extra?: ProgressExtra) => Promise<void>
 ): Promise<void> {
-  await progress("Fetching playlists", { stream: "playlists" });
-  const items = await paginate<SpotifyPlaylist>("/me/playlists?limit=50", token);
+  await progress("Fetching playlists", { stream: "playlists", phase: "start" });
+  const items = await paginate<SpotifyPlaylist>("/me/playlists?limit=50", token, progress, "playlists");
   for (const p of items) {
     await emitRecord("playlists", {
       id: p.id,
@@ -128,10 +174,10 @@ async function collectSavedTracks(
   state: Record<string, unknown>,
   emit: (msg: { type: "STATE"; stream: string; cursor: unknown }) => Promise<void>,
   emitRecord: (stream: string, data: Record<string, unknown>) => Promise<void>,
-  progress: (message: string, extra?: { stream?: string }) => Promise<void>
+  progress: (message: string, extra?: ProgressExtra) => Promise<void>
 ): Promise<void> {
-  await progress("Fetching saved tracks", { stream: "saved_tracks" });
-  const items = await paginate<SpotifySavedTrack>("/me/tracks?limit=50", token);
+  await progress("Fetching saved tracks", { stream: "saved_tracks", phase: "start" });
+  const items = await paginate<SpotifySavedTrack>("/me/tracks?limit=50", token, progress, "saved_tracks");
   const savedState = state.saved_tracks as SavedTracksState | undefined;
   let latest: string | undefined = savedState?.last_added_at;
   for (const item of items) {
@@ -167,11 +213,38 @@ async function collectSavedTracks(
 async function collectTopArtists(
   token: string,
   emitRecord: (stream: string, data: Record<string, unknown>) => Promise<void>,
-  progress: (message: string, extra?: { stream?: string }) => Promise<void>
+  progress: (message: string, extra?: ProgressExtra) => Promise<void>
 ): Promise<void> {
-  await progress("Fetching top artists", { stream: "top_artists" });
-  for (const range of ["short_term", "medium_term", "long_term"] as const) {
-    const json = await sp<{ items?: SpotifyArtist[] }>(`/me/top/artists?time_range=${range}&limit=50`, token);
+  await progress("Fetching top artists", { stream: "top_artists", phase: "start" });
+  const ranges = ["short_term", "medium_term", "long_term"] as const;
+  let totalSeen = 0;
+  for (let i = 0; i < ranges.length; i++) {
+    const range = ranges[i];
+    const pageExtra = {
+      stream: "top_artists",
+      phase: "fetch",
+      page_index: i,
+      offset_ordinal: i,
+      total_seen: totalSeen,
+      cursor_present: i > 0,
+    };
+    await progress("Fetching Spotify top artists window", pageExtra);
+    const json = await sp<{ items?: SpotifyArtist[] }>(
+      `/me/top/artists?time_range=${range}&limit=50`,
+      token,
+      progress,
+      pageExtra
+    );
+    totalSeen += json.items?.length ?? 0;
+    await progress("Fetched Spotify top artists window", {
+      stream: "top_artists",
+      phase: "page",
+      page_index: i,
+      offset_ordinal: i,
+      item_count: json.items?.length ?? 0,
+      total_seen: totalSeen,
+      cursor_present: i < ranges.length - 1,
+    });
     for (const a of json.items || []) {
       await emitRecord("top_artists", {
         id: a.id,
@@ -194,13 +267,31 @@ async function collectRecentlyPlayed(
   state: Record<string, unknown>,
   emit: (msg: { type: "STATE"; stream: string; cursor: unknown }) => Promise<void>,
   emitRecord: (stream: string, data: Record<string, unknown>) => Promise<void>,
-  progress: (message: string, extra?: { stream?: string }) => Promise<void>
+  progress: (message: string, extra?: ProgressExtra) => Promise<void>
 ): Promise<void> {
-  await progress("Fetching recently played", { stream: "recently_played" });
+  await progress("Fetching recently played", { stream: "recently_played", phase: "start" });
   const rpState = state.recently_played as RecentlyPlayedState | undefined;
   const after = rpState?.last_played_at_unix;
   const path = `/me/player/recently-played?limit=50${after ? `&after=${String(after)}` : ""}`;
-  const json = await sp<{ items?: SpotifyPlayHistory[] }>(path, token);
+  const pageExtra = {
+    stream: "recently_played",
+    phase: "fetch",
+    page_index: 0,
+    offset_ordinal: 0,
+    total_seen: 0,
+    cursor_present: Boolean(after),
+  };
+  await progress("Fetching Spotify recently played page", pageExtra);
+  const json = await sp<{ items?: SpotifyPlayHistory[] }>(path, token, progress, pageExtra);
+  await progress("Fetched Spotify recently played page", {
+    stream: "recently_played",
+    phase: "page",
+    page_index: 0,
+    offset_ordinal: 0,
+    item_count: json.items?.length ?? 0,
+    total_seen: json.items?.length ?? 0,
+    cursor_present: Boolean(after),
+  });
   let latest: number | null = null;
   for (const p of json.items || []) {
     const playedAt = p.played_at;

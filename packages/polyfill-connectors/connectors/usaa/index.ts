@@ -295,8 +295,8 @@ export async function emitExportFailure(
 ): Promise<void> {
   const isCreditCard = CREDIT_CARD_TYPE_RE.test(a.account_type);
   const baseMessage = lastDiag
-    ? `${a.name ?? "?"}: ${formatDiagnosticInfo(lastDiag)}`
-    : `${a.name ?? "?"}: export dialog didn't produce a download across all ranges — account may have no transactions or selectors shifted`;
+    ? `Export ladder exhausted: ${formatDiagnosticInfo(lastDiag)}`
+    : "Export dialog didn't produce a download across all ranges — account may have no transactions or selectors shifted";
   const ccSuffix = isCreditCard
     ? ' (credit-card export flow not verified live 2026-04-19 — see design-notes/usaa.md "Fallback path: DOM scrape")'
     : "";
@@ -305,20 +305,54 @@ export async function emitExportFailure(
     stream: "transactions",
     reason: isCreditCard ? "credit_card_export_unverified" : "export_no_download",
     message: `${baseMessage}${ccSuffix}`,
-    diagnostics: lastDiag,
+    diagnostics: lastDiag ? sanitizeDiagnosticInfo(lastDiag) : null,
   });
 }
 
-function redactDiagnosticUrl(rawUrl: string | null | undefined): string | null {
-  if (!rawUrl) {
-    return null;
+function sanitizeDiagnosticInfo(diag: DiagnosticInfo): DiagnosticInfo {
+  const sanitized: DiagnosticInfo = {
+    ...diag,
+    diag: diag.diag
+      ? {
+          ...diag.diag,
+          dialog_html_preview: null,
+          export_candidates: diag.diag.export_candidates.map((candidate) => ({
+            ...candidate,
+            id: null,
+            text: "",
+          })),
+          nav_candidates: diag.diag.nav_candidates.map((candidate) => ({
+            ...candidate,
+            id: null,
+            text: "",
+          })),
+          title: "",
+          url: "",
+        }
+      : diag.diag,
+  };
+  if (diag.artifact !== undefined) {
+    sanitized.artifact = diag.artifact
+      ? {
+          ...diag.artifact,
+          candidates: diag.artifact.candidates.map((candidate) => ({
+            ...candidate,
+            contentDisposition: "",
+            url: "",
+          })),
+        }
+      : diag.artifact;
   }
-  try {
-    const url = new URL(rawUrl);
-    return `${url.origin}${url.pathname}`;
-  } catch {
-    return rawUrl.replace(/\d{4,}/g, "[digits]").slice(0, 120);
+  if (diag.download !== undefined) {
+    sanitized.download = diag.download
+      ? {
+          ...diag.download,
+          suggestedFilename: null,
+          url: null,
+        }
+      : diag.download;
   }
+  return sanitized;
 }
 
 function summarizeArtifactDiagnostics(diag: DiagnosticInfo): string | null {
@@ -344,14 +378,6 @@ function summarizeArtifactDiagnostics(diag: DiagnosticInfo): string | null {
       `${firstCandidate.bodyBytes ?? 0}B`,
       firstCandidate.contentType || "no-content-type",
     ];
-    const disposition = firstCandidate.contentDisposition.slice(0, 80);
-    if (disposition) {
-      firstParts.push(`disposition=${disposition}`);
-    }
-    const url = redactDiagnosticUrl(firstCandidate.url);
-    if (url) {
-      firstParts.push(`url=${url}`);
-    }
     if (firstCandidate.bodyError) {
       firstParts.push(`bodyError=${firstCandidate.bodyError.slice(0, ID_TEXT_SNIP)}`);
     }
@@ -366,13 +392,6 @@ function summarizeDownloadDiagnostics(diag: DiagnosticInfo): string | null {
     return null;
   }
   const parts: string[] = [];
-  const url = redactDiagnosticUrl(dl.url ?? null);
-  if (url) {
-    parts.push(`url=${url}`);
-  }
-  if (dl.suggestedFilename) {
-    parts.push(`name=${dl.suggestedFilename.slice(0, 80)}`);
-  }
   if (typeof dl.bytes === "number") {
     parts.push(`bytes=${dl.bytes}`);
   }
@@ -393,8 +412,7 @@ function summarizeDownloadDiagnostics(diag: DiagnosticInfo): string | null {
 
 function formatDiagnosticInfo(diag: DiagnosticInfo): string {
   const parts = [diag.phase];
-  const url = redactDiagnosticUrl(diag.diag?.url);
-  parts.push(`page=${url ?? "unavailable"}`);
+  parts.push(`page=${diag.diag ? "captured" : "unavailable"}`);
   const artifact = summarizeArtifactDiagnostics(diag);
   if (artifact) {
     parts.push(artifact);
@@ -1007,12 +1025,12 @@ async function reauthAfterSessionLapse(
   context: BrowserContext,
   page: Page,
   sendInteraction: BrowserCollectContext["sendInteraction"],
-  accountName: string | null
+  _accountName: string | null
 ): Promise<boolean> {
   await deps.emit({
     type: "PROGRESS",
     stream: "transactions",
-    message: `${accountName ?? "?"}: session lapsed — re-authenticating before retry`,
+    message: "Session lapsed during transactions; re-authenticating before retry",
   });
   try {
     await ensureUsaaSession({ context, page, sendInteraction });
@@ -1039,6 +1057,10 @@ interface ExportLadderResult {
 /** Try each candidate `sinceDate` in the ladder; stop on success or fatal diagnostic. */
 interface LadderAttemptArgs {
   a: DashboardAccount;
+  accountOrdinal: number;
+  accountTotal: number;
+  attemptOrdinal: number;
+  attemptTotal: number;
   context: BrowserContext;
   deps: EmitDeps;
   onDiagnostics: (info: DiagnosticInfo) => void;
@@ -1067,6 +1089,10 @@ async function runSingleLadderAttempt({
   page,
   sendInteraction,
   a,
+  accountOrdinal,
+  accountTotal,
+  attemptOrdinal,
+  attemptTotal,
   sinceDate,
   todayIso,
   onDiagnostics,
@@ -1075,7 +1101,7 @@ async function runSingleLadderAttempt({
   await deps.emit({
     type: "PROGRESS",
     stream: "transactions",
-    message: `Export ${a.name ?? "?"} (${a.last_four || "n/a"}) from ${sinceDate} to ${todayIso}`,
+    message: `Export wait: account ${accountOrdinal}/${accountTotal}, window ${attemptOrdinal}/${attemptTotal}`,
   });
   try {
     const exportResult = await driveExport(page, `https://www.usaa.com${a.account_url}`, {
@@ -1104,7 +1130,7 @@ async function runSingleLadderAttempt({
       type: "SKIP_RESULT",
       stream: "transactions",
       reason: "export_error",
-      message: `${a.name ?? "?"}: ${msg.slice(0, ID_TEXT_SNIP)}`,
+      message: `Export error: account ${accountOrdinal}/${accountTotal}, window ${attemptOrdinal}/${attemptTotal}: ${msg.slice(0, ID_TEXT_SNIP)}`,
     });
     return { kind: "retry" };
   }
@@ -1120,6 +1146,8 @@ async function tryExportLadder(
   page: Page,
   sendInteraction: BrowserCollectContext["sendInteraction"],
   a: DashboardAccount,
+  accountOrdinal: number,
+  accountTotal: number,
   candidateStarts: readonly string[],
   todayIso: string,
   onSessionDead: () => void
@@ -1130,13 +1158,21 @@ async function tryExportLadder(
   const onDiagnostics = (info: DiagnosticInfo): void => {
     diagBox.current = info;
   };
-  for (const sinceDate of candidateStarts) {
+  for (let i = 0; i < candidateStarts.length; i++) {
+    const sinceDate = candidateStarts[i];
+    if (!sinceDate) {
+      continue;
+    }
     const outcome = await runSingleLadderAttempt({
       deps,
       context,
       page,
       sendInteraction,
       a,
+      accountOrdinal,
+      accountTotal,
+      attemptOrdinal: i + 1,
+      attemptTotal: candidateStarts.length,
       sinceDate,
       todayIso,
       onDiagnostics,
@@ -1152,7 +1188,7 @@ async function tryExportLadder(
       await deps.emit({
         type: "PROGRESS",
         stream: "transactions",
-        message: `${a.name ?? "?"}: no transactions to export for ${sinceDate} to ${todayIso}`,
+        message: `Export complete: no transactions for account ${accountOrdinal}/${accountTotal}, window ${i + 1}/${candidateStarts.length}`,
       });
       return { csvPath: null, exportEmpty: true, usedSince: sinceDate, lastDiag: diagBox.current };
     }
@@ -1161,21 +1197,21 @@ async function tryExportLadder(
       await deps.emit({
         type: "PROGRESS",
         stream: "transactions",
-        message: `${a.name ?? "?"}: ${formatDiagnosticInfo(diagNow)}`,
+        message: `Export diagnostic: account ${accountOrdinal}/${accountTotal}, window ${i + 1}/${candidateStarts.length}, ${formatDiagnosticInfo(diagNow)}`,
       });
     }
     if (isFatalDiagPhase(diagNow)) {
       await deps.emit({
         type: "PROGRESS",
         stream: "transactions",
-        message: `${a.name ?? "?"}: ${diagNow.phase} — skipping retries`,
+        message: `Export diagnostic: ${diagNow.phase}; skipping retries for account ${accountOrdinal}/${accountTotal}`,
       });
       break;
     }
     await deps.emit({
       type: "PROGRESS",
       stream: "transactions",
-      message: `retrying ${a.name ?? "?"} with shorter range`,
+      message: `Retrying export with shorter range for account ${accountOrdinal}/${accountTotal}`,
     });
   }
   return { csvPath: null, exportEmpty: false, usedSince: null, lastDiag: diagBox.current };
@@ -1224,7 +1260,9 @@ async function processAccountTransactions(
   priorLastDate: string | null,
   sinceDateCfg: string | undefined,
   seventeenMonthsAgo: string,
-  streamState: TransactionsStreamState
+  streamState: TransactionsStreamState,
+  accountOrdinal: number,
+  accountTotal: number
 ): Promise<{ last_date: string | null } | null> {
   const desiredSince = priorLastDate
     ? new Date(Date.parse(priorLastDate) - INCREMENTAL_OVERLAP_MS).toISOString().slice(0, 10)
@@ -1238,6 +1276,8 @@ async function processAccountTransactions(
     page,
     sendInteraction,
     a,
+    accountOrdinal,
+    accountTotal,
     candidateStarts,
     todayIso,
     () => {
@@ -1275,12 +1315,14 @@ async function runTransactionsStream(
   const priorStateForTxns = (state.transactions as TransactionsPriorState | undefined) ?? {};
   const transactionsCursor: TransactionsStreamCursor = { ...priorStateForTxns };
 
-  for (const a of accounts) {
+  const transactionAccounts = accounts.filter((a) => TRANSACTION_ACCOUNT_TYPE_RE.test(a.account_type));
+  for (let i = 0; i < transactionAccounts.length; i++) {
+    const a = transactionAccounts[i];
+    if (!a) {
+      continue;
+    }
     if (streamState.sessionDeadMidRun) {
       break;
-    }
-    if (!TRANSACTION_ACCOUNT_TYPE_RE.test(a.account_type)) {
-      continue;
     }
     const accountKey = a.account_id_raw || "";
     const perAccState = priorStateForTxns[accountKey];
@@ -1294,7 +1336,9 @@ async function runTransactionsStream(
       priorLastDate,
       sinceDateCfg,
       seventeenMonthsAgo,
-      streamState
+      streamState,
+      i + 1,
+      transactionAccounts.length
     );
     if (!updated) {
       continue;
@@ -1349,7 +1393,7 @@ async function hydratePdfsForIndex(deps: StatementsSubDeps, indexRows: readonly 
     const hydrated = await hydrateStatementPdfs({
       page: deps.page,
       statements: indexRows as IndexRow[],
-      onProgress: ({ index, total, title }) => {
+      onProgress: ({ index, total }) => {
         attempts = index + 1;
         // Fire-and-forget: hydrateStatementPdfs signature is sync callback.
         // Swallowing the promise keeps the emit ordering best-effort; a
@@ -1358,7 +1402,7 @@ async function hydratePdfsForIndex(deps: StatementsSubDeps, indexRows: readonly 
           .emit({
             type: "PROGRESS",
             stream: "statements",
-            message: `Downloading PDF ${index + 1}/${total}: ${(title ?? "").slice(0, 60)}`,
+            message: `Downloading statement PDF ${index + 1}/${total}`,
           })
           .catch((): undefined => undefined);
       },
@@ -1369,7 +1413,7 @@ async function hydratePdfsForIndex(deps: StatementsSubDeps, indexRows: readonly 
             type: "SKIP_RESULT",
             stream: "statements",
             reason: `pdf_download_${reason}`,
-            message: `${statement.title ?? "?"}: ${reason}`,
+            message: `Statement PDF download skipped at row ${statement.rowIndex + 1}: ${reason}`,
             diagnostics: diag,
           })
           .catch((): undefined => undefined);
@@ -1428,7 +1472,7 @@ async function processPdfStatementRow(
         type: "SKIP_RESULT",
         stream: "transactions",
         reason: "pdf_template_unknown",
-        message: `${row.title ?? "?"} (${period ?? "unknown"}): no parser matched (era=${parseMeta.era})`,
+        message: `PDF statement parse skipped at row ${row.rowIndex + 1}: no parser matched (era=${parseMeta.era})`,
         diagnostics: {
           statement_id: row.id,
           year: parseMeta.year,
@@ -1448,7 +1492,7 @@ async function processPdfStatementRow(
       type: "SKIP_RESULT",
       stream: "transactions",
       reason: "pdf_parse_failed",
-      message: `${row.title ?? "?"}: ${msg.slice(0, ID_TEXT_SNIP)}`,
+      message: `PDF statement parse failed at row ${row.rowIndex + 1}: ${msg.slice(0, ID_TEXT_SNIP)}`,
     });
   }
 }
@@ -1475,7 +1519,7 @@ async function emitPdfStatementTransactions(
   await deps.emit({
     type: "PROGRESS",
     stream: "transactions",
-    message: `PDF parse: ${counters.pdfTxnCount} txns across ${counters.parsedStatements} statements (${counters.unknownTemplates} unknown templates)`,
+    message: `PDF parse complete: ${counters.pdfTxnCount} transaction(s) across ${counters.parsedStatements} statement(s) (${counters.unknownTemplates} unknown templates)`,
   });
 }
 
@@ -1499,6 +1543,11 @@ async function runStatementsStream(
 
     const docs = await scrapeStatementsIndex(deps.page);
     const indexRows = buildIndexRows(docs, accounts);
+    await deps.emit({
+      type: "PROGRESS",
+      stream: "statements",
+      message: `Found ${indexRows.length} statement index row(s)`,
+    });
     const summary = await hydratePdfsForIndex(deps, indexRows);
 
     if (requested.has("statements")) {
@@ -1566,6 +1615,11 @@ async function runInboxStream(deps: EmitDeps, page: Page): Promise<void> {
     });
     await politeDelay(DOCUMENTS_SETTLE_DELAY_MS);
     const msgs = await scrapeInboxRows(page);
+    await deps.emit({
+      type: "PROGRESS",
+      stream: "inbox_messages",
+      message: `Found ${msgs.length} inbox row(s)`,
+    });
     const year = new Date().getFullYear();
     for (const m of msgs) {
       const record = buildInboxMessageRecord(m, year, nowIso());

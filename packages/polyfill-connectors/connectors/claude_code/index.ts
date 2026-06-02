@@ -586,7 +586,7 @@ async function parseJsonlFile(args: ParseJsonlFileArgs): Promise<string | null> 
     if (!buildOnly && lineCount % LINE_PROGRESS_INTERVAL === 0) {
       await emit({
         type: "PROGRESS",
-        message: `  ${path}: ${lineCount} lines parsed`,
+        message: `Claude Code phase=emit pass=emit lines_parsed=${lineCount}`,
       });
     }
     const messageCountBeforeLine = obs.messageCount;
@@ -812,17 +812,10 @@ interface ProcessJsonlFileArgs {
   args: ScanProjectDirsArgs;
   forcedSessionId: string | null;
   path: string;
-  progressLabel: string;
   projectDir: string;
 }
 
-async function processJsonlFile({
-  args,
-  forcedSessionId,
-  path,
-  progressLabel,
-  projectDir,
-}: ProcessJsonlFileArgs): Promise<void> {
+async function processJsonlFile({ args, forcedSessionId, path, projectDir }: ProcessJsonlFileArgs): Promise<void> {
   let st: ReturnType<typeof statSync>;
   try {
     st = statSync(path);
@@ -836,7 +829,9 @@ async function processJsonlFile({
   }
   await args.emit({
     type: "PROGRESS",
-    message: `${args.buildOnly ? "Indexing" : "Emitting"} ${progressLabel} (${(st.size / BYTES_PER_MB).toFixed(1)}MB)`,
+    message: `Claude Code phase=${args.buildOnly ? "index" : "emit"} pass=${
+      args.buildOnly ? "index" : "emit"
+    } file_size_mb=${(st.size / BYTES_PER_MB).toFixed(1)}`,
   });
   await parseJsonlFile({
     buildOnly: args.buildOnly,
@@ -863,7 +858,6 @@ async function processTopLevelJsonl(
       args,
       forcedSessionId: null,
       path: join(projectPath, f),
-      progressLabel: `${projectDir}/${f}`,
       projectDir,
     });
   }
@@ -894,7 +888,6 @@ async function processSessionDir(
       args,
       forcedSessionId: sessionId,
       path: join(subagentsDir, f),
-      progressLabel: `${projectDir}/${sessionId}/subagents/${f}`,
       projectDir,
     });
   }
@@ -942,13 +935,12 @@ async function listProjectDirs(baseDir: string, emit: CollectContext["emit"]): P
   let projectDirs: string[];
   try {
     projectDirs = (await readdir(baseDir)).filter((name) => !name.startsWith("."));
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
+  } catch {
     await emit({
       type: "SKIP_RESULT",
       stream: "sessions",
       reason: "claude_dir_not_found",
-      message: `${baseDir} not readable: ${errMsg}`,
+      message: "Claude Code projects directory not readable",
     });
     return null;
   }
@@ -963,9 +955,10 @@ export async function scanProjectDirs(args: ScanProjectDirsArgs): Promise<void> 
   if (projectDirs === null) {
     return;
   }
+  const totalProjectDirs = projectDirs.length;
   await args.emit({
     type: "PROGRESS",
-    message: `${projectDirs.length} project dirs in scope`,
+    message: `Claude Code phase=index pass=index total_project_dirs=${totalProjectDirs}`,
   });
   for (const projectDir of projectDirs) {
     await scanProjectDir(projectDir, args);
@@ -1063,9 +1056,8 @@ async function runSkillsAndCommands(
       fileMtimes: state.skillsMtimes,
       newMtimes: state.newSkillsMtimes,
     });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    await emit({ type: "PROGRESS", message: `skills scan skipped: ${msg}` });
+  } catch {
+    await emit({ type: "PROGRESS", message: "Claude Code phase=index pass=index stream=skills scan_skipped=true" });
   }
   try {
     await emitSlashCommands({
@@ -1075,9 +1067,11 @@ async function runSkillsAndCommands(
       fileMtimes: state.slashCommandMtimes,
       newMtimes: state.newSlashCommandMtimes,
     });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    await emit({ type: "PROGRESS", message: `slash_commands scan skipped: ${msg}` });
+  } catch {
+    await emit({
+      type: "PROGRESS",
+      message: "Claude Code phase=index pass=index stream=slash_commands scan_skipped=true",
+    });
   }
   if (requested.has("skills")) {
     await emit({

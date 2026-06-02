@@ -611,7 +611,8 @@ test("runCurrentActivity: single account + broken-surface HTML → selectors_pen
     "the misleading 'Chase account activity DOM' wording must be gone"
   );
   assert.equal(
-    (skip.diagnostics as { account_name: string } | undefined)?.account_name,
-    "Sapphire Preferred (...9241)"
+    (skip.diagnostics as { account_count: number } | undefined)?.account_count,
+    1,
+    "diagnostics carry only non-PII account count"
   );
 });
