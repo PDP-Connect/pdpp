@@ -1091,6 +1091,26 @@ export function deriveConnectionNextStep(input: {
  */
 export type PrimaryRowAction = { kind: "sync" } | { kind: "device_wait"; detail: string; label: string };
 
+/**
+ * Owner-facing lead sentence for a failed `Sync now`, keyed on whether the
+ * run-start request reached the reference server.
+ *
+ * `before_server` — the request never reached the server (network / deployment
+ * down): the run definitely did not start; the owner should check their
+ * deployment. `after_server` — the server responded with an error: the run
+ * did not start, but the cause is the server's (the full message carries its
+ * reason). Keeping this pure and JSX-free lets both the records row and the
+ * connection detail page render identical, tested copy without a browser
+ * harness, and keeps a run-start failure a row-local toast — never a fall
+ * through to the dashboard error boundary.
+ */
+export function syncStartFailureLead(phase: "before_server" | "after_server"): string {
+  if (phase === "before_server") {
+    return "Couldn't reach the reference server, so the sync did not start.";
+  }
+  return "The reference server rejected the sync, so it did not start.";
+}
+
 export function derivePrimaryRowAction(input: {
   connectorId: string | null | undefined;
   /** True when the reference has a push-mode local-device progress row for this connection. */

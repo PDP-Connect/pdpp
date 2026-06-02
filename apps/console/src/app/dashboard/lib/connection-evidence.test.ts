@@ -25,6 +25,7 @@ import {
   summarizeOutboxForRow,
   summarizeOutboxStallRemediation,
   summarizeSchedule,
+  syncStartFailureLead,
 } from "./connection-evidence.ts";
 import type { RefConnectionHealthCondition, RefConnectionHealthSnapshot, RefSchedule } from "./ref-client.ts";
 import type { ConnectorOverview } from "./rs-client.ts";
@@ -75,23 +76,28 @@ test("coverage axis covers the full reference-server vocabulary", () => {
   }
 });
 
+const TERMINAL_GAP_JARGON_RE = /terminal gap/i;
+const RECORDS_SAFE_RE = /stay valid|not current data loss/i;
+const RECOVERY_POINTER_RE = /run|stream|recovery/i;
+const RETRYABLE_REASSURANCE_RE = /later run|no owner action|stay valid/i;
+
 test("terminal_gap copy reassures records are safe and points at a recovery step (report 3)", () => {
   // The owner reported "Coverage · terminal gap" was unclear: it did not say
   // what terminated, whether records are safe, or how to recover. The chip
   // value drops the jargon; the title carries the three required signals.
   const chip = formatCoverageAxis("terminal_gap");
   assert.equal(chip.tone, "danger");
-  assert.doesNotMatch(chip.value, /terminal gap/i);
+  assert.doesNotMatch(chip.value, TERMINAL_GAP_JARGON_RE);
   // Records-safe reassurance (not current data loss).
-  assert.match(chip.title, /stay valid|not current data loss/i);
+  assert.match(chip.title, RECORDS_SAFE_RE);
   // A concrete recovery pointer (the latest run / affected streams).
-  assert.match(chip.title, /run|stream|recovery/i);
+  assert.match(chip.title, RECOVERY_POINTER_RE);
 });
 
 test("retryable_gap copy reassures no owner action is needed yet (report 3)", () => {
   const chip = formatCoverageAxis("retryable_gap");
   assert.equal(chip.tone, "warning");
-  assert.match(chip.title, /later run|no owner action|stay valid/i);
+  assert.match(chip.title, RETRYABLE_REASSURANCE_RE);
 });
 
 test("axis chips degrade safely when runtime axes are missing or novel", () => {
@@ -210,6 +216,8 @@ test("summarizeAxisChips returns empty when axes are missing (no false success)"
   assert.deepEqual(summarizeAxisChips(undefined), []);
 });
 
+const OUTBOX_NOT_DATA_LOSS_RE = /not a current data-loss signal/i;
+
 // ─── outbox applicability gate (report 1) ─────────────────────────────────
 //
 // The reference defaults `outbox: "unknown"` for every non-local connection
@@ -257,7 +265,7 @@ test("summarizeAxisChips keeps the outbox chip for a local-backed connection wit
   assert.equal(outbox?.label, "Outbox · evidence unavailable");
   // Still neutral — an unreadable outbox is not a current data-loss signal.
   assert.equal(outbox?.tone, "neutral");
-  assert.match(outbox?.title ?? "", /not a current data-loss signal/i);
+  assert.match(outbox?.title ?? "", OUTBOX_NOT_DATA_LOSS_RE);
 });
 
 test("summarizeAxisChips shows a stalled outbox even for a non-local connection (concrete verdict wins)", () => {
@@ -630,6 +638,31 @@ test("summarizeOutboxStallRemediation: counts never attach to a quiet (non-stall
       `expected no remediation (and thus no counts) for outbox=${outbox}`
     );
   }
+});
+
+// ─── syncStartFailureLead (report 5) ──────────────────────────────────────
+//
+// A failed `Sync now` must stay a row-local toast that tells the owner whether
+// the run-start request reached the reference server, never fall through to the
+// dashboard error boundary.
+
+const LEAD_UNREACHABLE_RE = /reach the reference server/i;
+const LEAD_DID_NOT_START_RE = /did not start/i;
+const LEAD_REJECTED_RE = /reference server rejected/i;
+
+test("syncStartFailureLead distinguishes a before-server (unreachable) failure", () => {
+  const lead = syncStartFailureLead("before_server");
+  assert.match(lead, LEAD_UNREACHABLE_RE);
+  assert.match(lead, LEAD_DID_NOT_START_RE);
+});
+
+test("syncStartFailureLead distinguishes an after-server (rejected) failure", () => {
+  const lead = syncStartFailureLead("after_server");
+  assert.match(lead, LEAD_REJECTED_RE);
+  assert.match(lead, LEAD_DID_NOT_START_RE);
+  // The two phases must read differently so the owner knows where the failure
+  // happened.
+  assert.notEqual(lead, syncStartFailureLead("before_server"));
 });
 
 function baseSchedule(overrides: Partial<RefSchedule> = {}): RefSchedule {
