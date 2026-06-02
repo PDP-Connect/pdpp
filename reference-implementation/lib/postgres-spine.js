@@ -165,8 +165,11 @@ const RUN_TERMINAL_EVENT_TYPES = new Set([
   'run.cancelled',
   'run.abandoned',
 ]);
+const RUN_TERMINAL_EVENT_TYPE_LIST = [...RUN_TERMINAL_EVENT_TYPES];
+const SUMMARY_EVENT_HEAD_LIMIT = 5000;
+const SUMMARY_EVENT_TAIL_LIMIT = 200;
 
-function summarizeRows(id, rows) {
+function summarizeRows(id, rows, aggregate = {}) {
   const events = rows.map(hydrate).filter(Boolean);
   const first = events[0] || {};
   const last = events[events.length - 1] || first;
@@ -219,17 +222,17 @@ function summarizeRows(id, rows) {
     actor_type: last.actor_type || null,
     client_id: last.client_id || null,
     connector_id: connector?.source_id || null,
-    event_count: events.length,
+    event_count: Number(aggregate.event_count) || events.length,
     failure: failureEvent
       ? {
           event_type: failureEvent.event_type,
           reason: typeof failureEvent.data?.reason === 'string' ? failureEvent.data.reason : null,
         }
       : null,
-    first_at: first.occurred_at || null,
+    first_at: aggregate.first_at || first.occurred_at || null,
     grant_id: last.grant_id || null,
     kinds,
-    last_at: last.occurred_at || null,
+    last_at: aggregate.last_at || last.occurred_at || null,
     needs_input: events.some((event) => event.status === 'needs_input'),
     request_id: last.request_id || null,
     run_id: last.run_id || null,
@@ -239,6 +242,41 @@ function summarizeRows(id, rows) {
     status,
     trace_id: last.trace_id || null,
   };
+}
+
+function mergeEventRows(rows) {
+  const bySeq = new Map();
+  for (const row of rows) {
+    if (!row) continue;
+    const key = Number(row.event_seq);
+    bySeq.set(Number.isFinite(key) ? key : row.event_id, row);
+  }
+  return [...bySeq.values()].sort((a, b) => Number(a.event_seq || 0) - Number(b.event_seq || 0));
+}
+
+async function fetchRowsForSummary(kind, column, id) {
+  const head = await postgresQuery(
+    `SELECT * FROM spine_events WHERE ${column} = $1 ORDER BY event_seq ASC LIMIT $2`,
+    [id, SUMMARY_EVENT_HEAD_LIMIT],
+  );
+  if (kind !== 'run') {
+    return head.rows;
+  }
+
+  const [tail, terminal] = await Promise.all([
+    postgresQuery(
+      `SELECT * FROM spine_events WHERE ${column} = $1 ORDER BY event_seq DESC LIMIT $2`,
+      [id, SUMMARY_EVENT_TAIL_LIMIT],
+    ),
+    postgresQuery(
+      `SELECT * FROM spine_events
+       WHERE ${column} = $1 AND event_type = ANY($2::text[])
+       ORDER BY event_seq DESC
+       LIMIT 10`,
+      [id, RUN_TERMINAL_EVENT_TYPE_LIST],
+    ),
+  ]);
+  return mergeEventRows([...head.rows, ...tail.rows, ...terminal.rows]);
 }
 
 export async function postgresEmitSpineEvent(input = {}) {
@@ -407,11 +445,8 @@ export async function postgresListSpineCorrelations(kind, filters = {}) {
   const pageRows = result.rows.slice(0, limit);
   let summaries = [];
   for (const row of pageRows) {
-    const events = await postgresQuery(
-      `SELECT * FROM spine_events WHERE ${column} = $1 ORDER BY event_seq ASC LIMIT 5000`,
-      [row.id],
-    );
-    summaries.push(summarizeRows(row.id, events.rows));
+    const events = await fetchRowsForSummary(kind, column, row.id);
+    summaries.push(summarizeRows(row.id, events, row));
   }
 
   if (filters.status) {
@@ -464,21 +499,19 @@ export async function postgresSearchSpine(query) {
   const like = `%${q}%`;
   async function summaries(kind) {
     const column = COLUMN_BY_KIND[kind];
-    const ids = await postgresQuery(
-      `SELECT DISTINCT ${column} AS id
+    const correlations = await postgresQuery(
+      `SELECT ${column} AS id, MIN(occurred_at) AS first_at, MAX(occurred_at) AS last_at, COUNT(*)::int AS event_count
        FROM spine_events
        WHERE ${column} ILIKE $1
+       GROUP BY ${column}
        ORDER BY id ASC
        LIMIT 25`,
       [like],
     );
     const out = [];
-    for (const row of ids.rows) {
-      const events = await postgresQuery(
-        `SELECT * FROM spine_events WHERE ${column} = $1 ORDER BY event_seq ASC LIMIT 5000`,
-        [row.id],
-      );
-      out.push(summarizeRows(row.id, events.rows));
+    for (const row of correlations.rows) {
+      const events = await fetchRowsForSummary(kind, column, row.id);
+      out.push(summarizeRows(row.id, events, row));
     }
     return out;
   }

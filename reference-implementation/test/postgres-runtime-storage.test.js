@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   emitSpineEvent,
+  listSpineCorrelations,
   listSpineEventsPage,
   searchSpine,
 } from '../lib/spine.ts';
@@ -525,6 +526,110 @@ if (!POSTGRES_URL) {
       await postgresQuery('DELETE FROM record_changes WHERE connector_id = $1', [connectorId]);
       await postgresQuery('DELETE FROM records WHERE connector_id = $1', [connectorId]);
       await postgresQuery('DELETE FROM version_counter WHERE connector_id = $1', [connectorId]);
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+
+  test('postgres run summaries include terminal events beyond the prefix sample', async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `pg_large_run_${suffix}`;
+    const runId = `run_pg_large_${suffix}`;
+    const traceId = `trc_pg_large_${suffix}`;
+    const sourceData = { source: { kind: 'connector', id: connectorId } };
+
+    initDb(':memory:');
+    await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+
+    async function insertRunEvent(eventType, status, occurredAt, extraData = {}) {
+      await postgresQuery(
+        `INSERT INTO spine_events (
+           event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+           actor_type, actor_id, subject_type, subject_id, object_type, object_id,
+           status, request_id, grant_id, run_id, source_kind, source_id, client_id, stream_id,
+           token_id, interaction_id, data_json, version
+         )
+         VALUES (
+           $1, $2, $3, $3, 'scn_pg_large_summary', $4,
+           'runtime', $5, NULL, NULL, 'run', $6,
+           $7, NULL, NULL, $6, 'connector', $5, NULL, NULL,
+           NULL, NULL, $8::jsonb, 'reference.spine.v1'
+         )`,
+        [
+          `evt_${eventType.replaceAll('.', '_')}_${suffix}`,
+          eventType,
+          occurredAt,
+          traceId,
+          connectorId,
+          runId,
+          status,
+          JSON.stringify({ ...sourceData, ...extraData }),
+        ],
+      );
+    }
+
+    try {
+      await insertRunEvent('run.started', 'started', '2026-06-02T00:00:00.000Z');
+      await postgresQuery(
+        `INSERT INTO spine_events (
+           event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+           actor_type, actor_id, subject_type, subject_id, object_type, object_id,
+           status, request_id, grant_id, run_id, source_kind, source_id, client_id, stream_id,
+           token_id, interaction_id, data_json, version
+         )
+         SELECT
+           'evt_pg_large_progress_${suffix}_' || g,
+           'run.progress_reported',
+           '2026-06-02T00:00:01.000Z',
+           '2026-06-02T00:00:01.000Z',
+           'scn_pg_large_summary',
+           $1,
+           'runtime',
+           $2,
+           NULL,
+           NULL,
+           'run',
+           $3,
+           'in_progress',
+           NULL,
+           NULL,
+           $3,
+           'connector',
+           $2,
+           NULL,
+           NULL,
+           NULL,
+           NULL,
+           $4::jsonb,
+           'reference.spine.v1'
+         FROM generate_series(1, 5100) AS g`,
+        [traceId, connectorId, runId, JSON.stringify(sourceData)],
+      );
+      await insertRunEvent('run.failed', 'failed', '2026-06-02T00:00:02.000Z', {
+        reason: 'connector_exit_without_done',
+      });
+      await insertRunEvent('run.browser_surface_released', 'released', '2026-06-02T00:00:03.000Z');
+
+      const page = await listSpineCorrelations('run', {
+        sourceKind: 'connector',
+        sourceId: connectorId,
+        limit: 5,
+      });
+      const summary = page.summaries.find((row) => row.run_id === runId || row.id === runId);
+
+      assert.ok(summary, 'expected a summary for the large Postgres run');
+      assert.equal(summary.status, 'failed');
+      assert.equal(summary.event_count, 5103);
+      assert.equal(summary.last_at, '2026-06-02T00:00:03.000Z');
+      assert.equal(summary.failure?.reason, 'connector_exit_without_done');
+
+      const search = await searchSpine(runId);
+      const searchSummary = search.runs.find((row) => row.run_id === runId || row.id === runId);
+      assert.ok(searchSummary, 'expected search to return the large run summary');
+      assert.equal(searchSummary.status, 'failed');
+      assert.equal(searchSummary.event_count, 5103);
+    } finally {
+      await postgresQuery('DELETE FROM spine_events WHERE run_id = $1', [runId]);
       await closePostgresStorage();
       closeDb();
     }
