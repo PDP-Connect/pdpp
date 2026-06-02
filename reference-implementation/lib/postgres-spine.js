@@ -189,7 +189,13 @@ const RUN_TERMINAL_EVENT_TYPE_LIST = [...RUN_TERMINAL_EVENT_TYPES];
 const SUMMARY_EVENT_HEAD_LIMIT = 5000;
 const SUMMARY_EVENT_TAIL_LIMIT = 200;
 
-function summarizeRows(id, rows, aggregate = {}) {
+async function hasPostgresActiveRunLease(runId) {
+  if (!runId) return false;
+  const result = await postgresQuery('SELECT 1 AS active FROM controller_active_runs WHERE run_id = $1 LIMIT 1', [runId]);
+  return result.rows.length > 0;
+}
+
+async function summarizeRows(id, rows, aggregate = {}) {
   const events = rows.map(hydrate).filter(Boolean);
   const first = events[0] || {};
   const last = events[events.length - 1] || first;
@@ -217,15 +223,14 @@ function summarizeRows(id, rows, aggregate = {}) {
     }
   }
   if (status === 'unknown') {
-    // Pass 2 (fallback): no run-terminal event yet (run in flight or a
-    // non-run correlation). Use the most recent non-"unknown" status as
-    // before. For an in-flight run with only `run.batch_ingested` events,
-    // this lands on the *batch's* status which still misrepresents the
-    // run — so we also detect that case explicitly.
+    // Pass 2 (fallback): no run-terminal event yet. A started run is only
+    // in progress while controller_active_runs still carries its lease;
+    // otherwise it is an orphan and must not keep owner surfaces live.
+    // Non-run correlations still use the most recent non-"unknown" status.
     const hasRunStarted = events.some((ev) => ev.event_type === 'run.started');
     if (hasRunStarted) {
-      // Run started, no terminal: it's still in progress.
-      status = 'in_progress';
+      const runId = events.find((ev) => ev.run_id)?.run_id || id || null;
+      status = await hasPostgresActiveRunLease(runId) ? 'in_progress' : 'failed';
     } else {
       for (let i = events.length - 1; i >= 0; i -= 1) {
         const ev = events[i];
@@ -249,6 +254,11 @@ function summarizeRows(id, rows, aggregate = {}) {
           event_type: failureEvent.event_type,
           reason: typeof failureEvent.data?.reason === 'string' ? failureEvent.data.reason : null,
         }
+      : status === 'failed' && events.some((event) => event.event_type === 'run.started')
+        ? {
+            event_type: 'run.started',
+            reason: 'orphaned_started_run',
+          }
       : null,
     first_at: aggregate.first_at || first.occurred_at || null,
     grant_id: last.grant_id || null,
@@ -467,7 +477,7 @@ export async function postgresListSpineCorrelations(kind, filters = {}) {
   let summaries = [];
   for (const row of pageRows) {
     const events = await fetchRowsForSummary(kind, column, row.id);
-    summaries.push(summarizeRows(row.id, events, row));
+    summaries.push(await summarizeRows(row.id, events, row));
   }
 
   if (filters.status) {
@@ -532,7 +542,7 @@ export async function postgresSearchSpine(query) {
     const out = [];
     for (const row of correlations.rows) {
       const events = await fetchRowsForSummary(kind, column, row.id);
-      out.push(summarizeRows(row.id, events, row));
+      out.push(await summarizeRows(row.id, events, row));
     }
     return out;
   }

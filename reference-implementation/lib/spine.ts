@@ -780,12 +780,36 @@ function findLatestStatus(
 // a single `status` column. The deeper fix is for the spec to distinguish
 // run-terminal events from sub-resource events explicitly. Tracked in
 // `openspec/changes/refine-spine-status-semantics-for-mixed-correlations/`.
+//
+// A started run with no terminal event is only live if the controller still
+// has an active lease for its run_id. Without that lease, it is an orphaned
+// started run and must not keep the dashboard auto-polling indefinitely.
+function hasActiveRunLease(runId: string | null): boolean {
+  if (!runId) {
+    return false;
+  }
+  const db = getDb() as SpineDatabase | undefined;
+  if (!db) {
+    return false;
+  }
+  const row = db.prepare("SELECT 1 AS active FROM controller_active_runs WHERE run_id = ? LIMIT 1").get(runId) as
+    | { readonly active?: number }
+    | undefined;
+  return Boolean(row);
+}
+
 function pickSummaryStatus(events: readonly SpineEventRecord[]): string {
-  return (
-    findLatestStatus(events, (ev) => RUN_TERMINAL_EVENT_TYPES.has(ev.event_type)) ??
-    findLatestStatus(events, () => true) ??
-    "unknown"
-  );
+  const terminalStatus = findLatestStatus(events, (ev) => RUN_TERMINAL_EVENT_TYPES.has(ev.event_type));
+  if (terminalStatus) {
+    return terminalStatus;
+  }
+
+  const runId = pickFirstNonNull(events, "run_id") as string | null;
+  if (events.some((ev) => ev.event_type === "run.started")) {
+    return hasActiveRunLease(runId) ? "in_progress" : "failed";
+  }
+
+  return findLatestStatus(events, () => true) ?? "unknown";
 }
 
 function findFirstConnectorId(events: readonly SpineEventRecord[]): string | null {
@@ -856,6 +880,10 @@ function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | nu
   const kinds = Array.from(new Set(events.map((e) => e.event_type))).slice(0, 16);
   const status = pickSummaryStatus(events);
   const terminalFailure = events.find((e) => e.status === "failed" || e.status === "rejected");
+  const inferredOrphanFailure =
+    !terminalFailure && status === "failed" && events.some((e) => e.event_type === "run.started")
+      ? { event_type: "run.started", reason: "orphaned_started_run" }
+      : null;
   const source = findFirstSource(events);
 
   return {
@@ -882,7 +910,7 @@ function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | nu
           event_type: terminalFailure.event_type,
           reason: readFailureReason(terminalFailure.data),
         }
-      : null,
+      : inferredOrphanFailure,
   };
 }
 

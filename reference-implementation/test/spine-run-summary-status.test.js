@@ -25,7 +25,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { closeDb, initDb } from '../server/db.js';
+import { closeDb, getDb, initDb } from '../server/db.js';
 import { emitSpineEvent, listSpineCorrelations } from '../lib/spine.ts';
 
 async function withSpine(fn) {
@@ -100,5 +100,69 @@ test('run summary falls back to last non-unknown status when no run-terminal eve
       'completed',
       'with no run-terminal event, fallback should use the most recent non-unknown status',
     );
+  });
+});
+
+test('started-only run without an active controller row is projected as failed orphan', async () => {
+  await withSpine(async () => {
+    const runId = 'run_started_only_orphan';
+
+    await emitSpineEvent({
+      event_type: 'run.started',
+      run_id: runId,
+      status: 'started',
+      object_type: 'run',
+      object_id: runId,
+      actor_type: 'runtime',
+      actor_id: 'github',
+      occurred_at: '2026-04-01T00:00:01Z',
+      data: {
+        boot_epoch: '00000000-0000-4000-8000-000000000001',
+        seq: 1,
+      },
+    });
+
+    const page = await listSpineCorrelations('run', { limit: 50 });
+    const summary = page.summaries.find((s) => s.run_id === runId || s.id === runId);
+    assert.ok(summary, 'expected a summary for the orphaned run');
+    assert.equal(summary.status, 'failed');
+    assert.deepEqual(summary.failure, {
+      event_type: 'run.started',
+      reason: 'orphaned_started_run',
+    });
+  });
+});
+
+test('started-only run with an active controller row is projected as in progress', async () => {
+  await withSpine(async () => {
+    const runId = 'run_started_only_active';
+
+    await emitSpineEvent({
+      event_type: 'run.started',
+      run_id: runId,
+      status: 'started',
+      object_type: 'run',
+      object_id: runId,
+      actor_type: 'runtime',
+      actor_id: 'ynab',
+      occurred_at: '2026-04-01T00:00:01Z',
+      data: {
+        boot_epoch: '00000000-0000-4000-8000-000000000002',
+        seq: 1,
+      },
+    });
+
+    getDb()
+      .prepare(
+        `INSERT INTO controller_active_runs(connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .run('cin_ynab', 'ynab', runId, 'trc_active', 'default', '2026-04-01T00:00:01Z');
+
+    const page = await listSpineCorrelations('run', { limit: 50 });
+    const summary = page.summaries.find((s) => s.run_id === runId || s.id === runId);
+    assert.ok(summary, 'expected a summary for the active run');
+    assert.equal(summary.status, 'in_progress');
+    assert.equal(summary.failure, null);
   });
 });
