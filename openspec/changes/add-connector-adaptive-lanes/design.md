@@ -6,6 +6,22 @@
 
 The immediate mitigation serialized ChatGPT `/conversation/{id}` detail fetches with jittered delay. That is the safe baseline, but not a reusable design for the connector fleet.
 
+## Live Evidence
+
+2026-06-02 A/B probe (evidence-only; report: `tmp/workstreams/chatgpt-current-ab-probe-report-2026-06-02.md`). Attached read-only over CDP to the live PDPP ChatGPT browser context. No connector code ran; no records were ingested.
+
+- The conservative *serial* request policy — the connector's own minimal lane shape — hit a 10×429 early-stop ceiling after 26 detail attempts (16×200, 10×429, ~38% 429 rate). The session stayed authenticated; the list endpoint returned 200 throughout.
+- **No `Retry-After` header was present on any 429.** ChatGPT's private detail endpoint returns *bare* 429s.
+- Cooldown probes stayed elevated (67% at +60s, 20% at +3min): the throttle is per-account and recovers over minutes, not per-conversation.
+- Batch-5 and profile A/B were deliberately not run: the account was already hot, so raising concurrency would confound the comparison and risk escalating the throttle on a real account.
+
+Two design consequences, both addressed in this change:
+
+1. A bare 429 is a signal about the whole account/source bucket, not the one conversation in hand. The previous code only opened the source-pressure circuit after a single conversation exhausted the full `CHATGPT_RATE_LIMIT_MAX_ATTEMPTS = 12` budget. With bare 429s and jittered exponential backoff to a 15-min cap, that first throttled conversation burns roughly 23–70 minutes (mid ≈ 47 min) of wall-clock retrying *the same conversation* against an already-hot account before the circuit opens and defers the rest. The fast-open (below) cuts that to ~6 s.
+2. Because the server advertises no `Retry-After`, exponential backoff is flying blind; the only honest signal is the 429 itself and its cadence. The connector must drive backoff off the observed bare-429 cadence and degrade to resumable `DETAIL_GAP` state, not keep hammering.
+
+This evidence does **not** support raising detail-lane concurrency. The least-aggressive serial policy is what was throttled; batching would be throttled at least as hard. ChatGPT `maxConcurrency` MUST stay at `1` until a genuinely cold-state live run produces clean evidence (see Tasks §6).
+
 ## Prior Art
 
 The design uses high-adoption queue/retry primitives as references but does not delegate the adaptive policy wholesale:
@@ -103,6 +119,7 @@ Implementation constants for the first tranche:
 - Normal launch pacing is bounded by connector-provided `minDelayMs`/`maxDelayMs`; source-pressure cooldown is separately bounded by `pressureMinDelayMs`/`pressureMaxDelayMs` so a connector can keep successful launches paced in seconds while backing off pressured sources in minutes.
 - ChatGPT keeps `retryHttp` as the per-request retry owner, but retry callbacks SHALL report intermediate pressure into the lane so pressure is visible even when the individual request eventually succeeds.
 - The ChatGPT pilot uses `initialConcurrency = 1`, `maxConcurrency = 1`, `minDelayMs = 1500`, `maxDelayMs = 3000`, and ChatGPT rate-limit retry bounds for pressure cooldown, preserving serialized normal fetches while applying meaningful source-pressure cooldown.
+- ChatGPT fast-opens the source-pressure circuit on a *bare* 429 (status 429 with no `Retry-After`). After `CHATGPT_BARE_429_FAST_OPEN_ATTEMPTS` (currently `3`) bare-429 attempts on a single detail request, `retryHttp` exhausts and throws the same `ChatGptRecoverableRetryExhaustedError` it would on full-budget exhaustion, opening the existing observed-pressure circuit so the remaining tranche defers to resumable `DETAIL_GAP` instead of grinding the hot account. A 429 that *does* carry `Retry-After`, and `502/503/504`, keep the full `CHATGPT_RATE_LIMIT_MAX_ATTEMPTS` budget — those are honest, server-bounded waits, not blind account hammering. This is implemented as a generic `retryHttp` `shouldKeepRetrying` early-stop hook with a connector-local predicate; the source-pressure *policy* stays connector-owned.
 
 Latency-gradient or Vegas-style algorithms are deferred. They may be useful for well-behaved public APIs, but they can give false confidence against opaque anti-abuse systems where latency is not the signal that matters.
 

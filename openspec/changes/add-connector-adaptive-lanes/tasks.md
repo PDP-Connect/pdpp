@@ -35,6 +35,8 @@
 - [x] Preserve existing ChatGPT retry/backoff progress copy or replace it with clearer lane-aware progress.
 - [x] Verify the connector still does not emit stream `STATE` or advance durable state on failed required detail collection.
 - [x] Verify concurrent or out-of-order lane completions cannot change the ChatGPT cursor calculation.
+- [x] Fast-open the source-pressure circuit on a bare 429 (no `Retry-After`) after `CHATGPT_BARE_429_FAST_OPEN_ATTEMPTS` attempts instead of burning the full 12-attempt budget, via a generic `retryHttp` `shouldKeepRetrying` hook and a connector-local predicate (`shouldKeepRetryingChatGptDetail`). Motivated by the 2026-06-02 bare-429 live probe; see `design.md` → Live Evidence.
+- [x] Keep the full retry budget for 429-with-`Retry-After` and `502/503/504` (honest server-bounded waits), and keep successful 200 detail processing unchanged.
 
 ## 5. Validation
 
@@ -42,11 +44,12 @@
 - [x] Run targeted connector tests for `http-retry`, adaptive lane, and ChatGPT.
 - [x] Run `openspec validate add-connector-adaptive-lanes --strict`.
 - [x] Run `openspec validate --all --strict` or document any pre-existing unrelated failures.
-- [ ] Run one Docker ChatGPT live pilot with fixture capture enabled.
-- [ ] Compare live telemetry against the serialized baseline: no retry exhaustion, no burst above configured lane cap, clear cooldown/progress messages, and successful cursor commit on terminal success.
+- [ ] Run one Docker ChatGPT live pilot with fixture capture enabled. **Deferred — hot-account blocked.** The 2026-06-02 probe left the live account/source bucket throttled (20–67% 429 across two cooldown probes), so a clean cold-state pilot is not safe to run now without risking escalation on the real account. Run from a genuinely cold start (no recent ChatGPT load) per the probe report's reproduce section. Owner-only live action.
+- [ ] Compare live telemetry against the serialized baseline: no retry exhaustion, no burst above configured lane cap, clear cooldown/progress messages, and successful cursor commit on terminal success. **Deferred — depends on the cold-state pilot above.** The fast-open and circuit behavior are proven deterministically (see §5 targeted tests); only the live wall-clock and cooldown-copy comparison remain.
 - [x] Verify lane observability redacts or omits secret-bearing URLs, headers, cookies, and request bodies.
+- [x] Add deterministic tests for the bare-429 fast-open: `retryHttp` `shouldKeepRetrying` early-stop (generic), and `shouldKeepRetryingChatGptDetail` boundary + real-`retryHttp` 3-attempt exhaustion (connector).
 
 ## 6. Follow-Up Gate
 
-- [ ] Decide whether ChatGPT may raise `maxConcurrency` above `1` after live evidence.
+- [ ] Decide whether ChatGPT may raise `maxConcurrency` above `1` after live evidence. **Owner-only; blocked on cold-state live evidence.** The 2026-06-02 probe shows even the minimal serial policy is throttled on the current account, so concurrency MUST stay at `1` until a cold-state run produces clean evidence.
 - [ ] Identify the next connector candidate only after its throttle bucket and required/optional stream semantics are explicit.

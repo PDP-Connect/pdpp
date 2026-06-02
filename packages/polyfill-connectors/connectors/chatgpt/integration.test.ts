@@ -49,6 +49,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { currentAdaptiveLaneRunContext } from "../../src/adaptive-lane.ts";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
+import { RetryExhaustedError, retryHttp } from "../../src/http-retry.ts";
 import { type EmittedRecord, makeRecordingEmit, type SkippedRecord } from "../../src/test-harness.ts";
 import {
   CHATGPT_RETRYABLE_ERROR_PATTERN,
@@ -63,6 +64,7 @@ import {
   runMessagesAndConversationsWithDetail,
   runSharedConversationsStream,
   type StreamDeps,
+  shouldKeepRetryingChatGptDetail,
   summarizeChatGptSideEffectProbe,
 } from "./index.ts";
 import { buildConversationRecord, type ConversationDetail } from "./parsers.ts";
@@ -83,6 +85,71 @@ test("CHATGPT_RETRYABLE_ERROR_PATTERN treats retry-budget exhaustion as retryabl
     ),
     true
   );
+});
+
+test("shouldKeepRetryingChatGptDetail fast-opens on bare 429 but keeps honest waits", () => {
+  // Bare 429 (no Retry-After): keep retrying for the first two attempts, then
+  // fast-open on the third so retryHttp exhausts and the source-pressure circuit
+  // opens — instead of burning the full 12-attempt budget on a hot account.
+  assert.equal(shouldKeepRetryingChatGptDetail({ attempt: 1, response: { status: 429 }, retryAfterMs: null }), true);
+  assert.equal(shouldKeepRetryingChatGptDetail({ attempt: 2, response: { status: 429 }, retryAfterMs: null }), true);
+  assert.equal(
+    shouldKeepRetryingChatGptDetail({ attempt: 3, response: { status: 429 }, retryAfterMs: null }),
+    false,
+    "third bare 429 fast-opens the circuit"
+  );
+
+  // 429 WITH Retry-After is an honest, server-bounded wait — keep the full budget.
+  assert.equal(
+    shouldKeepRetryingChatGptDetail({ attempt: 5, response: { status: 429 }, retryAfterMs: 120_000 }),
+    true,
+    "honor Retry-After instead of fast-opening"
+  );
+
+  // Transient server errors keep the full budget; they are not an account-bucket signal.
+  for (const status of [502, 503, 504]) {
+    assert.equal(
+      shouldKeepRetryingChatGptDetail({ attempt: 9, response: { status }, retryAfterMs: null }),
+      true,
+      `status ${status} should retry on the full budget`
+    );
+  }
+});
+
+test("ChatGPT detail fetch fast-opens on bare 429 after the configured attempts, not the full budget", async () => {
+  // Drive the REAL connector predicate through the REAL retryHttp with the same
+  // bounds the connector configures. Proves a bare-429 hot account exhausts in 3
+  // attempts (one initial + two short retries), not 12.
+  const sleeps: number[] = [];
+  let calls = 0;
+
+  await assert.rejects(
+    retryHttp({
+      baseDelayMs: 2000,
+      maxAttempts: 12,
+      maxDelayMs: 15 * 60_000,
+      maxRetryAfterMs: 15 * 60_000,
+      random: () => 0.5,
+      request: () => {
+        calls += 1;
+        return { status: 429 };
+      },
+      shouldKeepRetrying: shouldKeepRetryingChatGptDetail,
+      sleep: (ms) => {
+        sleeps.push(ms);
+      },
+    }),
+    (err: unknown) => {
+      assert.ok(err instanceof RetryExhaustedError);
+      assert.equal(err.attempts, 3);
+      return true;
+    }
+  );
+
+  assert.equal(calls, 3, "bare-429 detail fetch stops after the fast-open attempt cap");
+  // Only the two pre-fast-open backoffs (2s, 4s) are paid — seconds, not the
+  // ~23–70 min the 11-sleep full budget would burn against a hot account.
+  assert.deepEqual(sleeps, [2000, 4000]);
 });
 
 test("resolveChatGptBackendFetchTimeoutMs supports small test overrides", () => {

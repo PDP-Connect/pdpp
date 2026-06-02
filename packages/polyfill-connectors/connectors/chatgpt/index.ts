@@ -139,6 +139,24 @@ const CHATGPT_RATE_LIMIT_BASE_DELAY_MS = 2000;
 const CHATGPT_RATE_LIMIT_MAX_DELAY_MS = 15 * 60_000;
 const CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS = 15 * 60_000;
 const CHATGPT_LONG_SLEEP_PROGRESS_THRESHOLD_MS = 5000;
+// Source-pressure fast-open. The live A/B probe (2026-06-02) showed ChatGPT's
+// private detail endpoint returns BARE 429s — no `Retry-After` — and that the
+// throttle is per-account, recovering over minutes, not per-conversation. A
+// bare 429 is therefore a signal about the whole account/source bucket, not the
+// one conversation in hand. Retrying the same conversation up to the full
+// `CHATGPT_RATE_LIMIT_MAX_ATTEMPTS` budget would spend ~23–70 min of jittered
+// exponential backoff hammering an already-hot account before the connector's
+// upstream-pressure circuit opens and defers the rest as DETAIL_GAP.
+//
+// So a bare 429 (429 WITHOUT `Retry-After`) exhausts retryHttp after only
+// `CHATGPT_BARE_429_FAST_OPEN_ATTEMPTS` attempts. That throws the same
+// `RetryExhaustedError` the full budget would, opening the existing
+// observed-pressure circuit fast: the rest of the tranche is deferred to
+// resumable DETAIL_GAP records instead of grinding the hot bucket.
+//
+// A 429 that DOES carry `Retry-After`, and 502/503/504, keep the full budget:
+// those are honest, server-bounded waits we should respect, not blind hammering.
+const CHATGPT_BARE_429_FAST_OPEN_ATTEMPTS = 3;
 export const CHATGPT_RETRYABLE_ERROR_PATTERN = /ECONN|ETIMEDOUT|fetch failed|429|retry budget exhausted/i;
 const CHATGPT_BACKEND_FETCH_TIMEOUT_ENV = "PDPP_CHATGPT_BACKEND_FETCH_TIMEOUT_MS";
 const CHATGPT_BACKEND_FETCH_TIMEOUT_MS = 45_000;
@@ -286,6 +304,32 @@ function formatSleepDuration(ms: number): string {
   return remainderSeconds ? `${minutes}m ${remainderSeconds}s` : `${minutes}m`;
 }
 
+/**
+ * `retryHttp` early-stop predicate implementing the bare-429 source-pressure
+ * fast-open. Returns `false` (stop retrying, exhaust now) once a bare 429 —
+ * status 429 with no `Retry-After` — has been seen on
+ * `CHATGPT_BARE_429_FAST_OPEN_ATTEMPTS` attempts. Every other retryable
+ * response (429 + `Retry-After`, 502/503/504) keeps the full budget.
+ *
+ * Exported for direct unit testing of the boundary; `retryHttp` owns the
+ * exhaustion accounting and error shape.
+ */
+export function shouldKeepRetryingChatGptDetail({
+  attempt,
+  response,
+  retryAfterMs,
+}: {
+  attempt: number;
+  response: { status: number };
+  retryAfterMs: number | null;
+}): boolean {
+  const isBare429 = response.status === 429 && retryAfterMs == null;
+  if (isBare429 && attempt >= CHATGPT_BARE_429_FAST_OPEN_ATTEMPTS) {
+    return false;
+  }
+  return true;
+}
+
 function classifyRetryExhaustedStatus(status: number | null): ChatGptRetryExhaustedClass {
   if (status === 429) {
     return "rate_limited";
@@ -374,6 +418,11 @@ function createChatGptApi({
         maxAttempts: CHATGPT_RATE_LIMIT_MAX_ATTEMPTS,
         maxDelayMs: CHATGPT_RATE_LIMIT_MAX_DELAY_MS,
         maxRetryAfterMs: CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS,
+        // Fast-open the source-pressure circuit on a bare 429 (no Retry-After):
+        // a few short attempts, then exhaust so the lane defers the rest as
+        // resumable DETAIL_GAP instead of burning the full 12-attempt budget
+        // (~23–70 min of backoff) against an already-throttled account.
+        shouldKeepRetrying: shouldKeepRetryingChatGptDetail,
         onRetry: async ({ attempt, delayMs, maxAttempts, response, retryAfterMs }) => {
           // retryHttp sleeps `delayMs` itself immediately after this callback,
           // inside the same (serialized) detail attempt. Report the pressure so
