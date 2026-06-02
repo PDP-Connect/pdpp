@@ -25,6 +25,7 @@ import {
   type NextAction,
   type OutboxAxis,
   type OutboxDiagnosticCounts,
+  type OutboxStalledCause,
   rollupOutboxDiagnosticCounts,
 } from "../runtime/connection-health.ts";
 import { getConnectorManifest } from "./auth.js";
@@ -1247,6 +1248,7 @@ interface OutboxAxisAccumulator {
   sawTrustedIdle: boolean;
   sawTrustedUnknown: boolean;
   severity: "active" | "stalled" | null;
+  stalledCause: OutboxStalledCause | null;
 }
 
 function escalateOutboxAxisSeverity(
@@ -1262,6 +1264,28 @@ function escalateOutboxAxisSeverity(
   return current;
 }
 
+// When sources disagree, surface the most-actionable cause first:
+// dead letters need a retry-then-rerun, a failed state read needs a rerun, and
+// stale-pending also needs a rerun. Higher rank wins.
+const STALLED_CAUSE_RANK: Record<OutboxStalledCause, number> = {
+  dead_letter_backlog: 3,
+  state_read_failed: 2,
+  stale_pending: 1,
+};
+
+function escalateStalledCause(
+  current: OutboxStalledCause | null,
+  rowCause: OutboxStalledCause | null
+): OutboxStalledCause | null {
+  if (rowCause === null) {
+    return current;
+  }
+  if (current === null) {
+    return rowCause;
+  }
+  return STALLED_CAUSE_RANK[rowCause] > STALLED_CAUSE_RANK[current] ? rowCause : current;
+}
+
 function accumulateOutboxAxisRow(acc: OutboxAxisAccumulator, row: HeartbeatRow, nowIso: string): void {
   const trusted = row.deviceStatus === "active" && row.sourceStatus === "active" && row.deviceRevokedAt === null;
   if (trusted) {
@@ -1273,6 +1297,7 @@ function accumulateOutboxAxisRow(acc: OutboxAxisAccumulator, row: HeartbeatRow, 
       lastHeartbeatAt: row.lastHeartbeatAt,
       lastHeartbeatStatus: normalizeHeartbeatStatusForAxis(row.lastHeartbeatStatus),
       recordsPending: row.recordsPending,
+      deadLetterCount: row.outboxDiagnostics?.dead_letter ?? null,
     },
     {
       nowIso,
@@ -1286,6 +1311,7 @@ function accumulateOutboxAxisRow(acc: OutboxAxisAccumulator, row: HeartbeatRow, 
     return;
   }
   acc.severity = escalateOutboxAxisSeverity(acc.severity, result.axis);
+  acc.stalledCause = escalateStalledCause(acc.stalledCause, result.cause);
   if (result.axis === "idle") {
     acc.sawTrustedIdle = true;
   } else if (result.axis === "unknown") {
@@ -1296,9 +1322,9 @@ function accumulateOutboxAxisRow(acc: OutboxAxisAccumulator, row: HeartbeatRow, 
 export function projectConnectorOutboxAxisFromHeartbeats(
   heartbeats: readonly HeartbeatRow[],
   options: { readonly nowIso: string }
-): { axis: OutboxAxis; unreliable: boolean; hasEvidence: boolean } {
+): { axis: OutboxAxis; cause: OutboxStalledCause | null; unreliable: boolean; hasEvidence: boolean } {
   if (heartbeats.length === 0) {
-    return { axis: "unknown", unreliable: false, hasEvidence: false };
+    return { axis: "unknown", cause: null, unreliable: false, hasEvidence: false };
   }
   // Track each trusted row's contribution separately. We can only claim
   // `idle` when every trusted row reports idle; a trusted row whose
@@ -1311,6 +1337,7 @@ export function projectConnectorOutboxAxisFromHeartbeats(
     sawTrustedIdle: false,
     sawTrustedUnknown: false,
     severity: null,
+    stalledCause: null,
   };
   for (const row of heartbeats) {
     accumulateOutboxAxisRow(acc, row, options.nowIso);
@@ -1318,18 +1345,20 @@ export function projectConnectorOutboxAxisFromHeartbeats(
   // If every row is untrusted (e.g. all sources/devices revoked), there
   // is no honest evidence — keep `unknown` rather than implying idle.
   if (!acc.anyTrustedEvidence) {
-    return { axis: "unknown", unreliable: acc.anyUnreliable, hasEvidence: false };
+    return { axis: "unknown", cause: null, unreliable: acc.anyUnreliable, hasEvidence: false };
   }
   if (acc.severity !== null) {
-    return { axis: acc.severity, unreliable: acc.anyUnreliable, hasEvidence: true };
+    // Cause only travels with a stalled axis; an `active` rollup carries none.
+    const cause = acc.severity === "stalled" ? acc.stalledCause : null;
+    return { axis: acc.severity, cause, unreliable: acc.anyUnreliable, hasEvidence: true };
   }
   // No trusted instance is actively working or stalled. We can only
   // promise `idle` when every trusted instance reported idle — a missing
   // heartbeat on any trusted instance keeps the axis `unknown`.
   if (acc.sawTrustedIdle && !acc.sawTrustedUnknown) {
-    return { axis: "idle", unreliable: acc.anyUnreliable, hasEvidence: true };
+    return { axis: "idle", cause: null, unreliable: acc.anyUnreliable, hasEvidence: true };
   }
-  return { axis: "unknown", unreliable: acc.anyUnreliable, hasEvidence: acc.sawTrustedIdle };
+  return { axis: "unknown", cause: null, unreliable: acc.anyUnreliable, hasEvidence: acc.sawTrustedIdle };
 }
 
 function normalizeHeartbeatStatusForAxis(
@@ -1359,10 +1388,15 @@ function normalizeHeartbeatStatusForAxis(
 export async function getConnectorOutboxAxis(
   connectorId: string,
   options: { readonly connectorInstanceId?: string | null } = {}
-): Promise<{ axis: OutboxAxis; heartbeats: readonly HeartbeatRow[]; unreliable: boolean }> {
+): Promise<{
+  axis: OutboxAxis;
+  cause: OutboxStalledCause | null;
+  heartbeats: readonly HeartbeatRow[];
+  unreliable: boolean;
+}> {
   const store = getDefaultDeviceExporterStore();
   if (typeof store.listSourceInstanceHeartbeatsByConnector !== "function") {
-    return { axis: "unknown", heartbeats: [], unreliable: false };
+    return { axis: "unknown", cause: null, heartbeats: [], unreliable: false };
   }
   const connectorInstanceId = options.connectorInstanceId ?? null;
   try {
@@ -1375,9 +1409,9 @@ export async function getConnectorOutboxAxis(
       connectorInstanceId === null ? undefined : { connectorInstanceId }
     )) as readonly HeartbeatRow[];
     const result = projectConnectorOutboxAxisFromHeartbeats(rows, { nowIso: new Date().toISOString() });
-    return { axis: result.axis, heartbeats: rows, unreliable: result.unreliable };
+    return { axis: result.axis, cause: result.cause, heartbeats: rows, unreliable: result.unreliable };
   } catch {
-    return { axis: "unknown", heartbeats: [], unreliable: true };
+    return { axis: "unknown", cause: null, heartbeats: [], unreliable: true };
   }
 }
 
@@ -1869,7 +1903,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
    * Defaults to `new Date().toISOString()`; tests pass a fixed value.
    */
   readonly nowIso?: string;
-  readonly outbox?: { axis: OutboxAxis };
+  readonly outbox?: { axis: OutboxAxis; cause?: OutboxStalledCause | null };
   readonly pendingDetailGaps?: readonly PendingDetailGapSummary[];
   /**
    * Pre-projected browser-surface evidence for the connection. The list
@@ -2140,7 +2174,7 @@ export async function listConnectorSummaries(
         lastRun,
         lastSuccessfulRun,
         manifestStreams: manifest.streams ?? [],
-        outbox: { axis: outbox.axis },
+        outbox: { axis: outbox.axis, cause: outbox.cause },
         pendingDetailGaps: detailGaps.gaps,
         remoteSurface: remoteSurface.evidence,
         unreliableSources: combineUnreliableSources(
@@ -2210,7 +2244,7 @@ export async function getConnectorDetail(
     lastRun,
     lastSuccessfulRun,
     manifestStreams: manifest.streams ?? [],
-    outbox: { axis: outbox.axis },
+    outbox: { axis: outbox.axis, cause: outbox.cause },
     pendingDetailGaps: detailGaps.gaps,
     remoteSurface: remoteSurface.evidence,
     unreliableSources: combineUnreliableSources(

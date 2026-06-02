@@ -98,15 +98,21 @@ export const CONNECTION_CONDITION_REASONS = Object.freeze({
   FRESH: "fresh",
   FRESHNESS_UNKNOWN: "freshness_unknown",
   LOCAL_EXPORTER_ACTIVE: "local_exporter_active",
+  LOCAL_EXPORTER_DEAD_LETTER_BACKLOG: "local_exporter_dead_letter_backlog",
   LOCAL_EXPORTER_IDLE: "local_exporter_idle",
+  LOCAL_EXPORTER_STALE_PENDING: "local_exporter_stale_pending",
   LOCAL_EXPORTER_STALLED: "local_exporter_stalled",
+  LOCAL_EXPORTER_STATE_READ_FAILED: "local_exporter_state_read_failed",
   LOCAL_EXPORTER_UNKNOWN: "local_exporter_unknown",
   MISSING_BROWSER_SURFACE: "missing_browser_surface",
   NO_ACTIVE_BACKOFF: "no_active_backoff",
   NO_OPEN_ATTENTION: "no_open_attention",
   OUTBOX_ACTIVE: "outbox_active",
+  OUTBOX_DEAD_LETTER_BACKLOG: "outbox_dead_letter_backlog",
   OUTBOX_IDLE: "outbox_idle",
+  OUTBOX_STALE_PENDING: "outbox_stale_pending",
   OUTBOX_STALLED: "outbox_stalled",
+  OUTBOX_STATE_READ_FAILED: "outbox_state_read_failed",
   OUTBOX_UNKNOWN: "outbox_unknown",
   PROJECTION_CURRENT: "projection_current",
   PROJECTION_UNRELIABLE: "projection_unreliable",
@@ -230,6 +236,34 @@ export type AttentionAxis = "acknowledged" | "in_progress" | "none" | "open";
  *   - `unknown` : outbox evidence is missing or unreliable
  */
 export type OutboxAxis = "active" | "idle" | "stalled" | "unknown";
+
+/**
+ * Sub-classification of *why* the outbox axis is `stalled`. The axis stays a
+ * small four-value enum so existing consumers keep working; the cause carries
+ * the distinguishing detail the dashboard needs to avoid one scary "stalled or
+ * blocked" message for three genuinely different host-local situations:
+ *
+ *   - `state_read_failed`  : the device reported a `blocked` heartbeat but has
+ *                            no dead letters. The runner refused to advance
+ *                            because it could not read prior state (transient
+ *                            AS-reach issue, or a removed/inactive source).
+ *                            Recovery is to re-run the collector; there is
+ *                            nothing to requeue. Mirrors the device-side
+ *                            `last_error.kind = "state_read_failed"`.
+ *   - `dead_letter_backlog`: the device reported a `blocked` heartbeat *and*
+ *                            has dead-lettered rows. Recovery is to retry the
+ *                            dead letters, then re-run the collector to drain
+ *                            them. Mirrors `last_error.kind =
+ *                            "dead_letter_backlog"`.
+ *   - `stale_pending`      : pending work exists but the heartbeat has gone
+ *                            stale past the freshness threshold, so the
+ *                            collector likely died mid-drain. Recovery is to
+ *                            re-run the collector on the host.
+ *
+ * `null` is reserved for non-stalled axes (`idle`/`active`/`unknown`), which
+ * never carry a stalled cause.
+ */
+export type OutboxStalledCause = "dead_letter_backlog" | "stale_pending" | "state_read_failed";
 
 export type OutboxState = "backlog" | "dead_letter" | "drained" | "pending" | "retrying" | "stale" | "unknown";
 
@@ -543,6 +577,14 @@ export interface ConnectionCoverageEvidence {
 /** Outbox/work rollup from local collector or other durable executor. */
 export interface ConnectionOutboxEvidence {
   readonly axis: OutboxAxis;
+  /**
+   * When `axis === "stalled"`, the distinguishing cause so the projection can
+   * render a specific, non-scary message and a cause-matched remediation
+   * instead of one generic "stalled or blocked". Ignored for non-stalled
+   * axes; absent/`null` means "stalled, cause unknown" and falls back to the
+   * generic copy.
+   */
+  readonly cause?: OutboxStalledCause | null;
 }
 
 /**
@@ -971,6 +1013,8 @@ function projectConditions(
   axes: ConnectionAxes
 ): readonly ConnectionHealthCondition[] {
   const observedAt = input.observedAt ?? input.run?.lastSuccessAt ?? input.backoff?.nextRunAt ?? null;
+  // The stalled cause is only meaningful when the axis is actually stalled.
+  const stalledCause = axes.outbox === "stalled" ? (input.outbox?.cause ?? null) : null;
   return [
     projectionReliableCondition(input),
     scheduleEligibleCondition(input),
@@ -980,10 +1024,10 @@ function projectConditions(
     credentialsValidCondition(input),
     runtimeAvailableCondition(input),
     remoteSurfaceAvailableCondition(input),
-    localExporterAvailableCondition(axes),
+    localExporterAvailableCondition(axes, stalledCause),
     sourceCoverageCondition(input, axes),
     freshCondition(input, axes),
-    backlogClearCondition(axes),
+    backlogClearCondition(axes, stalledCause),
   ].map((item) => {
     const conditionObservedAt = item.observed_at ?? observedAt;
     return {
@@ -1365,7 +1409,66 @@ function remoteSurfaceAvailableCondition(input: ComputeConnectionHealthInput): C
   });
 }
 
-function localExporterAvailableCondition(axes: ConnectionAxes): ConnectionHealthCondition {
+/**
+ * Cause-specific copy for a stalled local-device outbox. Keeps the readiness
+ * (`LocalExporterAvailable`) and diagnostic (`BacklogClear`) conditions in
+ * lockstep so the dashboard never shows a generic "stalled or blocked"
+ * message when the projection actually knows which of three host-local
+ * situations applies. The remediation `label` names the exact next step on
+ * the host; the console renders the deterministic command separately.
+ */
+interface StalledCauseCopy {
+  readonly exporterMessage: string;
+  readonly exporterReason: string;
+  readonly backlogMessage: string;
+  readonly backlogReason: string;
+  readonly remediationLabel: string;
+}
+
+function stalledCauseCopy(cause: OutboxStalledCause | null): StalledCauseCopy {
+  switch (cause) {
+    case "state_read_failed":
+      return {
+        exporterMessage:
+          "Local exporter is blocked reading prior state. Re-run the collector on the host to clear it; there is nothing to requeue.",
+        exporterReason: CONDITION_REASON.LOCAL_EXPORTER_STATE_READ_FAILED,
+        backlogMessage: "Local-device outbox is blocked on a failed state read, not a backlog.",
+        backlogReason: CONDITION_REASON.OUTBOX_STATE_READ_FAILED,
+        remediationLabel: "Re-run the local collector on the host to clear the blocked state read",
+      };
+    case "dead_letter_backlog":
+      return {
+        exporterMessage:
+          "Local exporter has dead-lettered records. Retry the dead letters, then re-run the collector on the host to drain them.",
+        exporterReason: CONDITION_REASON.LOCAL_EXPORTER_DEAD_LETTER_BACKLOG,
+        backlogMessage: "Local-device outbox has dead-lettered records waiting to be retried and re-run.",
+        backlogReason: CONDITION_REASON.OUTBOX_DEAD_LETTER_BACKLOG,
+        remediationLabel: "Retry dead letters, then re-run the local collector on the host",
+      };
+    case "stale_pending":
+      return {
+        exporterMessage:
+          "Local exporter has pending work but stopped sending heartbeats. Re-run the collector on the host to resume draining.",
+        exporterReason: CONDITION_REASON.LOCAL_EXPORTER_STALE_PENDING,
+        backlogMessage: "Local-device outbox has pending work that stopped draining (no recent heartbeat).",
+        backlogReason: CONDITION_REASON.OUTBOX_STALE_PENDING,
+        remediationLabel: "Re-run the local collector on the host to resume draining pending work",
+      };
+    default:
+      return {
+        exporterMessage: "Local exporter work is stalled or blocked.",
+        exporterReason: CONDITION_REASON.LOCAL_EXPORTER_STALLED,
+        backlogMessage: "Local-device outbox work appears stalled.",
+        backlogReason: CONDITION_REASON.OUTBOX_STALLED,
+        remediationLabel: "Inspect the local collector backlog",
+      };
+  }
+}
+
+function localExporterAvailableCondition(
+  axes: ConnectionAxes,
+  stalledCause: OutboxStalledCause | null
+): ConnectionHealthCondition {
   switch (axes.outbox) {
     case "idle":
       return condition({
@@ -1382,24 +1485,26 @@ function localExporterAvailableCondition(axes: ConnectionAxes): ConnectionHealth
         status: "true",
         severity: "info",
         reason: CONDITION_REASON.LOCAL_EXPORTER_ACTIVE,
-        message: "Local exporter evidence shows active work.",
+        message: "Local exporter is draining queued work normally.",
         origin: "local_device",
       });
-    case "stalled":
+    case "stalled": {
+      const copy = stalledCauseCopy(stalledCause);
       return condition({
         type: "LocalExporterAvailable",
         status: "false",
         severity: "error",
-        reason: CONDITION_REASON.LOCAL_EXPORTER_STALLED,
-        message: "Local exporter work is stalled or blocked.",
+        reason: copy.exporterReason,
+        message: copy.exporterMessage,
         origin: "local_device",
         remediation: {
           action: "clear_backlog",
-          label: "Inspect the local collector backlog",
+          label: copy.remediationLabel,
           retryable: true,
           target: "local_device",
         },
       });
+    }
     default:
       return condition({
         type: "LocalExporterAvailable",
@@ -1482,7 +1587,10 @@ function freshCondition(input: ComputeConnectionHealthInput, axes: ConnectionAxe
   });
 }
 
-function backlogClearCondition(axes: ConnectionAxes): ConnectionHealthCondition {
+function backlogClearCondition(
+  axes: ConnectionAxes,
+  stalledCause: OutboxStalledCause | null
+): ConnectionHealthCondition {
   switch (axes.outbox) {
     case "idle":
       return condition({
@@ -1508,21 +1616,23 @@ function backlogClearCondition(axes: ConnectionAxes): ConnectionHealthCondition 
           target: "local_device",
         },
       });
-    case "stalled":
+    case "stalled": {
+      const copy = stalledCauseCopy(stalledCause);
       return condition({
         type: "BacklogClear",
         status: "false",
         severity: "error",
-        reason: CONDITION_REASON.OUTBOX_STALLED,
-        message: "Local-device outbox work appears stalled.",
+        reason: copy.backlogReason,
+        message: copy.backlogMessage,
         origin: "local_device",
         remediation: {
           action: "clear_backlog",
-          label: "Inspect the local collector backlog",
+          label: copy.remediationLabel,
           retryable: true,
           target: "local_device",
         },
       });
+    }
     default:
       return condition({
         type: "BacklogClear",
@@ -1832,6 +1942,14 @@ function projectNextAction(attention: ConnectionAttentionEvidence): NextAction {
  */
 export interface HeartbeatOutboxEvidence {
   /**
+   * Dead-lettered record depth the device last reported (from its rolled-up
+   * outbox diagnostics). Distinguishes a `blocked` heartbeat that is a pure
+   * state-read failure (no dead letters) from one carrying a dead-letter
+   * backlog. `null`/absent is treated as zero — a `blocked` heartbeat with no
+   * dead-letter evidence is classified `state_read_failed`.
+   */
+  readonly deadLetterCount?: number | null;
+  /**
    * Whether the device + source-instance row constitutes trustworthy
    * evidence (device active, source active, not revoked). The caller
    * decides; the projection trusts the flag.
@@ -1865,15 +1983,20 @@ export function deriveOutboxAxisFromHeartbeat(
     readonly nowIso: string;
     readonly staleHeartbeatThresholdMs: number;
   }
-): { axis: OutboxAxis; unreliable: boolean } {
+): { axis: OutboxAxis; cause: OutboxStalledCause | null; unreliable: boolean } {
   if (!evidence.evidenceTrusted) {
-    return { axis: "unknown", unreliable: true };
+    return { axis: "unknown", cause: null, unreliable: true };
   }
   if (!evidence.lastHeartbeatAt) {
-    return { axis: "unknown", unreliable: false };
+    return { axis: "unknown", cause: null, unreliable: false };
   }
   if (evidence.lastHeartbeatStatus === "blocked") {
-    return { axis: "stalled", unreliable: false };
+    // A blocked heartbeat with dead letters is a backlog to retry+re-run; a
+    // blocked heartbeat with none is a failed state read cleared by re-running.
+    // Mirrors the device-side `last_error.kind` split.
+    const cause: OutboxStalledCause =
+      (evidence.deadLetterCount ?? 0) > 0 ? "dead_letter_backlog" : "state_read_failed";
+    return { axis: "stalled", cause, unreliable: false };
   }
 
   const heartbeatAgeMs = ageMs(evidence.lastHeartbeatAt, options.nowIso);
@@ -1881,18 +2004,18 @@ export function deriveOutboxAxisFromHeartbeat(
   const heartbeatStale = heartbeatAgeMs !== null && heartbeatAgeMs > options.staleHeartbeatThresholdMs;
 
   if (pending > 0 && heartbeatStale) {
-    return { axis: "stalled", unreliable: false };
+    return { axis: "stalled", cause: "stale_pending", unreliable: false };
   }
   if (evidence.lastHeartbeatStatus === "starting" || evidence.lastHeartbeatStatus === "retrying") {
-    return { axis: "active", unreliable: false };
+    return { axis: "active", cause: null, unreliable: false };
   }
   if (pending > 0) {
-    return { axis: "active", unreliable: false };
+    return { axis: "active", cause: null, unreliable: false };
   }
   if (evidence.lastHeartbeatStatus === "healthy" || evidence.lastHeartbeatStatus === "stopped") {
-    return { axis: "idle", unreliable: false };
+    return { axis: "idle", cause: null, unreliable: false };
   }
-  return { axis: "unknown", unreliable: false };
+  return { axis: "unknown", cause: null, unreliable: false };
 }
 
 function ageMs(iso: string, nowIso: string): number | null {

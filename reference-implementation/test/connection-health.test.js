@@ -609,7 +609,7 @@ test('outbox axis: trusted healthy heartbeat with zero pending is idle', () => {
     nowIso: NOW,
     staleHeartbeatThresholdMs: STALE_MS,
   });
-  assert.deepEqual(r, { axis: 'idle', unreliable: false });
+  assert.deepEqual(r, { axis: 'idle', cause: null, unreliable: false });
 });
 
 test('outbox axis: trusted healthy heartbeat with pending work is active', () => {
@@ -633,20 +633,118 @@ test('outbox axis: starting/retrying heartbeats are active', () => {
   assert.equal(retrying.axis, 'active');
 });
 
-test('outbox axis: blocked status is stalled regardless of freshness', () => {
+test('outbox axis: blocked status with no dead letters is a state-read stall', () => {
   const r = deriveOutboxAxisFromHeartbeat(
     heartbeat({ lastHeartbeatStatus: 'blocked' }),
     { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS },
   );
   assert.equal(r.axis, 'stalled');
+  assert.equal(r.cause, 'state_read_failed');
 });
 
-test('outbox axis: pending work + stale heartbeat degrades to stalled', () => {
+test('outbox axis: blocked status with dead letters is a dead-letter backlog', () => {
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({ lastHeartbeatStatus: 'blocked', deadLetterCount: 258 }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS },
+  );
+  assert.equal(r.axis, 'stalled');
+  assert.equal(r.cause, 'dead_letter_backlog');
+});
+
+test('outbox axis: pending work + stale heartbeat degrades to stale_pending stall', () => {
   const r = deriveOutboxAxisFromHeartbeat(
     heartbeat({ lastHeartbeatStatus: 'healthy', lastHeartbeatAt: OLD, recordsPending: 3 }),
     { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS },
   );
   assert.equal(r.axis, 'stalled');
+  assert.equal(r.cause, 'stale_pending');
+});
+
+// ─── Stalled cause drives specific, non-generic projection copy ──────────
+
+test('local exporter: state_read_failed renders re-run copy, not generic stalled', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      outbox: { axis: 'stalled', cause: 'state_read_failed' },
+    }),
+  );
+  assert.equal(snap.state, 'degraded');
+  const exporter = findCondition(snap, 'LocalExporterAvailable');
+  assert.equal(exporter?.status, 'false');
+  assert.equal(exporter?.reason, CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_STATE_READ_FAILED);
+  assert.match(exporter?.message ?? '', /blocked reading prior state/i);
+  assert.match(exporter?.message ?? '', /nothing to requeue/i);
+  // Cause-matched remediation names the host re-run, not a generic "inspect".
+  assert.match(exporter?.remediation?.label ?? '', /re-run the local collector/i);
+  const backlog = findCondition(snap, 'BacklogClear');
+  assert.equal(backlog?.reason, CONNECTION_CONDITION_REASONS.OUTBOX_STATE_READ_FAILED);
+});
+
+test('local exporter: dead_letter_backlog renders retry-then-rerun copy', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      outbox: { axis: 'stalled', cause: 'dead_letter_backlog' },
+    }),
+  );
+  assert.equal(snap.state, 'degraded');
+  const exporter = findCondition(snap, 'LocalExporterAvailable');
+  assert.equal(exporter?.reason, CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_DEAD_LETTER_BACKLOG);
+  assert.match(exporter?.message ?? '', /dead-lettered records/i);
+  assert.match(exporter?.remediation?.label ?? '', /retry dead letters.*re-run/i);
+  assert.equal(
+    findCondition(snap, 'BacklogClear')?.reason,
+    CONNECTION_CONDITION_REASONS.OUTBOX_DEAD_LETTER_BACKLOG,
+  );
+});
+
+test('local exporter: stale_pending names the stopped heartbeat, not a backlog', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      outbox: { axis: 'stalled', cause: 'stale_pending' },
+    }),
+  );
+  const exporter = findCondition(snap, 'LocalExporterAvailable');
+  assert.equal(exporter?.reason, CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_STALE_PENDING);
+  assert.match(exporter?.message ?? '', /stopped sending heartbeats/i);
+});
+
+test('local exporter: stalled with no cause falls back to generic copy', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      outbox: { axis: 'stalled' },
+    }),
+  );
+  const exporter = findCondition(snap, 'LocalExporterAvailable');
+  assert.equal(exporter?.reason, CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_STALLED);
+  assert.match(exporter?.message ?? '', /stalled or blocked/i);
+});
+
+test('local exporter: a cause is ignored unless the axis is actually stalled', () => {
+  // A non-stalled axis must never inherit a stray cause into scary copy.
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      outbox: { axis: 'active', cause: 'dead_letter_backlog' },
+    }),
+  );
+  const exporter = findCondition(snap, 'LocalExporterAvailable');
+  assert.equal(exporter?.status, 'true');
+  assert.equal(exporter?.reason, CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_ACTIVE);
+  assert.match(exporter?.message ?? '', /draining queued work normally/i);
 });
 
 test('outbox axis: idle heartbeat that is stale but has zero pending stays idle', () => {
@@ -665,7 +763,7 @@ test('outbox axis: missing heartbeat is unknown (not unreliable)', () => {
     heartbeat({ lastHeartbeatAt: null, lastHeartbeatStatus: null }),
     { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS },
   );
-  assert.deepEqual(r, { axis: 'unknown', unreliable: false });
+  assert.deepEqual(r, { axis: 'unknown', cause: null, unreliable: false });
 });
 
 test('outbox axis: untrusted evidence flags projection unreliable', () => {
@@ -673,7 +771,7 @@ test('outbox axis: untrusted evidence flags projection unreliable', () => {
     heartbeat({ evidenceTrusted: false }),
     { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS },
   );
-  assert.deepEqual(r, { axis: 'unknown', unreliable: true });
+  assert.deepEqual(r, { axis: 'unknown', cause: null, unreliable: true });
 });
 
 test('outbox state: granular diagnostics use terminal-first precedence', () => {
