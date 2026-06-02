@@ -4809,13 +4809,22 @@ function createReferenceSchedulerManager({
       referenceBaseUrl: runtimeContext.referenceBaseUrl,
       schedulerStore,
       getState: async (connectorId, connectorInstanceId) => {
-        const stored = await getSyncState(connectorId, { connectorInstanceId });
+        // Read scheduler state from the connection-instance namespace by
+        // construction: getSyncState keys storage off its storage-target
+        // argument, and a bare connectorId string falls back to the
+        // default-account instance id (the connectorInstanceId option is
+        // ignored). Pass the explicit object target so each connection's
+        // schedule reads its own durable state.
+        const stored = await getSyncState(
+          storageTargetForConnectorNamespace({ connectorId, connectorInstanceId }),
+        );
         return stored?.state || null;
       },
       setState: async (connectorId, state, connectorInstanceId) => {
-        await putSyncState(connectorId, state && typeof state === 'object' && !Array.isArray(state) ? state : {}, {
-          connectorInstanceId,
-        });
+        await putSyncState(
+          storageTargetForConnectorNamespace({ connectorId, connectorInstanceId }),
+          state && typeof state === 'object' && !Array.isArray(state) ? state : {},
+        );
       },
       markNeedsHuman: (connectorId, connectorInstanceId) => controller.markNeedsHuman(connectorId, { connectorInstanceId }),
       isNeedsHuman: (connectorId, connectorInstanceId) =>

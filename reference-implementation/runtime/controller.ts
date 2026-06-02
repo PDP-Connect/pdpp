@@ -3088,8 +3088,18 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const browserSurfaceLease = acquireResult.lease;
     const browserSurfaceEnv = acquireResult.env;
 
+    // State must be read from the connection-instance namespace, not by
+    // caller convention. `getSyncState` keys storage off the *storage target*
+    // (its first argument); a bare `connectorId` string falls back to the
+    // default-account instance id and silently ignores any `connectorInstanceId`
+    // option. Pass an explicit `{ connector_id, connector_instance_id }` object
+    // so an explicit connection run reads its own durable state and defaults to
+    // incremental when that state is non-empty.
     const { state, collectionMode } = deriveCollectionState(
-      (await getSyncState(connectorId, { connectorInstanceId })) as { state?: unknown } | null
+      (await getSyncState({
+        connector_id: connectorId,
+        connector_instance_id: connectorInstanceId,
+      })) as { state?: unknown } | null
     );
     const ownerToken = options.ownerToken || (await issueRuntimeOwnerToken());
 
