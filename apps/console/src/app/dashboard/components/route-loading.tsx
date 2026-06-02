@@ -74,6 +74,51 @@ export function ListLoadingSkeleton({
 }
 
 /**
+ * A skeleton for a dense record-table surface (a stream's records list). The
+ * resolved page renders a header plus a desktop table / mobile list of records;
+ * a generic `DetailLoadingSkeleton` (two prose blocks) is the wrong shape and
+ * jumps the layout when the table paints. This mirrors the table's geometry: a
+ * header bar, a column-header strip, and `rows` evenly-spaced cell rows inside
+ * the same bordered container the resolved table uses.
+ */
+export function TableLoadingSkeleton({
+  label,
+  rows = 8,
+  columns = 4,
+}: {
+  /** What is loading, e.g. "records" — announced to assistive tech. */
+  label: string;
+  rows?: number;
+  columns?: number;
+}) {
+  const columnKeys = Array.from({ length: columns }, (_, i) => `skeleton-col-${i}`);
+  return (
+    <div aria-busy="true" className="min-w-0">
+      <span className="sr-only" role="status">
+        Loading {label}…
+      </span>
+      <HeaderSkeleton />
+      <div className="overflow-hidden rounded-md border border-border/70">
+        <div className="flex items-center gap-4 border-border/70 border-b bg-muted/40 px-3 py-2">
+          {columnKeys.map((key) => (
+            <Bar className="h-3 w-20 max-w-[18%] flex-1" key={key} />
+          ))}
+        </div>
+        <div className="divide-y divide-border/70">
+          {skeletonRowKeys(rows).map((rowKey) => (
+            <div className="flex items-center gap-4 px-3 py-3" key={rowKey}>
+              {columnKeys.map((colKey) => (
+                <Bar className="h-3.5 w-20 max-w-[18%] flex-1" key={`${rowKey}-${colKey}`} />
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
  * A skeleton for a detail surface (one connection, one run): a header plus a
  * couple of stacked content blocks. Lightweight on purpose — the resolved page
  * fills in the real sections.
