@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Runtime SHALL broker interactions as in-process pauses
-The reference runtime SHALL treat connector `INTERACTION` messages as blocking in-process pauses that are completed by a matching `INTERACTION_RESPONSE` while the connector child process remains alive. The reference runtime SHALL additionally monitor the browser surface during a `manual_action` or browser-surface-backed `otp` interaction wait and SHALL cancel the open interaction fail-closed if the surface becomes unavailable before the owner responds.
+The reference runtime SHALL treat connector `INTERACTION` messages as blocking in-process pauses that are completed by a matching `INTERACTION_RESPONSE` while the connector child process remains alive. The reference runtime SHALL additionally monitor the browser surface during a `manual_action` or browser-surface-backed `otp` interaction wait and SHALL fail closed by cancelling the open interaction if the surface becomes unavailable before the owner responds.
 
 #### Scenario: Interaction is accepted
 - **WHEN** a connector emits a valid `INTERACTION` and the run advertised `interactive`
