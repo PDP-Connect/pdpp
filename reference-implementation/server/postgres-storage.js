@@ -79,7 +79,7 @@ function parseSpineSourceShape(value) {
   return null;
 }
 
-function deriveSpineSource(payload, row) {
+export function deriveSpineSource(payload, row) {
   if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
     if (Object.prototype.hasOwnProperty.call(payload, 'source')) {
       const source = parseSpineSourceShape(payload.source);
@@ -2042,66 +2042,42 @@ async function migratePostgresConnectorInstancesSourceKindBrowserCollector(clien
   }
 }
 
+// Boot-safe spine source schema migration. This installs the
+// `source_kind`/`source_id` columns and their index and drops the superseded
+// `provider_id` column. It is bounded, idempotent DDL only — it does NOT scan
+// or rewrite `spine_events` rows.
+//
+// The per-row value backfill that previously lived here ran a full
+// `SELECT … FROM spine_events` plus per-row `UPDATE` inside one long
+// transaction on every boot. On a large spine (~361k rows on the public
+// reference deployment) that stalled startup for ~90–120s and held a
+// transaction whose locks blocked owner reads. It could never converge
+// because ~8.9k events are legitimately sourceless (token/consent/disclosure
+// events with no data source), so `deriveSpineSource` correctly returns null
+// and they stay NULL forever. The backfill now lives in an explicit operator
+// maintenance script (`scripts/backfill-spine-source/`).
+//
+// NULL legacy `source_*` columns are tolerable: unfiltered correlation
+// summaries derive source from canonical event payloads or runtime actor
+// fallback when the columns are NULL. Source-*filtered* spine correlations
+// under-count not-yet-backfilled legacy rows, which the maintenance script
+// repairs on demand. See
+// openspec/changes/harden-startup-data-backfills.
 async function migratePostgresSpineSourceColumns(client) {
-  const hadProviderId = await hasPostgresColumn(client, 'spine_events', 'provider_id');
-  await client.query('BEGIN');
-  try {
-    const before = await client.query('SELECT COUNT(*)::int AS count FROM spine_events');
-    await client.query(`
-      ALTER TABLE spine_events
-        ADD COLUMN IF NOT EXISTS source_kind TEXT,
-        ADD COLUMN IF NOT EXISTS source_id TEXT
-    `);
+  await client.query(`
+    ALTER TABLE spine_events
+      ADD COLUMN IF NOT EXISTS source_kind TEXT,
+      ADD COLUMN IF NOT EXISTS source_id TEXT
+  `);
 
-    const providerProjection = hadProviderId ? ', provider_id' : '';
-    const rows = await client.query(
-      `SELECT event_id, actor_type, actor_id, data_json, source_kind, source_id${providerProjection} FROM spine_events`
-    );
-
-    for (const row of rows.rows) {
-      const payload = row.data_json && typeof row.data_json === 'object' && !Array.isArray(row.data_json)
-        ? row.data_json
-        : {};
-      const source = deriveSpineSource(payload, row);
-      if (!source) {
-        continue;
-      }
-      const dataJson = { ...payload, source };
-      if (
-        row.source_kind !== source.kind
-        || row.source_id !== source.id
-        || JSON.stringify(payload.source) !== JSON.stringify(source)
-      ) {
-        await client.query(
-          `UPDATE spine_events
-              SET source_kind = $1, source_id = $2, data_json = $3::jsonb
-            WHERE event_id = $4`,
-          [source.kind, source.id, JSON.stringify(dataJson), row.event_id],
-        );
-      }
-    }
-
-    if (hadProviderId) {
-      await client.query('ALTER TABLE spine_events DROP COLUMN provider_id');
-    }
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_pg_spine_events_source
-        ON spine_events(source_kind, source_id, occurred_at, recorded_at)
-    `);
-
-    const after = await client.query('SELECT COUNT(*)::int AS count FROM spine_events');
-    if (before.rows[0].count !== after.rows[0].count) {
-      throw new Error(
-        `spine_events source migration row-count mismatch: before=${before.rows[0].count} after=${after.rows[0].count}`
-      );
-    }
-    await client.query('COMMIT');
-  } catch (err) {
-    try {
-      await client.query('ROLLBACK');
-    } catch {}
-    throw err;
+  if (await hasPostgresColumn(client, 'spine_events', 'provider_id')) {
+    await client.query('ALTER TABLE spine_events DROP COLUMN provider_id');
   }
+
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_pg_spine_events_source
+      ON spine_events(source_kind, source_id, occurred_at, recorded_at)
+  `);
 }
 
 /**
