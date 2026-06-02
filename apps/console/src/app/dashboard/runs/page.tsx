@@ -2,17 +2,12 @@ import { PageHeader, StatusBadge } from "@pdpp/operator-ui/components/primitives
 import { type ListWithPeekParams, ListWithPeekView } from "@pdpp/operator-ui/components/views/list-with-peek";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { LivePoller } from "../components/live-poller.tsx";
 import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
-import {
-  getRunTimeline,
-  type ListResponse,
-  listRuns,
-  type RunSummary,
-  type TimelineEnvelope,
-} from "../lib/ref-client.ts";
+import { type ListResponse, listRuns, type RunSummary } from "../lib/ref-client.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -35,6 +30,10 @@ function listHref(params: Params, overrides: Record<string, string | undefined> 
 
 export default async function RunsPage({ searchParams }: { searchParams: Promise<Params> }) {
   const params = await searchParams;
+  if (params.peek) {
+    redirect(dashboardRoutes.run(params.peek));
+  }
+
   const filters = {
     cursor: params.cursor,
     status: params.status,
@@ -44,12 +43,8 @@ export default async function RunsPage({ searchParams }: { searchParams: Promise
   };
 
   let result: ListResponse<RunSummary>;
-  let peekEnvelope: TimelineEnvelope | null = null;
   try {
     result = await listRuns(filters);
-    if (params.peek) {
-      peekEnvelope = await getRunTimeline(params.peek);
-    }
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
@@ -101,8 +96,8 @@ export default async function RunsPage({ searchParams }: { searchParams: Promise
     activeFilterChips: activeFilters,
     resetHref: "/dashboard/runs",
     buildListHref: (overrides) => listHref(params, overrides),
-    peekId: params.peek,
-    peekEnvelope,
+    peekId: undefined,
+    peekEnvelope: null,
     peekCliCommand: (id) => `pdpp ref run timeline ${id}`,
     emptyTitle: "No runs yet",
     emptyHint: "Run artifacts appear after connector runs stage, advance, or fail.",
