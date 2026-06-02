@@ -221,6 +221,7 @@ export interface EmitDeps {
   emit: EmitFn;
   emitRecord: EmitRecordFn;
   emittedAt: string;
+  progress: BrowserCollectContext["progress"];
   skipDetail: boolean;
   wantsItems: boolean;
   wantsOrders: boolean;
@@ -385,12 +386,21 @@ async function runYear(page: Page, deps: EmitDeps, flags: RunFlags, year: number
   let pageCount = 0;
   let yearOrderCount = 0;
   while (pageCount < PAGE_LIMIT) {
+    await deps.progress(`Amazon year ${year}: scanning page ${pageCount + 1}`, { stream: "orders" });
     const orders = await scrapeListPage(page, deps.capture, year, startIndex, deps.emit);
     if (orders.length === 0) {
+      await deps.progress(`Amazon year ${year}: no more orders after ${yearOrderCount} seen`, { stream: "orders" });
       break;
     }
     yearOrderCount += orders.length;
-    for (const o of orders) {
+    await deps.progress(`Amazon year ${year}: page ${pageCount + 1} found ${orders.length} orders`, {
+      stream: "orders",
+    });
+    for (const [index, o] of orders.entries()) {
+      await deps.progress(
+        `Amazon year ${year}: processing order ${index + 1}/${orders.length} on page ${pageCount + 1}`,
+        { stream: "orders" }
+      );
       await processListOrder(page, deps, flags, o);
     }
     pageCount++;
@@ -457,6 +467,7 @@ if (isMainModule(import.meta.url)) {
         emit,
         emitRecord,
         emittedAt,
+        progress,
         skipDetail: process.env.PDPP_AMAZON_SKIP_DETAIL === "1",
         wantsItems: requested.has("order_items"),
         wantsOrders: requested.has("orders"),

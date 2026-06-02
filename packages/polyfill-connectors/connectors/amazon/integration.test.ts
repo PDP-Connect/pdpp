@@ -27,12 +27,14 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import { type EmitDeps, emitOrderAndItems } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 import type { DetailItem, ListPageOrder, OrderDetail } from "./types.ts";
 
 const AMAZON_MANIFEST_PATH = new URL("../../manifests/amazon.json", import.meta.url);
+const AMAZON_INDEX_PATH = fileURLToPath(new URL("./index.ts", import.meta.url));
 
 interface RecordingDeps {
   deps: EmitDeps;
@@ -52,6 +54,7 @@ function makeRecordingDeps(overrides: Partial<EmitDeps> = {}): RecordingDeps {
     emit: harness.emit,
     emitRecord: harness.emitRecord,
     emittedAt: "2026-04-22T12:00:00.000Z",
+    progress: (): Promise<void> => Promise.resolve(),
     skipDetail: false,
     wantsItems: true,
     wantsOrders: true,
@@ -219,6 +222,21 @@ test("emitOrderAndItems: emittedAt propagates into the order record's fetched_at
   const orderRecord = emitted.find((r) => r.stream === "orders");
   assert.ok(orderRecord);
   assert.equal(orderRecord.data.fetched_at, frozen);
+});
+
+test("runYear reports non-PII granular progress across list pages and order processing", () => {
+  const src = readFileSync(AMAZON_INDEX_PATH, "utf8");
+  const progressMessages = [
+    /Amazon year \$\{year\}: scanning page \$\{pageCount \+ 1\}/,
+    /Amazon year \$\{year\}: no more orders after \$\{yearOrderCount\} seen/,
+    /Amazon year \$\{year\}: page \$\{pageCount \+ 1\} found \$\{orders\.length\} orders/,
+    /Amazon year \$\{year\}: processing order \$\{index \+ 1\}\/\$\{orders\.length\} on page \$\{pageCount \+ 1\}/,
+  ];
+  for (const message of progressMessages) {
+    assert.match(src, message);
+  }
+  assert.match(src, /deps\.progress\([\s\S]*?\{ stream: "orders" \}/);
+  assert.doesNotMatch(src, /processing order \$\{o\.orderId\}/);
 });
 
 test("amazon manifest: successful manual runs have a bounded freshness window", () => {
