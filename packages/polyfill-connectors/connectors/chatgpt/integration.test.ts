@@ -57,6 +57,7 @@ import {
   chatGptBackendFetchInBrowser,
   processConversationDetail,
   resolveChatGptBackendFetchTimeoutMs,
+  resolveChatGptDetailLaneTuning,
   runConversationsAndMessagesStreams,
   runCustomGptsStream,
   runCustomInstructionsStream,
@@ -156,6 +157,57 @@ test("resolveChatGptBackendFetchTimeoutMs supports small test overrides", () => 
   assert.equal(resolveChatGptBackendFetchTimeoutMs({ PDPP_CHATGPT_BACKEND_FETCH_TIMEOUT_MS: "7" }), 7);
   assert.equal(resolveChatGptBackendFetchTimeoutMs({ PDPP_CHATGPT_BACKEND_FETCH_TIMEOUT_MS: "0" }), 45_000);
   assert.equal(resolveChatGptBackendFetchTimeoutMs({ PDPP_CHATGPT_BACKEND_FETCH_TIMEOUT_MS: "invalid" }), 45_000);
+});
+
+test("resolveChatGptDetailLaneTuning defaults to the frozen production values when no probe env is set", () => {
+  // OpenSpec add-connector-adaptive-lanes: ChatGPT maxConcurrency MUST stay at 1
+  // until cold-state evidence. With no probe env, defaults are byte-identical.
+  assert.deepEqual(resolveChatGptDetailLaneTuning({}), {
+    initialConcurrency: 1,
+    maxConcurrency: 1,
+    pauseMinMs: 1500,
+    pauseMaxMs: 3000,
+  });
+});
+
+test("resolveChatGptDetailLaneTuning applies cold-state A/B probe overrides", () => {
+  assert.deepEqual(
+    resolveChatGptDetailLaneTuning({
+      PDPP_CHATGPT_DETAIL_INITIAL_CONCURRENCY_PROBE: "2",
+      PDPP_CHATGPT_DETAIL_MAX_CONCURRENCY_PROBE: "5",
+      PDPP_CHATGPT_DETAIL_PAUSE_MIN_MS_PROBE: "100",
+      PDPP_CHATGPT_DETAIL_PAUSE_MAX_MS_PROBE: "400",
+    }),
+    { initialConcurrency: 2, maxConcurrency: 5, pauseMinMs: 100, pauseMaxMs: 400 }
+  );
+});
+
+test("resolveChatGptDetailLaneTuning caps probe concurrency at the dataconnect-batch ceiling (5)", () => {
+  const tuning = resolveChatGptDetailLaneTuning({ PDPP_CHATGPT_DETAIL_MAX_CONCURRENCY_PROBE: "50" });
+  assert.equal(tuning.maxConcurrency, 5);
+});
+
+test("resolveChatGptDetailLaneTuning clamps maxConcurrency >= initialConcurrency and pauseMax >= pauseMin", () => {
+  const tuning = resolveChatGptDetailLaneTuning({
+    PDPP_CHATGPT_DETAIL_INITIAL_CONCURRENCY_PROBE: "4",
+    PDPP_CHATGPT_DETAIL_MAX_CONCURRENCY_PROBE: "2",
+    PDPP_CHATGPT_DETAIL_PAUSE_MIN_MS_PROBE: "900",
+    PDPP_CHATGPT_DETAIL_PAUSE_MAX_MS_PROBE: "100",
+  });
+  assert.equal(tuning.maxConcurrency, 4); // raised to meet initial
+  assert.equal(tuning.pauseMaxMs, 900); // raised to meet min
+});
+
+test("resolveChatGptDetailLaneTuning falls back to the frozen default per-knob on invalid input", () => {
+  assert.deepEqual(
+    resolveChatGptDetailLaneTuning({
+      PDPP_CHATGPT_DETAIL_INITIAL_CONCURRENCY_PROBE: "0",
+      PDPP_CHATGPT_DETAIL_MAX_CONCURRENCY_PROBE: "abc",
+      PDPP_CHATGPT_DETAIL_PAUSE_MIN_MS_PROBE: "-5",
+      PDPP_CHATGPT_DETAIL_PAUSE_MAX_MS_PROBE: "  ",
+    }),
+    { initialConcurrency: 1, maxConcurrency: 1, pauseMinMs: 1500, pauseMaxMs: 3000 }
+  );
 });
 
 test("chatGptBackendFetchInBrowser aborts a never-resolving backend fetch promptly", async () => {
