@@ -115,7 +115,13 @@ function ProjectedStateDiagnostics({
   }
 
   const projection = formatProjectionFreshness(connectionHealth);
-  const axisChips = summarizeAxisChips(connectionHealth.axes);
+  // Mirror the records-row gate: the outbox axis only renders for
+  // local/device-backed connections (or when it carries a concrete verdict).
+  // The diagnostics block already receives the connection's local-device
+  // progress, so reuse it as the local-backing signal.
+  const axisChips = summarizeAxisChips(connectionHealth.axes, {
+    isLocalDeviceBacked: Boolean(localDeviceProgress),
+  });
   const outbox = summarizeOutboxForRow(connectionHealth);
   const outboxRemediation = summarizeOutboxStallRemediation(connectionHealth, localDeviceProgress);
   const dominantCondition = formatDominantCondition(connectionHealth);

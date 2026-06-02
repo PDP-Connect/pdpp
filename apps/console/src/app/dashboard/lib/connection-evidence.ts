@@ -77,14 +77,24 @@ const COVERAGE_LABELS: Record<RefConnectionHealthSnapshot["axes"]["coverage"], A
     dimension: "Coverage",
     value: "retryable gap",
     label: "Coverage · retryable gap",
-    title: "Required detail has a pending gap that should be retried.",
+    title:
+      "Some required detail is missing, but the runtime expects to fill it on a later run. Records already collected stay valid; no owner action is needed yet.",
     tone: "warning",
   },
   terminal_gap: {
     dimension: "Coverage",
-    value: "terminal gap",
-    label: "Coverage · terminal gap",
-    title: "Required detail has a known terminal gap until connector or source support changes.",
+    // "terminal gap" is jargon. The value stays short for the chip; the title
+    // carries the three things the owner actually needs (per design-notes/
+    // dashboard-health-semantics-and-reliability-2026-06-01.md): what state this
+    // is, whether current records are safe, and what can recover coverage. The
+    // reference's coverage condition carries a `Review source coverage gaps`
+    // remediation but not the specific cause/stream/time — that contract gap is
+    // noted in the workstream report; the per-stream detail lives in the latest
+    // run's known_gaps, which the connection detail page links to.
+    value: "won't backfill",
+    label: "Coverage · won't backfill",
+    title:
+      "Some required detail will not backfill on its own — the connector or source cannot recover it without a change. Records already collected stay valid and usable; this is not current data loss. Open the connection's latest run to see which streams are affected and the recovery step.",
     tone: "danger",
   },
   unavailable: {
@@ -147,7 +157,14 @@ const OUTBOX_LABELS: Record<RefConnectionHealthSnapshot["axes"]["outbox"], AxisC
     value: "active",
     label: "Outbox · active",
     title: "Outbound work is making progress.",
-    tone: "neutral",
+    // `active` means the local-device outbox is draining — a healthy,
+    // progressing state. It previously shared `neutral` (muted grey) with
+    // `unknown`, so an operator could not tell a draining outbox from one
+    // whose evidence we could not read. `success` gives it a distinct,
+    // non-alarming colour (the same green as `idle`); the value text
+    // ("active" vs "idle") carries the finer distinction, and the row-level
+    // pill still escalates an actively-draining outbox to a "Syncing" badge.
+    tone: "success",
   },
   stalled: {
     dimension: "Outbox",
@@ -248,11 +265,54 @@ function formatKnownAxis<T extends string>(
 }
 
 /**
+ * Whether the outbox axis is meaningful for this connection.
+ *
+ * The reference computes the outbox axis ONLY from local-device exporter
+ * heartbeats (`getConnectorOutboxAxis` → `projectConnectorOutboxAxisFrom
+ * heartbeats`). A connector with no device-exporter rows — every API/OAuth and
+ * browser-bound connection — has no heartbeats, so the reference projects
+ * `outbox: "unknown"` as a *default of absence*, not a real signal. Rendering
+ * that as an "Outbox · unknown" chip on, say, a Gmail or Chase connection is the
+ * mysterious axis owners reported on 2026-06-01.
+ *
+ * The honest rule (per design-notes/dashboard-health-semantics-and-reliability-
+ * 2026-06-01.md): show the outbox axis only for local/device-backed
+ * connections. The console's available signal is the connection-summary
+ * `local_device_progress` row, which the reference populates exactly when
+ * `instance.sourceKind === "local_device"`. We also keep the axis when it
+ * carries a real verdict (`stalled` / `active` / `idle`) regardless of that
+ * signal, so a genuine local-collector state is never hidden — only the
+ * absence-default `unknown` is suppressed for non-local connections.
+ */
+export function outboxAxisIsApplicable(
+  axis: RefConnectionHealthSnapshot["axes"]["outbox"] | null | string | undefined,
+  isLocalDeviceBacked: boolean
+): boolean {
+  // A concrete outbox verdict is always worth showing.
+  if (axis === "stalled" || axis === "active" || axis === "idle") {
+    return true;
+  }
+  // `unknown` (or any absence-default) is only meaningful for a connection that
+  // actually has a local-device outbox whose evidence we could not read.
+  return isLocalDeviceBacked;
+}
+
+/**
  * Axes that meaningfully refine the headline pill. Order is the order
  * the chips render in. `attention=none` is omitted because the next-action
  * pill already carries that signal.
+ *
+ * `isLocalDeviceBacked` gates the outbox axis: pass `true` when the connection
+ * has a `local_device_progress` row (or is otherwise known to be a
+ * local/device-backed collector). When `false`, an absence-default
+ * `outbox: "unknown"` is omitted so non-local connections never render a
+ * mysterious unknown outbox axis. Defaults to `false` (the common,
+ * non-local case) so callers that do not yet thread the signal stay honest.
  */
-export function summarizeAxisChips(axes: RefConnectionHealthSnapshot["axes"] | undefined | null): AxisChip[] {
+export function summarizeAxisChips(
+  axes: RefConnectionHealthSnapshot["axes"] | undefined | null,
+  options: { isLocalDeviceBacked?: boolean } = {}
+): AxisChip[] {
   if (!axes) {
     return [];
   }
@@ -261,10 +321,28 @@ export function summarizeAxisChips(axes: RefConnectionHealthSnapshot["axes"] | u
   if (attention) {
     out.push(attention);
   }
-  // Outbox is a meaningful signal when it's stalled, or when it diverges
-  // from the headline. We always show it so operators can see "why" the
-  // pill is yellow.
-  out.push(formatOutboxAxis(axes.outbox));
+  // Outbox is meaningful only for local/device-backed connections (and whenever
+  // it carries a concrete verdict). For everything else the reference defaults
+  // it to `unknown` simply because there are no heartbeats — we omit that rather
+  // than show a mysterious axis.
+  if (outboxAxisIsApplicable(axes.outbox, options.isLocalDeviceBacked ?? false)) {
+    const outbox = formatOutboxAxis(axes.outbox);
+    // Sharpen the copy for the one case that survives the gate as `unknown`: a
+    // local-device connection whose outbox evidence failed to load. The bare
+    // "Outbox state cannot be read from durable evidence" is right, but a
+    // local-backed operator benefits from the "evidence unavailable" framing.
+    if (axes.outbox === "unknown") {
+      out.push({
+        ...outbox,
+        value: "evidence unavailable",
+        label: "Outbox · evidence unavailable",
+        title:
+          "This local collector's outbox evidence could not be read right now. It is not a current data-loss signal; retry, or open the connection's diagnostics for the device state.",
+      });
+    } else {
+      out.push(outbox);
+    }
+  }
   return out;
 }
 

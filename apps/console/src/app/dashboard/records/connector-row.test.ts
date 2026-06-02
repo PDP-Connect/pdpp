@@ -291,6 +291,15 @@ test("connector-row renders an axis chip strip when health is present", async ()
   assert.match(src, AXIS_CHIPS_STRIP);
 });
 
+test("connector-row gates the outbox axis on local-device backing (report 1)", async () => {
+  // The outbox axis is only meaningful for local/device-backed connections.
+  // The row must thread `isLocalDeviceBacked` from `localDeviceProgress` so a
+  // non-local connection never renders a mysterious "Outbox · unknown" chip.
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.match(src, /summarizeAxisChips\(connectionHealth\?\.axes, \{/);
+  assert.match(src, /isLocalDeviceBacked: Boolean\(overview\.localDeviceProgress\)/);
+});
+
 test("connector-row surfaces a projection-unreliable banner when unknown_reasons is non-empty", async () => {
   const src = await readFile(ROW_FILE, "utf8");
   assert.match(src, PROJECTION_UNRELIABLE_BANNER);

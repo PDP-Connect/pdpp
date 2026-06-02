@@ -164,7 +164,13 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
   const displayedStreamCount = streamCount ?? streams.length;
   const nextAction = formatNextAction(connectionHealth?.next_action ?? null);
   const recordCount = resolveRecordCountDisplay(overview);
-  const axisChips = summarizeAxisChips(connectionHealth?.axes);
+  // The outbox axis is only meaningful for local/device-backed connections.
+  // `localDeviceProgress` is populated by the reference exactly for
+  // `sourceKind === "local_device"`, so it is the honest console-side signal:
+  // pass it so non-local connections never render "Outbox · unknown".
+  const axisChips = summarizeAxisChips(connectionHealth?.axes, {
+    isLocalDeviceBacked: Boolean(overview.localDeviceProgress),
+  });
   const projectionFreshness = formatProjectionFreshness(connectionHealth);
   const dominantCondition = formatDominantCondition(connectionHealth);
   // Per-state "what next" guidance for non-green states the structured
