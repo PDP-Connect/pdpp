@@ -33,6 +33,10 @@ import { isRunningInContainer } from "./runtime-environment.ts";
 
 const PROFILE_NAME_RE = /^[A-Za-z0-9_-]+$/;
 const EXTRA_BROWSER_ARGS_RE = /\s+/;
+// The two halves of the transient remote-CDP-attach race signature. See
+// `isCdpAttachSessionRaceError` for the full root-cause explanation.
+const CDP_ATTACH_RACE_METHOD_RE = /Network\.setCacheDisabled/;
+const CDP_ATTACH_RACE_SESSION_CLOSED_RE = /session closed/i;
 
 export interface IsolatedBrowser {
   browser: Browser | null;
@@ -195,6 +199,109 @@ export function configuredBrowserChannel(env: Record<string, string | undefined>
 }
 
 /**
+ * Recognise the transient CDP-attach race that fails `connectOverCDP`
+ * against a live n.eko Chromium with:
+ *
+ *   Protocol error (Network.setCacheDisabled): Internal server error, session closed.
+ *       at ... crNetworkManager.setRequestInterception
+ *
+ * Root cause (verified against patchright-core 1.59.4 internals):
+ * Patchright's `CRPage` constructor eagerly calls
+ * `networkManager.setRequestInterception(true)` so its stealth Fetch-domain
+ * hooks are always active (`server/chromium/crPage.js`). Stock Playwright
+ * does NOT — it defers to a conditional `updateRequestInterception()`.
+ * Patchright's `setRequestInterception` ends with a patchright-only
+ * `_forEachSession(info => info.session.send("Network.setCacheDisabled", …))`
+ * (`server/chromium/crNetworkManager.js`). When `connectOverCDP` auto-attaches
+ * (`Target.setAutoAttach`) to every existing target, this fires
+ * `Network.setCacheDisabled` across all of them — including the short-lived
+ * `about:blank` target n.eko opens via `/json/new?about:blank` and immediately
+ * tears down via `/json/close`. If that target's session disposes while the
+ * send is in flight, the in-flight callback is rejected with
+ * `Internal server error, session closed.` (`crConnection.js` `dispose()`).
+ * For the MAIN-frame session `_forEachSession` has no `.catch` guard
+ * (non-main sessions swallow `isSessionClosedError`), so the rejection escapes
+ * page initialization and rejects the whole `connectOverCDP` call.
+ *
+ * The condition is inherently transient: the offending target is on its way
+ * out. A bounded retry a moment later — once n.eko's transient target has
+ * disposed and only the stable page target remains — attaches cleanly.
+ *
+ * We deliberately do NOT switch the remote-attach client to stock Playwright:
+ * patchright's `Runtime.enable` suppression and isolated-world hiding are
+ * CLIENT-driven stealth (sent over CDP by the driving process, not baked into
+ * the launched browser). A stock client attaching to the same browser would
+ * leak the canonical CDP `Runtime.enable` automation signal on every page —
+ * a permanent stealth regression on a bot-hostile target like Amazon, traded
+ * for a transient startup race. Retry keeps full patchright stealth.
+ *
+ * Matched narrowly on the CDP method + the session-closed phrase so unrelated
+ * protocol errors (auth, bad URL, real crash) still fail fast.
+ */
+export function isCdpAttachSessionRaceError(err: unknown): boolean {
+  let message = "";
+  if (err instanceof Error) {
+    message = err.message;
+  } else if (typeof err === "string") {
+    message = err;
+  }
+  if (!message) {
+    return false;
+  }
+  return CDP_ATTACH_RACE_METHOD_RE.test(message) && CDP_ATTACH_RACE_SESSION_CLOSED_RE.test(message);
+}
+
+const REMOTE_CDP_ATTACH_MAX_ATTEMPTS = 4;
+const REMOTE_CDP_ATTACH_RETRY_DELAY_MS = 500;
+
+/**
+ * Attach to a remote Chromium with a bounded retry around the transient
+ * `connectOverCDP` session-closed race (see `isCdpAttachSessionRaceError`).
+ *
+ * Only the race error is retried; every other failure (auth, unreachable
+ * endpoint, real browser crash) is rethrown immediately so we never mask a
+ * genuine attach failure behind a retry budget.
+ *
+ * `connect` and `sleep` are injected so the retry policy can be unit-tested
+ * without a live browser.
+ */
+export async function connectOverCdpWithRetry<TBrowser>({
+  connect,
+  profileName,
+  redactedUrl,
+  maxAttempts = REMOTE_CDP_ATTACH_MAX_ATTEMPTS,
+  retryDelayMs = REMOTE_CDP_ATTACH_RETRY_DELAY_MS,
+  sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+}: {
+  connect: () => Promise<TBrowser>;
+  profileName: string;
+  redactedUrl: string;
+  maxAttempts?: number;
+  retryDelayMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<TBrowser> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await connect();
+    } catch (err) {
+      lastErr = err;
+      if (!isCdpAttachSessionRaceError(err) || attempt === maxAttempts) {
+        throw err;
+      }
+      process.stderr.write(
+        "[browser-launch] remote CDP attach hit transient session-closed race " +
+          `profile=${profileName} url=${redactedUrl} attempt=${attempt}/${maxAttempts}; ` +
+          `retrying in ${retryDelayMs}ms\n`
+      );
+      await sleep(retryDelayMs);
+    }
+  }
+  // Unreachable: the loop either returns or throws. Rethrow defensively.
+  throw lastErr;
+}
+
+/**
  * Attach to a remote Chromium via the standard DevTools Protocol over
  * WebSocket. Used when the connector should run inside a browser hosted
  * by a different container (e.g. n.eko) so the manual_action streaming
@@ -210,13 +317,22 @@ export function configuredBrowserChannel(env: Record<string, string | undefined>
  * connector should close any pages it opened in its own cleanup. This
  * matches `launchPersistentContext` semantics where the context outlives
  * individual pages.
+ *
+ * The attach itself is wrapped in `connectOverCdpWithRetry` to ride out the
+ * transient session-closed race n.eko's transient targets trigger during
+ * Patchright's auto-attach. See `isCdpAttachSessionRaceError`.
  */
 async function acquireRemoteCdpBrowser(cdpUrl: string, profileName: string): Promise<IsolatedBrowser> {
   // @ts-expect-error — patchright.chromium is runtime-identical to playwright.chromium
   const { chromium: localChromium }: { chromium: typeof chromium } = await import("patchright");
   const attachStartedAt = Date.now();
-  process.stderr.write(`[browser-launch] remote CDP attach start profile=${profileName} url=${redactCdpUrl(cdpUrl)}\n`);
-  const browser = await localChromium.connectOverCDP(cdpUrl);
+  const redactedUrl = redactCdpUrl(cdpUrl);
+  process.stderr.write(`[browser-launch] remote CDP attach start profile=${profileName} url=${redactedUrl}\n`);
+  const browser = await connectOverCdpWithRetry<Browser>({
+    connect: () => localChromium.connectOverCDP(cdpUrl),
+    profileName,
+    redactedUrl,
+  });
   const attachedAt = Date.now();
   let releaseRequested = false;
   const onDisconnected = (): void => {

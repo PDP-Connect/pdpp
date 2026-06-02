@@ -6,10 +6,12 @@ import test from "node:test";
 import {
   acquireBrowserForConnector,
   configuredBrowserChannel,
+  connectOverCdpWithRetry,
   decideContainerHeadedBrowserGate,
   fetchPageTargetWsUrl,
   HEADED_BROWSER_UNAVAILABLE_CODE,
   HeadedBrowserUnavailableError,
+  isCdpAttachSessionRaceError,
   resolvePageTargetWsUrl,
 } from "./browser-launch.ts";
 
@@ -346,4 +348,134 @@ test("resolvePageTargetWsUrl returns null when DevToolsActivePort is malformed",
   } finally {
     await rm(userDataDir, { recursive: true, force: true });
   }
+});
+
+// ─── Remote-CDP attach session-closed race recognition + retry ─────────
+//
+// The production failure was `connectOverCDP` rejecting with
+// `Protocol error (Network.setCacheDisabled): Internal server error,
+// session closed.` when Patchright auto-attaches to a transient n.eko
+// target that is being torn down mid-attach. The race is transient, so we
+// retry the WHOLE attach. We exercise the predicate and the retry policy
+// directly with an injectable `connect` and `sleep` — no live browser.
+
+// The exact production error message shape (patchright crConnection.js
+// `dispose()` sets this message; `setMessage` prefixes the CDP method).
+const PRODUCTION_RACE_MESSAGE = "Protocol error (Network.setCacheDisabled): Internal server error, session closed.";
+
+test("isCdpAttachSessionRaceError matches the production setCacheDisabled session-closed error", () => {
+  assert.equal(isCdpAttachSessionRaceError(new Error(PRODUCTION_RACE_MESSAGE)), true);
+  // Bare string form (some transports surface message-only).
+  assert.equal(isCdpAttachSessionRaceError(PRODUCTION_RACE_MESSAGE), true);
+});
+
+test("isCdpAttachSessionRaceError does NOT match unrelated protocol errors (fail fast)", () => {
+  // Wrong CDP method — a session-closed on some other command is not this race.
+  assert.equal(isCdpAttachSessionRaceError(new Error("Protocol error (Target.attachToTarget): session closed")), false);
+  // setCacheDisabled but not session-closed (e.g. a real argument error).
+  assert.equal(
+    isCdpAttachSessionRaceError(new Error("Protocol error (Network.setCacheDisabled): Invalid parameters")),
+    false
+  );
+  // Completely unrelated failures must fail fast.
+  assert.equal(isCdpAttachSessionRaceError(new Error("connect ECONNREFUSED 127.0.0.1:9223")), false);
+  assert.equal(isCdpAttachSessionRaceError(new Error("WebSocket error: 403 Forbidden")), false);
+  assert.equal(isCdpAttachSessionRaceError(undefined), false);
+  assert.equal(isCdpAttachSessionRaceError(null), false);
+  assert.equal(isCdpAttachSessionRaceError({}), false);
+});
+
+test("connectOverCdpWithRetry returns immediately on first-attempt success (no retry)", async () => {
+  let attempts = 0;
+  let slept = 0;
+  const browser = await connectOverCdpWithRetry<string>({
+    connect: () => {
+      attempts += 1;
+      return Promise.resolve("BROWSER");
+    },
+    profileName: "amazon",
+    redactedUrl: "http://neko/",
+    sleep: () => {
+      slept += 1;
+      return Promise.resolve();
+    },
+  });
+  assert.equal(browser, "BROWSER");
+  assert.equal(attempts, 1);
+  assert.equal(slept, 0, "no sleep on first-attempt success");
+});
+
+test("connectOverCdpWithRetry rides out a transient session-closed race then succeeds", async () => {
+  let attempts = 0;
+  const delays: number[] = [];
+  const browser = await connectOverCdpWithRetry<string>({
+    connect: () => {
+      attempts += 1;
+      if (attempts < 3) {
+        return Promise.reject(new Error(PRODUCTION_RACE_MESSAGE));
+      }
+      return Promise.resolve("BROWSER");
+    },
+    profileName: "amazon",
+    redactedUrl: "http://neko/",
+    retryDelayMs: 7,
+    sleep: (ms) => {
+      delays.push(ms);
+      return Promise.resolve();
+    },
+  });
+  assert.equal(browser, "BROWSER");
+  assert.equal(attempts, 3, "two failed attempts then a success");
+  assert.deepEqual(delays, [7, 7], "slept the configured delay between each retry");
+});
+
+test("connectOverCdpWithRetry rethrows the race error after exhausting the attempt budget", async () => {
+  let attempts = 0;
+  let slept = 0;
+  await assert.rejects(
+    () =>
+      connectOverCdpWithRetry<string>({
+        connect: () => {
+          attempts += 1;
+          return Promise.reject(new Error(PRODUCTION_RACE_MESSAGE));
+        },
+        profileName: "amazon",
+        redactedUrl: "http://neko/",
+        maxAttempts: 3,
+        sleep: () => {
+          slept += 1;
+          return Promise.resolve();
+        },
+      }),
+    (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.match((err as Error).message, /session closed/i);
+      return true;
+    }
+  );
+  assert.equal(attempts, 3, "tried the full budget");
+  assert.equal(slept, 2, "slept between attempts but not after the final failure");
+});
+
+test("connectOverCdpWithRetry fails fast on a non-race error (no retry, no sleep)", async () => {
+  let attempts = 0;
+  let slept = 0;
+  await assert.rejects(
+    () =>
+      connectOverCdpWithRetry<string>({
+        connect: () => {
+          attempts += 1;
+          return Promise.reject(new Error("connect ECONNREFUSED 127.0.0.1:9223"));
+        },
+        profileName: "amazon",
+        redactedUrl: "http://neko/",
+        sleep: () => {
+          slept += 1;
+          return Promise.resolve();
+        },
+      }),
+    /ECONNREFUSED/
+  );
+  assert.equal(attempts, 1, "non-race error is not retried");
+  assert.equal(slept, 0, "no sleep on a fail-fast error");
 });
