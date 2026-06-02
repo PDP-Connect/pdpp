@@ -96,6 +96,22 @@ async function approve(asUrl, body) {
   return { status: resp.status, body: await resp.json().catch(() => null) };
 }
 
+async function approveForm(asUrl, fields) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(fields)) {
+    const values = Array.isArray(value) ? value : [value];
+    for (const item of values) {
+      params.append(key, String(item));
+    }
+  }
+  const resp = await fetch(`${asUrl}/consent/approve`, {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString(),
+  });
+  return { status: resp.status, body: await resp.json().catch(() => null) };
+}
+
 test('batch consent gate: page defaults to per-source confirmation and suppresses approve-all for continuous all-streams', async () => {
   await withHarness(async ({ asUrl, spotify, reddit }) => {
     const { status, body } = await par(asUrl, [
@@ -401,6 +417,34 @@ test('batch consent narrowing: owner defers a source by approving a subset', asy
     const db = getDb();
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM grants').get().n, 1);
     // No reddit grant issued from this ceremony.
+    assert.equal(childGrantStreams(db, approved.body.package_id, 'reddit'), null);
+  });
+});
+
+test('batch consent narrowing: HTML form defers a source even when nested controls submit', async () => {
+  await withHarness(async ({ asUrl, spotify, reddit }) => {
+    const { body } = await par(asUrl, [
+      detail({ kind: 'connector', id: spotify.connector_id }, [{ name: 'top_artists' }]),
+      detail({ kind: 'connector', id: reddit.connector_id }, [{ name: 'posts' }]),
+    ]);
+
+    const approved = await approveForm(asUrl, {
+      request_uri: body.request_uri,
+      subject_id: 'owner_local',
+      approved_source_indexes: '0',
+      // The rendered form keeps nested stream checkboxes checked even when the
+      // owner unchecks the parent source. The flat form parser must ignore the
+      // deferred source's narrowing controls so ordinary defer does not fail.
+      narrow_streams_0: 'top_artists',
+      narrow_streams_1: 'posts',
+    });
+
+    assert.equal(approved.status, 200);
+    assert.equal(approved.body.grant.child_grants.length, 1);
+    assert.equal(approved.body.grant.child_grants[0].source.id, 'spotify');
+
+    const db = getDb();
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM grants').get().n, 1);
     assert.equal(childGrantStreams(db, approved.body.package_id, 'reddit'), null);
   });
 });

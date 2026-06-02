@@ -639,7 +639,7 @@ function buildBatchSourceCards(cards: PendingConsentCard[], ui: ConsentUiRendere
 }
 
 // Base64url-encode a stream name so it is safe to embed inside a flat HTML
-// form field name (narrow_fields_<index>__<encoded>, narrow_since_…). The
+// form field name (narrow_fields_<index>__<encoded>, narrow_since_<encoded>).
 // transport adapter (`decodeStreamKey` in as-consent.ts) decodes it
 // symmetrically with `Buffer.from(…, "base64url")`.
 function encodeStreamKey(name: string): string {
@@ -690,7 +690,7 @@ function buildSourceNarrowingControls(card: PendingConsentCard, ui: ConsentUiRen
     .join("\n");
 
   return `<details class="hosted-ui-narrow"><summary class="pdpp-title">Narrow this source (optional)</summary>
-<p class="pdpp-body">Uncheck streams or fields to share less, or tighten a start date. You can only reduce what was requested — you cannot add anything here.</p>
+<p class="pdpp-body">Uncheck streams or fields to share less, or tighten a start date. You can only reduce what was requested; you cannot add anything here.</p>
 ${streamRows}</details>`;
 }
 

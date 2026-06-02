@@ -268,9 +268,9 @@ async function dispatchApproveResponse(
 //   - JSON branch: a structured `source_narrowing` object (agent-friendly):
 //       { "<index>": { streams?: string[], fields?: { [stream]: string[] }, since?: { [stream]: ISO } } }
 //   - HTML form branch: flat fields the rendered ceremony posts:
-//       narrow_streams_<index>            (repeated) — stream names to keep
-//       narrow_fields_<index>__<stream>   (repeated) — field names to keep
-//       narrow_since_<index>__<stream>    (single)   — tightened ISO since bound
+//       narrow_streams_<index>            (repeated) - stream names to keep
+//       narrow_fields_<index>__<stream>   (repeated) - field names to keep
+//       narrow_since_<index>__<stream>    (single)   - tightened ISO since bound
 //     `<stream>` is base64url-encoded in the field name to stay key-safe.
 interface SourceNarrowing {
   fields?: Record<string, string[]>;
@@ -422,6 +422,24 @@ function parseFlatFormNarrowing(body: Readonly<Record<string, unknown>>): Record
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+function pruneFlatNarrowingToApprovedSources(
+  narrowing: Record<number, SourceNarrowing> | undefined,
+  approvedSourceIndexes: number[] | undefined
+): Record<number, SourceNarrowing> | undefined {
+  if (!(narrowing && approvedSourceIndexes)) {
+    return narrowing;
+  }
+  const approved = new Set(approvedSourceIndexes);
+  const pruned: Record<number, SourceNarrowing> = {};
+  for (const [key, value] of Object.entries(narrowing)) {
+    const index = Number(key);
+    if (approved.has(index)) {
+      pruned[index] = value;
+    }
+  }
+  return Object.keys(pruned).length > 0 ? pruned : undefined;
+}
+
 function parseBatchApproveSelection(body: Readonly<Record<string, unknown>> | undefined): {
   approvedSourceIndexes?: number[];
   confirmedApproveAll?: boolean;
@@ -450,7 +468,7 @@ function parseBatchApproveSelection(body: Readonly<Record<string, unknown>> | un
   }
   const structured = parseStructuredSourceNarrowing(body?.source_narrowing);
   const flat = body ? parseFlatFormNarrowing(body) : undefined;
-  const narrowing = structured ?? flat;
+  const narrowing = structured ?? pruneFlatNarrowingToApprovedSources(flat, out.approvedSourceIndexes);
   if (narrowing) {
     out.sourceNarrowing = narrowing;
   }

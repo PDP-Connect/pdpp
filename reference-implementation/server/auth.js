@@ -2984,8 +2984,8 @@ function evaluateBatchApproveAllGate(cards = []) {
 }
 
 // Owner-driven per-source narrowing applied at approval time. The owner may
-// reduce a staged entry's streams, reduce a stream's fields, and tighten (or
-// add) a `time_range.since` bound — but MUST NOT widen beyond what the client
+// reduce a staged entry's streams, reduce a stream's fields, and tighten a
+// `time_range.since` bound, but MUST NOT widen beyond what the client
 // staged and the owner reviewed. Narrowing is validated against the staged
 // resolved baseline (`resolveGrantSelection(entry.selection, manifest)`), which
 // is the authoritative ceiling of what the client asked for. Anything not a
@@ -3050,7 +3050,7 @@ function narrowResolvedSelectionForSource(baselineResolved, narrowing, sourceLab
       if (!baselineByName.has(name)) {
         throw bindingError(
           'invalid_request',
-          `Cannot narrow '${sourceLabel}' to stream '${name}' — it was not in the staged request (widening is forbidden)`,
+        `Cannot narrow '${sourceLabel}' to stream '${name}': it was not in the staged request (widening is forbidden)`,
         );
       }
       seen.add(name);
@@ -3098,7 +3098,7 @@ function narrowResolvedSelectionForSource(baselineResolved, narrowing, sourceLab
       if (!baselineFields) {
         throw bindingError(
           'invalid_request',
-          `Cannot narrow fields for '${sourceLabel}' stream '${name}' — the staged request placed no field projection on it, so a field subset cannot be proven to be narrower`,
+          `Cannot narrow fields for '${sourceLabel}' stream '${name}': the staged request placed no field projection on it, so a field subset cannot be proven to be narrower`,
         );
       }
       const baselineFieldSet = new Set(baselineFields);
@@ -3110,7 +3110,7 @@ function narrowResolvedSelectionForSource(baselineResolved, narrowing, sourceLab
         if (!baselineFieldSet.has(field)) {
           throw bindingError(
             'invalid_request',
-            `Cannot narrow '${sourceLabel}' stream '${name}' to field '${field}' — it was not in the staged field set (widening is forbidden)`,
+            `Cannot narrow '${sourceLabel}' stream '${name}' to field '${field}': it was not in the staged field set (widening is forbidden)`,
           );
         }
         seenFields.add(field);
@@ -3133,7 +3133,7 @@ function narrowResolvedSelectionForSource(baselineResolved, narrowing, sourceLab
       if (!isNonEmptyString(baselineSince)) {
         throw bindingError(
           'invalid_request',
-          `Cannot set a time bound on '${sourceLabel}' stream '${name}' — the staged request placed no time bound on it, so a tighter bound cannot be proven against it`,
+          `Cannot set a time bound on '${sourceLabel}' stream '${name}': the staged request placed no time bound on it, so a tighter bound cannot be proven against it`,
         );
       }
       const requestedSince = sinceNarrowing[name];
@@ -3142,7 +3142,7 @@ function narrowResolvedSelectionForSource(baselineResolved, narrowing, sourceLab
       if (!Number.isNaN(baselineMs) && requestedMs < baselineMs) {
         throw bindingError(
           'invalid_request',
-          `Cannot narrow '${sourceLabel}' stream '${name}' to start at '${requestedSince}' — that is earlier than the staged bound '${baselineSince}' (widening is forbidden)`,
+          `Cannot narrow '${sourceLabel}' stream '${name}' to start at '${requestedSince}': that is earlier than the staged bound '${baselineSince}' (widening is forbidden)`,
         );
       }
       narrowed.time_range = { ...baseStream.time_range, since: requestedSince };
