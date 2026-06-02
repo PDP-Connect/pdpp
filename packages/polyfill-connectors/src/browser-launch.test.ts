@@ -299,7 +299,7 @@ test("fetchPageTargetWsUrl returns null on non-JSON body (does not throw)", asyn
   assert.equal(wsUrl, null);
 });
 
-test("closeRemoteCdpPageTargets closes only page targets and polls until none remain", async () => {
+test("closeRemoteCdpPageTargets replaces stale page targets before closing them", async () => {
   const seenUrls: string[] = [];
   let listCalls = 0;
   const fetchImpl = ((input: string | URL | Request): Promise<Response> => {
@@ -315,10 +315,16 @@ test("closeRemoteCdpPageTargets closes only page targets and polls until none re
               { id: "SERVICE_WORKER_ID", type: "service_worker", url: "https://www.amazon.com/sw.js" },
             ]
           : [
+              { id: "FRESH_PAGE_TARGET_ID", type: "page", url: "about:blank" },
               { id: "IFRAME_TARGET_ID", type: "iframe", url: "https://www.amazon.com/frame" },
               { id: "SERVICE_WORKER_ID", type: "service_worker", url: "https://www.amazon.com/sw.js" },
             ];
       return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+    }
+    if (url.endsWith("/json/new?about:blank")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ id: "FRESH_PAGE_TARGET_ID", type: "page", url: "about:blank" }), { status: 200 })
+      );
     }
     return Promise.resolve(new Response("Target is closing", { status: 200 }));
   }) as typeof fetch;
@@ -330,11 +336,44 @@ test("closeRemoteCdpPageTargets closes only page targets and polls until none re
     pollMs: 1,
   });
 
-  assert.deepEqual(result, { closed: 1, remaining: 0, skipped: false });
+  assert.deepEqual(result, { closed: 1, remaining: 0, replacementCreated: true, skipped: false });
   assert.deepEqual(seenUrls, [
     "http://neko.example.test:9223/json",
+    "http://neko.example.test:9223/json/new?about:blank",
     "http://neko.example.test:9223/json/close/PAGE_TARGET_ID",
     "http://neko.example.test:9223/json",
+  ]);
+});
+
+test("closeRemoteCdpPageTargets does not close the last page when replacement creation fails", async () => {
+  const seenUrls: string[] = [];
+  const fetchImpl = ((input: string | URL | Request): Promise<Response> => {
+    const url = urlOf(input);
+    seenUrls.push(url);
+    if (url.endsWith("/json")) {
+      return Promise.resolve(
+        new Response(JSON.stringify([{ id: "ONLY_PAGE_TARGET_ID", type: "page", url: "https://www.amazon.com" }]), {
+          status: 200,
+        })
+      );
+    }
+    if (url.endsWith("/json/new?about:blank")) {
+      return Promise.resolve(new Response("nope", { status: 500 }));
+    }
+    return Promise.resolve(new Response("should not close", { status: 200 }));
+  }) as typeof fetch;
+
+  const result = await closeRemoteCdpPageTargets({
+    cdpUrl: "http://neko.example.test:9223/",
+    fetchImpl,
+    timeoutMs: 500,
+    pollMs: 1,
+  });
+
+  assert.deepEqual(result, { closed: 0, remaining: 1, replacementCreated: false, skipped: true });
+  assert.deepEqual(seenUrls, [
+    "http://neko.example.test:9223/json",
+    "http://neko.example.test:9223/json/new?about:blank",
   ]);
 });
 
@@ -348,7 +387,7 @@ test("closeRemoteCdpPageTargets skips when the CDP URL cannot expose an HTTP tar
     }) as typeof fetch,
   });
 
-  assert.deepEqual(result, { closed: 0, remaining: 0, skipped: true });
+  assert.deepEqual(result, { closed: 0, remaining: 0, replacementCreated: false, skipped: true });
   assert.equal(called, false);
 });
 

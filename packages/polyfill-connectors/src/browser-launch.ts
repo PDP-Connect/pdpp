@@ -500,12 +500,13 @@ async function acquireRemoteCdpBrowser(cdpUrl: string, profileName: string): Pro
   const redactedUrl = redactCdpUrl(cdpUrl);
   process.stderr.write(`[browser-launch] remote CDP attach start profile=${profileName} url=${redactedUrl}\n`);
   // Remote profiles persist cookies; stale page targets do not need to persist.
-  // Close pages before attach so Patchright does not auto-attach to a wedged renderer.
+  // Replace pages before attach so Patchright does not auto-attach to a wedged
+  // renderer, while n.eko Chromium still keeps at least one page alive.
   const cleanup = await closeRemoteCdpPageTargets({ cdpUrl, profileName });
   process.stderr.write(
-    `[browser-launch] remote CDP page-target cleanup profile=${profileName} closed=${cleanup.closed} remaining=${cleanup.remaining} skipped=${String(
-      cleanup.skipped
-    )}\n`
+    `[browser-launch] remote CDP page-target cleanup profile=${profileName} closed=${cleanup.closed} remaining=${cleanup.remaining} replacementCreated=${String(
+      cleanup.replacementCreated
+    )} skipped=${String(cleanup.skipped)}\n`
   );
   const browser = await connectOverCdpWithRetry<Browser>({
     connect: () => localChromium.connectOverCDP(cdpUrl),
@@ -886,6 +887,7 @@ interface DevToolsTarget {
 export interface RemoteCdpPageTargetCleanupResult {
   readonly closed: number;
   readonly remaining: number;
+  readonly replacementCreated: boolean;
   readonly skipped: boolean;
 }
 
@@ -903,38 +905,48 @@ export async function closeRemoteCdpPageTargets({
   pollMs?: number;
 }): Promise<RemoteCdpPageTargetCleanupResult> {
   if (typeof fetchImpl !== "function") {
-    return { closed: 0, remaining: 0, skipped: true };
+    return { closed: 0, remaining: 0, replacementCreated: false, skipped: true };
   }
   const baseUrl = devToolsHttpBaseUrl(cdpUrl);
   if (!baseUrl) {
-    return { closed: 0, remaining: 0, skipped: true };
+    return { closed: 0, remaining: 0, replacementCreated: false, skipped: true };
   }
 
   const deadline = Date.now() + timeoutMs;
   const targets = await fetchRemoteDevToolsTargets({ baseUrl, deadline, fetchImpl });
   if (!targets) {
-    return { closed: 0, remaining: 0, skipped: true };
+    return { closed: 0, remaining: 0, replacementCreated: false, skipped: true };
   }
 
-  const pageTargets = targets.filter((target) => target?.type === "page" && typeof target.id === "string");
+  const pageTargets = targets.filter((target) => target?.type === "page" && typeof target.id === "string" && target.id);
+  if (pageTargets.length === 0) {
+    return { closed: 0, remaining: 0, replacementCreated: false, skipped: false };
+  }
+  const staleTargetIds = new Set(pageTargets.map((target) => target.id).filter((id): id is string => Boolean(id)));
+  const replacement = await createRemoteDevToolsPageTarget({ baseUrl, deadline, fetchImpl });
+  if (!replacement?.id) {
+    return { closed: 0, remaining: staleTargetIds.size, replacementCreated: false, skipped: true };
+  }
+  staleTargetIds.delete(replacement.id);
+
   let closed = 0;
-  for (const target of pageTargets) {
-    if (!target.id || Date.now() >= deadline) {
+  for (const targetId of staleTargetIds) {
+    if (Date.now() >= deadline) {
       break;
     }
-    const ok = await closeRemoteDevToolsTarget({ baseUrl, deadline, fetchImpl, targetId: target.id });
+    const ok = await closeRemoteDevToolsTarget({ baseUrl, deadline, fetchImpl, targetId });
     if (ok) {
       closed += 1;
     }
   }
 
-  let remaining = countPageTargets(targets) - closed;
+  let remaining = Math.max(0, staleTargetIds.size - closed);
   while (Date.now() < deadline) {
     const latestTargets = await fetchRemoteDevToolsTargets({ baseUrl, deadline, fetchImpl });
     if (!latestTargets) {
       break;
     }
-    remaining = countPageTargets(latestTargets);
+    remaining = countMatchingPageTargets(latestTargets, staleTargetIds);
     if (remaining === 0) {
       break;
     }
@@ -946,7 +958,7 @@ export async function closeRemoteCdpPageTargets({
       `[browser-launch] remote CDP page-target cleanup incomplete profile=${profileName} remaining=${remaining}\n`
     );
   }
-  return { closed, remaining, skipped: false };
+  return { closed, remaining, replacementCreated: true, skipped: false };
 }
 
 function devToolsHttpBaseUrl(cdpUrl: string): URL | null {
@@ -1003,6 +1015,28 @@ async function closeRemoteDevToolsTarget({
   return response?.ok === true;
 }
 
+async function createRemoteDevToolsPageTarget({
+  baseUrl,
+  deadline,
+  fetchImpl,
+}: {
+  baseUrl: URL;
+  deadline: number;
+  fetchImpl: typeof fetch;
+}): Promise<DevToolsTarget | null> {
+  const response = await fetchWithDeadline(new URL("/json/new?about:blank", baseUrl).toString(), deadline, fetchImpl);
+  if (!response?.ok) {
+    return null;
+  }
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    return null;
+  }
+  return typeof body === "object" && body !== null ? (body as DevToolsTarget) : null;
+}
+
 async function fetchWithDeadline(url: string, deadline: number, fetchImpl: typeof fetch): Promise<Response | null> {
   const remainingMs = Math.max(1, deadline - Date.now());
   const controller = new AbortController();
@@ -1024,8 +1058,10 @@ async function fetchWithDeadline(url: string, deadline: number, fetchImpl: typeo
   }
 }
 
-function countPageTargets(targets: readonly DevToolsTarget[]): number {
-  return targets.filter((target) => target?.type === "page").length;
+function countMatchingPageTargets(targets: readonly DevToolsTarget[], targetIds: ReadonlySet<string>): number {
+  return targets.filter(
+    (target) => target?.type === "page" && typeof target.id === "string" && targetIds.has(target.id)
+  ).length;
 }
 
 export async function fetchPageTargetWsUrl({
