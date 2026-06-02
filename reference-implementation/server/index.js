@@ -196,8 +196,6 @@ import {
 import { isClosedPipeWriteError } from '../runtime/pipe-errors.js';
 import { createApp, buildLogger } from './transport.js';
 import {
-  HOSTED_UI_CSS,
-  HOSTED_UI_CSS_PATH,
   escapeHtml as hostedEscape,
   renderActionRow,
   renderEmptyState,
@@ -297,6 +295,7 @@ import {
   mountRsProtectedResourceMetadata,
   mountRsRoot,
 } from './routes/root-and-discovery.ts';
+import { mountHostedUiCss } from './routes/hosted-ui-asset.ts';
 import {
   mountRefGrants,
   mountRefRuns,
@@ -2462,13 +2461,11 @@ function buildAsApp(opts = {}) {
 
   // Shared hosted-UI stylesheet for reference server-rendered HTML pages
   // (consent, device, approval results, owner-login). This is a
-  // reference-only asset, not a PDPP protocol surface. See
-  // `reference-implementation/server/hosted-ui.js`.
-  app.get(HOSTED_UI_CSS_PATH, (req, res) => {
-    res.setHeader('Content-Type', 'text/css; charset=utf-8');
-    res.setHeader('Cache-Control', 'public, max-age=300');
-    res.send(HOSTED_UI_CSS);
-  });
+  // reference-only asset, not a PDPP protocol surface. Mounted via
+  // `server/routes/hosted-ui-asset.ts` per OpenSpec change
+  // `split-reference-server-by-route-family`. Behaviour-preserving extraction:
+  // same path, same headers, same registration order.
+  mountHostedUiCss(app);
 
   // AS root (`GET /`) is mounted via `server/routes/root-and-discovery.ts`
   // per OpenSpec change `split-reference-server-by-route-family`. Behaviour-
@@ -3591,12 +3588,11 @@ function buildRsApp(opts = {}) {
 
   // Shared hosted-UI stylesheet, mounted on the RS app so the browser-friendly
   // RS root landing (see below) can load styles from its own origin without
-  // depending on the AS port being reachable.
-  app.get(HOSTED_UI_CSS_PATH, (req, res) => {
-    res.setHeader('Content-Type', 'text/css; charset=utf-8');
-    res.setHeader('Cache-Control', 'public, max-age=300');
-    res.send(HOSTED_UI_CSS);
-  });
+  // depending on the AS port being reachable. Mounted via
+  // `server/routes/hosted-ui-asset.ts` per OpenSpec change
+  // `split-reference-server-by-route-family`. Behaviour-preserving extraction:
+  // same path, same headers, same registration order.
+  mountHostedUiCss(app);
 
   // RS root (`GET /`) is mounted via `server/routes/root-and-discovery.ts`
   // per OpenSpec change `split-reference-server-by-route-family`. Behaviour-
