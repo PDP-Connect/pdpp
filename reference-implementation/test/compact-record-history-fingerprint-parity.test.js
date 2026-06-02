@@ -117,6 +117,32 @@ if (canonicalRecordFingerprint) {
     assert.equal(h1, h2, 'fetched_at delta must not change the fingerprint');
   });
 
+  test('parity: slack channel_memberships excludes fetched_at; real membership move is a boundary', () => {
+    const policy = findPolicy('slack', 'channel_memberships');
+    assert.deepEqual(policy.excludeKeys, ['fetched_at']);
+    const base = { id: 'C1:U1', channel_id: 'C1', user_id: 'U1' };
+    // Script and canonical helper agree byte-for-byte under the exclusion.
+    expectParity({ ...base, fetched_at: '2026-05-26T10:00:00Z' }, policy.excludeKeys, 'slack/channel_memberships t1');
+    expectParity({ ...base, fetched_at: '2026-05-27T10:00:00Z' }, policy.excludeKeys, 'slack/channel_memberships t2');
+    // A fetched_at-only delta must NOT change the fingerprint (the connector's
+    // own no-op-emit definition — FINGERPRINT_EXCLUDE.channel_memberships).
+    const noop1 = scriptRecordFingerprint({ ...base, fetched_at: '2026-05-26T10:00:00Z' }, policy.excludeKeys);
+    const noop2 = scriptRecordFingerprint({ ...base, fetched_at: '2026-05-27T10:00:00Z' }, policy.excludeKeys);
+    assert.equal(noop1, noop2, 'fetched_at delta must not change the channel_memberships fingerprint');
+    // A real membership field move (channel_id or user_id) MUST change it —
+    // a membership appearing or disappearing is never hidden.
+    const userMoved = scriptRecordFingerprint(
+      { ...base, user_id: 'U2', fetched_at: '2026-05-26T10:00:00Z' },
+      policy.excludeKeys,
+    );
+    const channelMoved = scriptRecordFingerprint(
+      { ...base, channel_id: 'C2', fetched_at: '2026-05-26T10:00:00Z' },
+      policy.excludeKeys,
+    );
+    assert.notEqual(noop1, userMoved, 'a user_id move MUST change the fingerprint');
+    assert.notEqual(noop1, channelMoved, 'a channel_id move MUST change the fingerprint');
+  });
+
   test('parity: slack users representative payload', () => {
     const policy = findPolicy('slack', 'users');
     expectParity(
@@ -582,6 +608,7 @@ if (canonicalRecordFingerprint) {
       'slack/workspace',
       'slack/users',
       'slack/files',
+      'slack/channel_memberships',
       'ynab/payee_locations',
       'ynab/budgets',
       'gmail/labels',

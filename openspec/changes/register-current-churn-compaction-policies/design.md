@@ -9,15 +9,20 @@ Three current high/watch churn streams whose churn is provably non-semantic:
 | gmail / labels | 269 | `{name, canonical_name, is_system, parent_name, message_count}` | none (`message_count` is `null`) | fingerprint over stored body |
 | usaa / statements | 14.93 | identity + content-addressed pdf fields + `fetched_at` | `fetched_at` only | exclude `fetched_at` |
 | chase / accounts | 20 | identity + all-null balances + `fetched_at` | `fetched_at` only | exclude `fetched_at` |
+| slack / channel_memberships | high | `{id, channel_id, user_id, fetched_at}` | `fetched_at` only | exclude `fetched_at` (forward gate already shipped) |
 
 ## Why these three and not the others
 
 The audit classified all eight brief-listed streams:
 
-- **slack / channel_memberships** — forward fix already shipped (now in
-  `FINGERPRINTED_STREAMS`); only historical residue remains. No new connector
-  work needed; a compaction policy is a possible follow-on but was out of this
-  change's narrow scope (the connector already gates with `fetched_at` excluded).
+- **slack / channel_memberships** — forward fix already shipped (in
+  `FINGERPRINTED_STREAMS` with `fetched_at` excluded, proven by
+  `connectors/slack/fingerprint.test.ts`); only historical residue remained. No
+  new connector work needed. The matching Family-1 compaction policy
+  (`excludeKeys: ["fetched_at"]`) is now registered to collapse that residue —
+  excluding only the run clock is lossless because the remaining fields
+  (`id`/`channel_id`/`user_id`) are the membership identity, so a membership
+  appearing or disappearing always survives as a fingerprint boundary.
 - **github / user** — churns on real volatile fields (`followers`, `following`,
   `public_repos`, `public_gists`). No safe `excludeKeys` mirror exists; the only
   honest forward fix is to project these counts into a separate stream or accept
@@ -85,7 +90,7 @@ own after the projection recomputes from ground truth.
 ## Out of scope
 
 - Live `--apply` (owner-gated).
-- github/user, slack/channels, usaa/accounts, usaa/credit_card_billing forward
-  fixes (need a real-field design decision, not a churn-hiding exclusion).
-- slack/channel_memberships historical compaction (forward fix already shipped;
-  possible follow-on policy).
+- github/user, slack/channels forward fixes (need a real-field design decision,
+  not a churn-hiding exclusion). usaa/accounts and usaa/credit_card_billing were
+  later registered as `fetched_at`-only Family-1 policies (their real balance
+  fields are retained as boundaries).

@@ -21,6 +21,9 @@
  *        - slack / workspace   (fingerprint excludes `fetched_at`)
  *        - slack / users
  *        - slack / files
+ *        - slack / channel_memberships (excludes `fetched_at`; real
+ *                               membership identity channel_id/user_id
+ *                               preserved as a fingerprint boundary)
  *        - ynab  / payee_locations
  *        - ynab  / budgets     (excludes `last_month`,`last_modified_on`)
  *        - usaa  / statements  (excludes `fetched_at`)
@@ -134,6 +137,26 @@ export const COMPACTION_POLICIES = [
     excludeKeys: [],
     connectorSource:
       'packages/polyfill-connectors/connectors/slack/index.ts:FINGERPRINT_EXCLUDE.files ([]) → openFingerprintCursor → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
+  },
+  {
+    // `channel_memberships` record body is `{id, channel_id, user_id,
+    // fetched_at}`. The per-run `fetched_at: nowIso()` forced a brand-new
+    // version of every membership on every slackdump pass, and the stream
+    // grew into the single largest churn stream by absolute history volume
+    // for a membership set that barely moves. The connector now gates emit
+    // through the per-record fingerprint cursor with
+    // excludeFromFingerprint ["fetched_at"] (FINGERPRINTED_STREAMS now
+    // includes channel_memberships); this policy mirrors that exclusion
+    // one-for-one. Excluding ONLY `fetched_at` is lossless: the only other
+    // fields (id, channel_id, user_id) are the membership identity itself,
+    // so a membership appearing or disappearing is always a fingerprint
+    // boundary that survives — only a true no-op refresh (same membership,
+    // moved run clock) collapses.
+    connectorIds: ['slack', 'https://registry.pdpp.org/connectors/slack'],
+    stream: 'channel_memberships',
+    excludeKeys: ['fetched_at'],
+    connectorSource:
+      'packages/polyfill-connectors/connectors/slack/index.ts:FINGERPRINT_EXCLUDE.channel_memberships (["fetched_at"]) → openFingerprintCursor → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
   },
   {
     connectorIds: ['ynab', 'https://registry.pdpp.org/connectors/ynab'],

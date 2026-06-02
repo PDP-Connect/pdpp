@@ -25,6 +25,10 @@
   `compact-record-history.mjs`, each with short + registry-URL `connectorIds`
   and a `connectorSource` pointing at the new connector gate. Update the header
   docstring's Family-1 enumeration.
+- [x] 2.2 Add `slack/channel_memberships` (`excludeKeys: ["fetched_at"]`) to
+  `COMPACTION_POLICIES`, mirroring the already-shipped connector forward gate
+  (`FINGERPRINT_EXCLUDE.channel_memberships`). No new connector work — the gate
+  was deferred-but-shipped; only the historical compaction policy was missing.
 
 ## 3. Test coverage
 
@@ -39,6 +43,10 @@
 - [x] 3.3 Add `gmail/labels`, `usaa/statements`, `chase/accounts` parity
   fixtures to `compact-record-history-fingerprint-parity.test.js` and to the
   static-guard `fixturedPairs` set.
+- [x] 3.4 Add `slack/channel_memberships` registry/findPolicy + selector tests
+  to `compact-record-history.test.js` and a parity fixture (fetched_at-only
+  collapse; real channel_id/user_id move is a boundary) to
+  `compact-record-history-fingerprint-parity.test.js` + `fixturedPairs`.
 
 ## 4. Spec
 

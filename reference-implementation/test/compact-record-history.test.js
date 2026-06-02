@@ -68,6 +68,7 @@ test('COMPACTION_POLICIES exposes the registered policies (short-name canonical 
     ['slack', 'workspace'],
     ['slack', 'users'],
     ['slack', 'files'],
+    ['slack', 'channel_memberships'],
     ['ynab', 'payee_locations'],
     // run-clock / stored-body mirror family (forward gate added 2026-06-01)
     ['gmail', 'labels'],
@@ -136,6 +137,19 @@ test('findPolicy returns the registered policy for Slack workspace with excludeK
   const p = findPolicy('slack', 'workspace');
   assert.ok(p);
   assert.deepEqual(p.excludeKeys, ['fetched_at']);
+});
+
+test('findPolicy returns the registered policy for Slack channel_memberships with excludeKeys=[fetched_at]', () => {
+  // Mirrors the connector-side gate (FINGERPRINT_EXCLUDE.channel_memberships
+  // in connectors/slack/index.ts, proven by connectors/slack/fingerprint.test.ts).
+  // Excluding only the run-clock `fetched_at` leaves the membership identity
+  // (id, channel_id, user_id) inside the fingerprint, so a membership
+  // appearing or disappearing always remains a version boundary.
+  const short = findPolicy('slack', 'channel_memberships');
+  const url = findPolicy('https://registry.pdpp.org/connectors/slack', 'channel_memberships');
+  assert.ok(short, 'slack/channel_memberships policy must be registered');
+  assert.deepEqual(short.excludeKeys, ['fetched_at']);
+  assert.equal(short, url, 'short-name and URL lookups must resolve to the same policy entry');
 });
 
 test('parseLimitKeys accepts positive integers, rejects everything else', () => {
@@ -255,6 +269,43 @@ test('selectRemovableVersions: workspace fetched_at-only churn collapses under f
   ];
   const removable = selectRemovableVersions(rows, 5, WORKSPACE_POLICY);
   assert.deepEqual(removable.sort((a, b) => a - b), [2, 3, 4]);
+});
+
+test('selectRemovableVersions: channel_memberships fetched_at-only churn collapses, but a real membership field move is a boundary', () => {
+  // The live offender shape: the membership identity {id, channel_id,
+  // user_id} is stable across runs and only the run-clock `fetched_at`
+  // moves, so under the fetched_at exclusion every version shares one
+  // fingerprint and the intermediates collapse to the v1 anchor + current
+  // pin. A version that changes a REAL membership field (here user_id, as
+  // if the row were re-keyed) is a fingerprint boundary that survives.
+  const MEMBERSHIPS_POLICY = findPolicy('slack', 'channel_memberships');
+  assert.ok(MEMBERSHIPS_POLICY, 'slack/channel_memberships policy must be registered');
+  const member = (userId, ts) => ({ id: `C1:${userId}`, channel_id: 'C1', user_id: userId, fetched_at: ts });
+  const churnRows = [
+    row(1, member('U1', '2026-05-26T00:00:00Z')),
+    row(2, member('U1', '2026-05-26T00:01:00Z')),
+    row(3, member('U1', '2026-05-26T00:02:00Z')),
+    row(4, member('U1', '2026-05-26T00:03:00Z')),
+  ];
+  // All four share one fingerprint (fetched_at excluded) → 2,3 collapse to
+  // v1; v4 is current → retained.
+  assert.deepEqual(
+    selectRemovableVersions(churnRows, 4, MEMBERSHIPS_POLICY).sort((a, b) => a - b),
+    [2, 3],
+  );
+  // A real membership field move (user_id) is a fingerprint boundary that is
+  // never collapsed — it is pinned as the most-recent-differing-prior.
+  const boundaryRows = [
+    row(1, member('U1', '2026-05-26T00:00:00Z')),
+    row(2, member('U1', '2026-05-26T00:01:00Z')),
+    row(3, member('U2', '2026-05-26T00:02:00Z')),
+    row(4, member('U2', '2026-05-26T00:03:00Z')),
+  ];
+  // current = v4 (U2). most-recent prior with different fp = v2 (U1) → pinned.
+  //   v1 first → retain; v2 differing-prior pin → retain; v3 different fp from
+  //   v2 → retain; v4 current → retain. Nothing removable: the U1→U2 boundary
+  //   and the only intermediate are all protected.
+  assert.deepEqual(selectRemovableVersions(boundaryRows, 4, MEMBERSHIPS_POLICY), []);
 });
 
 test('selectRemovableVersions: workspace fetched_at-only churn does NOT collapse under threads policy (no exclude)', () => {

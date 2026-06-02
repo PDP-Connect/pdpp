@@ -38,11 +38,14 @@ remain report-only recommendations.
   Slack/Gmail/YNAB `openFingerprintCursor` pattern. gmail `labels` excludes the
   synthetic keying `id` so its fingerprint is computed over exactly the stored
   body; usaa `statements` and chase `accounts` exclude `fetched_at`.
-- Register three Family-1 ("connector fingerprint mirror") compaction policies
+- Register Family-1 ("connector fingerprint mirror") compaction policies
   in the tool registry, each mirroring its connector gate one-for-one:
   - `gmail/labels` — `excludeKeys: []` (stored body has no `id`).
   - `usaa/statements` — `excludeKeys: ["fetched_at"]`.
   - `chase/accounts` — `excludeKeys: ["fetched_at"]`.
+  - `slack/channel_memberships` — `excludeKeys: ["fetched_at"]`. The connector
+    forward gate was already shipped (in `FINGERPRINTED_STREAMS`); this
+    closes the previously-deferred matching historical compaction policy.
 - Extend the canonical Family-1 stream enumeration in the
   reference-implementation-architecture capability spec to include the three new
   streams.
