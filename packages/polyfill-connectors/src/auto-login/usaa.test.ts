@@ -164,6 +164,50 @@ test("ensureUsaaSession fails with diagnostic if manual login response does not 
   });
 });
 
+test("ensureUsaaSession honors operator-completed login even when the interaction is cancelled", async () => {
+  // The operator completed USAA login in the visible browser, then ended the
+  // interaction as cancelled (timeout, or an explicit "I'm already in" cancel).
+  // The session is live, so the connector must re-probe and continue rather
+  // than trust the interaction status and kill the run. Mirrors the chatgpt
+  // Cloudflare-fallback best practice.
+  await withUsaaCredentials(async () => {
+    const context = makeContext([[], [makeCookie("UsaaMbWebMemberLoggedIn", "true")]]);
+    const { gotoCalls, page } = makePage(new Error(`page.goto: net::ERR_HTTP2_PROTOCOL_ERROR at ${LOGIN_URL}`));
+    const interactions = makeInteractionHarness("cancelled");
+
+    const ok = await ensureUsaaSession({
+      context,
+      page,
+      sendInteraction: interactions.sendInteraction,
+    });
+
+    assert.equal(ok, true);
+    assert.deepEqual(gotoCalls, [LOGIN_URL, DASHBOARD_URL]);
+    assert.equal(interactions.requests.length, 1);
+    assert.equal(interactions.requests[0]?.kind, "manual_action");
+  });
+});
+
+test("ensureUsaaSession fails when a cancelled interaction left no active session", async () => {
+  // Cancelled interaction AND no live session → the run must end with the
+  // re-probe diagnostic, not silently continue.
+  await withUsaaCredentials(async () => {
+    const context = makeContext([[], []]);
+    const { page } = makePage(new Error(`page.goto: net::ERR_HTTP2_PROTOCOL_ERROR at ${LOGIN_URL}`));
+    const interactions = makeInteractionHarness("cancelled");
+
+    await assert.rejects(
+      ensureUsaaSession({
+        context,
+        page,
+        sendInteraction: interactions.sendInteraction,
+      }),
+      /manual action did not establish a session/
+    );
+    assert.equal(interactions.requests.length, 1);
+  });
+});
+
 test("ensureUsaaSession does not convert ordinary DNS navigation errors into manual_action", async () => {
   await withUsaaCredentials(async () => {
     const context = makeContext([[]]);

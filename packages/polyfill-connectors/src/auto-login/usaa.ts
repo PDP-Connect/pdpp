@@ -88,7 +88,7 @@ async function requestManualLoginAfterNavigationFailure({
   reason,
   sendInteraction,
 }: EnsureUsaaSessionArgs & { reason: string }): Promise<boolean> {
-  const response = await manualAction(
+  await manualAction(
     {
       page,
       reason: "login",
@@ -101,9 +101,12 @@ async function requestManualLoginAfterNavigationFailure({
     },
     sendInteraction
   );
-  if (response.status !== "success") {
-    throw new Error(`USAA login navigation needs manual browser action; interaction status=${response.status}`);
-  }
+  // Re-probe the session after the manual step rather than trusting the
+  // interaction's completion status. The operator who completes login in a
+  // visible browser may end the interaction as cancelled/error (timeout, or
+  // an explicit "I'm already in" cancel) yet still have an active session.
+  // Mirrors the chatgpt and reddit fallbacks: completing the manual step is a
+  // signal to re-check ground truth, not an instruction to end the run.
   return verifyLoggedIn(context, page);
 }
 
