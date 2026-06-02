@@ -291,21 +291,20 @@ test('event spine', async (t) => {
       const db = getDb();
       const columns = db.prepare('PRAGMA table_info(spine_events)').all().map((row) => row.name);
       const rowCount = db.prepare('SELECT COUNT(*) AS count FROM spine_events').get().count;
-      const connectorCount = db.prepare(
-        'SELECT COUNT(*) AS count FROM spine_events WHERE source_kind = ? AND source_id = ?'
-      ).get('connector', 'conn_legacy').count;
-      const nativeCount = db.prepare(
-        'SELECT COUNT(*) AS count FROM spine_events WHERE source_kind = ? AND source_id = ?'
-      ).get('provider_native', 'provider_legacy').count;
-      const runtimeFallbackCount = db.prepare(
-        'SELECT COUNT(*) AS count FROM spine_events WHERE source_kind = ? AND source_id = ?'
-      ).get('connector', 'conn_runtime_fallback').count;
+
+      // Boot performs only the bounded, idempotent schema DDL: it adds the
+      // source columns and index and drops the superseded provider_id column,
+      // preserving the row count. It NO LONGER backfills source values — the
+      // unbounded per-row backfill that scanned the whole table on every boot
+      // was moved to an explicit operator maintenance script. Legacy rows
+      // therefore keep NULL source columns after boot; reads derive source
+      // from data_json. See openspec/changes/harden-startup-data-backfills.
+      const backfilledCount = db.prepare(
+        'SELECT COUNT(*) AS count FROM spine_events WHERE source_kind IS NOT NULL OR source_id IS NOT NULL'
+      ).get().count;
 
       assert.equal(rowCount, 3);
-      assert.equal(connectorCount, 1);
-      assert.equal(nativeCount, 1);
-      assert.equal(runtimeFallbackCount, 1);
-      assert.equal(db.pragma('user_version', { simple: true }), 1);
+      assert.equal(backfilledCount, 0, 'boot must not backfill legacy source values');
       assert.equal(columns.includes('provider_id'), false);
       assert.ok(columns.includes('source_kind'));
       assert.ok(columns.includes('source_id'));

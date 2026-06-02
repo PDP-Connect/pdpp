@@ -2794,46 +2794,29 @@ function deriveSpineSource(payload, row) {
   return null;
 }
 
+// Boot-safe spine source schema migration (SQLite). Installs the
+// `source_kind`/`source_id` columns and their index and drops the superseded
+// `provider_id` column. Bounded, idempotent DDL only — it does NOT scan or
+// rewrite `spine_events` rows.
+//
+// The per-row value backfill that previously lived here ran a full
+// `SELECT … FROM spine_events` plus per-row `UPDATE` inside one transaction on
+// every boot, never converging (legitimately sourceless events stay NULL). It
+// now lives in an explicit operator maintenance script
+// (`scripts/backfill-spine-source/`). NULL legacy `source_*` columns are
+// tolerable because the read path derives source from `data_json`. The prior
+// `user_version = 1` stamp gated nothing (the migration ran every boot
+// regardless) and is removed to avoid implying convergence. See
+// openspec/changes/harden-startup-data-backfills.
 function migrateSpineSourceColumns(raw, opts = {}) {
   if (!tableColumns(raw, 'spine_events').length) {
-    return { backfilledRows: 0, rowCount: 0, droppedProviderId: false };
+    return { rowCount: 0, droppedProviderId: false };
   }
 
   const hadProviderId = hasTableColumn(raw, 'spine_events', 'provider_id');
   const migration = raw.transaction(() => {
-    const beforeCount = raw.prepare('SELECT COUNT(*) AS count FROM spine_events').get().count;
     addColumnIfMissing(raw, 'spine_events', 'source_kind', 'TEXT');
     addColumnIfMissing(raw, 'spine_events', 'source_id', 'TEXT');
-
-    const providerProjection = hadProviderId ? ', provider_id' : '';
-    const rows = raw.prepare(
-      `SELECT event_id, actor_type, actor_id, data_json, source_kind, source_id${providerProjection} FROM spine_events`
-    ).all();
-    const update = raw.prepare(
-      'UPDATE spine_events SET source_kind = @source_kind, source_id = @source_id, data_json = @data_json WHERE event_id = @event_id'
-    );
-    let backfilledRows = 0;
-
-    for (const row of rows) {
-      const payload = parseSpineEventData(row.data_json, row.event_id);
-      const source = deriveSpineSource(payload, row);
-      if (!source) {
-        continue;
-      }
-      const nextPayload = payload && typeof payload === 'object' && !Array.isArray(payload)
-        ? { ...payload, source }
-        : { source };
-      const nextDataJson = JSON.stringify(nextPayload);
-      if (row.source_kind !== source.kind || row.source_id !== source.id || row.data_json !== nextDataJson) {
-        update.run({
-          event_id: row.event_id,
-          source_kind: source.kind,
-          source_id: source.id,
-          data_json: nextDataJson,
-        });
-        backfilledRows += 1;
-      }
-    }
 
     if (hadProviderId) {
       raw.exec('ALTER TABLE spine_events DROP COLUMN provider_id');
@@ -2843,12 +2826,8 @@ function migrateSpineSourceColumns(raw, opts = {}) {
         ON spine_events(source_kind, source_id, occurred_at, recorded_at)`
     );
 
-    const afterCount = raw.prepare('SELECT COUNT(*) AS count FROM spine_events').get().count;
-    if (beforeCount !== afterCount) {
-      throw new Error(`spine_events source migration row-count mismatch: before=${beforeCount} after=${afterCount}`);
-    }
-    raw.pragma('user_version = 1');
-    return { backfilledRows, rowCount: afterCount, droppedProviderId: hadProviderId };
+    const rowCount = raw.prepare('SELECT COUNT(*) AS count FROM spine_events').get().count;
+    return { rowCount, droppedProviderId: hadProviderId };
   });
 
   const result = migration();

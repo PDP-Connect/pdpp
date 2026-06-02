@@ -2,60 +2,74 @@
 
 ## 1. Postgres boot path
 
-- [ ] 1.1 In `reference-implementation/server/postgres-storage.js`, split
+- [x] 1.1 In `reference-implementation/server/postgres-storage.js`, split
   `migratePostgresSpineSourceColumns()` into a boot-safe DDL step (add
   `source_kind`/`source_id`, drop `provider_id` if present, create
   `idx_pg_spine_events_source`) and remove the full-table `SELECT … FROM
   spine_events` + per-row `UPDATE` backfill from the boot path.
-- [ ] 1.2 Export `deriveSpineSource` from `postgres-storage.js` so the
+- [x] 1.2 Export `deriveSpineSource` from `postgres-storage.js` so the
   maintenance script reuses the canonical derivation (single source of truth).
-- [ ] 1.3 Keep the row-count safety assertion only where it still makes sense
-  (DDL is row-count neutral); do not wrap boot in a long transaction.
+- [x] 1.3 No long transaction at boot. The DDL is individual idempotent
+  statements; the row-count assertion (which only made sense to guard the
+  removed backfill) is dropped.
 
 ## 2. SQLite boot path
 
-- [ ] 2.1 In `reference-implementation/server/db.js`, split
+- [x] 2.1 In `reference-implementation/server/db.js`, split
   `migrateSpineSourceColumns()` the same way: boot keeps the bounded DDL and the
   index; remove the unbounded per-row backfill from the boot runner.
-- [ ] 2.2 Remove or repurpose the dead `user_version = 1` write so it gates the
-  DDL or is deleted; do not leave a no-op version stamp implying convergence.
+- [x] 2.2 Removed the dead `user_version = 1` write (it gated nothing — the
+  migration ran every boot regardless) so no no-op version stamp implies
+  convergence. The result object no longer carries `backfilledRows`.
 
 ## 3. Maintenance script
 
-- [ ] 3.1 Add `reference-implementation/scripts/backfill-spine-source/` modeled
-  on `compact-record-history.mjs`: direct-DB-access auth, dry-run default,
-  `--apply`, `--batch-size`, Postgres and SQLite support.
-- [ ] 3.2 Select only `WHERE source_kind IS NULL`, batch in short transactions,
-  reuse `deriveSpineSource`, write `source_kind`/`source_id` and the
+- [x] 3.1 Added `reference-implementation/scripts/backfill-spine-source/`
+  modeled on `compact-record-history.mjs`: direct-DB-access auth, dry-run
+  default, `--apply`, `--batch-size`, `--max-batches`. **Postgres only** — the
+  reader-blocking lock problem is Postgres-specific and the existing
+  `compact-record-history` precedent is also Postgres-only. SQLite is
+  embedded/single-process; its boot likewise no longer backfills and reads
+  derive source from `data_json`.
+- [x] 3.2 Selects only NULL-source rows, batches in short transactions, reuses
+  the exported `deriveSpineSource`, writes `source_kind`/`source_id` and the
   `data_json.source` mirror only for rows it resolves.
-- [ ] 3.3 Make it resumable and convergent: stop when a batch resolves zero new
-  rows; report `resolved` / `remaining_unresolvable` / `total` counts.
+- [x] 3.3 Resumable and convergent via a keyset cursor on the unique monotonic
+  `event_seq`: the cursor advances past unresolvable rows so the run terminates;
+  reports `scanned` / `resolved` / `unresolvable` / `written` / `batches`.
 
 ## 4. Tests
 
-- [ ] 4.1 Postgres: against a temporary DB, prove a boot with columns already
-  present issues no full `SELECT … FROM spine_events` and no per-row
-  `UPDATE … source_kind` (instrument via a query-capturing client or by
-  asserting on a seeded large-row table that boot leaves NULL rows NULL and is
-  fast / non-locking).
-- [ ] 4.2 Postgres: prove boot still creates columns + index on a DB missing
-  them.
-- [ ] 4.3 Maintenance script: seed mixed rows (resolvable via payload source,
-  resolvable via runtime actor, genuinely sourceless); assert dry-run writes
-  nothing and reports the split; `--apply` resolves the resolvable rows in
-  batches, leaves sourceless rows NULL, and a second run is a no-op.
-- [ ] 4.4 SQLite: prove the boot runner no longer backfills and the script
-  works against a temp SQLite file (if SQLite support is included in 3.1).
+- [x] 4.1 Postgres (`test/spine-source-boot-backfill.test.js`): proven by
+  observable state — a RESOLVABLE NULL-source row (runtime actor) stays NULL
+  across a simulated reboot, which is only possible if boot does not backfill.
+  (Stronger than query interception: a query spy could miss an indirect write;
+  observed final state cannot.)
+- [x] 4.2 Postgres: boot creates the `source_kind`/`source_id` columns and the
+  `idx_pg_spine_events_source` index on a fresh DB.
+- [x] 4.3 Maintenance script: seed resolvable (runtime-actor) + genuinely
+  sourceless rows; dry-run writes nothing and reports the split (`batchSize=1`
+  pages row-by-row); `--apply` resolves the resolvable rows in bounded batches,
+  leaves sourceless rows NULL, mirrors `data_json.source`, and a second run is a
+  no-op.
+- [x] 4.4 SQLite: `test/event-spine.test.js` updated to assert the new boot
+  contract — DDL applied (columns added, `provider_id` dropped, row count
+  preserved) and `source_*` left NULL (no boot backfill). SQLite has no separate
+  backfill script (see 3.1).
 
 ## 5. Validation
 
-- [ ] 5.1 `pnpm --dir reference-implementation run typecheck` (if
-  TypeScript-visible files changed).
-- [ ] 5.2 Targeted `node --test` for the new tests against a temporary Postgres
-  DB (`PDPP_TEST_POSTGRES_URL`).
-- [ ] 5.3 `openspec validate harden-startup-data-backfills --strict` and
-  `openspec validate --all --strict`.
-- [ ] 5.4 `git diff --check`.
+- [x] 5.1 `pnpm --dir reference-implementation run typecheck` — pass.
+- [x] 5.2 Targeted `node --test` for the new tests against a temporary Postgres
+  DB (`PDPP_TEST_POSTGRES_URL`) — `spine-source-boot-backfill.test.js` 4/4 pass;
+  `event-spine.test.js` 46/46 pass; `migrate-storage.test.js` 73/73 pass.
+- [x] 5.3 `openspec validate harden-startup-data-backfills --strict` (valid) and
+  `openspec validate --all --strict` (40/40 pass).
+- [x] 5.4 `git diff --check` — clean.
+
+Known baseline failure (NOT caused by this change): `postgres-runtime-storage.test.js:949`
+(lexical-search pagination `has_more`) fails identically on the unchanged
+pre-change source; verified by reverting both source files and re-running.
 
 ## Acceptance checks
 
