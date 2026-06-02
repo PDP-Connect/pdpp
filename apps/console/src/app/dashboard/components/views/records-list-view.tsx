@@ -413,7 +413,7 @@ function AddConnectionGuidance({ deviceExportersHref }: { deviceExportersHref: s
   return (
     <Callout
       className="mb-4"
-      description="Filesystem connectors can be added directly. Amazon can mint a manual browser-collector enrollment code and then requires the owner-run browser proof procedure. Other source classes are listed below with the missing owner-approved flow."
+      description="Connections are added by connector modality, not per brand: the reference classifies every connector by its runtime bindings. Filesystem connectors enroll directly. Browser-bound connectors (Amazon is the current example with a runner profile) mint a browser-collector code and then need the owner-run browser procedure. API/network sources have no owner-approved connect flow yet. Each modality is listed below."
       surface="human"
       title="Add a connection"
     >
@@ -461,8 +461,10 @@ function AddConnectionGuidance({ deviceExportersHref }: { deviceExportersHref: s
             ))}
           </ul>
           <p className="pdpp-caption mt-1.5 text-muted-foreground">
-            This mints a <code className="font-mono">browser_collector</code> enrollment code. It is not a one-click
-            browser flow: finish the local, owner-logged-in browser run with{" "}
+            This is the same generic <code className="font-mono">browser_collector</code> enrollment any browser-bound
+            connector uses; Amazon is listed because it is the connector with a committed runner profile today. It mints
+            a <code className="font-mono">browser_collector</code> enrollment code. It is not a one-click browser flow:
+            finish the local, owner-logged-in browser run with{" "}
             <code className="pdpp-eyebrow font-mono text-foreground">{BROWSER_BOUND_RUNBOOK_PATH}</code>.
           </p>
         </div>
