@@ -9,6 +9,8 @@ See `design-notes/connector-catalog-vs-connection-lifecycle-2026-06-02.md` for t
 
 ## Decision
 
+> Note: Decision §2/§3 below (the "not-connected catalog entry in `listConnectorSummaries`" shape) was the initial draft and is **superseded** by the B1, real-connections-only implementation recorded under "Implementation decision" further down. Decision §1 (a read never persists a connection) and §4 (explicit lifecycle states) stand as implemented. The draft is kept for the rationale trail; the spec deltas and proposal reflect the B1 shape.
+
 1. **A read never persists a connection.** Remove the `ensureDefaultAccountConnection` fan-out from `listConnectorInstanceRowsForDashboard`. The dashboard projects:
    - the real configured/ingest-materialized `connector_instances` rows (unchanged), AND
    - for each registered public connector with **no** connection, a **not-connected catalog entry** projected directly from the `connectors` table (manifest) with **no** `connector_instance_id`.
