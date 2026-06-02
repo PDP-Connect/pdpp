@@ -296,12 +296,14 @@ export interface UnhandledRejectionHost {
  * UNHANDLED REJECTION (`node:internal/process/promises`), terminating the
  * process. A `try/catch` around `connectOverCDP` (v1) can never see it.
  *
- * The fix installs a temporary `process.on("unhandledRejection")` listener for
- * the duration of the attempt PLUS a short settle window after `connect`
- * resolves (the rejection lands on a later tick). If the unhandled rejection
- * matches the transient race signature, we convert it into a retryable
- * rejection of this attempt; the caller's bounded retry then re-attaches once
- * n.eko's transient target is gone.
+ * The fix installs a temporary `process.on("unhandledRejection")` listener and
+ * races the attach attempt against that signal. If the race lands while
+ * `connect()` is still pending, the attempt rejects immediately instead of
+ * waiting for Patchright's 30s timeout. If `connect()` resolves first, the
+ * guard stays open for a short settle window because the floated rejection can
+ * land on a later tick. Either way, a matching unhandled rejection becomes a
+ * retryable rejection of this attempt; the caller's bounded retry then
+ * re-attaches once n.eko's transient target is gone.
  *
  * Safety rails:
  *   - The listener is ALWAYS removed when the attempt settles (success,
@@ -311,9 +313,10 @@ export interface UnhandledRejectionHost {
  *     is re-thrown synchronously from the listener after removing ourselves, so
  *     Node's default crash-on-unhandled-rejection behavior is preserved for
  *     unrelated bugs. We do not become a process-wide rejection sink.
- *   - If the race rejection arrives AFTER `connect` already returned a live
- *     browser, that browser is orphaned; the injected `disconnect` is invoked
- *     best-effort before the retry so we don't leak a CDP client.
+ *   - If the race rejection arrives after `connect()` already returned a live
+ *     browser, or `connect()` resolves after the guard has already rejected,
+ *     the injected `disconnect` is invoked best-effort so we don't leak a CDP
+ *     client.
  *
  * `host`, `setTimeoutFn`, and `clearTimeoutFn` are injected for tests.
  */
@@ -356,7 +359,36 @@ export async function runCdpAttemptWithRaceGuard<TBrowser>({
 
   host.on("unhandledRejection", onUnhandledRejection);
   try {
-    const browser = await connect();
+    let connectSettled = false;
+    const connectPromise = connect().then(
+      (browser) => {
+        connectSettled = true;
+        return browser;
+      },
+      (err: unknown) => {
+        connectSettled = true;
+        throw err;
+      }
+    );
+    const disconnectLateBrowser = async (browser: TBrowser): Promise<void> => {
+      if (!disconnect) {
+        return;
+      }
+      await Promise.resolve(disconnect(browser)).catch(() => undefined);
+    };
+    const browser = await Promise.race([
+      connectPromise,
+      raceObserved.then(() => {
+        // The race can happen while Patchright is still inside connectOverCDP.
+        // Do not wait for its 30s timeout; convert this attempt into the
+        // retryable race immediately. If connect later yields a Browser, close
+        // that orphaned CDP client best-effort.
+        if (!connectSettled) {
+          connectPromise.then(disconnectLateBrowser, () => undefined).catch(() => undefined);
+        }
+        throw raceReason;
+      }),
+    ]);
     // `connect` resolved, but the floated `setRequestInterception` rejection
     // (if any) lands on a LATER tick. Hold the guard open for a brief settle
     // window; bail early the moment a race rejection is observed.
@@ -369,13 +401,7 @@ export async function runCdpAttemptWithRaceGuard<TBrowser>({
     if (raceReason !== undefined) {
       // The just-connected browser is orphaned by the race; disconnect it
       // best-effort so we don't leak a CDP client before the caller retries.
-      if (disconnect) {
-        try {
-          await disconnect(browser);
-        } catch {
-          /* best-effort; the remote browser owns its own lifecycle */
-        }
-      }
+      await disconnectLateBrowser(browser);
       throw raceReason;
     }
     return browser;

@@ -574,6 +574,45 @@ test("runCdpAttemptWithRaceGuard converts an UNHANDLED setCacheDisabled rejectio
   assert.equal(fake.listenerCount(), 0, "guard listener is removed even when it converts a race to a throw");
 });
 
+test("runCdpAttemptWithRaceGuard converts an UNHANDLED race while connect is still pending", async () => {
+  const fake = makeFakeRejectionHost();
+  let resolveConnect: ((browser: string) => void) | undefined;
+  const disconnected: string[] = [];
+
+  await assert.rejects(
+    () =>
+      runCdpAttemptWithRaceGuard<string>({
+        connect: () =>
+          new Promise<string>((resolve) => {
+            resolveConnect = resolve;
+            setTimeout(() => fake.emit(new Error(PRODUCTION_RACE_MESSAGE)), 5);
+          }),
+        disconnect: (b) => {
+          disconnected.push(b);
+        },
+        settleMs: 200,
+        host: fake.host,
+      }),
+    (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.match((err as Error).message, /Network\.setCacheDisabled/);
+      assert.match((err as Error).message, /session closed/i);
+      return true;
+    }
+  );
+
+  assert.equal(fake.listenerCount(), 0, "guard listener is removed after the pending-connect race");
+  assert.deepEqual(disconnected, [], "no Browser existed at the moment the guarded attempt rejected");
+
+  // If Patchright eventually resolves the stale connect promise after the
+  // attempt already retried, the late Browser is still disconnected
+  // best-effort so the abandoned CDP client does not leak.
+  assert.ok(resolveConnect, "connect promise was started");
+  resolveConnect("LATE_BROWSER");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(disconnected, ["LATE_BROWSER"], "late browser was disconnected after pending-connect race");
+});
+
 test("runCdpAttemptWithRaceGuard does NOT swallow an unrelated unhandled rejection (re-throws to preserve crash semantics)", async () => {
   const fake = makeFakeRejectionHost();
   // A non-race unhandled rejection must NOT be consumed — the guard re-throws
