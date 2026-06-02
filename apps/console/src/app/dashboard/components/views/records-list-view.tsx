@@ -406,6 +406,18 @@ function unsupportedModalityCopy(modality: "browser_bound" | "api_network") {
  * Honest add-connection picker. The catalog is read server-side from shipped
  * manifests, then rendered as: startable now, manual browser proof, or visible
  * but gated. Gated entries never render enrollment links.
+ *
+ * Presentation contract (owner feedback: the picker felt "too Amazon-specific,
+ * too verbose, confusing"): the ONE easy path — one-click local-collector
+ * enrollment — leads and stays open. Every other group (manual browser-collector
+ * / Amazon, browser-bound runbook, local-collector unproven, api_network
+ * unsupported) is honest but secondary, so it lives inside a native
+ * `<details>` disclosure that names its count. Collapsing is not omission: each
+ * connector is still in the DOM, grouped by modality, keyboard-reachable, with
+ * its honest reason and (where it exists) its deep-link — the same standard the
+ * version-churn disclosure in this file already meets. Amazon is one entry inside
+ * the disclosure, no longer the headline. The honesty model — five dispositions,
+ * gated reasons, runbook pointer, exactly-two deep-links — is unchanged.
  */
 function AddConnectionGuidance({
   catalog,
@@ -421,17 +433,18 @@ function AddConnectionGuidance({
   const networkUnsupported = unsupportedNetworkEntries(catalog);
   const browserCopy = unsupportedModalityCopy("browser_bound");
   const networkCopy = unsupportedModalityCopy("api_network");
+  const otherCount =
+    browserManualEntries.length + browserRunbook.length + localUnproven.length + networkUnsupported.length;
   return (
     <Callout
       className="mb-4"
-      description="Choose a connector. Entries with an arrow set up here; the rest name the setup path they still need."
+      description="Pick a connector to add. The ones below set up here in one step; everything else lives under “Other connectors”, with the manual or not-yet-supported path each one still needs."
       surface="human"
       title="Add a connection"
     >
       <div className="space-y-3">
         {localEntries.length > 0 ? (
           <div>
-            <p className="pdpp-caption mb-1.5 font-medium text-foreground">Supported from the console</p>
             <ul className="flex flex-wrap gap-2">
               {localEntries.map((entry) => (
                 <li key={entry.connectorKey}>
@@ -455,103 +468,120 @@ function AddConnectionGuidance({
           </div>
         ) : null}
 
-        {browserManualEntries.length > 0 ? (
-          <div>
-            <p className="pdpp-caption mb-1.5 font-medium text-foreground">Manual browser-collector setup</p>
-            <ul className="flex flex-wrap gap-2">
-              {browserManualEntries.map((entry) => (
-                <li key={entry.connectorKey}>
-                  <Link
-                    className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/50 bg-amber-500/10 px-2.5 py-1 text-foreground transition-colors hover:bg-amber-500/15"
-                    data-testid={`catalog-browser-manual-${entry.connectorKey}`}
-                    href={`${deviceExportersHref}?connector=${encodeURIComponent(entry.enrollmentKey ?? entry.connectorKey)}`}
-                  >
-                    <span className="pdpp-caption font-medium">{entry.displayName}</span>
-                    <code className="pdpp-eyebrow font-mono text-muted-foreground">{entry.connectorKey}</code>
-                    <span aria-hidden className="text-muted-foreground">
-                      →
-                    </span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-            <p className="pdpp-caption mt-1.5 text-muted-foreground">
-              Mints a <code className="font-mono">browser_collector</code> enrollment code. It is not a one-click
-              browser flow; finish the owner-run browser proof with{" "}
-              <code className="pdpp-eyebrow font-mono text-foreground">{BROWSER_BOUND_RUNBOOK_PATH}</code>.
-            </p>
-          </div>
-        ) : null}
+        {otherCount > 0 ? (
+          <details className="rounded-md border border-border/60 bg-muted/10" data-testid="add-connection-other">
+            <summary
+              className="pdpp-caption flex cursor-pointer list-none items-center gap-1.5 px-3 py-2 font-medium text-foreground marker:hidden [&::-webkit-details-marker]:hidden"
+              data-testid="add-connection-other-toggle"
+            >
+              <span aria-hidden className="text-muted-foreground transition-transform [details[open]_&]:rotate-90">
+                ›
+              </span>
+              Other connectors — owner-run or not yet supported ({otherCount})
+            </summary>
+            <div className="space-y-3 px-3 pt-1 pb-3">
+              {browserManualEntries.length > 0 ? (
+                <div>
+                  <p className="pdpp-caption mb-1.5 font-medium text-foreground">Manual browser-collector setup</p>
+                  <ul className="flex flex-wrap gap-2">
+                    {browserManualEntries.map((entry) => (
+                      <li key={entry.connectorKey}>
+                        <Link
+                          className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/50 bg-amber-500/10 px-2.5 py-1 text-foreground transition-colors hover:bg-amber-500/15"
+                          data-testid={`catalog-browser-manual-${entry.connectorKey}`}
+                          href={`${deviceExportersHref}?connector=${encodeURIComponent(entry.enrollmentKey ?? entry.connectorKey)}`}
+                        >
+                          <span className="pdpp-caption font-medium">{entry.displayName}</span>
+                          <code className="pdpp-eyebrow font-mono text-muted-foreground">{entry.connectorKey}</code>
+                          <span aria-hidden className="text-muted-foreground">
+                            →
+                          </span>
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="pdpp-caption mt-1.5 text-muted-foreground">
+                    Mints a <code className="font-mono">browser_collector</code> enrollment code. It is not a one-click
+                    browser flow; finish the owner-run browser proof with{" "}
+                    <code className="pdpp-eyebrow font-mono text-foreground">{BROWSER_BOUND_RUNBOOK_PATH}</code>.
+                  </p>
+                </div>
+              ) : null}
 
-        {browserRunbook.length > 0 ? (
-          <div>
-            <p className="pdpp-caption mb-1.5 font-medium text-foreground">Browser-bound — owner-run setup</p>
-            <ul className="flex flex-wrap gap-2">
-              {browserRunbook.map((entry) => (
-                <li
-                  className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/20 px-2.5 py-1"
-                  data-testid={`catalog-browser-runbook-${entry.connectorKey}`}
-                  key={entry.connectorKey}
-                >
-                  <span className="pdpp-caption font-medium text-foreground">{entry.displayName}</span>
-                  <code className="pdpp-eyebrow font-mono text-muted-foreground">{entry.connectorKey}</code>
-                </li>
-              ))}
-            </ul>
-            <p className="pdpp-caption mt-1.5 text-muted-foreground">
-              {browserCopy?.ownerFacingReason ??
-                "needs a supported browser-collector run profile before the console can generate setup commands"}
-              . Manual path:{" "}
-              <code className="pdpp-eyebrow font-mono text-foreground" data-testid="runbook-path-browser_bound">
-                {BROWSER_BOUND_RUNBOOK_PATH}
-              </code>
-              {"."}
-            </p>
-          </div>
-        ) : null}
+              {browserRunbook.length > 0 ? (
+                <div>
+                  <p className="pdpp-caption mb-1.5 font-medium text-foreground">Browser-bound — owner-run setup</p>
+                  <ul className="flex flex-wrap gap-2">
+                    {browserRunbook.map((entry) => (
+                      <li
+                        className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/20 px-2.5 py-1"
+                        data-testid={`catalog-browser-runbook-${entry.connectorKey}`}
+                        key={entry.connectorKey}
+                      >
+                        <span className="pdpp-caption font-medium text-foreground">{entry.displayName}</span>
+                        <code className="pdpp-eyebrow font-mono text-muted-foreground">{entry.connectorKey}</code>
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="pdpp-caption mt-1.5 text-muted-foreground">
+                    {browserCopy?.ownerFacingReason ??
+                      "needs a supported browser-collector run profile before the console can generate setup commands"}
+                    . Manual path:{" "}
+                    <code className="pdpp-eyebrow font-mono text-foreground" data-testid="runbook-path-browser_bound">
+                      {BROWSER_BOUND_RUNBOOK_PATH}
+                    </code>
+                    {"."}
+                  </p>
+                </div>
+              ) : null}
 
-        {localUnproven.length > 0 ? (
-          <div>
-            <p className="pdpp-caption mb-1.5 font-medium text-foreground">Local-collector — not proven here yet</p>
-            <ul className="flex flex-wrap gap-2">
-              {localUnproven.map((entry) => (
-                <li
-                  className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/20 px-2.5 py-1"
-                  data-testid={`catalog-local-unproven-${entry.connectorKey}`}
-                  key={entry.connectorKey}
-                >
-                  <span className="pdpp-caption font-medium text-foreground">{entry.displayName}</span>
-                  <code className="pdpp-eyebrow font-mono text-muted-foreground">{entry.connectorKey}</code>
-                </li>
-              ))}
-            </ul>
-            <p className="pdpp-caption mt-1.5 text-muted-foreground">
-              Filesystem-class connectors without a committed console enrollment proof yet.
-            </p>
-          </div>
-        ) : null}
+              {localUnproven.length > 0 ? (
+                <div>
+                  <p className="pdpp-caption mb-1.5 font-medium text-foreground">
+                    Local-collector — not proven here yet
+                  </p>
+                  <ul className="flex flex-wrap gap-2">
+                    {localUnproven.map((entry) => (
+                      <li
+                        className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/20 px-2.5 py-1"
+                        data-testid={`catalog-local-unproven-${entry.connectorKey}`}
+                        key={entry.connectorKey}
+                      >
+                        <span className="pdpp-caption font-medium text-foreground">{entry.displayName}</span>
+                        <code className="pdpp-eyebrow font-mono text-muted-foreground">{entry.connectorKey}</code>
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="pdpp-caption mt-1.5 text-muted-foreground">
+                    Filesystem-class connectors without a committed console enrollment proof yet.
+                  </p>
+                </div>
+              ) : null}
 
-        {networkUnsupported.length > 0 ? (
-          <div>
-            <p className="pdpp-caption mb-1.5 font-medium text-foreground">Not supported from the console yet</p>
-            <ul className="flex flex-wrap gap-2">
-              {networkUnsupported.map((entry) => (
-                <li
-                  className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/20 px-2.5 py-1"
-                  data-testid={`catalog-network-${entry.connectorKey}`}
-                  key={entry.connectorKey}
-                >
-                  <span className="pdpp-caption font-medium text-foreground">{entry.displayName}</span>
-                  <code className="pdpp-eyebrow font-mono text-muted-foreground">{entry.connectorKey}</code>
-                </li>
-              ))}
-            </ul>
-            <p className="pdpp-caption mt-1.5 text-muted-foreground" title={networkCopy?.missingPrimitive}>
-              {networkCopy?.ownerFacingReason ??
-                "needs an owner-approved API connection flow; today these connections appear only after a connector has ingested data"}
-              {"."}
-            </p>
-          </div>
+              {networkUnsupported.length > 0 ? (
+                <div>
+                  <p className="pdpp-caption mb-1.5 font-medium text-foreground">Not supported from the console yet</p>
+                  <ul className="flex flex-wrap gap-2">
+                    {networkUnsupported.map((entry) => (
+                      <li
+                        className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/20 px-2.5 py-1"
+                        data-testid={`catalog-network-${entry.connectorKey}`}
+                        key={entry.connectorKey}
+                      >
+                        <span className="pdpp-caption font-medium text-foreground">{entry.displayName}</span>
+                        <code className="pdpp-eyebrow font-mono text-muted-foreground">{entry.connectorKey}</code>
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="pdpp-caption mt-1.5 text-muted-foreground" title={networkCopy?.missingPrimitive}>
+                    {networkCopy?.ownerFacingReason ??
+                      "needs an owner-approved API connection flow; today these connections appear only after a connector has ingested data"}
+                    {"."}
+                  </p>
+                </div>
+              ) : null}
+            </div>
+          </details>
         ) : null}
       </div>
     </Callout>

@@ -353,6 +353,57 @@ test("only the two creatable catalog groups render an enrollment deep-link (no p
   assert.equal(deepLinks.length, 2, "exactly the two creatable groups may deep-link into enrollment");
 });
 
+// ─── Easy path leads; honest caveats recede into progressive disclosure ───
+//
+// Owner feedback: the picker felt "too Amazon-specific, too verbose, confusing".
+// The fix is presentation, not honesty: the one-click local-collector group
+// leads and stays open, while the four secondary groups (manual
+// browser-collector / Amazon, browser-bound runbook, local-collector unproven,
+// api_network unsupported) collapse into a native <details> disclosure that
+// names its count. Collapsing is NOT omission — every group still renders inside
+// the disclosure, keyboard-reachable, with its honest reason and deep-link. This
+// pins the new layout so it cannot silently regress back to five always-open
+// jargon sections, AND guards that the secondary groups did not get dropped.
+const ADD_OTHER_DISCLOSURE = /<details[\s\S]*?data-testid="add-connection-other"/;
+const ADD_OTHER_SUMMARY = /<summary[\s\S]*?data-testid="add-connection-other-toggle"/;
+const ADD_OTHER_SUMMARY_NAMES_COUNT = /Other connectors[\s\S]*?\(\{otherCount\}\)/;
+// The four secondary groups must be RENDERED INSIDE the disclosure, i.e. their
+// per-group entry markup follows the <details> open tag — never hoisted back out
+// as always-open sections. Anchoring each per-group testid to the text following
+// `add-connection-other` proves the group's rendered rows live within the
+// collapsed region. (The partition helpers themselves are computed once at the
+// top of the function; what matters for "not omission" is that each group's rows
+// still render, and that they render inside the disclosure.)
+const ADD_OTHER_CONTAINS_SECONDARY_GROUPS =
+  /data-testid="add-connection-other"[\s\S]*?catalog-browser-manual-[\s\S]*?catalog-browser-runbook-[\s\S]*?catalog-local-unproven-[\s\S]*?catalog-network-/;
+// The one-click local-collector group's rendered rows must appear BEFORE the
+// disclosure — it is the lead, not a peer buried inside "Other connectors".
+const ADD_LOCAL_LEADS_BEFORE_DISCLOSURE = /catalog-local-\$\{[\s\S]*?data-testid="add-connection-other"/;
+// The disclosure must not render when there are no secondary entries (otherwise
+// an empty "Other connectors (0)" toggle would show); it is gated on a count.
+const ADD_OTHER_GATED_ON_COUNT = /\{otherCount > 0 \? \(\s*<details/;
+
+test("add-connection picker collapses the non-one-click groups into a counted disclosure", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.match(src, ADD_OTHER_DISCLOSURE);
+  assert.match(src, ADD_OTHER_SUMMARY);
+  assert.match(src, ADD_OTHER_SUMMARY_NAMES_COUNT);
+  assert.match(src, ADD_OTHER_GATED_ON_COUNT);
+});
+
+test("the one-click local-collector group leads, above the 'Other connectors' disclosure", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.match(src, ADD_LOCAL_LEADS_BEFORE_DISCLOSURE);
+});
+
+test("collapsing is not omission: all four secondary groups still render inside the disclosure", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  // Every secondary partition helper appears after the disclosure open tag, in
+  // order — so none of the honest groups was dropped when they moved behind the
+  // <details> toggle.
+  assert.match(src, ADD_OTHER_CONTAINS_SECONDARY_GROUPS);
+});
+
 test("page header no longer promises every connection supports Sync now", async () => {
   const src = await readFile(VIEW_FILE, "utf8");
   assert.doesNotMatch(src, NO_BLANKET_SYNC_NOW_PROMISE);
