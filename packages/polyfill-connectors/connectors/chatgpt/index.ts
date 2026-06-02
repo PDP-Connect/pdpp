@@ -1061,9 +1061,97 @@ const CONVO_DETAIL_PAUSE_MAX_MS = 3000;
 const CONVO_DETAIL_INITIAL_CONCURRENCY = 1;
 const CONVO_DETAIL_MAX_CONCURRENCY = 1;
 
+// ─── Cold-state A/B probe overrides (DEFAULTS FROZEN) ────────────────────
+//
+// The detail-lane concurrency MUST stay at `1` in production until a
+// genuinely cold-state live run produces clean evidence — see
+// openspec/changes/add-connector-adaptive-lanes (design.md "Live Evidence":
+// "ChatGPT `maxConcurrency` MUST stay at `1`...") and its Tasks §6 owner-only
+// gate. The 2026-06-02 A/B probe showed even the minimal serial lane hits
+// ~38% bare-429 on a hot account, so raising request rate is unsafe while
+// hot and only justified from a cold start.
+//
+// These resolvers exist solely to let the OWNER run that cold-state A/B
+// against the REAL connector lane (with real DETAIL_GAP/cursor semantics)
+// without hand-editing — and committing — the frozen constants. They are
+// PROBE-ONLY knobs: when the env vars are unset/invalid the production
+// defaults (1 / 1 / 1500ms / 3000ms) hold exactly, so normal runs are
+// byte-for-byte unchanged. Do NOT set these in a production environment;
+// setting concurrency > 1 against a hot account increases 429 pressure.
+const CHATGPT_DETAIL_INITIAL_CONCURRENCY_ENV = "PDPP_CHATGPT_DETAIL_INITIAL_CONCURRENCY_PROBE";
+const CHATGPT_DETAIL_MAX_CONCURRENCY_ENV = "PDPP_CHATGPT_DETAIL_MAX_CONCURRENCY_PROBE";
+const CHATGPT_DETAIL_PAUSE_MIN_MS_ENV = "PDPP_CHATGPT_DETAIL_PAUSE_MIN_MS_PROBE";
+const CHATGPT_DETAIL_PAUSE_MAX_MS_ENV = "PDPP_CHATGPT_DETAIL_PAUSE_MAX_MS_PROBE";
+// Hard ceiling on the probe override. Even a cold-state A/B should not fan out
+// beyond dataconnect's own batch size (5); anything higher is not an A/B, it is
+// a different, untested posture.
+const CHATGPT_DETAIL_PROBE_MAX_CONCURRENCY_CEILING = 5;
+
+function resolvePositiveIntOverride(raw: string | undefined, fallback: number, ceiling: number): number {
+  const trimmed = raw?.trim();
+  if (!trimmed) {
+    return fallback;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    return fallback;
+  }
+  return Math.min(parsed, ceiling);
+}
+
+function resolvePositiveMsOverride(raw: string | undefined, fallback: number): number {
+  const trimmed = raw?.trim();
+  if (!trimmed) {
+    return fallback;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+  return Math.floor(parsed);
+}
+
+export interface ChatGptDetailLaneTuning {
+  initialConcurrency: number;
+  maxConcurrency: number;
+  pauseMaxMs: number;
+  pauseMinMs: number;
+}
+
+/**
+ * Resolve the conversation-detail lane tuning. With no probe env vars set this
+ * returns the frozen production defaults; the OpenSpec concurrency constraint is
+ * therefore preserved by default. Invalid values fall back to the default for
+ * that knob. `maxConcurrency` is capped at `CHATGPT_DETAIL_PROBE_MAX_CONCURRENCY_CEILING`
+ * and clamped to be >= `initialConcurrency`; `pauseMaxMs` is clamped to be >=
+ * `pauseMinMs` so the lane's jitter window is always valid.
+ */
+export function resolveChatGptDetailLaneTuning(env: NodeJS.ProcessEnv = process.env): ChatGptDetailLaneTuning {
+  const initialConcurrency = resolvePositiveIntOverride(
+    env[CHATGPT_DETAIL_INITIAL_CONCURRENCY_ENV],
+    CONVO_DETAIL_INITIAL_CONCURRENCY,
+    CHATGPT_DETAIL_PROBE_MAX_CONCURRENCY_CEILING
+  );
+  const maxConcurrency = Math.max(
+    initialConcurrency,
+    resolvePositiveIntOverride(
+      env[CHATGPT_DETAIL_MAX_CONCURRENCY_ENV],
+      CONVO_DETAIL_MAX_CONCURRENCY,
+      CHATGPT_DETAIL_PROBE_MAX_CONCURRENCY_CEILING
+    )
+  );
+  const pauseMinMs = resolvePositiveMsOverride(env[CHATGPT_DETAIL_PAUSE_MIN_MS_ENV], CONVO_DETAIL_PAUSE_MIN_MS);
+  const pauseMaxMs = Math.max(
+    pauseMinMs,
+    resolvePositiveMsOverride(env[CHATGPT_DETAIL_PAUSE_MAX_MS_ENV], CONVO_DETAIL_PAUSE_MAX_MS)
+  );
+  return { initialConcurrency, maxConcurrency, pauseMinMs, pauseMaxMs };
+}
+
 interface ConversationDetailPacingOptions {
   random?: () => number;
   sleep?: (ms: number) => Promise<void> | void;
+  tuning?: ChatGptDetailLaneTuning;
 }
 
 interface ConversationDetailCoverage {
@@ -1238,16 +1326,20 @@ export async function runMessagesAndConversationsWithDetail(
 ): Promise<ConversationDetailCoverage> {
   const random = pacing.random ?? Math.random;
   const sleep = pacing.sleep ?? sleepMs;
+  // Defaults are the frozen production values (1 / 1 / 1500ms / 3000ms). A
+  // cold-state A/B probe may override them via PDPP_CHATGPT_DETAIL_*_PROBE env
+  // vars; see resolveChatGptDetailLaneTuning. Tests may also inject `tuning`.
+  const tuning = pacing.tuning ?? resolveChatGptDetailLaneTuning();
   const coverage: ConversationDetailCoverage = { gapKeys: [], hydratedKeys: [] };
   let emittedConversationDetailLaneStart = false;
   const lane = createAdaptiveLane<ChatGptFetchResult>({
     name: "chatgpt.conversationDetail",
-    initialConcurrency: CONVO_DETAIL_INITIAL_CONCURRENCY,
-    maxConcurrency: CONVO_DETAIL_MAX_CONCURRENCY,
-    maxDelayMs: CONVO_DETAIL_PAUSE_MAX_MS,
+    initialConcurrency: tuning.initialConcurrency,
+    maxConcurrency: tuning.maxConcurrency,
+    maxDelayMs: tuning.pauseMaxMs,
     maxQueueSize: Math.max(1, convosToSync.length),
     minConcurrency: 1,
-    minDelayMs: CONVO_DETAIL_PAUSE_MIN_MS,
+    minDelayMs: tuning.pauseMinMs,
     pressureMaxDelayMs: CHATGPT_RATE_LIMIT_MAX_DELAY_MS,
     pressureMinDelayMs: CHATGPT_RATE_LIMIT_BASE_DELAY_MS,
     classifyOutcome: ({ result }) => {
