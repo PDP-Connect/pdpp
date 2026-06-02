@@ -82,6 +82,10 @@ const PAGE_MOUNTS_DIAGNOSTICS = /<ConnectionDiagnostics/;
 
 const AXES_TESTID = /data-testid="diagnostics-axes"/;
 const AXIS_CHIPS_HELPER = /summarizeAxisChips/;
+const AXIS_CHIPS_USE_TONE_CLASS = /diagnosticsAxisChipClass\(c\.tone\)/;
+const AXIS_CHIP_SUCCESS_CLASS = /function diagnosticsAxisChipClass[\s\S]*emerald-500/;
+const AXIS_CHIP_WARNING_CLASS = /function diagnosticsAxisChipClass[\s\S]*var\(--warning\)/;
+const AXIS_CHIP_DANGER_CLASS = /function diagnosticsAxisChipClass[\s\S]*destructive/;
 const REDUNDANT_OUTBOX_LINE_TESTID = /data-testid="diagnostics-outbox"/;
 const REDUNDANT_OUTBOX_HELPER = /summarizeOutboxForRow/;
 
@@ -92,6 +96,17 @@ test("connection-diagnostics renders the outbox axis as a colored chip, the sour
   const src = await readFile(DIAG_FILE, "utf8");
   assert.match(src, AXES_TESTID);
   assert.match(src, AXIS_CHIPS_HELPER);
+});
+
+test("connection-diagnostics applies the axis tone to visible chip classes", async () => {
+  // `data-axis-tone` is useful for tests, but the owner-visible fix depends on
+  // using that tone in the actual class list. This keeps active/success,
+  // warning, and danger axes materially distinct on the detail page.
+  const src = await readFile(DIAG_FILE, "utf8");
+  assert.match(src, AXIS_CHIPS_USE_TONE_CLASS);
+  assert.match(src, AXIS_CHIP_SUCCESS_CLASS);
+  assert.match(src, AXIS_CHIP_WARNING_CLASS);
+  assert.match(src, AXIS_CHIP_DANGER_CLASS);
 });
 
 test("connection-diagnostics does not render a redundant plain-text outbox line", async () => {

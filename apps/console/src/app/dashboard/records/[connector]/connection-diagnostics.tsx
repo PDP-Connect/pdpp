@@ -176,7 +176,7 @@ function ProjectedStateDiagnostics({
         <ul className="flex flex-wrap items-center gap-1.5" data-testid="diagnostics-axes">
           {axisChips.map((c) => (
             <li
-              className="pdpp-caption inline-flex items-center gap-1 border border-muted-foreground/30 bg-muted/30 px-2 py-0.5 text-muted-foreground"
+              className={`pdpp-caption inline-flex items-center gap-1 px-2 py-0.5 ${diagnosticsAxisChipClass(c.tone)}`}
               data-axis-tone={c.tone}
               key={c.label}
               title={c.title}
@@ -228,6 +228,19 @@ function ProjectedStateDiagnostics({
       )}
     </div>
   );
+}
+
+function diagnosticsAxisChipClass(tone: "neutral" | "success" | "warning" | "danger"): string {
+  if (tone === "success") {
+    return "border border-emerald-500/30 bg-emerald-500/5 text-emerald-700 dark:text-emerald-300";
+  }
+  if (tone === "warning") {
+    return "border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/5 text-[color:var(--warning)]";
+  }
+  if (tone === "danger") {
+    return "border border-destructive/40 bg-destructive/5 text-destructive";
+  }
+  return "border border-muted-foreground/30 bg-muted/40 text-muted-foreground";
 }
 
 function ScheduleDiagnostics({
@@ -488,7 +501,7 @@ function sourceOutboxToneClass(tone: ReturnType<typeof formatSourceOutboxState>[
  * `retry-dead-letters --apply` only moves dead-lettered rows back to `pending`.
  * It does not itself ingest them — the next `@pdpp/local-collector run` pass on
  * the host drains the requeued work. The same re-run is the recovery for the
- * *other* cause of a stalled axis: a `blocked` heartbeat means the runner could
+ * other cause of a stalled axis: a `blocked` heartbeat means the runner could
  * not read prior state (`state_get_failed`) and refused to advance, so there may
  * be no dead-letter rows to requeue at all — re-running the collector re-reads
  * state and clears the block. We therefore close with an explicit "run the
