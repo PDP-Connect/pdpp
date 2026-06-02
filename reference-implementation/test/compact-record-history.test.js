@@ -69,6 +69,10 @@ test('COMPACTION_POLICIES exposes the registered policies (short-name canonical 
     ['slack', 'users'],
     ['slack', 'files'],
     ['ynab', 'payee_locations'],
+    // run-clock / stored-body mirror family (forward gate added 2026-06-01)
+    ['gmail', 'labels'],
+    ['usaa', 'statements'],
+    ['chase', 'accounts'],
     ['ynab', 'budgets'],
     // exact stable-JSON identity family (codex)
     ['codex', 'messages'],

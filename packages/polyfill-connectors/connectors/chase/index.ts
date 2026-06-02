@@ -45,6 +45,7 @@ import {
   type ValidateRecord,
 } from "../../src/connector-runtime.ts";
 import { attachDownloadQueue } from "../../src/download-queue.ts";
+import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import type { CaptureSession, LocatorProbe } from "../../src/fixture-capture.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { savePlaywrightDownload } from "../../src/playwright-download.ts";
@@ -939,10 +940,26 @@ export function filterAccountsByScope(
  * Emit one `accounts` record per filtered account. Balance fields are
  * null here; they're populated later from QFX LEDGERBAL/AVAILBAL as
  * separate `balances` records.
+ *
+ * Every field except `fetched_at` is stable across runs (the account
+ * identity; all balance fields are hardcoded `null` and live in the
+ * `balances` stream). Without a gate, the run-clock `fetched_at` forced
+ * a fresh version of every account on every run (~20 versions/record of
+ * pure run-clock churn). The fingerprint cursor excludes `fetched_at`,
+ * so an account re-emits only when its identity actually changes.
+ *
+ * Emits a per-stream STATE carrying the fingerprint map so the next run
+ * can suppress unchanged accounts. When no cursor is supplied
+ * (legacy callers/tests) the records emit unconditionally and no STATE
+ * is written.
  */
-export async function emitAccountsStream(deps: EmitDeps, filteredAccounts: readonly ChaseAccount[]): Promise<void> {
+export async function emitAccountsStream(
+  deps: EmitDeps,
+  filteredAccounts: readonly ChaseAccount[],
+  fingerprintCursor?: FingerprintCursor
+): Promise<void> {
   for (const a of filteredAccounts) {
-    await deps.emitRecord("accounts", {
+    const record = {
       id: a.internal_id,
       name: a.name,
       type: a.type,
@@ -955,8 +972,47 @@ export async function emitAccountsStream(deps: EmitDeps, filteredAccounts: reado
       status: null,
       balance_as_of: null,
       fetched_at: deps.emittedAt,
-    });
+    };
+    if (!fingerprintCursor || fingerprintCursor.shouldEmit(record)) {
+      await deps.emitRecord("accounts", record);
+    }
   }
+  if (!fingerprintCursor) {
+    return;
+  }
+  // Accounts enumeration is a full dashboard scan: prune fingerprints for
+  // accounts no longer present so a re-added account re-emits.
+  fingerprintCursor.pruneStale();
+  const cursor: Record<string, unknown> = { fetched_at: deps.emittedAt };
+  if (fingerprintCursor.size() > 0) {
+    cursor.fingerprints = fingerprintCursor.toState();
+  }
+  await deps.emit({
+    type: "STATE",
+    stream: "accounts",
+    cursor,
+  });
+}
+
+/**
+ * Parse the prior `accounts` STATE cursor's `fingerprints` map. Keyed by
+ * Chase internal account id. Legacy/missing cursors decode to an empty
+ * map; the first post-deploy run rebuilds it and re-emits every account
+ * exactly once.
+ */
+export function readPriorAccountFingerprints(state: Record<string, unknown>): Map<string, string> {
+  const streamState = (state.accounts ?? {}) as Record<string, unknown>;
+  const raw = streamState.fingerprints;
+  const out = new Map<string, string>();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return out;
+  }
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > 0) {
+      out.set(id, value);
+    }
+  }
+  return out;
 }
 
 /**
@@ -1549,7 +1605,11 @@ if (isMainModule(import.meta.url)) {
         // directly — stable, no hashing needed. Keeps transactions.account_id
         // aligned with the download URL param.
         if (deps.wantsAccounts) {
-          await emitAccountsStream(deps, filteredAccounts);
+          const accountsFingerprintCursor = openFingerprintCursor(startState.accounts, {
+            excludeFromFingerprint: ["fetched_at"],
+            priorFingerprints: readPriorAccountFingerprints(startState),
+          });
+          await emitAccountsStream(deps, filteredAccounts, accountsFingerprintCursor);
         }
 
         // Transactions + balances: download QFX per account, parse, emit.

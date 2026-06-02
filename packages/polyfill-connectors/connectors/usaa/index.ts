@@ -40,6 +40,7 @@ import {
   type ValidateRecord,
 } from "../../src/connector-runtime.ts";
 import { attachDownloadQueue, type DownloadQueue } from "../../src/download-queue.ts";
+import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { readPlaywrightDownloadBufferDetailed } from "../../src/playwright-download.ts";
 import {
@@ -374,7 +375,8 @@ export async function emitStatementRecords(
   deps: EmitDeps,
   indexRows: readonly IndexRow[],
   hydrationResults: Map<number, HydrationResult>,
-  summary: HydrationSummary
+  summary: HydrationSummary,
+  fingerprintCursor?: FingerprintCursor
 ): Promise<void> {
   for (const row of indexRows) {
     const ok = hydrationSuccess(hydrationResults.get(row.rowIndex));
@@ -389,8 +391,22 @@ export async function emitStatementRecords(
       pdf_path: ok?.pdfPath ?? null,
       fetched_at: nowIso(),
     };
-    await deps.emitRecord("statements", rec);
+    // Gate on a per-statement fingerprint that excludes the run-clock
+    // `fetched_at`. A statement's identity fields (id, account_id, title,
+    // date_delivered) are immutable, and pdf_path/pdf_sha256/document_url
+    // are content-addressed (the path embeds the sha256 prefix), so a
+    // re-hydrated identical statement produces a byte-identical body
+    // modulo `fetched_at`. Without this gate every run appended a fresh
+    // version of every statement (~15 versions/record of pure run-clock
+    // churn). When no cursor is supplied (legacy callers/tests) the
+    // record always emits.
+    if (!fingerprintCursor || fingerprintCursor.shouldEmit(rec)) {
+      await deps.emitRecord("statements", rec);
+    }
   }
+  // Statements is a full scan of the documents index: prune fingerprints
+  // for statements no longer listed so a re-appearance re-emits.
+  fingerprintCursor?.pruneStale();
   const progressMsg = {
     type: "PROGRESS",
     stream: "statements",
@@ -399,11 +415,36 @@ export async function emitStatementRecords(
     total: summary.attempts || indexRows.length,
   } as const;
   await deps.emit(progressMsg);
+  const cursor: Record<string, unknown> = { fetched_at: nowIso() };
+  if (fingerprintCursor && fingerprintCursor.size() > 0) {
+    cursor.fingerprints = fingerprintCursor.toState();
+  }
   await deps.emit({
     type: "STATE",
     stream: "statements",
-    cursor: { fetched_at: nowIso() },
+    cursor,
   });
+}
+
+/**
+ * Parse the prior `statements` STATE cursor's `fingerprints` map. Keyed
+ * by statement `id`. Legacy cursors (only `{ fetched_at }`) decode to an
+ * empty map, so the first post-deploy run rebuilds the map and re-emits
+ * every statement exactly once.
+ */
+export function readPriorStatementFingerprints(state: Record<string, unknown>): Map<string, string> {
+  const streamState = (state.statements ?? {}) as Record<string, unknown>;
+  const raw = streamState.fingerprints;
+  const out = new Map<string, string>();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return out;
+  }
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > 0) {
+      out.set(id, value);
+    }
+  }
+  return out;
 }
 
 // ─── Account extraction from the /my/usaa dashboard ───────────────────────
@@ -1389,7 +1430,8 @@ async function emitPdfStatementTransactions(
 async function runStatementsStream(
   deps: StatementsSubDeps,
   accounts: readonly DashboardAccount[],
-  requested: BrowserCollectContext["requested"]
+  requested: BrowserCollectContext["requested"],
+  statementsFingerprintCursor?: FingerprintCursor
 ): Promise<void> {
   try {
     await deps.emit({
@@ -1408,7 +1450,7 @@ async function runStatementsStream(
     const summary = await hydratePdfsForIndex(deps, indexRows);
 
     if (requested.has("statements")) {
-      await emitStatementRecords(deps, indexRows, summary.results, summary);
+      await emitStatementRecords(deps, indexRows, summary.results, summary, statementsFingerprintCursor);
     }
     if (requested.has("transactions")) {
       await emitPdfStatementTransactions(deps, indexRows, summary.results, accounts);
@@ -1618,8 +1660,18 @@ if (isMainModule(import.meta.url)) {
       }
 
       // STATEMENTS — scrape /my/documents + hydrate PDFs + (optionally) parse txns.
+      // Per-statement fingerprint cursor (excludes the run-clock `fetched_at`)
+      // so unchanged statements stop appending a new version every run. Only
+      // opened when `statements` is requested; a transactions-only run does
+      // not touch the statements STATE.
       if ((requested.has("statements") || requested.has("transactions")) && !streamState.sessionDeadMidRun) {
-        await runStatementsStream({ ...deps, page }, accounts, requested);
+        const statementsFingerprintCursor = requested.has("statements")
+          ? openFingerprintCursor(state.statements, {
+              excludeFromFingerprint: ["fetched_at"],
+              priorFingerprints: readPriorStatementFingerprints(state),
+            })
+          : undefined;
+        await runStatementsStream({ ...deps, page }, accounts, requested, statementsFingerprintCursor);
       }
 
       // INBOX_MESSAGES — scrape /my/inbox.

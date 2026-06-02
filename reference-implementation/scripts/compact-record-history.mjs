@@ -11,14 +11,20 @@
  *
  * Scope is deny-by-default. Two policy families are eligible:
  *
- *   1. "Connector fingerprint mirror" — five streams whose connectors
+ *   1. "Connector fingerprint mirror" — streams whose connectors
  *      ship a semantic fingerprint cursor (a08d7a0a, 47ec8edd, 228305a6).
  *      The script's `excludeKeys` mirrors the connector's:
  *        - gmail / threads
+ *        - gmail / labels      (fingerprint over the stored body; the
+ *                               connector's synthetic keying `id` is not
+ *                               stored, so excludeKeys is empty)
  *        - slack / workspace   (fingerprint excludes `fetched_at`)
  *        - slack / users
  *        - slack / files
  *        - ynab  / payee_locations
+ *        - ynab  / budgets     (excludes `last_month`,`last_modified_on`)
+ *        - usaa  / statements  (excludes `fetched_at`)
+ *        - chase / accounts    (excludes `fetched_at`)
  *
  *   2. "Exact stable-JSON identity" — local-device connectors
  *      (codex, claude_code) whose record bodies are derived from
@@ -130,6 +136,53 @@ export const COMPACTION_POLICIES = [
     excludeKeys: [],
     connectorSource:
       'packages/polyfill-connectors/connectors/ynab/index.ts:openPayeeLocationCursor → openFingerprintCursor → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
+  },
+  {
+    // `labels` re-emitted every IMAP mailbox unconditionally on every run
+    // (~269 versions/label of byte-identical history). The connector now
+    // gates emit through a per-label fingerprint cursor keyed by the label
+    // `name`. The cursor keys on a synthetic `id = name` but EXCLUDES `id`
+    // from the fingerprint, so the hash is computed over exactly the
+    // stored record body — `{name, canonical_name, is_system,
+    // parent_name, message_count}` — which contains no `id` and no
+    // run-clock field. This policy therefore mirrors the connector with an
+    // empty exclude set: a "removable historical version" here equals the
+    // connector's own "no-op emit."
+    connectorIds: ['gmail', 'https://registry.pdpp.org/connectors/gmail'],
+    stream: 'labels',
+    excludeKeys: [],
+    connectorSource:
+      'packages/polyfill-connectors/connectors/gmail/index.ts:emitLabelsStream → openFingerprintCursor({excludeFromFingerprint:["id"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical). Stored record_json has no `id`; script excludeKeys [] hashes the same body the connector hashes after stripping the synthetic keying id.',
+  },
+  {
+    // `statements` carried a run-clock `fetched_at: nowIso()` in the
+    // record body, forcing a new version of every statement on every run
+    // (~15 versions/record). A statement's identity (id, account_id,
+    // title, date_delivered) is immutable and its hydrated fields
+    // (pdf_path/pdf_sha256/document_url) are content-addressed (the path
+    // embeds the sha256 prefix), so the only field that moved was
+    // `fetched_at`. The connector now gates emit through a per-statement
+    // fingerprint cursor with excludeFromFingerprint ["fetched_at"]; this
+    // policy mirrors that exclusion one-for-one.
+    connectorIds: ['usaa', 'https://registry.pdpp.org/connectors/usaa'],
+    stream: 'statements',
+    excludeKeys: ['fetched_at'],
+    connectorSource:
+      'packages/polyfill-connectors/connectors/usaa/index.ts:emitStatementRecords → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
+  },
+  {
+    // `accounts` carried a run-clock `fetched_at` and ALL balance fields
+    // hardcoded `null` (balances live in the separate `balances` stream).
+    // The only field that moved between runs was `fetched_at` (~20
+    // versions/record of pure run-clock churn). The connector now gates
+    // emit through a per-account fingerprint cursor with
+    // excludeFromFingerprint ["fetched_at"]; this policy mirrors that
+    // exclusion one-for-one.
+    connectorIds: ['chase', 'https://registry.pdpp.org/connectors/chase'],
+    stream: 'accounts',
+    excludeKeys: ['fetched_at'],
+    connectorSource:
+      'packages/polyfill-connectors/connectors/chase/index.ts:emitAccountsStream → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
   },
   {
     // `/budgets` is a full-collection refetch with no server_knowledge

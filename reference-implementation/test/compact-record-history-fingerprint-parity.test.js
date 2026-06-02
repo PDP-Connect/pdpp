@@ -204,6 +204,68 @@ if (canonicalRecordFingerprint) {
     assert.equal(h1, h2, 'last_month/last_modified_on delta must not change the budgets fingerprint');
   });
 
+  test('parity: gmail labels representative payload (stored body, no id)', () => {
+    const policy = findPolicy('gmail', 'labels');
+    // The stored record_json has no `id` (the stream is keyed by `name`).
+    // The connector hashes `{id:name, ...body}` with excludeFromFingerprint
+    // ["id"], which strips the synthetic id and hashes exactly this body.
+    // The compaction policy hashes the stored body with excludeKeys [].
+    const body = {
+      name: '[Gmail]/All Mail',
+      canonical_name: 'all mail',
+      is_system: true,
+      parent_name: null,
+      message_count: null,
+    };
+    expectParity(body, policy.excludeKeys, 'gmail/labels');
+    // The connector's exclude-id fingerprint over {id, ...body} MUST equal
+    // the compaction fingerprint over the bare stored body.
+    const connectorFp = scriptRecordFingerprint({ id: body.name, ...body }, ['id']);
+    const compactionFp = scriptRecordFingerprint(body, policy.excludeKeys);
+    assert.equal(connectorFp, compactionFp, 'gmail/labels: connector(exclude id) == compaction(stored body)');
+  });
+
+  test('parity: usaa statements excludes fetched_at', () => {
+    const policy = findPolicy('usaa', 'statements');
+    const base = {
+      id: 'IDX-ID-0001',
+      account_id: 'ACCT-CHK-0001',
+      title: 'April 2026 STATEMENT',
+      date_delivered: '2026-04-13',
+      account_reference: 'USAA CLASSIC CHECKING *9241',
+      document_url: 'file:///tmp/usaa/2026-04-aaaa.pdf',
+      pdf_sha256: 'a'.repeat(64),
+      pdf_path: '/tmp/usaa/2026-04-aaaa.pdf',
+    };
+    expectParity({ ...base, fetched_at: '2026-04-22T12:00:00.000Z' }, policy.excludeKeys, 'usaa/statements t1');
+    expectParity({ ...base, fetched_at: '2026-05-22T12:00:00.000Z' }, policy.excludeKeys, 'usaa/statements t2');
+    const h1 = scriptRecordFingerprint({ ...base, fetched_at: '2026-04-22T12:00:00.000Z' }, policy.excludeKeys);
+    const h2 = scriptRecordFingerprint({ ...base, fetched_at: '2026-05-22T12:00:00.000Z' }, policy.excludeKeys);
+    assert.equal(h1, h2, 'fetched_at delta must not change the statements fingerprint');
+  });
+
+  test('parity: chase accounts excludes fetched_at', () => {
+    const policy = findPolicy('chase', 'accounts');
+    const base = {
+      id: 'INTACC123',
+      name: 'Sapphire Preferred',
+      type: 'credit_card',
+      last_four: '9241',
+      balance_cents: null,
+      available_balance_cents: null,
+      credit_limit_cents: null,
+      available_credit_cents: null,
+      statement_balance_cents: null,
+      status: null,
+      balance_as_of: null,
+    };
+    expectParity({ ...base, fetched_at: '2026-04-22T12:00:00.000Z' }, policy.excludeKeys, 'chase/accounts t1');
+    expectParity({ ...base, fetched_at: '2026-04-23T12:00:00.000Z' }, policy.excludeKeys, 'chase/accounts t2');
+    const h1 = scriptRecordFingerprint({ ...base, fetched_at: '2026-04-22T12:00:00.000Z' }, policy.excludeKeys);
+    const h2 = scriptRecordFingerprint({ ...base, fetched_at: '2026-04-23T12:00:00.000Z' }, policy.excludeKeys);
+    assert.equal(h1, h2, 'fetched_at delta must not change the accounts fingerprint');
+  });
+
   test('parity: nested objects with mixed key order', () => {
     const a = {
       id: 'x',
@@ -466,6 +528,9 @@ if (canonicalRecordFingerprint) {
       'slack/files',
       'ynab/payee_locations',
       'ynab/budgets',
+      'gmail/labels',
+      'usaa/statements',
+      'chase/accounts',
       // exact stable-JSON identity family (codex)
       'codex/messages',
       'codex/function_calls',

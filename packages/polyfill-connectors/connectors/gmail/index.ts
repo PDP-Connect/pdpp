@@ -540,26 +540,86 @@ async function resolveAddress(): Promise<string | null> {
 
 // ─── Labels stream ──────────────────────────────────────────────────────
 
-async function emitLabelsStream(client: ImapFlow, emitRecord: EmitRecordFn): Promise<void> {
+/**
+ * Parse the prior `labels` STATE cursor's `fingerprints` map. The cursor
+ * shape is `state.labels.fingerprints` keyed by label `name`. Legacy
+ * cursors (pre-fingerprint: only `{ fetched_at }`) decode to an empty
+ * map, so the first post-deploy run rebuilds the map and re-emits every
+ * label exactly once.
+ */
+export function readPriorLabelFingerprints(state: Record<string, unknown>): Map<string, string> {
+  const streamState = (state.labels ?? {}) as Record<string, unknown>;
+  const raw = streamState.fingerprints;
+  const out = new Map<string, string>();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return out;
+  }
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > 0) {
+      out.set(id, value);
+    }
+  }
+  return out;
+}
+
+/**
+ * Emit the IMAP mailbox list as `labels` records, gated through a
+ * per-label fingerprint cursor so an unchanged mailbox set does not
+ * append a new version of every label on every run.
+ *
+ * The labels record body is `{ name, canonical_name, is_system,
+ * parent_name, message_count }`. `message_count` is hardcoded `null`,
+ * and there is no run-clock field in the record (the `fetched_at`
+ * lives only in the STATE cursor). So the record's stable-JSON IS the
+ * change signal: a label only re-emits when its name/derived flags
+ * actually change. No fields are excluded from the fingerprint.
+ *
+ * Before this gate, `labels` re-emitted every mailbox unconditionally
+ * each run, accumulating ~269 versions per label of byte-identical
+ * history.
+ */
+async function emitLabelsStream(
+  client: ImapFlow,
+  emitRecord: EmitRecordFn,
+  state: Record<string, unknown>
+): Promise<void> {
+  // `labels` is keyed by `name`, not `id`, and the stored record body has
+  // no `id` field. The fingerprint cursor keys on `data.id`, so we pass a
+  // keying `id` (the label name) but EXCLUDE it from the fingerprint —
+  // leaving the hash computed over exactly the stored record body
+  // (`{name, canonical_name, is_system, parent_name, message_count}`).
+  // This keeps byte-parity with the compaction script, which fingerprints
+  // the stored `record_json` (no `id`) with an empty exclude set.
+  const cursor = openFingerprintCursor(state, {
+    excludeFromFingerprint: ["id"],
+    priorFingerprints: readPriorLabelFingerprints(state),
+  });
   const mailboxes: ListResponse[] = await client.list();
   for (const mb of mailboxes) {
     const name = mb.path;
-    await emitRecord(
-      "labels",
-      {
-        name,
-        canonical_name: canonicalLabelName(name),
-        is_system: isGmailSystemLabel(name),
-        parent_name: labelParentName(name),
-        message_count: null, // we could SELECT each to get EXISTS but not worth it
-      },
-      "name"
-    );
+    const record = {
+      name,
+      canonical_name: canonicalLabelName(name),
+      is_system: isGmailSystemLabel(name),
+      parent_name: labelParentName(name),
+      message_count: null, // we could SELECT each to get EXISTS but not worth it
+    };
+    // Fingerprint by the label `name` (the record key for this stream).
+    if (cursor.shouldEmit({ id: name, ...record })) {
+      await emitRecord("labels", record, "name");
+    }
+  }
+  // Drop fingerprints for mailboxes that disappeared so a future
+  // re-creation re-emits. `labels` is always a full scan.
+  cursor.pruneStale();
+  const labelsCursor: Record<string, unknown> = { fetched_at: nowIso() };
+  if (cursor.size() > 0) {
+    labelsCursor.fingerprints = cursor.toState();
   }
   await emit({
     type: "STATE",
     stream: "labels",
-    cursor: { fetched_at: nowIso() },
+    cursor: labelsCursor,
   });
 }
 
@@ -1627,7 +1687,7 @@ async function main(): Promise<void> {
     await emit({ type: "PROGRESS", message: `Connected to ${address}` });
 
     if (requested.has("labels")) {
-      await emitLabelsStream(client, emitRecord);
+      await emitLabelsStream(client, emitRecord, state);
     }
 
     const allMail = await findAllMailbox(client);
