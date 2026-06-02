@@ -678,9 +678,7 @@ test("runCollectorConnector does not checkpoint when record work dead-letters", 
     assert.equal(blockedHeartbeat?.status, "blocked");
     // The blocked-on-backlog heartbeat now carries the redacted cause so the
     // dashboard can answer "why did these dead-letter?" without host access.
-    const lastError = blockedHeartbeat?.last_error as
-      | { kind?: string; top_dead_letter_classes?: { count: number; error_class: string }[] }
-      | undefined;
+    const lastError = heartbeatLastError(blockedHeartbeat?.last_error);
     assert.equal(lastError?.kind, "dead_letter_backlog");
     assert.ok((lastError?.top_dead_letter_classes?.length ?? 0) >= 1, "expected at least one error class");
     assert.equal(lastError?.top_dead_letter_classes?.[0]?.count, 1);
@@ -1118,7 +1116,7 @@ test("runCollectorConnector surfaces state-read failure as a blocked heartbeat a
     // The blocked-on-state-read heartbeat discriminates the stall shape so the
     // dashboard distinguishes a state-read block (re-run to clear) from a
     // dead-letter backlog — without leaking the raw state-read error text.
-    const stateBlocked = blockedHeartbeats.at(-1)?.last_error as { kind?: string } | undefined;
+    const stateBlocked = heartbeatLastError(blockedHeartbeats.at(-1)?.last_error);
     assert.equal(stateBlocked?.kind, "state_read_failed");
   } finally {
     await harness.close();
@@ -1130,6 +1128,38 @@ interface CollectorHarnessOptions {
   priorState?: Record<string, unknown> | null;
   /** When set, the GET state endpoint returns this status instead of 200. */
   stateReadStatus?: number;
+}
+
+function heartbeatLastError(input: unknown): {
+  kind?: string;
+  top_dead_letter_classes?: { count: number; error_class: string }[];
+} | null {
+  if (!isPlainObject(input)) {
+    return null;
+  }
+  const parsed: {
+    kind?: string;
+    top_dead_letter_classes?: { count: number; error_class: string }[];
+  } = {};
+  if (typeof input.kind === "string") {
+    parsed.kind = input.kind;
+  }
+  const topClasses = input.top_dead_letter_classes;
+  if (Array.isArray(topClasses)) {
+    parsed.top_dead_letter_classes = topClasses.flatMap(asDeadLetterClass);
+  }
+  return parsed;
+}
+
+function asDeadLetterClass(input: unknown): { count: number; error_class: string }[] {
+  if (!isPlainObject(input) || typeof input.count !== "number" || typeof input.error_class !== "string") {
+    return [];
+  }
+  return [{ count: input.count, error_class: input.error_class }];
+}
+
+function isPlainObject(input: unknown): input is Record<string, unknown> {
+  return typeof input === "object" && input !== null && !Array.isArray(input);
 }
 
 interface CollectorHarness {
