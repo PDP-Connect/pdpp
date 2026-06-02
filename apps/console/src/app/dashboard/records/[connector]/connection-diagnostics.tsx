@@ -8,7 +8,6 @@ import {
   formatProjectionFreshness,
   formatSourceOutboxState,
   summarizeAxisChips,
-  summarizeOutboxForRow,
   summarizeOutboxStallRemediation,
   summarizeSchedule,
 } from "../../lib/connection-evidence.ts";
@@ -146,7 +145,6 @@ function ProjectedStateDiagnostics({
   const axisChips = summarizeAxisChips(connectionHealth.axes, {
     isLocalDeviceBacked: Boolean(localDeviceProgress),
   });
-  const outbox = summarizeOutboxForRow(connectionHealth);
   const outboxRemediation = summarizeOutboxStallRemediation(connectionHealth, localDeviceProgress);
   const dominantCondition = formatDominantCondition(connectionHealth);
   const conditionById = new Map((connectionHealth.conditions ?? []).map((condition) => [condition.id, condition]));
@@ -195,11 +193,6 @@ function ProjectedStateDiagnostics({
           title={projection.detail}
         >
           Projection unreliable: {projection.reasons.join(", ")}.
-        </p>
-      ) : null}
-      {outbox ? (
-        <p className="pdpp-caption text-muted-foreground" data-testid="diagnostics-outbox">
-          {outbox.label}
         </p>
       ) : null}
       {outboxRemediation ? (

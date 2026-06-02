@@ -77,6 +77,31 @@ const PAGE_SCHEDULE_ERROR_BINDING = /scheduleError = errorMessage/;
 const PAGE_SOURCES_ERROR_BINDING = /sourceInstancesError = errorMessage/;
 const PAGE_MOUNTS_DIAGNOSTICS = /<ConnectionDiagnostics/;
 
+const AXES_TESTID = /data-testid="diagnostics-axes"/;
+const AXIS_CHIPS_HELPER = /summarizeAxisChips/;
+const REDUNDANT_OUTBOX_LINE_TESTID = /data-testid="diagnostics-outbox"/;
+const REDUNDANT_OUTBOX_HELPER = /summarizeOutboxForRow/;
+
+test("connection-diagnostics renders the outbox axis as a colored chip, the source of truth", async () => {
+  // The axis chip (data-axis-tone + label) is the single owner-visible
+  // surface for Outbox · active/stalled/unknown color and label. The
+  // remediation panel below handles the stalled case in full.
+  const src = await readFile(DIAG_FILE, "utf8");
+  assert.match(src, AXES_TESTID);
+  assert.match(src, AXIS_CHIPS_HELPER);
+});
+
+test("connection-diagnostics does not render a redundant plain-text outbox line", async () => {
+  // The plain-text `summarizeOutboxForRow` line duplicated the axis chip's
+  // label but in a flat muted tone — rendering danger ("stalled") in neutral
+  // grey and reintroducing the "Outbox unknown" noise the axis-chip gate
+  // (outboxAxisIsApplicable) suppresses for non-local connections. The axis
+  // chip is the source of truth; the redundant line is gone.
+  const src = await readFile(DIAG_FILE, "utf8");
+  assert.doesNotMatch(src, REDUNDANT_OUTBOX_LINE_TESTID);
+  assert.doesNotMatch(src, REDUNDANT_OUTBOX_HELPER);
+});
+
 test("connection-diagnostics renders an unavailable branch when connection_health is null", async () => {
   const src = await readFile(DIAG_FILE, "utf8");
   assert.match(src, PROJECTION_MISSING_TESTID);
