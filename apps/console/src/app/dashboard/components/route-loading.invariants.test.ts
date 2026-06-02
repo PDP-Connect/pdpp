@@ -2,11 +2,16 @@
  * Invariants for the route-level loading states (report 4, 2026-06-01).
  *
  * The owner reported that heavy dashboard pages had no Next.js route-level
- * loading state. These structural assertions pin that the high-value records
- * and runs surfaces each ship a `loading.tsx`, that the loading UI reuses the
+ * loading state. These structural assertions pin that every server-read
+ * dashboard segment ships a `loading.tsx`, that the loading UI reuses the
  * shared `DashboardShell` (stable chrome, no bespoke layout), and that the
  * shared skeleton stays lightweight (a single `animate-pulse`, an accessible
  * live region) so a loading state never becomes a second source of slowness.
+ *
+ * The list was widened in report 6 (2026-06-02, ri-console-stability-performance)
+ * to cover the remaining server-read segments (grants, traces,
+ * event-subscriptions, schedules, device-exporters, deployment) that previously
+ * painted a blank frame while their reference reads resolved.
  */
 
 import assert from "node:assert/strict";
@@ -22,6 +27,12 @@ const LOADING_FILES = [
   "records/[connector]/loading.tsx",
   "runs/loading.tsx",
   "runs/[runId]/loading.tsx",
+  "grants/loading.tsx",
+  "traces/loading.tsx",
+  "event-subscriptions/loading.tsx",
+  "schedules/loading.tsx",
+  "device-exporters/loading.tsx",
+  "deployment/loading.tsx",
 ] as const;
 
 const DASHBOARD_SHELL_RE = /DashboardShell/;
