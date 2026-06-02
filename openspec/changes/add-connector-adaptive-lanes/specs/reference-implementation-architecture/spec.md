@@ -34,6 +34,20 @@ Retry attempts for lane-governed work SHALL obey the same lane capacity, pacing,
 - **AND** scheduled retries SHALL NOT launch after cancellation
 - **AND** active attempts SHOULD receive cancellation through `AbortSignal` or an equivalent mechanism when the underlying operation supports it
 
+### Requirement: Connectors SHALL treat unbounded throttling as a source-bucket signal
+When an upstream returns a retryable throttle response that carries no bounded backoff hint (for example HTTP 429 with no `Retry-After`), a connector SHALL be able to stop retrying that single request before exhausting its full per-request retry budget, so that a per-account throttle does not cause one request to spend a large retry budget against an already-pressured upstream. A bounded backoff hint, when present, SHALL still be honored on the connector's normal retry budget.
+
+#### Scenario: Bare throttle response without a backoff hint
+- **WHEN** a lane-governed request receives a throttle outcome (such as HTTP 429) that carries no `Retry-After` or equivalent bounded backoff hint
+- **THEN** the connector MAY stop retrying that request after a small bounded number of attempts rather than exhausting its full per-request budget
+- **AND** the connector SHALL surface the resulting pressure as resumable gap/deferred state rather than silently dropping required data
+- **AND** required items deferred by this fast-open SHALL NOT be represented as complete cursor coverage
+
+#### Scenario: Throttle response carries a bounded backoff hint
+- **WHEN** a lane-governed request receives a throttle outcome that carries a bounded `Retry-After` or equivalent hint
+- **THEN** the connector SHALL respect the bounded hint on its normal retry budget
+- **AND** the connector SHALL NOT treat the hinted wait as a fast-open source-bucket signal
+
 ### Requirement: Adaptive lanes SHALL stay outside cursor ownership
 Adaptive lanes SHALL schedule connector work but SHALL NOT emit connector `RECORD`, `STATE`, or `DONE` messages and SHALL NOT decide whether a bounded run's staged state becomes durable.
 
