@@ -1,7 +1,8 @@
 import { PageHeader } from "@pdpp/operator-ui/components/primitives";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
+import { Suspense } from "react";
 import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
-import { RecordsListView } from "../components/views/records-list-view.tsx";
+import { RecordsListView, VersionChurnNotice } from "../components/views/records-list-view.tsx";
 import { liveDashboardDataSource } from "../lib/data-source.ts";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
@@ -9,7 +10,6 @@ import {
   listRecordVersionStats,
   type RefConnectorRunSummary,
   type RefConnectorSummary,
-  type RefRecordVersionStatsRow,
 } from "../lib/ref-client.ts";
 import type { ConnectorOverview } from "../lib/rs-client.ts";
 import { RecordsPagePoller } from "./records-page-poller.tsx";
@@ -64,7 +64,6 @@ function toConnectorOverview(summary: RefConnectorSummary): ConnectorOverview {
 
 export default async function RecordsIndexPage() {
   let overviews: ConnectorOverview[];
-  let versionChurnRows: RefRecordVersionStatsRow[] = [];
   // Aggregate `records_pending` across all enrolled local device source
   // instances. The records list otherwise only shows retained-on-server
   // totals, which implies completeness when a local collector still has
@@ -75,12 +74,6 @@ export default async function RecordsIndexPage() {
   try {
     const response = await liveDashboardDataSource.listConnectorSummaries();
     overviews = response.data.map(toConnectorOverview);
-    try {
-      const churn = await listRecordVersionStats({ limit: 8 });
-      versionChurnRows = churn.data.filter((row) => row.risk_level !== "normal");
-    } catch {
-      versionChurnRows = [];
-    }
     try {
       const sources = await listDeviceExporterSourceInstances();
       pendingOnDevices = sources.data.reduce(
@@ -115,8 +108,30 @@ export default async function RecordsIndexPage() {
         pendingOnDevices={pendingOnDevices}
         pollerSlot={<RecordsPagePoller enabled={runningCount > 0} />}
         routes={dashboardRoutes}
-        versionChurnRows={versionChurnRows}
+        versionChurnSlot={
+          <Suspense fallback={<VersionChurnFallback />}>
+            <VersionChurnSection />
+          </Suspense>
+        }
       />
     </DashboardShell>
+  );
+}
+
+async function VersionChurnSection() {
+  try {
+    const churn = await listRecordVersionStats({ limit: 8 });
+    const versionChurnRows = churn.data.filter((row) => row.risk_level !== "normal");
+    return versionChurnRows.length > 0 ? <VersionChurnNotice rows={versionChurnRows} /> : null;
+  } catch {
+    return null;
+  }
+}
+
+function VersionChurnFallback() {
+  return (
+    <div className="pdpp-caption mb-4 rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground">
+      Checking retained-history diagnostics...
+    </div>
   );
 }

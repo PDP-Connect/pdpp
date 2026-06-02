@@ -183,6 +183,7 @@ export function RecordsListView({
   pendingOnDevices,
   pollerSlot,
   versionChurnRows,
+  versionChurnSlot,
 }: {
   overviews: ConnectorOverview[];
   routes: Routes;
@@ -199,6 +200,8 @@ export function RecordsListView({
   pendingOnDevices?: number;
   /** Optional client-side poller; live dashboard injects RecordsPagePoller. */
   pollerSlot?: ReactNode;
+  /** Advisory diagnostics that should not block the primary connection list. */
+  versionChurnSlot?: ReactNode;
   /** Highest-risk stream-level version churn diagnostics from /_ref/records/version-stats. */
   versionChurnRows?: RefRecordVersionStatsRow[];
   /**
@@ -267,7 +270,8 @@ export function RecordsListView({
         title="Connections"
       />
 
-      {versionChurnRows && versionChurnRows.length > 0 ? <VersionChurnNotice rows={versionChurnRows} /> : null}
+      {versionChurnSlot ??
+        (versionChurnRows && versionChurnRows.length > 0 ? <VersionChurnNotice rows={versionChurnRows} /> : null)}
 
       <section aria-label="Connection health summary" className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-5">
         <HealthStat
@@ -511,7 +515,7 @@ function AddConnectionGuidance({ deviceExportersHref }: { deviceExportersHref: s
  * which never returns record payloads. Copy frames the warning as retained
  * history, not current-data loss.
  */
-function VersionChurnNotice({ rows }: { rows: RefRecordVersionStatsRow[] }) {
+export function VersionChurnNotice({ rows }: { rows: RefRecordVersionStatsRow[] }) {
   const summary = summarizeVersionChurn(rows);
   if (!summary) {
     return null;
