@@ -20,7 +20,20 @@ Two design consequences, both addressed in this change:
 1. A bare 429 is a signal about the whole account/source bucket, not the one conversation in hand. The previous code only opened the source-pressure circuit after a single conversation exhausted the full `CHATGPT_RATE_LIMIT_MAX_ATTEMPTS = 12` budget. With bare 429s and jittered exponential backoff to a 15-min cap, that first throttled conversation burns roughly 23–70 minutes (mid ≈ 47 min) of wall-clock retrying *the same conversation* against an already-hot account before the circuit opens and defers the rest. The fast-open (below) cuts that to ~6 s.
 2. Because the server advertises no `Retry-After`, exponential backoff is flying blind; the only honest signal is the 429 itself and its cadence. The connector must drive backoff off the observed bare-429 cadence and degrade to resumable `DETAIL_GAP` state, not keep hammering.
 
-This evidence does **not** support raising detail-lane concurrency. The least-aggressive serial policy is what was throttled; batching would be throttled at least as hard. ChatGPT `maxConcurrency` MUST stay at `1` until a genuinely cold-state live run produces clean evidence (see Tasks §6).
+This evidence does **not** support raising detail-lane concurrency while the account is hot. The least-aggressive serial policy is what was throttled; batching would be throttled at least as hard. ChatGPT `maxConcurrency` MUST stay at `1` in production until a genuinely cold-state live run produces clean evidence (see Tasks §6).
+
+Later the same day (2026-06-02, ~20:20 UTC), a follow-up status-only probe set found the account had recovered to **cold**: 0/25 detail requests returned 429 across serial+batch-3, with batch-3 ~3.6x faster than serial on the same account (`tmp/workstreams/ri-chatgpt-throughput-policy-v2-probe-evidence.md`). This confirms the prior probe's recovery curve (38% -> 67% -> 20% over minutes) and shows the throttle is **per-account and time-varying**, not a fixed property of PDPP's request policy. The structural throughput gap (serial + 1.5-3s jitter vs. a modest batch with short inter-batch delay) is real and recoverable on a cold account, but the run-start account state is the hard variable.
+
+## Cold-State Preflight
+
+Because account pressure is time-varying, the gate on raising concurrency cannot be a one-time design decision. A run configured for a faster posture could still launch into a hot bucket. The cold-state preflight makes that escalation safe at run start:
+
+- It runs **only** when the bulk detail lane is configured above the serial default (`maxConcurrency > 1`, i.e. the owner has set a `PDPP_CHATGPT_DETAIL_*_PROBE` knob for an A/B). When `maxConcurrency === 1`, it is skipped entirely, so production runs issue no preflight requests and preserve the serial baseline.
+- It fires a few (default 3) **serial, status-only** GET detail probes for the first conversations through the connector's own browser-context transport. The probe necessarily targets conversation ids, but it does not parse response JSON, does not capture bodies, and does not emit records, titles, ids, tokens, cookies, or request bodies.
+- A clean preflight lets the requested faster posture through. **Any** throttle (429/5xx, or a retry-exhausted fast-open circuit) forces the run back to the frozen serial posture (`1/1`) for that run. The preflight can only make a run more conservative.
+- It is connector-local and deterministic under injected fetch/sleep tests. It deliberately re-fetches the first few conversations after the preflight; for an owner A/B this is a small documented cost and keeps the classifier on the same browser/auth path the lane will use.
+
+This closes the gap the earlier hot-account probe could not close: the reason batch was declined was "cannot safely escalate against a possibly-hot account." The preflight resolves that at run start, while preserving the production default until an owner-run A/B clears the live gate.
 
 ## Prior Art
 

@@ -37,6 +37,7 @@
 - [x] Verify concurrent or out-of-order lane completions cannot change the ChatGPT cursor calculation.
 - [x] Fast-open the source-pressure circuit on a bare 429 (no `Retry-After`) after `CHATGPT_BARE_429_FAST_OPEN_ATTEMPTS` attempts instead of burning the full 12-attempt budget, via a generic `retryHttp` `shouldKeepRetrying` hook and a connector-local predicate (`shouldKeepRetryingChatGptDetail`). Motivated by the 2026-06-02 bare-429 live probe; see `design.md` → Live Evidence.
 - [x] Keep the full retry budget for 429-with-`Retry-After` and `502/503/504` (honest server-bounded waits), and keep successful 200 detail processing unchanged.
+- [x] Gate any raised detail concurrency behind a cold-state preflight (`classifyChatGptSourcePressure` + `applyChatGptColdStatePreflight`): a status-only serial probe of the first few conversations classifies cold vs. pressured; a pressured account forces the run back to serial `1/1`. Skipped entirely when `maxConcurrency === 1`, so production is unchanged. Motivated by the 2026-06-02 evidence that the throttle is per-account and time-varying; see `design.md` → Cold-State Preflight. Fresh cold-window evidence: `tmp/workstreams/ri-chatgpt-throughput-policy-v2-probe-evidence.md`.
 
 ## 5. Validation
 
@@ -48,8 +49,9 @@
 - [ ] Compare live telemetry against the serialized baseline: no retry exhaustion, no burst above configured lane cap, clear cooldown/progress messages, and successful cursor commit on terminal success. **Deferred — depends on the cold-state pilot above.** The fast-open and circuit behavior are proven deterministically (see §5 targeted tests); only the live wall-clock and cooldown-copy comparison remain.
 - [x] Verify lane observability redacts or omits secret-bearing URLs, headers, cookies, and request bodies.
 - [x] Add deterministic tests for the bare-429 fast-open: `retryHttp` `shouldKeepRetrying` early-stop (generic), and `shouldKeepRetryingChatGptDetail` boundary + real-`retryHttp` 3-attempt exhaustion (connector).
+- [x] Add deterministic tests for the cold-state preflight: classifier cold/pressured/stop-at-first-429/retry-exhausted-circuit cases, no-op at serial tuning, cold pass-through, pressured→serial fallback, and an end-to-end `runMessagesAndConversationsWithDetail` test proving a pressured preflight forces serial execution even when raised probe concurrency is requested.
 
 ## 6. Follow-Up Gate
 
-- [ ] Decide whether ChatGPT may raise `maxConcurrency` above `1` after live evidence. **Owner-only; blocked on cold-state live evidence.** The 2026-06-02 probe shows even the minimal serial policy is throttled on the current account, so concurrency MUST stay at `1` until a cold-state run produces clean evidence.
+- [ ] Decide whether ChatGPT may raise `maxConcurrency` above `1` after live evidence. **Owner-only; needs a cold-state connector-run A/B.** The earlier 2026-06-02 probe showed even serial was throttled on a hot account; a later same-day status-only probe set (`tmp/workstreams/ri-chatgpt-throughput-policy-v2-probe-evidence.md`) saw 0/25 detail requests 429 once cold, with batch-3 clean and ~3.6x faster. The probe knobs (`PDPP_CHATGPT_DETAIL_*_PROBE`) plus the cold-state preflight now make this A/B safe to run: even if the account is hot at run start, the preflight forces serial. Production default stays `1` until a connector-run A/B clears the bar.
 - [ ] Identify the next connector candidate only after its throttle bucket and required/optional stream semantics are explicit.

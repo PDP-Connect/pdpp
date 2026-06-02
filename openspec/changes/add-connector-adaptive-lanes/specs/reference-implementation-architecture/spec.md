@@ -48,6 +48,25 @@ When an upstream returns a retryable throttle response that carries no bounded b
 - **THEN** the connector SHALL respect the bounded hint on its normal retry budget
 - **AND** the connector SHALL NOT treat the hinted wait as a fast-open source-bucket signal
 
+### Requirement: Raised detail concurrency SHALL be gated on current cold-state preflight
+When a connector is configured to run a bulk detail lane above the serial default concurrency for an opaque per-account upstream, it SHALL first classify current source pressure with a small status-only preflight before fanning out at the raised concurrency. If the preflight observes throttling, the connector SHALL hold the run at the serial default concurrency instead of escalating. The preflight SHALL only make a run more conservative, never less, and SHALL NOT run when the configured concurrency is already the serial default.
+
+#### Scenario: Owner enables a faster posture against a cold account
+- **WHEN** a connector is configured to raise bulk detail concurrency above the serial default
+- **AND** a status-only preflight of a small number of detail requests observes no throttling
+- **THEN** the connector MAY proceed at the requested raised concurrency
+
+#### Scenario: Owner enables a faster posture against a pressured account
+- **WHEN** a connector is configured to raise bulk detail concurrency above the serial default
+- **AND** a status-only preflight observes a throttle response
+- **THEN** the connector SHALL hold the bulk detail lane at the serial default concurrency for that run
+- **AND** the connector SHALL NOT fan out the raised concurrency against the pressured upstream
+
+#### Scenario: Serial default needs no preflight
+- **WHEN** a connector's configured bulk detail concurrency is the serial default
+- **THEN** the connector SHALL NOT issue any preflight probe requests
+- **AND** the run's request behavior SHALL remain unchanged from the serial baseline
+
 ### Requirement: Adaptive lanes SHALL stay outside cursor ownership
 Adaptive lanes SHALL schedule connector work but SHALL NOT emit connector `RECORD`, `STATE`, or `DONE` messages and SHALL NOT decide whether a bounded run's staged state becomes durable.
 
