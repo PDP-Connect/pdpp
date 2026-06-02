@@ -747,37 +747,29 @@ function recordStorageConnectorIdForConnection(instance: ConnectorInstanceRow): 
   return instance.connectorId;
 }
 
-async function listConnectorInstanceRowsForDashboard(
-  registeredRows: readonly ConnectorRow[]
-): Promise<readonly ConnectorInstanceRow[]> {
+async function listConnectorInstanceRowsForDashboard(): Promise<readonly ConnectorInstanceRow[]> {
+  // A read SHALL NOT persist a connection. The dashboard / catalog read
+  // projects exactly the owner's real (configured or ingest-materialized)
+  // connections and nothing else. Previously this path called
+  // `ensureDefaultAccountConnection` for every registered public connector
+  // when the owner had zero connections, which is an `upsert`: merely
+  // viewing a fresh instance's dashboard persisted ~14 `status:'active'`
+  // default-account `connector_instances` rows — phantom connections the
+  // owner never created, which then surfaced on every owner-connections
+  // surface and (worse) participated in grant fan-in resolution.
+  //
+  // Catalog completeness — "which connectors can I add" — is a distinct
+  // concept owned by the connector catalog (the registered `connectors`
+  // table and the add-connection picker, which reads the shipped manifests
+  // directly), NOT by `connector_instances`. A connector is not a
+  // connection until an explicit enrollment, ingest, pending/draft, active,
+  // or revoked state creates a durable row. Default-account materialization
+  // stays demand-driven at ingest/resolution time (`resolveNamespace` with
+  // `allowDefaultAccount: true`); see
+  // `openspec/changes/separate-connector-catalog-from-connections/`.
   const store = getConnectorInstanceStore();
   const instances = await store.listByOwner(REFERENCE_OWNER_SUBJECT_ID);
-  const active = instances.filter(
-    (instance: ConnectorInstanceRow) => instance.status !== "revoked" && !instance.revokedAt
-  );
-  if (active.length > 0) {
-    return active;
-  }
-
-  // Materialize a default-account connection for each registered
-  // connector that lacks an owner-configured instance row. The dashboard
-  // then projects exclusively from connector_instances.
-  const now = new Date().toISOString();
-  const ensured = await Promise.all(
-    registeredRows.map(async (row): Promise<ConnectorInstanceRow | null> => {
-      const manifest = parseManifest(row.manifest, row.connector_id);
-      return await store.ensureDefaultAccountConnection({
-        ownerSubjectId: REFERENCE_OWNER_SUBJECT_ID,
-        connectorId: row.connector_id,
-        displayName: manifest.display_name || row.connector_id,
-        now,
-      });
-    })
-  );
-  return ensured.filter(
-    (instance): instance is ConnectorInstanceRow =>
-      instance !== null && instance.status !== "revoked" && !instance.revokedAt
-  );
+  return instances.filter((instance: ConnectorInstanceRow) => instance.status !== "revoked" && !instance.revokedAt);
 }
 
 export function isPublicReferenceConnector(row: ConnectorRow, manifest: ConnectorManifest): boolean {
@@ -810,6 +802,37 @@ export function isPublicReferenceConnector(row: ConnectorRow, manifest: Connecto
   // Catalog visibility is explicit opt-in only. A connector without
   // capabilities.public_listing.listed === true is hidden by default.
   return false;
+}
+
+/**
+ * Project the public connector catalog — the connectors the owner CAN add —
+ * directly from the registered `connectors` table, filtered by
+ * `isPublicReferenceConnector`. Catalog visibility is owned by the
+ * `connectors` table, NOT by `connector_instances`: this read enumerates
+ * registered manifests and SHALL NOT create or upsert any connection row.
+ *
+ * Distinct from `listConnectorSummaries`, which projects the owner's real
+ * CONNECTIONS (configured / ingest-materialized `connector_instances` rows).
+ * A connector appears here with zero connections; it only becomes a
+ * connection once an explicit enrollment, ingest, or grant/connection
+ * resolution materializes a durable row. See
+ * `openspec/changes/separate-connector-catalog-from-connections/`.
+ */
+export async function listPublicCatalogConnectorIds(): Promise<string[]> {
+  const registeredRows = await listRegisteredConnectorRows();
+  const ids: string[] = [];
+  for (const row of registeredRows) {
+    let manifest: ConnectorManifest;
+    try {
+      manifest = parseManifest(row.manifest, row.connector_id);
+    } catch {
+      continue;
+    }
+    if (isPublicReferenceConnector(row, manifest)) {
+      ids.push(row.connector_id);
+    }
+  }
+  return ids.sort();
 }
 
 function getScheduleFrom(
@@ -2065,7 +2088,7 @@ export async function listConnectorSummaries(
   const manifestsByConnectorId = new Map(
     connectorRows.map((row) => [row.connector_id, parseManifest(row.manifest, row.connector_id)])
   );
-  const rows = await listConnectorInstanceRowsForDashboard(connectorRows);
+  const rows = await listConnectorInstanceRowsForDashboard();
   const summaries = await mapWithConcurrency(
     rows,
     options.concurrency ?? LIST_CONNECTOR_SUMMARIES_CONCURRENCY,

@@ -9,7 +9,7 @@ A reference-implementation read operation SHALL NOT create, upsert, or otherwise
 - **WHEN** the owner views the connection dashboard on an instance that has registered public connectors but zero configured connections
 - **THEN** the reference SHALL NOT write any `connector_instances` row as a side effect of the read
 - **AND** after the read, the owner's set of `connector_instances` rows SHALL remain empty
-- **AND** the read SHALL still return the registered connectors as not-connected catalog entries.
+- **AND** the registered connectors SHALL remain discoverable through the connector catalog (the registered `connectors` table and the add-connection surface), which is independent of `connector_instances`.
 
 #### Scenario: Ingest still materializes a default-account connection on demand
 
@@ -19,20 +19,21 @@ A reference-implementation read operation SHALL NOT create, upsert, or otherwise
 
 ### Requirement: Catalog connectors SHALL be distinct from connections in owner projections
 
-Owner-facing reference projections SHALL distinguish a catalog connector (a registered `connector_id` the owner can add) from a connection (a configured `connector_instance_id`). A connector that has no connection SHALL be projected as a not-connected catalog entry that carries no `connector_instance_id` and SHALL NOT be presented as an active connection. Connection lifecycle actions — sync, pause, resume, revoke, delete — SHALL target a connection identified by a `connector_instance_id` and SHALL NOT be offered for a catalog connector that has no connection.
+Owner-facing reference projections SHALL distinguish a catalog connector (a registered `connector_id` the owner can add) from a connection (a configured `connector_instance_id`). The owner connection projection SHALL list only connections — rows backed by a real `connector_instance_id`. A connector that has no connection SHALL NOT appear in the connection projection as a synthesized or zero-record "active connection"; it remains a catalog connector, surfaced through the connector catalog (the registered `connectors` table and the add-connection surface). Connection lifecycle actions — sync, pause, resume, revoke, delete — SHALL target a connection identified by a `connector_instance_id`; because a catalog connector with no connection is not present in the connection projection, those actions are not offered for it.
 
-#### Scenario: Zero configured connections projects a complete catalog and no connections
+#### Scenario: Zero configured connections projects no connections and a complete catalog
 
 - **WHEN** the owner has registered listed connectors and zero configured connections
 - **THEN** the owner connection projection SHALL list zero connections
-- **AND** it SHALL present the registered listed connectors as not-connected catalog entries with no `connector_instance_id`
-- **AND** it SHALL offer an add/initiate action for each catalog connector rather than sync, pause, resume, revoke, or delete.
+- **AND** the registered listed connectors SHALL remain discoverable in the connector catalog (an add-connection surface, independent of `connector_instances`)
+- **AND** no sync, pause, resume, revoke, or delete action SHALL be offered for a catalog connector that has no connection.
 
 #### Scenario: A mix of connected and unconnected connectors
 
 - **WHEN** the owner has one configured connection for connector A and no connection for connector B, where both are registered listed connectors
 - **THEN** connector A SHALL be projected as a connection with its `connector_instance_id`
-- **AND** connector B SHALL be projected as a not-connected catalog entry with no `connector_instance_id`.
+- **AND** connector B SHALL NOT appear in the connection projection
+- **AND** connector B SHALL remain available to add through the connector catalog.
 
 ### Requirement: Grant resolution SHALL NOT bind to a non-existent connection
 

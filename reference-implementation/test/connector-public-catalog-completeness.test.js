@@ -1,22 +1,38 @@
 /**
- * Catalog completeness for the reference operator console.
+ * Catalog completeness for the reference operator console — and the
+ * catalog-vs-connection lifecycle boundary.
  *
  * The honesty contract from
  * `openspec/changes/add-connector-public-listing-honesty/` says any
  * first-party manifest under `packages/polyfill-connectors/manifests/`
  * that declares `capabilities.public_listing.listed: true` SHALL be
- * visible on `GET /_ref/connectors` after the reference starts up —
- * even on a fresh database, before any schedule or run row exists.
+ * visible in the reference connector catalog after the reference starts up —
+ * even on a fresh database, before any schedule, run, or connection row
+ * exists.
  *
- * This test exercises the path that closes the gap end to end:
+ * `openspec/changes/separate-connector-catalog-from-connections/` refines
+ * what "visible in the catalog" means: catalog completeness is owned by the
+ * registered `connectors` table (the connectors you CAN add), NOT by
+ * `connector_instances` (the connections you HAVE configured). A dashboard /
+ * catalog read SHALL NOT materialize a default-account `connector_instances`
+ * row for every listed connector — a read must not persist a connection, and
+ * an owner with zero connections SHALL see zero connections while still being
+ * able to discover the full catalog.
+ *
+ * This test exercises both halves end to end:
  *   1. Initialize a fresh DB.
- *   2. Run `reconcilePolyfillManifests` against the real shipped
- *      manifests directory.
- *   3. Project the connectors table through `listConnectorSummaries`
- *      and confirm every listed=true first-party manifest is present.
+ *   2. Run `reconcilePolyfillManifests` against the real shipped manifests.
+ *   3. Catalog completeness: every listed=true first-party manifest resolves
+ *      via the catalog detail projection (`getConnectorDetail`) — which reads
+ *      the registered manifest, independent of any connection row — and is
+ *      recognized as a public catalog connector.
+ *   4. Lifecycle boundary: `listConnectorSummaries()` (the owner connection
+ *      projection) returns ZERO connections on a fresh DB, and the read
+ *      persists ZERO `connector_instances` rows (no phantom default-account
+ *      connections).
  *
  * The complement (hidden / unproven / local-device manifests stay
- * invisible) is asserted at the unit level in
+ * out of the public catalog) is asserted at the unit level in
  * `polyfill-manifest-reconcile-invalidation.test.js` and the
  * per-manifest catalog filter is pinned in
  * `ref-connectors-list-operation.test.js`. Both paths are kept
@@ -35,11 +51,16 @@ import {
   defaultPolyfillManifestsDir,
   reconcilePolyfillManifests,
 } from '../server/polyfill-manifest-reconcile.ts';
-import { listConnectorSummaries } from '../server/ref-control.ts';
+import {
+  listConnectorSummaries,
+  listPublicCatalogConnectorIds,
+} from '../server/ref-control.ts';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 import { canonicalConnectorKey } from '../server/connector-key.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const POLYFILL_MANIFESTS_DIR = resolve(__dirname, '..', '..', 'packages', 'polyfill-connectors', 'manifests');
+const REFERENCE_OWNER_SUBJECT_ID = 'owner_local';
 
 function listFirstPartyManifestNames() {
   return readdirSync(POLYFILL_MANIFESTS_DIR)
@@ -98,7 +119,7 @@ test('defaultPolyfillManifestsDir resolves to the shipped first-party manifests 
   assert.equal(defaultPolyfillManifestsDir(), POLYFILL_MANIFESTS_DIR);
 });
 
-test('every listed=true first-party manifest is visible on the operator catalog after startup reconciliation', withTmpDb(async () => {
+test('every listed=true first-party manifest is catalog-visible after startup reconciliation, with no connection row', withTmpDb(async () => {
   const expectedListed = listedConnectorIds();
   assert.ok(
     expectedListed.length > 0,
@@ -116,18 +137,52 @@ test('every listed=true first-party manifest is visible on the operator catalog 
     `reconciliation must register at least every listed manifest (registered=${summary.registered}, listed=${expectedListed.length})`,
   );
 
-  const summaries = await listConnectorSummaries();
-  const visibleIds = summaries.map((row) => row.connector_id).sort();
-
-  const missing = expectedListed.filter((id) => !visibleIds.includes(id));
+  // Catalog completeness is owned by the registered connectors table, not by
+  // connection rows. The public catalog projection (`listPublicCatalogConnectorIds`,
+  // which reads the registered `connectors` table filtered by
+  // `isPublicReferenceConnector` and creates no connection row) must contain
+  // every listed=true first-party connector.
+  const catalog = await listPublicCatalogConnectorIds();
+  const visible = new Set(catalog);
+  const missing = expectedListed.filter((id) => !visible.has(id));
   assert.deepEqual(
     missing,
     [],
-    `listed=true first-party manifests must appear in the operator catalog after startup: missing ${missing.join(', ')}`,
+    `listed=true first-party manifests must appear in the public connector catalog after startup: missing ${missing.join(', ')}`,
   );
 }));
 
-test('hidden / unproven first-party manifests remain invisible on the operator catalog after startup reconciliation', withTmpDb(async () => {
+test('a fresh-DB catalog read projects zero connections and persists no phantom connection rows', withTmpDb(async () => {
+  await reconcilePolyfillManifests({ enabled: true, log: () => {} });
+
+  const store = createSqliteConnectorInstanceStore();
+  // Pre-condition: a freshly reconciled instance has registered connectors
+  // but no configured connections.
+  assert.equal(
+    store.listByOwner(REFERENCE_OWNER_SUBJECT_ID).length,
+    0,
+    'fresh instance starts with zero connector_instances rows',
+  );
+
+  // The owner connection projection is the path that previously
+  // materialized one default-account connection per registered connector.
+  const summaries = await listConnectorSummaries();
+  assert.equal(
+    summaries.length,
+    0,
+    `owner with zero connections must see zero connections, not phantom catalog rows (saw ${summaries.length})`,
+  );
+
+  // The read SHALL NOT persist a connection. After the projection, the
+  // owner's connector_instances set must still be empty.
+  assert.equal(
+    store.listByOwner(REFERENCE_OWNER_SUBJECT_ID).length,
+    0,
+    'catalog/dashboard read must not persist any connector_instances row',
+  );
+}));
+
+test('hidden / unproven first-party manifests stay out of the public catalog', withTmpDb(async () => {
   const hidden = unlistedConnectorIds();
   assert.ok(
     hidden.length > 0,
@@ -136,13 +191,11 @@ test('hidden / unproven first-party manifests remain invisible on the operator c
 
   await reconcilePolyfillManifests({ enabled: true, log: () => {} });
 
-  const summaries = await listConnectorSummaries();
-  const visibleIds = new Set(summaries.map((row) => row.connector_id));
-
-  const leaks = hidden.filter((id) => visibleIds.has(id));
+  const catalog = new Set(await listPublicCatalogConnectorIds());
+  const leaks = hidden.filter((id) => catalog.has(id));
   assert.deepEqual(
     leaks,
     [],
-    `hidden / unproven first-party manifests must NOT appear in the operator catalog: leaked ${leaks.join(', ')}`,
+    `hidden / unproven first-party manifests must NOT be public catalog connectors: leaked ${leaks.join(', ')}`,
   );
 }));

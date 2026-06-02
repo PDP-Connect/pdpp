@@ -25,10 +25,21 @@ See `design-notes/connector-catalog-vs-connection-lifecycle-2026-06-02.md` for t
 - **Persist phantoms but mark them with an `is_phantom` column and filter everywhere.** Rejected: spreads a filter obligation across every `listByOwner` caller and the grant resolver; one missed call site re-leaks. Not creating the row is strictly safer and simpler.
 - **Drop catalog connectors from the dashboard entirely (show only real connections).** Viable and clean, but it would regress catalog discoverability and the `connector-public-catalog-completeness` contract unless the catalog moves to a dedicated "add connection" surface in the same change. Kept as an implementation option (B1 in the design note) for the console lane; the contract here only requires that catalog connectors are not represented as connections.
 
+## Implementation decision (lane `ri-zero-record-lifecycle-runtime-v1`, 2026-06-02): B1, real-connections-only
+
+The owner selected **B1** for the runtime lane: catalog connectors live in the add-connection picker, not as rows (not even `not_connected` rows) in the connections list. The implementation is the strictest reading of B1:
+
+- `listConnectorInstanceRowsForDashboard` returns only the owner's real (configured / ingest-materialized) active rows. `listConnectorSummaries` / `GET /_ref/connectors` therefore projects only real connections — on a fresh DB it returns `[]`.
+- Catalog completeness is anchored to a dedicated honest catalog primitive, `listPublicCatalogConnectorIds()` (registered `connectors` table filtered by `isPublicReferenceConnector`, creates no connection row), plus the already-shipped add-connection picker (which reads the shipped manifests from disk, independent of `listConnectorSummaries`).
+
+Why B1 over the earlier draft that kept emitting `connection_state: "not_connected"` entries (Decision §2 above): every consumer of `listConnectorSummaries` (records list, connection diagnostics, the owner grant-request connection picker, schedules, explore facets) treats each row as a real connection keyed on `connector_instance_id`. Emitting catalog entries with a null `connector_instance_id` would have spread a null-id guard obligation across all of those — the same "filter obligation across every caller" failure mode rejected for the `is_phantom` alternative. Returning only real connections keeps the null-id surface at zero and makes the action-gating fall out structurally: a catalog-only connector is simply absent from the projection, so its row actions can never render. The grant-resolution leak is closed at the same source: with no phantom `status:'active'` rows, `listActiveByConnector` returns empty and fan-in fails closed.
+
+The spec deltas in this change reflect the B1 shape: the owner connection projection lists only connections; catalog visibility is a separate surface (registered `connectors` table + add-connection picker), independent of `connector_instances`.
+
 ## Acceptance Checks
 
-- On a fresh DB with registered listed connectors and zero owner connections, `listConnectorSummaries()` returns catalog entries with `connection_state: "not_connected"` and no `connector_instance_id`, and **no** `connector_instances` rows are written (assert `store.listByOwner(owner).length === 0` after the read).
-- `connector-public-catalog-completeness.test.js` still passes (every `listed:true` `connector_id` visible).
-- Grant fan-in resolution for a connector with no connection does not resolve to a phantom binding (it resolves to "no active connection" / fails closed, exactly as if the owner never connected).
-- After the owner creates one real connection (or ingest materializes one), that connection appears as a connection; the remaining catalog connectors stay not-connected.
-- `git diff --check` clean; focused console + reference projection tests pass.
+- On a fresh DB with registered listed connectors and zero owner connections, `listConnectorSummaries()` returns zero connections, and **no** `connector_instances` rows are written (assert `store.listByOwner(owner).length === 0` after the read). The catalog stays complete via `listPublicCatalogConnectorIds()`.
+- `connector-public-catalog-completeness.test.js` passes (every `listed:true` `connector_id` visible through the catalog primitive; hidden/unproven stay out).
+- Grant fan-in resolution for a connector with no connection does not resolve to a phantom binding (it resolves to "no active connection" / fails closed, exactly as if the owner never connected) — `grant-fan-in-fail-closed-no-phantom.test.js`.
+- After the owner creates one real connection (or ingest materializes one), that connection appears as a connection; the remaining catalog connectors do not appear in the connection projection and stay available to add.
+- `git diff --check` clean; reference projection / store / grant tests pass.
