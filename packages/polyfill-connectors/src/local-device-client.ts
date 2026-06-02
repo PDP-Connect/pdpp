@@ -137,6 +137,8 @@ export interface RecoverLocalCollectorGapRequest {
 
 export class LocalDeviceHttpError extends Error {
   readonly body: string;
+  readonly envelopeMessage: string | null;
+  readonly param: string | null;
   readonly status: number;
   /**
    * Typed PDPP error code parsed from the response body when the server
@@ -150,28 +152,60 @@ export class LocalDeviceHttpError extends Error {
 
   constructor(status: number, body: string) {
     const parsed = parseLocalDeviceErrorEnvelope(body);
-    const detail = parsed?.code ? ` ${parsed.code}` : "";
+    const detail = formatLocalDeviceErrorDetail(parsed);
     super(`local device request failed: ${status}${detail}`);
     this.name = "LocalDeviceHttpError";
     this.status = status;
     this.body = body;
     this.code = parsed?.code ?? null;
+    this.param = parsed?.param ?? null;
+    this.envelopeMessage = parsed?.message ?? null;
   }
 }
 
-function parseLocalDeviceErrorEnvelope(body: string): { code: string } | null {
+function parseLocalDeviceErrorEnvelope(
+  body: string
+): { code: string; message: string | null; param: string | null } | null {
   if (!body) {
     return null;
   }
   try {
-    const parsed = JSON.parse(body) as { error?: { code?: unknown } };
+    const parsed = JSON.parse(body) as { error?: { code?: unknown; message?: unknown; param?: unknown } };
     if (parsed && typeof parsed === "object" && parsed.error && typeof parsed.error.code === "string") {
-      return { code: parsed.error.code };
+      return {
+        code: parsed.error.code,
+        message: typeof parsed.error.message === "string" ? sanitizeErrorDetail(parsed.error.message) : null,
+        param: typeof parsed.error.param === "string" ? sanitizeErrorDetail(parsed.error.param) : null,
+      };
     }
   } catch {
     // Body wasn't JSON. Fall through to null.
   }
   return null;
+}
+
+function formatLocalDeviceErrorDetail(
+  parsed: { code: string; message: string | null; param: string | null } | null
+): string {
+  if (!parsed) {
+    return "";
+  }
+  const parts = [parsed.code];
+  if (parsed.param) {
+    parts.push(`param=${parsed.param}`);
+  }
+  if (parsed.message) {
+    parts.push(`message=${parsed.message}`);
+  }
+  return ` ${parts.join(" ")}`;
+}
+
+const ERROR_DETAIL_SECRET_RE =
+  /\b(authorization|bearer|token|password|passwd|cookie|secret|otp|api[_-]?key)\b\s*[:=]\s*["']?[^"',\s}]+/gi;
+
+function sanitizeErrorDetail(value: string): string {
+  const compact = value.replace(ERROR_DETAIL_SECRET_RE, "$1=[REDACTED]").replace(/\s+/g, " ").trim();
+  return compact.length > 160 ? `${compact.slice(0, 159)}…` : compact;
 }
 
 export class LocalDeviceClient {

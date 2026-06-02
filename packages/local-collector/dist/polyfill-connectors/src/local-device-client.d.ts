@@ -105,6 +105,8 @@ export interface RecoverLocalCollectorGapRequest {
 }
 export declare class LocalDeviceHttpError extends Error {
     readonly body: string;
+    readonly envelopeMessage: string | null;
+    readonly param: string | null;
     readonly status: number;
     readonly code: string | null;
     constructor(status: number, body: string);

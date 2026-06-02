@@ -17,7 +17,7 @@ const SCAN_BATCH_LIMIT_DETAIL_RE = /enqueued\s+\d+\s+batches\s+>=\s+(?:run batch
 const CONNECTOR_PROTOCOL_DEBUG_DIR_ENV = "PDPP_DEBUG_CONNECTOR_PROTOCOL_DIR";
 export const DEFAULT_COLLECTOR_OUTBOX_POLICY = Object.freeze({
     drainBatchSize: 4,
-    leaseMs: 60_000,
+    leaseMs: 300_000,
     maxAttempts: 5,
     maxDrainDurationMs: 120_000,
     maxDrainIterations: 256,
@@ -781,10 +781,16 @@ function hasCheckpointPredecessorBlockingWork(outbox, checkpoint) {
 async function drainClaimedOutboxItem(input, item, result, sentByKind) {
     throwIfAborted(input.abortSignal);
     try {
-        await sendOutboxItem(input.client, item);
-        input.outbox.acknowledge({ holder: input.holderId, id: item.id, leaseEpoch: item.lease_epoch });
+        const current = input.outbox.renewLease({
+            holder: input.holderId,
+            id: item.id,
+            leaseEpoch: item.lease_epoch,
+            leaseMs: input.policy.leaseMs,
+        });
+        await sendOutboxItem(input.client, current);
+        input.outbox.acknowledge({ holder: input.holderId, id: current.id, leaseEpoch: current.lease_epoch });
         result.sent++;
-        sentByKind[item.kind] = (sentByKind[item.kind] ?? 0) + 1;
+        sentByKind[current.kind] = (sentByKind[current.kind] ?? 0) + 1;
     }
     catch (error) {
         failOutboxItem(input, item, error, result);
@@ -792,24 +798,36 @@ async function drainClaimedOutboxItem(input, item, result, sentByKind) {
 }
 function failOutboxItem(input, item, error, result) {
     const message = error instanceof Error ? error.message : String(error);
-    if (error instanceof OutboxPayloadShapeError || item.attempt_count + 1 >= input.policy.maxAttempts) {
-        input.outbox.deadLetter({
+    try {
+        if (error instanceof OutboxPayloadShapeError || item.attempt_count + 1 >= input.policy.maxAttempts) {
+            input.outbox.deadLetter({
+                error: message,
+                holder: input.holderId,
+                id: item.id,
+                leaseEpoch: item.lease_epoch,
+            });
+            result.deadLettered++;
+            return;
+        }
+        input.outbox.failRetryable({
             error: message,
             holder: input.holderId,
             id: item.id,
             leaseEpoch: item.lease_epoch,
+            retryBackoffMs: input.policy.retryBackoffMs * (item.attempt_count + 1),
         });
-        result.deadLettered++;
-        return;
+        result.failed++;
     }
-    input.outbox.failRetryable({
-        error: message,
-        holder: input.holderId,
-        id: item.id,
-        leaseEpoch: item.lease_epoch,
-        retryBackoffMs: input.policy.retryBackoffMs * (item.attempt_count + 1),
-    });
-    result.failed++;
+    catch (transitionError) {
+        if (isLeaseNotCurrentError(transitionError)) {
+            result.failed++;
+            return;
+        }
+        throw transitionError;
+    }
+}
+function isLeaseNotCurrentError(error) {
+    return error instanceof Error && error.message.startsWith("local outbox lease not current");
 }
 class OutboxPayloadShapeError extends Error {
     constructor(message) {

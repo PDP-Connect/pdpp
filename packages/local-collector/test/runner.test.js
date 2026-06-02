@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -24,6 +25,7 @@ import {
   inspectLocalOutboxStatus,
   parseArgs,
   resolveLocalCollectorPackageVersion,
+  retryLocalOutboxDeadLetters,
   scopedDefaultQueuePath,
   summarizeRunResultForCli,
 } from '../bin/pdpp-local-collector.ts';
@@ -238,6 +240,61 @@ test('local collector doctor flags missing db, expired leases, and dead letters'
   } finally {
     outbox.close();
   }
+});
+
+test('local collector retry-dead-letters is dry-run by default and backs up before apply', async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    outbox.enqueue({
+      id: 'dead-letter-id',
+      kind: 'record_batch',
+      payload: { secret: 'dead-letter-payload' },
+      sourceInstanceId: 'src-1',
+    });
+    const [claim] = outbox.claimReady({ holder: 'worker-a', leaseMs: 60_000, sourceInstanceId: 'src-1' });
+    assert.ok(claim);
+    outbox.deadLetter({
+      error: 'terminal',
+      holder: 'worker-a',
+      id: claim.id,
+      leaseEpoch: claim.lease_epoch,
+    });
+  } finally {
+    outbox.close();
+  }
+
+  const parsed = parseArgs([
+    'retry-dead-letters',
+    '--queue', path,
+    '--connection-id', 'src-1',
+    '--kind', 'record_batch',
+    '--limit', '10',
+  ]);
+  assert.equal(parsed.apply, undefined);
+  assert.equal(parsed.deadLetterKind, 'record_batch');
+  assert.equal(parsed.limit, 10);
+
+  const dryRun = retryLocalOutboxDeadLetters(parsed);
+  assert.equal(dryRun.dry_run, true);
+  assert.equal(dryRun.matched, 1);
+  assert.equal(dryRun.requeued, 0);
+  assert.equal(dryRun.backup_path, null);
+  assert.equal(dryRun.status_before.dead_letter, 1);
+  assert.equal(dryRun.status_after.dead_letter, 1);
+
+  const applied = retryLocalOutboxDeadLetters({ ...parsed, apply: true });
+  assert.equal(applied.dry_run, false);
+  assert.equal(applied.matched, 1);
+  assert.equal(applied.requeued, 1);
+  assert.ok(applied.backup_path);
+  assert.equal(existsSync(applied.backup_path), true);
+  assert.equal(applied.status_before.dead_letter, 1);
+  assert.equal(applied.status_after.dead_letter, 0);
+  assert.equal(applied.status_after.pending, 1);
+
+  const rendered = JSON.stringify(applied);
+  assert.doesNotMatch(rendered, /dead-letter-payload|dead-letter-id|terminal/);
 });
 
 test('local collector run output summarizes state cursors without dumping payload maps', () => {

@@ -38,6 +38,7 @@ import {
   COLLECTOR_RUNTIME_CAPABILITIES,
   type CollectorConnectorSpec,
   LocalDeviceOutbox,
+  type LocalDeviceOutboxKind,
   type LocalDeviceOutboxSummary,
   enrollCollector,
   getBundledConnector,
@@ -89,15 +90,18 @@ export function resolveLocalCollectorPackageVersion(startUrl: string | URL = imp
 }
 
 export interface CliOptions {
+  apply?: boolean;
   args?: string[];
   baseUrl: string;
   code?: string;
-  command: "enroll" | "run" | "advertise" | "status" | "doctor";
+  command: "enroll" | "run" | "advertise" | "status" | "doctor" | "retry-dead-letters";
   connector?: string;
+  deadLetterKind?: LocalDeviceOutboxKind;
   deviceId?: string;
   deviceLabel?: string;
   deviceToken?: string;
   entrypointCommand?: string;
+  limit?: number;
   queuePath: string;
   runId?: string;
   sourceInstanceId?: string;
@@ -120,6 +124,12 @@ Subcommands:
   doctor                          Print local durable outbox operator diagnostics as JSON.
           [--queue <path>]
           [--connection-id <id>]
+  retry-dead-letters              Requeue local dead-letter outbox rows.
+          [--queue <path>]
+          [--connection-id <id>]
+          [--kind record_batch|checkpoint|gap|blob_upload]
+          [--limit <n>]
+          [--apply]                Dry-run by default; --apply mutates after a DB backup.
   enroll  --base-url <url>        Exchange a one-time enrollment code for a
           --code <code>             device id + device token.
           [--device-label <label>]
@@ -165,6 +175,12 @@ async function main(): Promise<void> {
     process.stdout.write(
       `${JSON.stringify(options.command === "doctor" ? buildLocalOutboxDoctor(status) : status, null, 2)}\n`
     );
+    return;
+  }
+
+  if (options.command === "retry-dead-letters") {
+    const result = retryLocalOutboxDeadLetters(options);
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     return;
   }
 
@@ -302,6 +318,24 @@ export interface LocalOutboxDoctorOutput extends LocalOutboxStatusOutput {
   status: "ok" | "warning" | "critical";
 }
 
+export interface RetryDeadLettersOutput {
+  backup_path: string | null;
+  db: {
+    exists: boolean;
+    path: string;
+  };
+  dry_run: boolean;
+  filter: {
+    kind: LocalDeviceOutboxKind | null;
+    limit: number | null;
+    source_instance_id: string | null;
+  };
+  matched: number;
+  requeued: number;
+  status_after: LocalOutboxStatusOutput["outbox"]["counts"] | null;
+  status_before: LocalOutboxStatusOutput["outbox"]["counts"] | null;
+}
+
 export function inspectLocalOutboxStatus(options: CliOptions): LocalOutboxStatusOutput {
   const dbPath = resolveOutboxPath(options);
   const exists = existsSync(dbPath);
@@ -358,6 +392,75 @@ export function buildLocalOutboxDoctor(status: LocalOutboxStatusOutput): LocalOu
   };
 }
 
+export function retryLocalOutboxDeadLetters(options: CliOptions): RetryDeadLettersOutput {
+  const dbPath = resolveOutboxPath(options);
+  const exists = existsSync(dbPath);
+  if (!exists) {
+    return {
+      backup_path: null,
+      db: { exists: false, path: dbPath },
+      dry_run: !options.apply,
+      filter: {
+        kind: options.deadLetterKind ?? null,
+        limit: options.limit ?? null,
+        source_instance_id: options.sourceInstanceId ?? null,
+      },
+      matched: 0,
+      requeued: 0,
+      status_after: null,
+      status_before: null,
+    };
+  }
+
+  const outbox = new LocalDeviceOutbox({ path: dbPath });
+  try {
+    const statusBefore = summaryCounts(outbox.summary(options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {}));
+    const dryRun = !options.apply;
+    const backupPath = dryRun ? null : backupSqliteDb(outbox, dbPath);
+    const result = outbox.requeueDeadLetters({
+      dryRun,
+      ...(options.deadLetterKind ? { kind: options.deadLetterKind } : {}),
+      ...(options.limit ? { limit: options.limit } : {}),
+      ...(options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {}),
+    });
+    const statusAfter = summaryCounts(outbox.summary(options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {}));
+    return {
+      backup_path: backupPath,
+      db: { exists: true, path: dbPath },
+      dry_run: dryRun,
+      filter: {
+        kind: options.deadLetterKind ?? null,
+        limit: options.limit ?? null,
+        source_instance_id: options.sourceInstanceId ?? null,
+      },
+      matched: result.matched,
+      requeued: result.requeued,
+      status_after: statusAfter,
+      status_before: statusBefore,
+    };
+  } finally {
+    outbox.close();
+  }
+}
+
+function summaryCounts(summary: LocalDeviceOutboxSummary): LocalOutboxStatusOutput["outbox"]["counts"] {
+  return {
+    dead_letter: summary.deadLetter,
+    leased: summary.leased,
+    pending: summary.ready,
+    retrying: summary.retrying,
+    sent: summary.succeeded,
+    total: summary.total,
+  };
+}
+
+function backupSqliteDb(outbox: Pick<LocalDeviceOutbox, "backupTo">, dbPath: string): string {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupPath = `${dbPath}.pre-retry-dead-letters-${stamp}.bak`;
+  outbox.backupTo(backupPath);
+  return backupPath;
+}
+
 export function buildConnectorSpec(options: CliOptions): CollectorConnectorSpec {
   if (!options.connector) {
     throw new CollectorUsageError("connector required");
@@ -400,9 +503,16 @@ export function parseArgs(args: string[]): CliOptions {
     process.stdout.write(HELP_TEXT);
     process.exit(0);
   }
-  if (command !== "enroll" && command !== "run" && command !== "advertise" && command !== "status" && command !== "doctor") {
+  if (
+    command !== "enroll" &&
+    command !== "run" &&
+    command !== "advertise" &&
+    command !== "status" &&
+    command !== "doctor" &&
+    command !== "retry-dead-letters"
+  ) {
     throw new CollectorUsageError(
-      `usage: pdpp-local-collector <enroll|run|advertise|status|doctor> --base-url <url> [options]`
+      `usage: pdpp-local-collector <enroll|run|advertise|status|doctor|retry-dead-letters> --base-url <url> [options]`
     );
   }
   const options: CliOptions = {
@@ -434,12 +544,23 @@ export function parseArgs(args: string[]): CliOptions {
     if (!arg) {
       throw new CollectorUsageError("missing option");
     }
+    if (applyFlagOption(options, arg)) {
+      continue;
+    }
     const value = rest[index + 1];
     applyOption(options, arg, value);
     index++;
   }
 
   return options;
+}
+
+function applyFlagOption(options: CliOptions, arg: string): boolean {
+  if (arg === "--apply") {
+    options.apply = true;
+    return true;
+  }
+  return false;
 }
 
 function applyOption(options: CliOptions, arg: string, value: string | undefined): void {
@@ -468,6 +589,12 @@ function applyOption(options: CliOptions, arg: string, value: string | undefined
     "--device-token": (next) => {
       options.deviceToken = next;
     },
+    "--kind": (next) => {
+      options.deadLetterKind = parseOutboxKind(next);
+    },
+    "--limit": (next) => {
+      options.limit = parsePositiveInteger("--limit", next);
+    },
     "--queue": (next) => {
       options.queuePath = next;
     },
@@ -495,6 +622,21 @@ function applyOption(options: CliOptions, arg: string, value: string | undefined
     throw new CollectorUsageError(`unknown option: ${arg}`);
   }
   set(value);
+}
+
+function parseOutboxKind(value: string): LocalDeviceOutboxKind {
+  if (value === "record_batch" || value === "checkpoint" || value === "gap" || value === "blob_upload") {
+    return value;
+  }
+  throw new CollectorUsageError(`invalid --kind: ${value}`);
+}
+
+function parsePositiveInteger(label: string, value: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new CollectorUsageError(`${label} must be a positive integer`);
+  }
+  return parsed;
 }
 
 function parseCsv(value: string): string[] {

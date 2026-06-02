@@ -2495,6 +2495,87 @@ test("drainCollectorOutbox stops between iterations when the duration budget is 
   }
 });
 
+test("drainCollectorOutbox does not crash when batch-claimed work expires before processing", async () => {
+  let now = new Date("2026-05-19T12:00:00.000Z");
+  const queuePath = await tempQueuePath();
+  const outbox = new LocalDeviceOutbox({ clock: () => now, path: queuePath });
+  try {
+    for (let i = 0; i < 3; i++) {
+      const records = transformRecordsToCollectorEnvelopes({
+        batchId: `lease-batch-${i}`,
+        batchSeq: i + 1,
+        connectorId: "fixture-lease",
+        deviceId: "device-1",
+        messages: [
+          {
+            data: { id: `lease-${i}` },
+            emitted_at: "2026-05-19T12:00:00.000Z",
+            key: `lease-${i}`,
+            stream: "messages",
+            type: "RECORD",
+          },
+        ],
+        sourceInstanceId: "src-1",
+      });
+      outbox.enqueue({
+        id: buildLocalDeviceOutboxId({
+          kind: "record_batch",
+          parts: [`lease-batch-${i}`],
+          sourceInstanceId: "src-1",
+        }),
+        kind: "record_batch",
+        payload: {
+          batchId: `lease-batch-${i}`,
+          batchSeq: i + 1,
+          connectorId: "fixture-lease",
+          deviceId: "device-1",
+          records,
+          sourceInstanceId: "src-1",
+        },
+        sourceInstanceId: "src-1",
+      });
+    }
+
+    const slowClient: Pick<LocalDeviceClient, "ackLocalCollectorGap" | "ingestBatch" | "putSourceInstanceState"> = {
+      ackLocalCollectorGap() {
+        return Promise.reject(new Error("lease test must not ack gaps"));
+      },
+      ingestBatch() {
+        now = new Date(now.getTime() + 40);
+        return Promise.resolve({ ok: true });
+      },
+      putSourceInstanceState() {
+        return Promise.reject(new Error("lease test must not send checkpoints"));
+      },
+    };
+
+    const result = await drainCollectorOutbox({
+      client: slowClient,
+      connectorId: "fixture-lease",
+      holderId: "holder-lease",
+      outbox,
+      policy: {
+        drainBatchSize: 3,
+        leaseMs: 50,
+        maxAttempts: 5,
+        maxDrainDurationMs: 60_000,
+        maxDrainIterations: 4,
+        maxEnqueuedBatchesPerRun: 2048,
+        maxQueueDepth: 10_000,
+        retryBackoffMs: 30_000,
+      },
+      sourceInstanceId: "src-1",
+    });
+
+    assert.equal(result.sent, 2);
+    assert.equal(result.failed, 1);
+    assert.equal(result.deadLettered, 0);
+    assert.equal(outbox.summary({ sourceInstanceId: "src-1" }).staleLeases, 1);
+  } finally {
+    outbox.close();
+  }
+});
+
 async function startTogglableHarness(options: {
   ingestHandler: () => "fail" | "ok";
   onIngestSucceeded?: () => void;

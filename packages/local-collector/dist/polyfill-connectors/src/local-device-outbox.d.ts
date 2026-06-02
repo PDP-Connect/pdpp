@@ -66,6 +66,16 @@ export interface LocalDeviceOutboxDeadLetterInput extends LocalDeviceOutboxLease
 export interface LocalDeviceOutboxRenewInput extends LocalDeviceOutboxLeaseInput {
     leaseMs: number;
 }
+export interface LocalDeviceOutboxRequeueDeadLettersInput {
+    dryRun?: boolean;
+    kind?: LocalDeviceOutboxKind;
+    limit?: number;
+    sourceInstanceId?: string;
+}
+export interface LocalDeviceOutboxRequeueDeadLettersResult {
+    matched: number;
+    requeued: number;
+}
 export declare class LocalDeviceOutbox {
     #private;
     constructor(options: LocalDeviceOutboxOptions);
@@ -84,6 +94,8 @@ export declare class LocalDeviceOutbox {
     }): number;
     get(id: string): LocalDeviceOutboxItem | null;
     deleteSucceeded(id: string): boolean;
+    backupTo(path: string): void;
+    requeueDeadLetters(input?: LocalDeviceOutboxRequeueDeadLettersInput): LocalDeviceOutboxRequeueDeadLettersResult;
     hasNonSucceededWork(input: {
         excludeKinds?: readonly LocalDeviceOutboxKind[];
         kinds?: readonly LocalDeviceOutboxKind[];

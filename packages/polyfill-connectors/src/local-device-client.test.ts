@@ -180,7 +180,7 @@ test("LocalDeviceClient state methods reject 401/403 with LocalDeviceHttpError",
 test("LocalDeviceHttpError surfaces a typed PDPP code from the response envelope", async () => {
   const server = await startStatusServer(
     409,
-    '{"error":{"type":"conflict","code":"collector_protocol_mismatch","accepted_versions":["2"],"received_version":"1"}}'
+    '{"error":{"type":"conflict","code":"collector_protocol_mismatch","param":"connector_id","message":"connector_id does not match source_instance_id","accepted_versions":["2"],"received_version":"1"}}'
   );
   try {
     const client = new LocalDeviceClient({ baseUrl: server.url });
@@ -191,8 +191,12 @@ test("LocalDeviceHttpError surfaces a typed PDPP code from the response envelope
         if (err instanceof LocalDeviceHttpError) {
           assert.equal(err.status, 409);
           assert.equal(err.code, "collector_protocol_mismatch");
+          assert.equal(err.param, "connector_id");
+          assert.equal(err.envelopeMessage, "connector_id does not match source_instance_id");
           assert.match(err.message, /409/);
           assert.match(err.message, /collector_protocol_mismatch/);
+          assert.match(err.message, /param=connector_id/);
+          assert.match(err.message, /message=connector_id does not match source_instance_id/);
         }
         return true;
       }

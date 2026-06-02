@@ -204,6 +204,55 @@ export class LocalDeviceOutbox {
         const result = this.#db.prepare("DELETE FROM local_device_outbox WHERE id = ? AND status = 'succeeded'").run(id);
         return Number(result.changes) === 1;
     }
+    backupTo(path) {
+        this.#db.exec(`VACUUM INTO ${sqlStringLiteral(path)}`);
+    }
+    requeueDeadLetters(input = {}) {
+        const limit = normalizeLimit(input.limit);
+        const { clauses, params } = deadLetterWhere(input);
+        const matched = this.#countWhere(clauses, params, limit);
+        if (input.dryRun || matched === 0) {
+            return { matched, requeued: 0 };
+        }
+        const now = this.#now();
+        const limitSql = limit == null ? "" : " LIMIT ?";
+        const selected = this.#db
+            .prepare(`SELECT id
+           FROM local_device_outbox
+          WHERE ${clauses.join(" AND ")}
+          ORDER BY rowid${limitSql}`)
+            .all(...(limit == null ? params : [...params, limit]));
+        const ids = selected.map((row) => {
+            if (!isRecord(row) || typeof row.id !== "string") {
+                throw new Error("local outbox dead-letter id query returned an invalid row");
+            }
+            return row.id;
+        });
+        if (ids.length === 0) {
+            return { matched, requeued: 0 };
+        }
+        this.#db.exec("BEGIN IMMEDIATE");
+        try {
+            const result = this.#db
+                .prepare(`UPDATE local_device_outbox
+              SET status = 'ready',
+                  attempt_count = 0,
+                  next_attempt_at = ?,
+                  lease_holder = NULL,
+                  lease_until = NULL,
+                  last_error = NULL,
+                  updated_at = ?
+            WHERE id IN (${ids.map(() => "?").join(", ")})
+              AND status = 'dead_letter'`)
+                .run(now, now, ...ids);
+            this.#db.exec("COMMIT");
+            return { matched, requeued: Number(result.changes) };
+        }
+        catch (error) {
+            this.#db.exec("ROLLBACK");
+            throw error;
+        }
+    }
     hasNonSucceededWork(input) {
         const clauses = ["source_instance_id = ?", "status != 'succeeded'"];
         const params = [input.sourceInstanceId];
@@ -331,6 +380,25 @@ export class LocalDeviceOutbox {
         }
         return summary;
     }
+    #countWhere(clauses, params, limit) {
+        if (limit == null) {
+            const row = this.#db
+                .prepare(`SELECT COUNT(*) AS total FROM local_device_outbox WHERE ${clauses.join(" AND ")}`)
+                .get(...params);
+            return isRecord(row) ? numberFrom(row.total) : 0;
+        }
+        const row = this.#db
+            .prepare(`SELECT COUNT(*) AS total
+           FROM (
+             SELECT 1
+               FROM local_device_outbox
+              WHERE ${clauses.join(" AND ")}
+              ORDER BY rowid
+              LIMIT ?
+           )`)
+            .get(...params, limit);
+        return isRecord(row) ? numberFrom(row.total) : 0;
+    }
     #initialize() {
         this.#db.exec(`
       PRAGMA journal_mode = WAL;
@@ -443,6 +511,31 @@ function assertOneChange(changes, message) {
     if (changes !== 1) {
         throw new Error(message);
     }
+}
+function deadLetterWhere(input) {
+    const clauses = ["status = 'dead_letter'"];
+    const params = [];
+    if (input.sourceInstanceId) {
+        clauses.push("source_instance_id = ?");
+        params.push(input.sourceInstanceId);
+    }
+    if (input.kind) {
+        clauses.push("kind = ?");
+        params.push(input.kind);
+    }
+    return { clauses, params };
+}
+function normalizeLimit(value) {
+    if (value == null) {
+        return null;
+    }
+    if (!Number.isSafeInteger(value) || value <= 0) {
+        throw new Error("dead-letter requeue limit must be a positive safe integer");
+    }
+    return value;
+}
+function sqlStringLiteral(value) {
+    return `'${value.replaceAll("'", "''")}'`;
 }
 function asOutboxRow(row) {
     if (!isRecord(row)) {

@@ -19,6 +19,7 @@ const BROWSER_SURFACE_ID_ENV = "PDPP_BROWSER_SURFACE_ID";
 const BROWSER_SURFACE_LEASE_ID_ENV = "PDPP_BROWSER_SURFACE_LEASE_ID";
 const BROWSER_SURFACE_PROFILE_KEY_ENV = "PDPP_BROWSER_SURFACE_PROFILE_KEY";
 const BROWSER_SURFACE_REQUIRED_ENV = "PDPP_BROWSER_SURFACE_REQUIRED";
+const BROWSER_SURFACE_REMOTE_CDP_URL_ENV = "PDPP_BROWSER_SURFACE_REMOTE_CDP_URL";
 const BROWSER_SURFACE_STREAM_BASE_URL_ENV = "PDPP_BROWSER_SURFACE_STREAM_BASE_URL";
 function resolveCdpEndpointFromEnv(env) {
     const host = env[BROWSER_CDP_HOST_ENV]?.trim();
@@ -43,12 +44,14 @@ function resolveManagedNekoDescriptorFromEnv(env) {
     const baseUrl = nonEmptyEnv(env, BROWSER_SURFACE_STREAM_BASE_URL_ENV);
     const leaseId = nonEmptyEnv(env, BROWSER_SURFACE_LEASE_ID_ENV);
     const profileKey = nonEmptyEnv(env, BROWSER_SURFACE_PROFILE_KEY_ENV);
+    const cdpHttpUrl = nonEmptyEnv(env, BROWSER_SURFACE_REMOTE_CDP_URL_ENV);
     if (!(baseUrl && leaseId && profileKey)) {
         return;
     }
     return {
         backend: "neko",
         base_url: baseUrl,
+        ...(cdpHttpUrl ? { cdp_http_url: cdpHttpUrl } : {}),
         lease_id: leaseId,
         profile_key: profileKey,
         ...(nonEmptyEnv(env, BROWSER_SURFACE_ID_ENV) ? { surface_id: nonEmptyEnv(env, BROWSER_SURFACE_ID_ENV) } : {}),
@@ -197,4 +200,4 @@ export async function manualAction(args, sendInteraction) {
         ...(args.timeoutSeconds === undefined ? {} : { timeout_seconds: args.timeoutSeconds }),
     });
 }
-export { BROWSER_CDP_HOST_ENV, BROWSER_CDP_PORT_ENV, BROWSER_SURFACE_ID_ENV, BROWSER_SURFACE_LEASE_ID_ENV, BROWSER_SURFACE_PROFILE_KEY_ENV, BROWSER_SURFACE_REQUIRED_ENV, BROWSER_SURFACE_STREAM_BASE_URL_ENV, };
+export { BROWSER_CDP_HOST_ENV, BROWSER_CDP_PORT_ENV, BROWSER_SURFACE_ID_ENV, BROWSER_SURFACE_LEASE_ID_ENV, BROWSER_SURFACE_PROFILE_KEY_ENV, BROWSER_SURFACE_REMOTE_CDP_URL_ENV, BROWSER_SURFACE_REQUIRED_ENV, BROWSER_SURFACE_STREAM_BASE_URL_ENV, };

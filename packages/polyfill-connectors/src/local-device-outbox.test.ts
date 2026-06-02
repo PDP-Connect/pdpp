@@ -229,6 +229,68 @@ test("LocalDeviceOutbox handles retry and dead-letter transitions", async () => 
   }
 });
 
+test("LocalDeviceOutbox requeues dead letters by source, kind, and limit", async () => {
+  const outbox = new LocalDeviceOutbox({
+    clock: fixedClock("2026-05-19T12:00:00.000Z"),
+    path: await tempOutboxPath(),
+  });
+  try {
+    for (const [id, kind, sourceInstanceId] of [
+      ["src-1:record_batch:1", "record_batch", "src-1"],
+      ["src-1:record_batch:2", "record_batch", "src-1"],
+      ["src-1:gap:1", "gap", "src-1"],
+      ["src-2:record_batch:1", "record_batch", "src-2"],
+    ] as const) {
+      outbox.enqueue({
+        id,
+        kind,
+        payload: { id, secret: "not surfaced" },
+        sourceInstanceId,
+      });
+      const [claim] = outbox.claimReady({ holder: "worker-a", leaseMs: 60_000, sourceInstanceId });
+      assert.ok(claim);
+      outbox.deadLetter({
+        error: "terminal",
+        holder: "worker-a",
+        id: claim.id,
+        leaseEpoch: claim.lease_epoch,
+      });
+    }
+
+    assert.deepEqual(
+      outbox.requeueDeadLetters({
+        dryRun: true,
+        kind: "record_batch",
+        limit: 1,
+        sourceInstanceId: "src-1",
+      }),
+      { matched: 1, requeued: 0 }
+    );
+    assert.equal(outbox.summary({ sourceInstanceId: "src-1" }).deadLetter, 3);
+
+    assert.deepEqual(
+      outbox.requeueDeadLetters({
+        kind: "record_batch",
+        limit: 1,
+        sourceInstanceId: "src-1",
+      }),
+      { matched: 1, requeued: 1 }
+    );
+
+    const summary = outbox.summary({ sourceInstanceId: "src-1" });
+    assert.equal(summary.ready, 1);
+    assert.equal(summary.deadLetter, 2);
+    const requeued = outbox.get("src-1:record_batch:1");
+    assert.equal(requeued?.status, "ready");
+    assert.equal(requeued?.attempt_count, 0);
+    assert.equal(requeued?.last_error, null);
+
+    assert.equal(outbox.summary({ sourceInstanceId: "src-2" }).deadLetter, 1);
+  } finally {
+    outbox.close();
+  }
+});
+
 test("LocalDeviceOutbox deletes only succeeded rows by id", async () => {
   const outbox = new LocalDeviceOutbox({ path: await tempOutboxPath() });
   try {
