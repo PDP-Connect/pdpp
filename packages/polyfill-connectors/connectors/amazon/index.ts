@@ -414,8 +414,9 @@ if (isMainModule(import.meta.url)) {
     // re-auth). Warm sessions can go headless since cookies + TLS fingerprint
     // stay consistent across runs on the persistent profile.
     browser: { profileName: "amazon" },
-    async ensureSession({ context, page, sendInteraction }): Promise<void> {
+    async ensureSession({ capture, context, page, sendInteraction }): Promise<void> {
       await ensureAmazonSession({
+        ...(capture ? { capture } : {}),
         context,
         page,
         sendInteraction,

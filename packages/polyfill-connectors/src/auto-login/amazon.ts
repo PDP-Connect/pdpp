@@ -17,13 +17,17 @@
  */
 
 import type { BrowserContext, Locator, Page } from "playwright";
+import { manualAction } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
+import type { CaptureSession } from "../fixture-capture.ts";
 
 const SIGNIN_CHALLENGE_URL = /\/ap\/(signin|challenge|mfa)/;
 const ORDER_URL = /\/your-orders|\/order-history/;
 const TFA_PROMPT_TEXT = /verification|two.?step|authenticator|passcode|code we sent|sent a text/i;
+const ORDERS_URL = "https://www.amazon.com/your-orders/orders";
 
 interface EnsureAmazonSessionArgs {
+  capture?: CaptureSession | null;
   context: BrowserContext;
   page: Page;
   sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
@@ -53,29 +57,117 @@ async function fillWhenVisible(
   throw new Error("no visible match for locator within timeout");
 }
 
-export async function ensureAmazonSession({
-  context: _context,
-  page,
-  sendInteraction,
-}: EnsureAmazonSessionArgs): Promise<boolean> {
-  // Deep probe
+/**
+ * Probe whether the persistent profile already has a live Amazon session by
+ * navigating to the orders page and confirming Amazon did not redirect to a
+ * sign-in/challenge URL or render the sign-in form. Used both for the initial
+ * fast path and to re-check ground truth after a manual/browser action.
+ */
+async function probeAmazonSession(page: Page): Promise<boolean> {
   await page
-    .goto("https://www.amazon.com/your-orders/orders", {
+    .goto(ORDERS_URL, {
       waitUntil: "domcontentloaded",
       timeout: 30_000,
     })
     .catch((): undefined => undefined);
   await page.waitForTimeout(2500);
-  const url1 = page.url();
-  if (!SIGNIN_CHALLENGE_URL.test(url1)) {
-    const loginForm = await page
-      .locator('form[name="signIn"]')
-      .first()
-      .isVisible()
-      .catch((): boolean => false);
-    if (!loginForm && ORDER_URL.test(url1)) {
-      return true;
+  const url = page.url();
+  if (SIGNIN_CHALLENGE_URL.test(url)) {
+    return false;
+  }
+  const loginForm = await page
+    .locator('form[name="signIn"]')
+    .first()
+    .isVisible()
+    .catch((): boolean => false);
+  return !loginForm && ORDER_URL.test(url);
+}
+
+/**
+ * Hand the unexpected/Cloudflare-or-CAPTCHA sign-in UI to the operator, then
+ * re-probe the session. Returns `true` when the operator completed login in
+ * the streaming companion (or on a host desktop) and the session is now
+ * active; `false` when login still has not happened.
+ *
+ * Mirrors the reddit captcha fallback and the chatgpt/usaa manual-action
+ * handoffs: completing the manual step is a *signal to re-check ground truth*,
+ * not an instruction to end the run. The message never interpolates the stored
+ * credentials, and the sign-in URL handed to the operator carries no secrets.
+ */
+async function requestManualLoginForChallenge({
+  capture,
+  page,
+  reason,
+  sendInteraction,
+}: Pick<EnsureAmazonSessionArgs, "capture" | "page" | "sendInteraction"> & {
+  readonly reason: string;
+}): Promise<boolean> {
+  await manualAction(
+    {
+      ...(capture ? { capture } : {}),
+      page,
+      reason: "captcha",
+      message:
+        `Amazon did not render the expected sign-in form (${reason}). ` +
+        "This usually means Amazon is showing a CAPTCHA/puzzle or an approve-on-device challenge to the automated browser. " +
+        "If this run opened a visible browser, complete Amazon sign-in there and respond success. " +
+        "If it is headless, cancel this interaction and rerun Amazon headed (for example with PDPP_AMAZON_HEADLESS=0 on a desktop or under xvfb-run).",
+      timeoutSeconds: 1800,
+    },
+    sendInteraction
+  );
+  await page.waitForTimeout(3000);
+  return probeAmazonSession(page);
+}
+
+/**
+ * Fill a login field that should be visible, or — when it never renders
+ * (Amazon interposed a challenge) — hand off to the operator and re-probe.
+ *
+ * Returns:
+ *   - `"filled"`     — the field was found and filled; keep driving the form.
+ *   - `"recovered"`  — the field was missing, the operator completed the manual
+ *                      step, and the session is now live; the caller should
+ *                      return success without driving further form steps.
+ * Throws `amazon_login_unexpected_ui` when the field was missing and the manual
+ * step did not establish a session.
+ */
+async function fillOrHandleChallenge({
+  capture,
+  locator,
+  page,
+  reason,
+  sendInteraction,
+  value,
+}: Pick<EnsureAmazonSessionArgs, "capture" | "page" | "sendInteraction"> & {
+  readonly locator: Locator;
+  readonly reason: string;
+  readonly value: string;
+}): Promise<"filled" | "recovered"> {
+  try {
+    await fillWhenVisible(page, locator, value);
+    return "filled";
+  } catch {
+    // The expected input never became visible — Amazon is most likely serving a
+    // Cloudflare/CAPTCHA/puzzle or approve-on-device challenge instead of the
+    // sign-in form. Hand off to the operator and re-probe the session before
+    // declaring failure, rather than crashing with a bare selector timeout.
+    if (await requestManualLoginForChallenge({ ...(capture ? { capture } : {}), page, reason, sendInteraction })) {
+      return "recovered";
     }
+    throw new Error("amazon_login_unexpected_ui");
+  }
+}
+
+export async function ensureAmazonSession({
+  capture,
+  context: _context,
+  page,
+  sendInteraction,
+}: EnsureAmazonSessionArgs): Promise<boolean> {
+  // Deep probe
+  if (await probeAmazonSession(page)) {
+    return true;
   }
 
   const email = process.env.AMAZON_USERNAME;
@@ -106,7 +198,17 @@ export async function ensureAmazonSession({
     .inputValue()
     .catch((): string => "");
   if (currentEmail !== email) {
-    await fillWhenVisible(page, emailLoc, email);
+    const emailStep = await fillOrHandleChallenge({
+      ...(capture ? { capture } : {}),
+      locator: emailLoc,
+      page,
+      reason: "sign-in form did not render",
+      sendInteraction,
+      value: email,
+    });
+    if (emailStep === "recovered") {
+      return true;
+    }
   }
   // Amazon's unified-claim signin page uses an unlabeled <input type="submit">
   // with aria-labelledby="continue-announce" — no stable id. Cover all shapes.
@@ -121,7 +223,17 @@ export async function ensureAmazonSession({
 
   // Password step — `#ap_password` remains stable; `input[name="password"]`
   // also matches a hidden autofill hint, so we prefer the id + require vis.
-  await fillWhenVisible(page, page.locator("input#ap_password"), password);
+  const passwordStep = await fillOrHandleChallenge({
+    ...(capture ? { capture } : {}),
+    locator: page.locator("input#ap_password"),
+    page,
+    reason: "password form did not render",
+    sendInteraction,
+    value: password,
+  });
+  if (passwordStep === "recovered") {
+    return true;
+  }
   await page
     .locator('input#signInSubmit, input[type="submit"], button[type="submit"]')
     .first()
@@ -163,17 +275,22 @@ export async function ensureAmazonSession({
     await page.waitForTimeout(6000);
   }
 
-  // Verify
-  await page
-    .goto("https://www.amazon.com/your-orders/orders", {
-      waitUntil: "domcontentloaded",
-      timeout: 30_000,
-    })
-    .catch((): undefined => undefined);
-  await page.waitForTimeout(2500);
-  const finalUrl = page.url();
-  if (SIGNIN_CHALLENGE_URL.test(finalUrl)) {
-    throw new Error("amazon_login_incomplete_after_submit");
+  // Verify. If Amazon still parks us on a sign-in/challenge URL after the
+  // automated flow (e.g. an approve-on-device prompt or an OTP variant whose
+  // copy did not match TFA_PROMPT_TEXT), give the operator one manual/browser
+  // step and re-probe before declaring the login incomplete.
+  if (await probeAmazonSession(page)) {
+    return true;
   }
-  return true;
+  if (
+    await requestManualLoginForChallenge({
+      ...(capture ? { capture } : {}),
+      page,
+      reason: "automated sign-in did not complete",
+      sendInteraction,
+    })
+  ) {
+    return true;
+  }
+  throw new Error("amazon_login_incomplete_after_submit");
 }
