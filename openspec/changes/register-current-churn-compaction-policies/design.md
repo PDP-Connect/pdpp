@@ -2,7 +2,7 @@
 
 ## Scope
 
-Three current high/watch churn streams whose churn is provably non-semantic:
+Four current high/watch churn streams whose churn is provably non-semantic:
 
 | Stream | ~v/rec | Stored body | Volatile field | Forward fix |
 | --- | --- | --- | --- | --- |
@@ -11,7 +11,7 @@ Three current high/watch churn streams whose churn is provably non-semantic:
 | chase / accounts | 20 | identity + all-null balances + `fetched_at` | `fetched_at` only | exclude `fetched_at` |
 | slack / channel_memberships | high | `{id, channel_id, user_id, fetched_at}` | `fetched_at` only | exclude `fetched_at` (forward gate already shipped) |
 
-## Why these three and not the others
+## Why these streams and not the others
 
 The audit classified all eight brief-listed streams:
 
@@ -32,14 +32,15 @@ The audit classified all eight brief-listed streams:
 - **usaa / accounts**, **usaa / credit_card_billing** — churn on real balance
   fields (`balance_cents`, `current_balance_cents`, …) in addition to
   `fetched_at`. Excluding only `fetched_at` would still leave balance churn (a
-  real change), and excluding balances would hide real changes. Report-only.
+  real change), and excluding balances would hide real changes. Handled by a
+  separate `fetched_at`-only follow-up that keeps balances as boundaries.
 
 The brief is explicit: "A low-quality 'exclude timestamps' guess is not
-acceptable." For the three in-scope streams, excluding the run-clock field (or,
-for labels, hashing the stored body) loses **nothing** real — the excluded field
-is the run clock, not source data. For the four out-of-scope streams, any
-exclusion would drop real signal, so they get a root-cause recommendation
-instead of a churn-hiding compaction policy.
+acceptable." For the in-scope streams, excluding the run-clock field (or, for
+labels, hashing the stored body) loses **nothing** real — the excluded field is
+the run clock, not source data. For the out-of-scope streams, any exclusion
+would drop real signal, so they get a root-cause recommendation instead of a
+churn-hiding compaction policy.
 
 ## gmail/labels parity construction
 
@@ -72,6 +73,7 @@ node reference-implementation/scripts/compact-record-history.mjs \
   --connector-instance-id=<cin> --stream=labels      # gmail
   --connector-instance-id=<cin> --stream=statements  # usaa
   --connector-instance-id=<cin> --stream=accounts    # chase
+  --connector-instance-id=<cin> --stream=channel_memberships # slack
 ```
 
 Confirm a non-zero `removableVersions`, then re-run with `--apply`. The tool
@@ -84,7 +86,7 @@ own after the projection recomputes from ground truth.
 
 - `node --test reference-implementation/test/compact-record-history.test.js`
 - `node --test --import tsx reference-implementation/test/compact-record-history-fingerprint-parity.test.js`
-- gmail/usaa/chase forward-gate tests + existing connector suites
+- gmail/usaa/chase/slack forward-gate tests + existing connector suites
 - `openspec validate register-current-churn-compaction-policies --strict`
 
 ## Out of scope

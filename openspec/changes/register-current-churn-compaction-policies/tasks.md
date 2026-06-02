@@ -37,7 +37,7 @@
   `connectors/chase/accounts-fingerprint.test.ts` — each proves
   unchanged-suppressed / real-change-emits / prune-on-disappear / STATE
   round-trip / legacy tolerance / connector-vs-compaction fingerprint parity.
-- [x] 3.2 Add the three pairs (in array order) to the
+- [x] 3.2 Add the initial three pairs (in array order) to the
   `COMPACTION_POLICIES exposes the registered policies` assertion in
   `compact-record-history.test.js`.
 - [x] 3.3 Add `gmail/labels`, `usaa/statements`, `chase/accounts` parity
@@ -52,8 +52,8 @@
 
 - [x] 4.1 Extend the Family-1 enumeration in the
   reference-implementation-architecture capability spec to include
-  `gmail/labels`, `usaa/statements`, and `chase/accounts` via this change's
-  delta.
+  `gmail/labels`, `usaa/statements`, `chase/accounts`, and the later
+  `slack/channel_memberships` policy via this change's delta.
 - [x] 4.2 Add a scenario describing the run-clock / stored-body collapse and the
   preserved boundaries (a renamed label / re-hydrated statement / renamed
   account stays a fingerprint boundary).
@@ -65,6 +65,7 @@
 - [x] `node --test --import tsx reference-implementation/test/compact-record-history-fingerprint-parity.test.js`
   — pass.
 - [x] gmail/usaa/chase forward-gate tests + existing connector suites — pass.
+- [x] slack forward-gate test — pass.
 - [x] `pnpm exec openspec validate register-current-churn-compaction-policies --strict`
   — pass.
 - [ ] (Owner-only, deferred) Dry-run each scope against live data, confirm

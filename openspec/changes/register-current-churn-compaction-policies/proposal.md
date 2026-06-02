@@ -1,4 +1,4 @@
-# Register current high-churn compaction policies (gmail/labels, usaa/statements, chase/accounts)
+# Register current high-churn compaction policies
 
 ## Why
 
@@ -25,11 +25,13 @@ not compaction that hides ongoing churn. This change ships both: the forward
 fingerprint gates (the new connector-side no-op definitions) and the historical
 compaction policies that mirror them one-for-one.
 
-The other current high/watch streams (github/user, slack/channels,
-usaa/accounts, usaa/credit_card_billing) churn on genuinely volatile semantic
-fields (follower counts, `num_members`, live balances). Excluding those fields
-would hide real changes, so they are intentionally **not** addressed here and
-remain report-only recommendations.
+The other current high/watch streams (`github/user`, `slack/channels`,
+`usaa/accounts`, `usaa/credit_card_billing`) churn on genuinely volatile
+semantic fields (follower counts, `num_members`, live balances). Excluding
+those fields would hide real changes, so they are intentionally **not** handled
+by arbitrary exclusions. The USAA account/billing follow-up later proved a
+safe, narrow `fetched_at`-only policy that keeps real balance fields as
+boundaries; `github/user` and `slack/channels` remain report-only design work.
 
 ## What Changes
 
@@ -47,8 +49,8 @@ remain report-only recommendations.
     forward gate was already shipped (in `FINGERPRINTED_STREAMS`); this
     closes the previously-deferred matching historical compaction policy.
 - Extend the canonical Family-1 stream enumeration in the
-  reference-implementation-architecture capability spec to include the three new
-  streams.
+  reference-implementation-architecture capability spec to include the newly
+  covered streams.
 - Add pure-helper, selector, and fingerprint-parity test coverage.
 
 No new HTTP route, schedule, or automatic job. No change to the retention rule,
@@ -70,11 +72,11 @@ procedure).
   fingerprint gate + `readPriorAccountFingerprints`.
 - `packages/polyfill-connectors/connectors/{gmail,usaa,chase}/*-fingerprint.test.ts`
   — new forward-gate tests.
-- `reference-implementation/scripts/compact-record-history.mjs` — three registry
+- `reference-implementation/scripts/compact-record-history.mjs` — registry
   entries + header docstring.
 - `reference-implementation/test/compact-record-history.test.js` — registry
   shape assertion.
 - `reference-implementation/test/compact-record-history-fingerprint-parity.test.js`
-  — three parity fixtures + static-guard set.
+  — parity fixtures + static-guard set.
 - `openspec/specs/reference-implementation-architecture/spec.md` — Family-1
   enumeration (via this change's delta).
