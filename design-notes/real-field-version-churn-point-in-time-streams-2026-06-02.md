@@ -8,12 +8,13 @@ Related: design-notes/record-version-churn-and-noop-semantics-2026-05-26.md, des
 
 ## One-screen summary (for the owner)
 
-The version-churn audit forward-fixed every **run-clock** stream: `fetched_at`
-(a run timestamp, not source data) is now excluded from the fingerprint on
-gmail/labels, usaa/statements, chase/accounts, slack/channel_memberships, and —
-as of `cd577ba7` on this branch's base — **usaa/accounts and
-usaa/credit_card_billing**. Those last two no longer churn on a no-op refresh;
-any real balance/APR/reward move still re-emits.
+The version-churn audit forward-fixed the current **no-op/run-clock** streams:
+Gmail labels now suppress byte-identical label re-emits, and `fetched_at` (a run
+timestamp, not source data) is excluded from the fingerprint on usaa/statements,
+chase/accounts, slack/channel_memberships, and — as of `cd577ba7` on this
+branch's base — **usaa/accounts and usaa/credit_card_billing**. Those last two
+no longer churn on a no-op refresh; any real balance/APR/reward move still
+re-emits.
 
 What is left is not a bug and not a threshold problem. Four streams still version
 on **genuinely changing real fields**, because one record is being asked to carry
@@ -41,14 +42,14 @@ first. The owner decisions are in the section of the same name below.
 ## Question
 
 How should the reference model the four streams that still version on real,
-genuinely-changing fields, now that the run-clock (`fetched_at`) half is already
-fixed for all of them — without losing history, without raising churn
-thresholds, and without hiding real changes?
+genuinely-changing fields, now that the known no-op/run-clock emit defects are
+already fixed — without losing history, without raising churn thresholds, and
+without hiding real changes?
 
 ## Context
 
 - The version-churn policy audit (`register-current-churn-compaction-policies`)
-  forward-fixed three pure run-clock streams and left four "real-field" streams
+  forward-fixed three no-op/run-clock streams and left four "real-field" streams
   as report-only, because excluding a real field from a fingerprint silently
   destroys source history.
 - `cd577ba7` (this branch's base) then closed the **run-clock half** of the two
@@ -110,9 +111,10 @@ retain real history, stop alarming, and keep compaction safe.
 
 Decision rule (applies to any future real-field churn):
 
-1. **Run clock / ingest artifact** (`fetched_at`, re-normalization, repair
-   backfill) → exclude from fingerprint + register a mirrored compaction policy.
-   *Already done for all six streams that had this component.*
+1. **No-op / run-clock / ingest artifact** (byte-identical re-emit,
+   `fetched_at`, re-normalization, repair backfill) → suppress from the connector
+   fingerprint + register a mirrored compaction policy where historical cleanup
+   is warranted. *Already done for the current no-op/run-clock streams.*
 2. **Genuine point-in-time metric** (counts, balances, rewards sampled at fetch
    time) → **split into an append-keyed stream.** Retain history as records.
    Never compact. Never exclude-without-moving (exclusion alone loses data).
@@ -256,11 +258,9 @@ Each connector is its own narrow lane with AC-1…AC-6 as its validation contrac
 
 ## Decision log
 
-- 2026-06-02 — Captured. Run-clock half closed for all six affected streams
+- 2026-06-02 — Captured. Current no-op/run-clock churn is forward-fixed
   (`cd577ba7` closed the two USAA real-field streams' run-clock component);
   residual churn on the four streams above is now purely real-field. Direction
   proposed: append-keyed point-in-time split, thresholds frozen, no real-field
   exclusion or compaction. Awaiting owner decisions 1–5. Not promoted to
   OpenSpec yet.
-</content>
-</invoke>
