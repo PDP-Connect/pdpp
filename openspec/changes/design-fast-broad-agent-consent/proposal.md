@@ -20,7 +20,7 @@ The current reference accepts one `authorization_details[]` entry per PAR reques
 
 ### Modified
 
-- None accepted. This change is explicitly proposed/investigative until owner review accepts a design.
+- None in this design track. The accepted implementation lives in the follow-up `implement-batch-consent-ceremony` change, which promoted Option B into reference-experimental runtime behavior without changing PDPP Core.
 
 ## Impact
 

@@ -1,6 +1,8 @@
 ## Status
 
-This is a high-stakes normative design track. It is not an accepted PDPP protocol change, does not modify the reference PAR contract, and does not authorize implementation of multi-source grants or approve-many consent UI.
+Decided for the reference implementation. This design track selected Option B first: a reference-experimental batch consent ceremony that issues independent source-bounded child grants. The accepted implementation lives in the follow-up `implement-batch-consent-ceremony` change.
+
+This is not a PDPP Core change. The follow-up changed reference implementation behavior and the `agent-consent-bundling` capability, not the root protocol grant model. Option C (owner-authored permission sets) remains deferred to a separate future OpenSpec change; Option D (agent roles) remains out of scope for this track.
 
 ## Problem
 
@@ -27,7 +29,7 @@ But it creates a real user problem:
 - **Make broadness legible.** Mixed-source, continuous, no-time-limit, all-stream, or no-field-limit access needs stronger presentation than a narrow one-shot task grant.
 - **Keep denial and revocation granular.** The owner must be able to deny or revoke one source without invalidating unrelated approved access unless they choose package-level revocation.
 - **Do not let clients author dark-pattern bundles.** Client-authored broad packages need constraints. Owner-authored permission sets may be safer for repeated high-trust use.
-- **Treat this as proposed until accepted.** Any experimental reference implementation must be labeled reference-experimental and must not claim root PDPP normativity.
+- **Keep experimental reference behavior labeled.** Any experimental reference implementation must be labeled reference-experimental and must not claim root PDPP normativity.
 
 ## Candidate Models
 
@@ -94,11 +96,11 @@ Cons:
 - Risks becoming account-level authorization policy rather than consent.
 - Needs careful relationship to client registration, project-local caches, and revocation.
 
-## Current Leaning
+## Accepted Reference Path
 
-Prefer **Option B as the first implementation candidate**, constrained by source-bounded issued grants, and **Option C as the next OpenSpec change after B lands** rather than a parallel track. **Option D is out of scope for this design track** based on prior-art review (see `design-notes/2026-04-27-prior-art-review.md`): no surveyed system ships anything close to agent-role policy as a first-class consent primitive, so it should not block fast setup.
+The accepted path is **Option B as the first implementation candidate**, constrained by source-bounded issued grants, and **Option C as a later OpenSpec change after B lands** rather than a parallel track. **Option D is out of scope for this design track** based on prior-art review (see `design-notes/2026-04-27-prior-art-review.md`): no surveyed system ships anything close to agent-role policy as a first-class consent primitive, so it should not block fast setup.
 
-The likely shape:
+The accepted shape:
 
 1. A client may stage a batch consent request containing multiple source-bounded grant requests.
 2. The AS renders a grouped consent ceremony.
@@ -111,11 +113,11 @@ The likely shape:
 
 Prior art validates this shape. RFC 9396 already supports multi-entry staged requests with partial approval. Plaid Multi-Item Link, Slack optional scopes, GitHub App installation, and Google granular consent all ship per-entry toggling against independent per-source credentials. The novel piece PDPP would invent — and must not underestimate — is **cumulative cross-source risk legibility**: none of the surveyed systems show an aggregated picture of risk across the bundle being approved.
 
-This leaning is not final. It must survive owner review before implementation.
+This path was implemented by `implement-batch-consent-ceremony`; the owner-facing surfaces remain labeled reference-experimental.
 
 ## Decision Matrix
 
-This is the owner-consumable summary of every `tasks.md` §3 decision in one place. It separates what accepted artifacts and prior owner steering already make safe to close (Decided) from genuine owner choices (Owner-gated). For each owner-gated row, the exact question text the owner must answer is below the table. Status here mirrors the checkboxes in `tasks.md`; this table does not introduce new normative requirements (those live in `specs/agent-consent-bundling/spec.md`).
+This is the owner-consumable summary of every `tasks.md` §3 decision in one place. It separates decisions closed by this track and the follow-up implementation from decisions deferred to later tracks. Status here mirrors the checkboxes in `tasks.md`; this table does not introduce new normative requirements (those live in `specs/agent-consent-bundling/spec.md` and in the follow-up `implement-batch-consent-ceremony` change).
 
 | # | Decision | Status | Recommendation | Where it is / would be captured |
 | --- | --- | --- | --- | --- |
@@ -125,14 +127,14 @@ This is the owner-consumable summary of every `tasks.md` §3 decision in one pla
 | D4 | Consent-level predicate filters (date/resource/category) | **Decided: deferred** | Reopen only as its own change after the query-layer filter grammar settles | Synthesis Q4 / decision #11 |
 | D5 | Where "source-bounded" normativity lives | **Decided: `agent-consent-bundling` capability spec** | `spec-core.md` promotion remains an optional later owner call | Merged capability spec |
 | D6 | Reference-experimental labeling of any first Option B | **Decided: required** | n/a | `agent-consent-bundling/spec.md` ("SHALL label it reference-experimental") |
-| O1 | First fast-setup primitive: B / C / D / none | **Owner-gated** | **B first.** D-out is prior-art-backed and safe; B-vs-nothing is the live owner call | Would gate a follow-up Option B implementation change (§4) |
-| O2 | Both B and C on roadmap, or only B | **Owner-gated** | **Both — B first, C as the next OpenSpec change, not a parallel track** | design.md "Current Leaning"; would be ratified into proposal scope |
-| O3 | Soft cap / warning threshold on `authorization_details[]` entries | **Owner-gated** | **Soft cap 8, warning at 6, no hard cap.** Lower to 5 if the target is the common email/finance/Slack/GitHub/calendar setup | Reference-contract policy in the follow-up B change (not a protocol limit) |
-| O4 | "Approve all" allowed for mixed-source, and disabling conditions | **Owner-gated** | **Hidden whenever (continuous + all streams), (no time bound + sensitive source), or N≥3 sensitive sources;** default presentation requires per-source confirmation | design.md "Current Leaning" step 3; would become a B-change spec scenario |
-| O5 | Which sources are "sensitive" + where the list lives | **Owner-gated** | **Manifest-declared `sensitivity: "standard" \| "sensitive"`** to ship fast; central registry as a later hardening step. Do **not** hardcode a source list | Connector manifest field, defined in the follow-up B change |
-| O6 | Package-level audit + revoke-package affordance | **Owner-gated (B-ceremony surface only)** | Hosted MCP package audit is already decided in merged spec; the **Option B batch-ceremony** package model stays open: package id grouped in timeline + dashboard, per-grant revocation primary, revoke-package as convenience only | Merged spec covers hosted MCP; B-ceremony semantics would be the follow-up change |
-| O7 | Incremental "add a source later" linkage | **Owner-gated** | **New ceremony, new package linked via `parent_package_id`; dashboard renders a cumulative per-client view** (Google `include_granted_scopes` precedent) | Follow-up B change storage + dashboard delta |
-| O8 | Option C permission-set storage + client-registration impact | **Owner-gated (deferred to Option C track)** | **Owner-local storage with optional manifest-declared templates;** decide only when Option C opens | Separate Option C design/implementation change |
+| O1 | First fast-setup primitive: B / C / D / none | **Decided: Option B first** | B first; D out of scope | Implemented by `implement-batch-consent-ceremony` |
+| O2 | Both B and C on roadmap, or only B | **Decided: B first; C later** | Keep C as a later separate change, not a parallel track | Option C remains deferred |
+| O3 | Soft cap / warning threshold on `authorization_details[]` entries | **Decided: 8 / 6** | Soft cap 8, warning at 6, no hard cap | Reference-contract policy in the follow-up B change (not a protocol limit) |
+| O4 | "Approve all" allowed for mixed-source, and disabling conditions | **Decided** | Hidden whenever (continuous + all streams), (no time bound + sensitive source), or N>=3 sensitive sources; otherwise requires re-asserting confirmation | Follow-up B change spec scenario + tests |
+| O5 | Which sources are "sensitive" + where the list lives | **Decided: manifest-declared now** | `sensitivity: "standard" \| "sensitive"`, absent defaults to `standard`; central registry optional later hardening | Connector manifest field in the follow-up B change |
+| O6 | Package-level audit + revoke-package affordance | **Decided** | `package_id` groups child grants; per-grant revocation primary; revoke-package dispatches per-child revokes and surfaces partial failure | Follow-up B package semantics and console/read surfaces |
+| O7 | Incremental "add a source later" linkage | **Decided** | New ceremony, new package linked via `parent_package_id`; dashboard renders cumulative per-client view | Follow-up B storage + dashboard delta |
+| O8 | Option C permission-set storage + client-registration impact | **Deferred to Option C track** | No storage/client-registration commitment in Option B | Separate Option C design/implementation change |
 
 ### Exact owner questions
 
@@ -149,13 +151,13 @@ These are the questions to put to the owner verbatim. Each is phrased so it can 
 
 ## Recommended Decision Packet
 
-This section is the single decision-ready summary for owner review. It does **not** record that any decision has been made, and it does **not** change `tasks.md` checkboxes; it states one coherent recommended path so the eight owner-gated questions (O1–O8) can be answered in one pass. Approving it would authorize writing a *follow-up* implementation OpenSpec change — not editing `/oauth/par`, consent storage, consent UI issuance, or grant issuance. Until that follow-up change is written and owner-reviewed, the "Do Not Implement Yet" guards below remain in force.
+This section is the historical decision packet that fed the follow-up implementation change. The owner path selected Option B first, kept Option C deferred as a separate future change, and kept Option D out of scope. The accepted runtime behavior now lives in `implement-batch-consent-ceremony`.
 
 ### One recommended SLVP path
 
 The recommended path is **Option B (batch consent ceremony issuing independent source-bounded grants) as the first and only near-term primitive**, with Option C (owner-authored permission sets) kept on the roadmap as the next OpenSpec change after B lands, Option D (agent roles) off the track, and consent-level predicate filters deferred. This is the minimum viable design that removes the "5–12 ceremonies to set up a useful agent" friction without normalizing a client-authored "all data" bundle or an owner-token shortcut. It adds no new enforcement primitive: `package_id` and `parent_package_id` are grouping aids; every issued grant stays source-bounded and individually revocable.
 
-The recommendation chooses, for each owner-gated question, the option already carried as the design-leaning recommendation in the Decision Matrix. They are collected here so the owner can ratify, amend, or reject them as a set.
+The recommendation chose, for each owner-gated question, the option already carried as the design-leaning recommendation in the Decision Matrix. They are retained here as the rationale for the accepted Option B follow-up.
 
 | # | Question | Recommended answer | One-line rationale |
 | --- | --- | --- | --- |
@@ -187,9 +189,9 @@ Keeping the Core / Collection Profile / reference-implementation split explicit 
 
 The reference's current `authorization_details.maxItems = 1` is a **reference policy choice, not an RFC 9396 requirement and not PDPP Core**. Relaxing it to a soft cap is a follow-up-change reference-contract edit, not a protocol change.
 
-### Acceptance criteria for the follow-up implementation OpenSpec change
+### Acceptance criteria used for the follow-up implementation OpenSpec change
 
-These criteria are written so the follow-up change can be specified the moment the owner ratifies (or amends) the packet above. They are **not** authorization to implement now. The follow-up change SHOULD:
+These criteria were used to specify and review the follow-up `implement-batch-consent-ceremony` change. They remain useful as the audit checklist for that implementation. The follow-up change SHOULD:
 
 1. **Be its own OpenSpec change** (e.g. `implement-batch-consent-ceremony`), extending the `agent-consent-bundling` capability spec. It SHALL NOT edit `spec-core.md` unless the owner separately decides to promote the source-bounded rule (D5).
 2. **Preserve source-bounded issued grants.** Each approved source SHALL issue one independent, source-bounded, independently revocable PDPP grant. No cross-source grant object is created. (Already normative; the follow-up restates it as the batch-ceremony invariant.)
@@ -208,27 +210,26 @@ These criteria are written so the follow-up change can be specified the moment t
 
 Explicit non-goals for the follow-up change (each its own later track if ever pursued): owner-authored permission sets (Option C), agent roles (Option D), consent-level predicate filters, cross-source grant objects, AS-side enrichment, default approve-all for high-risk bundles, and per-source access-mode mixing within one package (see Residual Risks).
 
-### Do Not Implement Yet
+### Historical Implementation Guard
 
-Until the owner ratifies this packet **and** a follow-up implementation OpenSpec change is written and owner-reviewed, the following remain frozen (consistent with `tasks.md` §4 and the v2 closeout triage):
+This guard was active while this design track was still under review. It was lifted only through the follow-up `implement-batch-consent-ceremony` change. Outside that follow-up, these constraints remain useful boundaries:
 
-- Do not modify `/oauth/par`, pending-consent storage, the consent UI issuance path, or grant issuance.
-- Do not relax `authorization_details.maxItems = 1` in the reference contract.
-- Do not add `package_id` / `parent_package_id` storage, manifest `sensitivity`, the grouped review screen, the cumulative-risk header, the approve-all gate, or the soft cap to reference code.
-- Do not update the `pdpp-data-access` skill or CLI to recommend batched setup.
+- Do not modify `/oauth/par`, pending-consent storage, the consent UI issuance path, or grant issuance outside an accepted OpenSpec change.
+- Do not relax reference authorization behavior outside the accepted reference-experimental batch path.
+- Do not add future permission-set, role, predicate-filter, or cross-source-grant behavior through this change.
+- Do not update `pdpp-data-access` skill or CLI guidance ahead of the runtime behavior it describes.
 - Do not edit `spec-core.md` to promote the source-bounded rule; that is a separate optional owner call (D5).
-- Do not treat this packet as owner approval. It is a recommendation requiring sign-off.
 
 The already-landed hosted MCP picker repairs (streams narrowing, package access-mode, picker UX repair — `tasks.md` §4 checked items) are **not** affected by these guards; they shipped under prior owner approval and are the precedent the follow-up change reuses.
 
-## Current-State Audit
+## Historical Current-State Audit
 
-Reference PAR behavior remains intentionally one-entry-only:
+At the time this design track was opened, reference PAR behavior was intentionally one-entry-only:
 
-- `reference-implementation/server/auth.js` rejects any request whose `authorization_details.length !== 1`.
-- The observed runtime failure shape for two entries is HTTP `400` with body `{ error: { type: "invalid_request_error", code: "invalid_request", message: "Exactly one authorization_details entry is supported in the current reference flow", request_id } }`; no `PDPP-Reference-Trace-Id` header is returned for this validation failure.
-- `reference-implementation/test/pdpp.test.js` now pins that multi-entry rejection shape in the malformed request-envelope coverage.
-- The public reference contract schema also advertises `authorization_details.maxItems = 1` (`packages/reference-contract/src/public/index.ts`).
+- `reference-implementation/server/auth.js` rejected any request whose `authorization_details.length !== 1`.
+- The observed runtime failure shape for two entries was HTTP `400` with body `{ error: { type: "invalid_request_error", code: "invalid_request", message: "Exactly one authorization_details entry is supported in the current reference flow", request_id } }`; no `PDPP-Reference-Trace-Id` header was returned for this validation failure.
+- `reference-implementation/test/pdpp.test.js` pinned that multi-entry rejection shape in the malformed request-envelope coverage at the time of the audit.
+- The public reference contract schema also advertised `authorization_details.maxItems = 1` (`packages/reference-contract/src/public/index.ts`) at the time of the audit.
 
 Consent presentation for maximal single-source grants is legible but not enough for mixed-source batching:
 
