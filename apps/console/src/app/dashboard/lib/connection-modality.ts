@@ -190,6 +190,30 @@ function bareConnectorKey(connectorId: string): string {
 }
 
 /**
+ * Public canonical bare key for a manifest's (possibly registry-URL-shaped)
+ * `connector_id`. The connector catalog keys, displays, and routes on this value;
+ * exporting the existing private helper keeps one canonicalization rule for the
+ * console rather than letting the catalog re-implement the registry-prefix strip.
+ */
+export function canonicalConnectorKey(connectorId: string): string {
+  return bareConnectorKey(connectorId);
+}
+
+/**
+ * Map a canonical bare connector key to the enrollment-form key the supported
+ * sets and the device-exporter deep-link expect. The only divergence today is
+ * the local-collector slug: manifests use `claude-code` (hyphen), but the proven
+ * enrollment path and `SUPPORTED_LOCAL_COLLECTOR_CONNECTORS` use `claude_code`
+ * (underscore), mirroring the form's `COLLECTOR_RUN_CONNECTORS` literal. Every
+ * other connector's bare key already equals its enrollment key. Keeping this
+ * mapping here — next to the supported sets it serves — means the catalog never
+ * mints a `?connector=` value the enrollment form would reject.
+ */
+export function enrollmentKeyForCanonicalKey(canonicalKey: string): string {
+  return canonicalKey === "claude-code" ? "claude_code" : canonicalKey;
+}
+
+/**
  * True when this connector is browser-bound (manifest `browser` binding).
  * Accepts the canonical bare key the row normally receives and the registry-URL
  * fallback form, so a non-canonical id cannot resurrect a false Sync now.

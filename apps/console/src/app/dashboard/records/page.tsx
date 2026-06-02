@@ -3,6 +3,7 @@ import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { Suspense } from "react";
 import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
 import { RecordsListView, VersionChurnNotice } from "../components/views/records-list-view.tsx";
+import { buildConnectorCatalog, type ConnectorCatalogEntry } from "../lib/connection-catalog.ts";
 import { liveDashboardDataSource } from "../lib/data-source.ts";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
@@ -11,7 +12,7 @@ import {
   type RefConnectorRunSummary,
   type RefConnectorSummary,
 } from "../lib/ref-client.ts";
-import type { ConnectorOverview } from "../lib/rs-client.ts";
+import { type ConnectorOverview, listConnectorManifests } from "../lib/rs-client.ts";
 import { RecordsPagePoller } from "./records-page-poller.tsx";
 
 export const dynamic = "force-dynamic";
@@ -71,6 +72,7 @@ export default async function RecordsIndexPage() {
   // when the device-exporter endpoint fails so the rest of the page
   // still renders.
   let pendingOnDevices = 0;
+  let connectorCatalog: ConnectorCatalogEntry[] = [];
   // The connector summaries and the device-exporter diagnostics are
   // independent reads. Fire the (advisory) device-exporter request
   // concurrently with the (load-bearing) connector-summaries request so the
@@ -83,6 +85,14 @@ export default async function RecordsIndexPage() {
       sources.data.reduce((sum, s) => sum + (typeof s.records_pending === "number" ? s.records_pending : 0), 0)
     )
     .catch(() => 0);
+  // The add-connection picker catalog is built from the shipped connector
+  // manifests, which are read from disk in this server component — independent of
+  // the RS connector summaries. Read them concurrently and tolerate a read
+  // failure by falling back to an empty catalog (the guidance still renders its
+  // shared-module modality taxonomy; it just lists no per-connector entries).
+  const connectorCatalogPromise: Promise<ConnectorCatalogEntry[]> = listConnectorManifests()
+    .then((manifests) => buildConnectorCatalog(manifests))
+    .catch(() => []);
   try {
     const response = await liveDashboardDataSource.listConnectorSummaries();
     overviews = response.data.map(toConnectorOverview);
@@ -90,6 +100,7 @@ export default async function RecordsIndexPage() {
     // the connector list. Per-connection diagnostics surface the underlying
     // error. The request already raced the connector summaries above.
     pendingOnDevices = await pendingOnDevicesPromise;
+    connectorCatalog = await connectorCatalogPromise;
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
@@ -107,6 +118,7 @@ export default async function RecordsIndexPage() {
   return (
     <DashboardShell active="records">
       <RecordsListView
+        connectorCatalog={connectorCatalog}
         interactive={true}
         overviews={overviews}
         pendingOnDevices={pendingOnDevices}

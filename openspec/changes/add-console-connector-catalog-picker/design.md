@@ -30,13 +30,21 @@ grouped by modality, with routing derived from the existing supported-set
 predicates. Concretely:
 
 1. Add a pure module `connection-catalog.ts` that takes the manifest list and
-   produces a `ConnectorCatalogEntry[]`: `{ connectorId (canonical key),
+   produces a `ConnectorCatalogEntry[]`: `{ connectorKey (canonical key),
    displayName, modality, disposition }`, where `disposition` is one of
-   `local_collector_enroll` | `browser_collector_manual` | `browser_bound_runbook`
-   | `api_network_unsupported`. The disposition is computed from the binding
-   modality plus the existing `isSupportedLocalCollectorConnector` /
+   `local_collector_enroll` | `local_collector_unproven` |
+   `browser_collector_manual` | `browser_bound_runbook` | `api_network_unsupported`
+   | `unknown_unsupported`. The disposition is computed from the binding modality
+   plus the existing `isSupportedLocalCollectorConnector` /
    `isSupportedBrowserCollectorConnector` predicates — no new classification
    logic, no new source of truth.
+
+   `local_collector_unproven` is the honest treatment for filesystem-class
+   connectors outside the proven enrollment set (e.g. `slack`, `apple-health`):
+   their collector path exists in principle, but the console has no committed
+   enrollment proof for them, so they are named without a deep-link rather than
+   either offered as a false one-click enroll OR mislabeled as "needs an API
+   connection flow" by being lumped with API/network sources.
 2. The records page (server component) calls `listConnectorManifests()`, builds
    the catalog, and passes it to `RecordsListView`, which forwards it to
    `AddConnectionGuidance`.

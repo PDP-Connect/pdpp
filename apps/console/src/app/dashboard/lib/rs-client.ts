@@ -84,6 +84,13 @@ export interface ConnectorManifest {
   display_name?: string;
   name?: string;
   provider_id?: string;
+  /**
+   * Runtime binding requirements. The add-connection catalog classifies each
+   * connector's modality from `runtime_requirements.bindings` (the same signal
+   * the backend owner-agent intent route reads), so the manifest type must carry
+   * it through the typed `listConnectorManifests()` path.
+   */
+  runtime_requirements?: { bindings?: Record<string, unknown> | null } | null;
   streams?: Array<{ name: string; [k: string]: unknown }>;
 }
 

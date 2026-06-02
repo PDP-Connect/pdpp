@@ -250,9 +250,9 @@ test("persistent Add-connection action targets the device-enrollment entry point
 // local-collector-only "No data yet" wording.
 
 const ADD_CONNECTION_GUIDANCE_DEF = /function AddConnectionGuidance\(/;
-// The guidance is rendered (live only) and points at device enrollment.
-const ADD_CONNECTION_GUIDANCE_RENDERED =
-  /<AddConnectionGuidance deviceExportersHref=\{routes\.section\.deviceExporters\}/;
+// The guidance is rendered (live only), receives the live catalog, and points at
+// device enrollment.
+const ADD_CONNECTION_GUIDANCE_RENDERED = /<AddConnectionGuidance\s+catalog=\{connectorCatalog \?\? \[\]\}/;
 // The honest guidance must render UNCONDITIONALLY on the live list — gated only
 // on `interactive`, immediately before the Connections section — not buried
 // inside an empty-state branch. A fully-populated console (no empty-state
@@ -262,24 +262,34 @@ const ADD_CONNECTION_GUIDANCE_RENDERED =
 // way to add a second Amazon"). This invariant fails if the guidance regresses
 // to rendering only when `primaryConnections.length === 0` / `empty.length > 0`.
 const ADD_CONNECTION_GUIDANCE_ALWAYS_VISIBLE =
-  /\{interactive \? <AddConnectionGuidance deviceExportersHref=\{routes\.section\.deviceExporters\} \/> : null\}\s*\n\s*<Section title=\{`Connections/;
-// The supported set and unsupported reasons must come from the shared module,
-// not be re-hardcoded in the view (single source of truth with the backend).
+  /\{interactive \? \(\s*<AddConnectionGuidance[\s\S]*?\/>\s*\) : null\}\s*\n\s*<Section title=\{`Connections/;
+// The modality taxonomy + gated reasons must still come from the shared module,
+// and the per-connector list must come from the shared catalog model — not be
+// re-hardcoded in the view (single source of truth with the backend).
 const ADD_CONNECTION_USES_SHARED_MODALITY = /from "\.\.\/\.\.\/lib\/connection-modality\.ts"/;
-const ADD_CONNECTION_RENDERS_SUPPORTED = /SUPPORTED_LOCAL_COLLECTOR_CONNECTORS\.map\(/;
-const ADD_CONNECTION_RENDERS_BROWSER_SUPPORTED = /SUPPORTED_BROWSER_COLLECTOR_CONNECTORS\.map\(/;
-const ADD_CONNECTION_RENDERS_UNSUPPORTED = /UNSUPPORTED_ADD_MODALITIES\.map\(/;
-// Supported connectors deep-link into the enrollment form pre-selected.
+const ADD_CONNECTION_USES_SHARED_CATALOG = /from "\.\.\/\.\.\/lib\/connection-catalog\.ts"/;
+// The picker renders the FULL catalog grouped by disposition, not three
+// hardcoded literals. Each group comes from a catalog partition helper.
+const ADD_CONNECTION_RENDERS_LOCAL_CATALOG = /localCollectorEntries\(catalog\)/;
+const ADD_CONNECTION_RENDERS_BROWSER_MANUAL_CATALOG = /browserCollectorEntries\(catalog\)/;
+const ADD_CONNECTION_RENDERS_BROWSER_RUNBOOK_CATALOG = /browserBoundRunbookEntries\(catalog\)/;
+const ADD_CONNECTION_RENDERS_LOCAL_UNPROVEN_CATALOG = /localCollectorUnprovenEntries\(catalog\)/;
+const ADD_CONNECTION_RENDERS_NETWORK_CATALOG = /unsupportedNetworkEntries\(catalog\)/;
+// Supported entries (and only those) deep-link into the enrollment form
+// pre-selected, using the entry's enrollment key.
 const ADD_CONNECTION_DEEP_LINKS_PRESELECTED =
-  /\$\{deviceExportersHref\}\?connector=\$\{encodeURIComponent\(connectorId\)\}/;
+  /\$\{deviceExportersHref\}\?connector=\$\{encodeURIComponent\(entry\.enrollmentKey \?\? entry\.connectorKey\)\}/;
 const ADD_CONNECTION_BROWSER_MANUAL_SECTION = /Manual browser-collector setup/;
 const ADD_CONNECTION_BROWSER_MANUAL_NOT_ONE_CLICK = /not a one-click\s+browser flow/;
 const ADD_CONNECTION_NAMES_NOT_SUPPORTED_YET = /Not supported from the console yet/;
-// An unsupported modality that carries a `runbookPath` (browser-bound) must
-// surface that documented owner-run path inline, so the owner is pointed at the
-// real manual flow instead of a dead end. The intent route and the console used
-// to send the owner in a loop; this closes it.
-const ADD_CONNECTION_SURFACES_RUNBOOK_PATH = /entry\.runbookPath \?[\s\S]*?\{entry\.runbookPath\}/;
+// The browser-bound owner-run group must surface the documented runbook path
+// inline, so the owner is pointed at the real manual flow instead of a dead end.
+const ADD_CONNECTION_SURFACES_RUNBOOK_PATH =
+  /data-testid="runbook-path-browser_bound"[\s\S]*?BROWSER_BOUND_RUNBOOK_PATH/;
+// A gated group (browser-bound runbook, API/network) must NEVER render an
+// enrollment deep-link: only the two creatable groups build a `?connector=` href.
+// There must be exactly two deep-link sites in the picker.
+const ADD_CONNECTION_DEEP_LINK_COUNT_RE = /\$\{deviceExportersHref\}\?connector=/g;
 // The PageHeader must not promise that every connection supports Sync now.
 const NO_BLANKET_SYNC_NOW_PROMISE = /Click Sync now to pull fresh data/;
 const QUALIFIED_SYNC_NOW = /Where a connector supports an owner-triggered pull, Sync now refetches it/;
@@ -306,26 +316,41 @@ test("honest add-connection guidance is always visible on the live list (no popu
   // dropped past it by the header "Add connection" button.
   assert.match(src, ADD_CONNECTION_GUIDANCE_ALWAYS_VISIBLE);
   // And it is not duplicated: the hoisted render is the only occurrence.
-  const renders = src.match(/<AddConnectionGuidance /g) ?? [];
+  const renders = src.match(/<AddConnectionGuidance[\s/]/g) ?? [];
   assert.equal(renders.length, 1, "AddConnectionGuidance must render exactly once (hoisted, not per-branch)");
 });
 
-test("add-connection entry point sources its taxonomy from the shared module", async () => {
+test("add-connection picker sources its taxonomy + per-connector list from the shared modules", async () => {
   const src = await readFile(VIEW_FILE, "utf8");
-  // Single source of truth: the view must consume the shared module rather than
-  // re-hardcoding the supported set or the unsupported reasons.
+  // Single source of truth: the view must consume the shared modality module for
+  // the gated reasons/runbook path AND the shared catalog model for the full
+  // per-connector list, rather than re-hardcoding either.
   assert.match(src, ADD_CONNECTION_USES_SHARED_MODALITY);
-  assert.match(src, ADD_CONNECTION_RENDERS_SUPPORTED);
-  assert.match(src, ADD_CONNECTION_RENDERS_BROWSER_SUPPORTED);
-  assert.match(src, ADD_CONNECTION_RENDERS_UNSUPPORTED);
+  assert.match(src, ADD_CONNECTION_USES_SHARED_CATALOG);
+  // Every disposition group is rendered from a catalog partition helper, so the
+  // picker shows the full catalog grouped by modality, not three literals.
+  assert.match(src, ADD_CONNECTION_RENDERS_LOCAL_CATALOG);
+  assert.match(src, ADD_CONNECTION_RENDERS_BROWSER_MANUAL_CATALOG);
+  assert.match(src, ADD_CONNECTION_RENDERS_BROWSER_RUNBOOK_CATALOG);
+  assert.match(src, ADD_CONNECTION_RENDERS_LOCAL_UNPROVEN_CATALOG);
+  assert.match(src, ADD_CONNECTION_RENDERS_NETWORK_CATALOG);
   assert.match(src, ADD_CONNECTION_BROWSER_MANUAL_SECTION);
   assert.match(src, ADD_CONNECTION_BROWSER_MANUAL_NOT_ONE_CLICK);
   // Unsupported modalities are named honestly, not hidden behind a generic
   // "not supported" line.
   assert.match(src, ADD_CONNECTION_NAMES_NOT_SUPPORTED_YET);
-  // Where a documented owner-run path exists today (browser-bound), the entry
+  // Where a documented owner-run path exists today (browser-bound), the group
   // surfaces it instead of dead-ending the owner.
   assert.match(src, ADD_CONNECTION_SURFACES_RUNBOOK_PATH);
+});
+
+test("only the two creatable catalog groups render an enrollment deep-link (no phantom connections)", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  // The browser-bound-runbook and API/network groups must be display-only; only
+  // local-collector + manual-browser-collector build a `?connector=` href. So the
+  // picker must contain exactly two deep-link sites.
+  const deepLinks = src.match(ADD_CONNECTION_DEEP_LINK_COUNT_RE) ?? [];
+  assert.equal(deepLinks.length, 2, "exactly the two creatable groups may deep-link into enrollment");
 });
 
 test("page header no longer promises every connection supports Sync now", async () => {

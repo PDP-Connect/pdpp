@@ -21,13 +21,14 @@ import type { ReactNode } from "react";
 import { buttonVariants } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import {
-  BROWSER_BOUND_RUNBOOK_PATH,
-  browserCollectorConnectorLabel,
-  localCollectorConnectorLabel,
-  SUPPORTED_BROWSER_COLLECTOR_CONNECTORS,
-  SUPPORTED_LOCAL_COLLECTOR_CONNECTORS,
-  UNSUPPORTED_ADD_MODALITIES,
-} from "../../lib/connection-modality.ts";
+  browserBoundRunbookEntries,
+  browserCollectorEntries,
+  type ConnectorCatalogEntry,
+  localCollectorEntries,
+  localCollectorUnprovenEntries,
+  unsupportedNetworkEntries,
+} from "../../lib/connection-catalog.ts";
+import { BROWSER_BOUND_RUNBOOK_PATH, UNSUPPORTED_ADD_MODALITIES } from "../../lib/connection-modality.ts";
 import { summarizeConnectionHealth } from "../../lib/connection-summary-stats.ts";
 import { shouldShowInPrimaryConnections } from "../../lib/records-list-classification.ts";
 import type { RefRecordVersionStatsRow } from "../../lib/ref-client.ts";
@@ -180,6 +181,7 @@ export function RecordsListView({
   overviews,
   routes,
   interactive,
+  connectorCatalog,
   pendingOnDevices,
   pollerSlot,
   versionChurnRows,
@@ -189,6 +191,13 @@ export function RecordsListView({
   routes: Routes;
   /** True for live /dashboard, false for sandbox (no Sync now action). */
   interactive: boolean;
+  /**
+   * The connector catalog (every shipped manifest, classified by modality and
+   * routed to its honest next step) the add-connection picker renders. Built by
+   * the live page from `listConnectorManifests()`; the sandbox omits it (no
+   * add-connection surface), so it defaults to an empty list.
+   */
+  connectorCatalog?: ConnectorCatalogEntry[];
   /**
    * Aggregate `records_pending` across all device source instances. The
    * top-line `totalRecords` only reflects records the server has
@@ -313,7 +322,9 @@ export function RecordsListView({
        * the device-exporters form that only offers the local-collector set. That
        * dead-end was the owner-reported "no obvious way to add a second Amazon".
        */}
-      {interactive ? <AddConnectionGuidance deviceExportersHref={routes.section.deviceExporters} /> : null}
+      {interactive ? (
+        <AddConnectionGuidance catalog={connectorCatalog ?? []} deviceExportersHref={routes.section.deviceExporters} />
+      ) : null}
 
       <Section title={`Connections (${primaryConnections.length})`}>
         {primaryConnections.length === 0 ? (
@@ -386,114 +397,187 @@ function RecordsHeaderActions({ interactive, routes }: { interactive: boolean; r
   );
 }
 
+/** Owner-facing reason copy for a gated modality, sourced from the shared module. */
+function unsupportedModalityCopy(modality: "browser_bound" | "api_network") {
+  return UNSUPPORTED_ADD_MODALITIES.find((entry) => entry.modality === modality);
+}
+
 /**
- * Honest add-connection entry point.
+ * Honest add-connection picker, driven by the live connector catalog.
  *
  * The owner-agent typed connection-intent route now exists
- * (`POST /v1/owner/connections/intents`), but it is owner-*bearer* REST for
- * trusted local agents — a browser owner session has no owner bearer, so the
- * console must not call it. The proven console primitive is the cookie-authed
- * device-exporter enrollment at `/dashboard/device-exporters`
- * (`POST /_ref/device-exporters/enrollment-codes`).
+ * (`POST /v1/owner/connections/intents`), and the owner-agent catalog route
+ * (`GET /v1/owner/connector-templates`) returns this same catalog — but both are
+ * owner-*bearer* REST for trusted local agents. A browser owner session has no
+ * owner bearer, so the console must not call them. The cookie-safe equivalent is
+ * reading the shipped manifests directly in the server component; that catalog is
+ * passed in as `catalog`.
  *
- * This entry point gives owners a *real path*, not a dead button:
- * filesystem-class connectors (`claude_code`, `codex`) deep-link into the
- * one-click enrollment form pre-selected; Amazon deep-links into the same form
- * as a manual `browser_collector` proof-run path that mints a code and generates
- * monorepo runner commands. Browser-bound sources without a generated runner path
- * and API/network sources stay listed honestly with their missing primitive —
- * never an implied "Add connection" or "Sync now" that would silently fail.
+ * The picker shows EVERY shipped connector, grouped by its binding-derived
+ * modality, each routed to the honest next step the reference can complete today:
+ * filesystem-class connectors deep-link into the one-click enrollment form
+ * pre-selected; Amazon deep-links into the manual `browser_collector` proof-run
+ * path; other browser-bound connectors are named and pointed at the owner-run
+ * runbook without a deep-link; API/network connectors are named with their
+ * missing primitive. No gated connector renders an "Add connection" affordance
+ * the reference cannot complete (no phantom zero-record connections).
  *
- * The supported set and the unsupported reasons come from the shared
- * `connection-modality` module, which is the cookie-session sibling of the
- * backend intent route's classifier — one source of truth across both surfaces
+ * The catalog classification reuses the shared `connection-catalog` /
+ * `connection-modality` modules — the cookie-session siblings of the backend
+ * intent route's classifier — so both surfaces tell the same story
  * (`docs/voice-and-framing.md`: qualify connector claims; name the gap).
  */
-function AddConnectionGuidance({ deviceExportersHref }: { deviceExportersHref: string }) {
+function AddConnectionGuidance({
+  catalog,
+  deviceExportersHref,
+}: {
+  catalog: ConnectorCatalogEntry[];
+  deviceExportersHref: string;
+}) {
+  const localEntries = localCollectorEntries(catalog);
+  const localUnproven = localCollectorUnprovenEntries(catalog);
+  const browserManualEntries = browserCollectorEntries(catalog);
+  const browserRunbook = browserBoundRunbookEntries(catalog);
+  const networkUnsupported = unsupportedNetworkEntries(catalog);
+  const browserCopy = unsupportedModalityCopy("browser_bound");
+  const networkCopy = unsupportedModalityCopy("api_network");
   return (
     <Callout
       className="mb-4"
-      description="Connections are added by connector modality, not per brand: the reference classifies every connector by its runtime bindings. Filesystem connectors enroll directly. Browser-bound connectors (Amazon is the current example with a runner profile) mint a browser-collector code and then need the owner-run browser procedure. API/network sources have no owner-approved connect flow yet. Each modality is listed below."
+      description="Connections are added by connector modality, not per brand: the reference classifies every connector by its runtime bindings. Every connector it ships is listed below, grouped by modality. Filesystem connectors enroll directly. Browser-bound connectors mint a browser-collector code and then need the owner-run browser procedure. API/network sources have no owner-approved connect flow yet."
       surface="human"
       title="Add a connection"
     >
       <div className="space-y-3">
-        <div>
-          <p className="pdpp-caption mb-1.5 font-medium text-foreground">Supported from the console</p>
-          <ul className="flex flex-wrap gap-2">
-            {SUPPORTED_LOCAL_COLLECTOR_CONNECTORS.map((connectorId) => (
-              <li key={connectorId}>
-                <Link
-                  className="inline-flex items-center gap-1.5 rounded-md border border-border/80 bg-background px-2.5 py-1 text-foreground transition-colors hover:bg-muted/40"
-                  href={`${deviceExportersHref}?connector=${encodeURIComponent(connectorId)}`}
-                >
-                  <span className="pdpp-caption font-medium">{localCollectorConnectorLabel(connectorId)}</span>
-                  <code className="pdpp-eyebrow font-mono text-muted-foreground">{connectorId}</code>
-                  <span aria-hidden className="text-muted-foreground">
-                    →
-                  </span>
-                </Link>
-              </li>
-            ))}
-          </ul>
-          <p className="pdpp-caption mt-1.5 text-muted-foreground">
-            Each opens the enrollment form pre-selected. You run the collector on the host that has the data; the
-            connection materializes when the device enrolls and ingests.
-          </p>
-        </div>
+        {localEntries.length > 0 ? (
+          <div>
+            <p className="pdpp-caption mb-1.5 font-medium text-foreground">Supported from the console</p>
+            <ul className="flex flex-wrap gap-2">
+              {localEntries.map((entry) => (
+                <li key={entry.connectorKey}>
+                  <Link
+                    className="inline-flex items-center gap-1.5 rounded-md border border-border/80 bg-background px-2.5 py-1 text-foreground transition-colors hover:bg-muted/40"
+                    data-testid={`catalog-local-${entry.connectorKey}`}
+                    href={`${deviceExportersHref}?connector=${encodeURIComponent(entry.enrollmentKey ?? entry.connectorKey)}`}
+                  >
+                    <span className="pdpp-caption font-medium">{entry.displayName}</span>
+                    <code className="pdpp-eyebrow font-mono text-muted-foreground">{entry.connectorKey}</code>
+                    <span aria-hidden className="text-muted-foreground">
+                      →
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+            <p className="pdpp-caption mt-1.5 text-muted-foreground">
+              Each opens the enrollment form pre-selected. You run the collector on the host that has the data; the
+              connection materializes when the device enrolls and ingests.
+            </p>
+          </div>
+        ) : null}
 
-        <div>
-          <p className="pdpp-caption mb-1.5 font-medium text-foreground">Manual browser-collector setup</p>
-          <ul className="flex flex-wrap gap-2">
-            {SUPPORTED_BROWSER_COLLECTOR_CONNECTORS.map((connectorId) => (
-              <li key={connectorId}>
-                <Link
-                  className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/50 bg-amber-500/10 px-2.5 py-1 text-foreground transition-colors hover:bg-amber-500/15"
-                  href={`${deviceExportersHref}?connector=${encodeURIComponent(connectorId)}`}
-                >
-                  <span className="pdpp-caption font-medium">{browserCollectorConnectorLabel(connectorId)}</span>
-                  <code className="pdpp-eyebrow font-mono text-muted-foreground">{connectorId}</code>
-                  <span aria-hidden className="text-muted-foreground">
-                    →
-                  </span>
-                </Link>
-              </li>
-            ))}
-          </ul>
-          <p className="pdpp-caption mt-1.5 text-muted-foreground">
-            This is the same generic <code className="font-mono">browser_collector</code> enrollment any browser-bound
-            connector uses; Amazon is listed because it is the connector with a committed runner profile today. It mints
-            a <code className="font-mono">browser_collector</code> enrollment code. It is not a one-click browser flow:
-            finish the local, owner-logged-in browser run with{" "}
-            <code className="pdpp-eyebrow font-mono text-foreground">{BROWSER_BOUND_RUNBOOK_PATH}</code>.
-          </p>
-        </div>
+        {browserManualEntries.length > 0 ? (
+          <div>
+            <p className="pdpp-caption mb-1.5 font-medium text-foreground">Manual browser-collector setup</p>
+            <ul className="flex flex-wrap gap-2">
+              {browserManualEntries.map((entry) => (
+                <li key={entry.connectorKey}>
+                  <Link
+                    className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/50 bg-amber-500/10 px-2.5 py-1 text-foreground transition-colors hover:bg-amber-500/15"
+                    data-testid={`catalog-browser-manual-${entry.connectorKey}`}
+                    href={`${deviceExportersHref}?connector=${encodeURIComponent(entry.enrollmentKey ?? entry.connectorKey)}`}
+                  >
+                    <span className="pdpp-caption font-medium">{entry.displayName}</span>
+                    <code className="pdpp-eyebrow font-mono text-muted-foreground">{entry.connectorKey}</code>
+                    <span aria-hidden className="text-muted-foreground">
+                      →
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+            <p className="pdpp-caption mt-1.5 text-muted-foreground">
+              This is the same generic <code className="font-mono">browser_collector</code> enrollment any browser-bound
+              connector uses; the connector(s) above are listed here because they have a committed runner profile today.
+              It mints a <code className="font-mono">browser_collector</code> enrollment code. It is not a one-click
+              browser flow: finish the local, owner-logged-in browser run with{" "}
+              <code className="pdpp-eyebrow font-mono text-foreground">{BROWSER_BOUND_RUNBOOK_PATH}</code>.
+            </p>
+          </div>
+        ) : null}
 
-        <div>
-          <p className="pdpp-caption mb-1.5 font-medium text-foreground">Not supported from the console yet</p>
-          <ul className="space-y-1.5">
-            {UNSUPPORTED_ADD_MODALITIES.map((entry) => (
-              <li className="pdpp-caption text-muted-foreground" key={entry.modality} title={entry.missingPrimitive}>
-                <span className="text-foreground">{entry.label}</span>{" "}
-                <span className="text-muted-foreground">({entry.examples.join(", ")})</span> — {entry.ownerFacingReason}
-                {"."}
-                {entry.runbookPath ? (
-                  <>
-                    {" "}
-                    To add one today, follow{" "}
-                    <code
-                      className="pdpp-eyebrow font-mono text-foreground"
-                      data-testid={`runbook-path-${entry.modality}`}
-                    >
-                      {entry.runbookPath}
-                    </code>
-                    {"."}
-                  </>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        </div>
+        {browserRunbook.length > 0 ? (
+          <div>
+            <p className="pdpp-caption mb-1.5 font-medium text-foreground">Browser-bound — owner-run setup</p>
+            <ul className="flex flex-wrap gap-2">
+              {browserRunbook.map((entry) => (
+                <li
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/20 px-2.5 py-1"
+                  data-testid={`catalog-browser-runbook-${entry.connectorKey}`}
+                  key={entry.connectorKey}
+                >
+                  <span className="pdpp-caption font-medium text-foreground">{entry.displayName}</span>
+                  <code className="pdpp-eyebrow font-mono text-muted-foreground">{entry.connectorKey}</code>
+                </li>
+              ))}
+            </ul>
+            <p className="pdpp-caption mt-1.5 text-muted-foreground">
+              {browserCopy?.ownerFacingReason ??
+                "needs a supported browser-collector run profile before the console can generate setup commands"}
+              . To add one today, follow{" "}
+              <code className="pdpp-eyebrow font-mono text-foreground" data-testid="runbook-path-browser_bound">
+                {BROWSER_BOUND_RUNBOOK_PATH}
+              </code>
+              {"."}
+            </p>
+          </div>
+        ) : null}
+
+        {localUnproven.length > 0 ? (
+          <div>
+            <p className="pdpp-caption mb-1.5 font-medium text-foreground">Local-collector — not proven here yet</p>
+            <ul className="flex flex-wrap gap-2">
+              {localUnproven.map((entry) => (
+                <li
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/20 px-2.5 py-1"
+                  data-testid={`catalog-local-unproven-${entry.connectorKey}`}
+                  key={entry.connectorKey}
+                >
+                  <span className="pdpp-caption font-medium text-foreground">{entry.displayName}</span>
+                  <code className="pdpp-eyebrow font-mono text-muted-foreground">{entry.connectorKey}</code>
+                </li>
+              ))}
+            </ul>
+            <p className="pdpp-caption mt-1.5 text-muted-foreground">
+              These are filesystem-class connectors: they collect from a local export or host file via a local
+              collector, the same mechanism as the supported set above. The console does not have a committed enrollment
+              proof for them yet, so they are listed here rather than offered as a one-click enroll.
+            </p>
+          </div>
+        ) : null}
+
+        {networkUnsupported.length > 0 ? (
+          <div>
+            <p className="pdpp-caption mb-1.5 font-medium text-foreground">Not supported from the console yet</p>
+            <ul className="flex flex-wrap gap-2">
+              {networkUnsupported.map((entry) => (
+                <li
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/20 px-2.5 py-1"
+                  data-testid={`catalog-network-${entry.connectorKey}`}
+                  key={entry.connectorKey}
+                >
+                  <span className="pdpp-caption font-medium text-foreground">{entry.displayName}</span>
+                  <code className="pdpp-eyebrow font-mono text-muted-foreground">{entry.connectorKey}</code>
+                </li>
+              ))}
+            </ul>
+            <p className="pdpp-caption mt-1.5 text-muted-foreground" title={networkCopy?.missingPrimitive}>
+              {networkCopy?.ownerFacingReason ??
+                "needs an owner-approved API connection flow; today these connections appear only after a connector has ingested data"}
+              {"."}
+            </p>
+          </div>
+        ) : null}
       </div>
     </Callout>
   );
