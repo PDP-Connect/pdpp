@@ -333,18 +333,45 @@ export async function bootstrapPostgresSchema() {
         client_id TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'active',
         package_json JSONB NOT NULL,
-        parent_package_id TEXT REFERENCES grant_packages(package_id) ON DELETE SET NULL,
+        parent_package_id TEXT,
         trace_id TEXT,
         scenario_id TEXT,
         created_at TEXT NOT NULL,
         approved_at TEXT NOT NULL,
-        revoked_at TEXT
+        revoked_at TEXT,
+        CONSTRAINT grant_packages_parent_package_fk
+          FOREIGN KEY(parent_package_id) REFERENCES grant_packages(package_id) ON DELETE SET NULL
       );
       -- Incremental add-source linkage; cumulative-view/audit metadata only,
       -- carries no source/stream authority. Added via ALTER for DBs created
-      -- before the column existed.
+      -- before the column existed; the explicit FK keeps migrated and fresh
+      -- Postgres schemas aligned.
       ALTER TABLE grant_packages
         ADD COLUMN IF NOT EXISTS parent_package_id TEXT;
+      UPDATE grant_packages child
+         SET parent_package_id = NULL
+       WHERE child.parent_package_id IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1
+             FROM grant_packages parent
+            WHERE parent.package_id = child.parent_package_id
+         );
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1
+            FROM pg_constraint
+           WHERE conrelid = 'grant_packages'::regclass
+             AND contype = 'f'
+             AND pg_get_constraintdef(oid) LIKE 'FOREIGN KEY (parent_package_id) REFERENCES grant_packages(package_id)%'
+        ) THEN
+          ALTER TABLE grant_packages
+            ADD CONSTRAINT grant_packages_parent_package_fk
+            FOREIGN KEY(parent_package_id)
+            REFERENCES grant_packages(package_id)
+            ON DELETE SET NULL;
+        END IF;
+      END $$;
       CREATE INDEX IF NOT EXISTS idx_pg_grant_packages_client_status
         ON grant_packages(client_id, status, created_at);
       CREATE INDEX IF NOT EXISTS idx_pg_grant_packages_parent

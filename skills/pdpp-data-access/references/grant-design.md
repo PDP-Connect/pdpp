@@ -8,8 +8,9 @@ Each entry binds the grant to one source. The single-source path accepts exactly
 one `authorization_details[]` entry per PAR request, and remains the default
 agent workflow: one source, one request, one grant. The reference also ships a
 **reference-experimental** batch path that stages several source-bounded entries
-in one ceremony — see "Reference-experimental batch consent" below; the default
-single-entry path is unchanged. One entry has:
+in one ceremony, plus parent-linked add-source ceremonies that may stage exactly
+one added source — see "Reference-experimental batch consent" below. Parentless
+single-entry requests still use the default path. One entry has:
 
 | Field | Meaning | Common values |
 | --- | --- | --- |
@@ -122,11 +123,13 @@ Don't try to bundle these into one `authorization_details[]` array entry — the
 > default agent workflow is still one source per request. Use the batch path
 > only when the owner is explicitly setting up several sources at once.
 
-The reference accepts a PAR request whose `authorization_details[]` carries more
-than one source-bounded entry (up to a reference policy soft cap of 8, with a
-breadth warning at 6). Each entry still binds to exactly one source; the
-reference never merges entries into a cross-source request and never widens an
-entry beyond what you staged.
+For a fresh batch, the reference accepts a PAR request whose
+`authorization_details[]` carries more than one source-bounded entry (up to a
+reference policy soft cap of 8, with a breadth warning at 6). For incremental
+add-source, a request with top-level `parent_package_id` also uses the staged
+batch path and may carry exactly one added source. Each entry still binds to
+exactly one source; the reference never merges entries into a cross-source
+request and never widens an entry beyond what you staged.
 
 ```json
 {
@@ -165,7 +168,7 @@ and set a top-level `parent_package_id` to the prior package:
 - `parent_package_id` is lineage/cumulative-view metadata, not a new authorization primitive — it grants nothing on its own.
 - Linkage must be to one of *your own* still-active packages for the same owner. A missing, cross-client, cross-owner, inactive, or malformed `parent_package_id` is rejected before any grant is issued.
 - The owner-facing dashboard can render the cumulative per-client view across linked packages (reference surface: `GET /_ref/grant-packages/:id/cumulative`).
-- `parent_package_id` is only valid on the batch path. Don't send it with a single-entry request.
+- `parent_package_id` is the signal for the staged add-source path, even when you are adding exactly one source. Without `parent_package_id`, a single-entry request remains the default one-grant path.
 
 ### Upgrade flow
 

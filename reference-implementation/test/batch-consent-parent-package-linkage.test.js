@@ -133,17 +133,11 @@ test('parent linkage: a later same-client ceremony links a new package and issue
     // Add-source ceremony: one new source, linked to the root.
     const second = await par(
       asUrl,
-      [
-        detail({ kind: 'connector', id: github.connector_id }, [{ name: 'repositories' }]),
-        // A second entry so this stays on the batch (multi-entry) path; both
-        // approved. Reddit again would re-list an existing source; use github
-        // + a distinct calendar-like add. We keep it simple with two adds.
-        detail({ kind: 'connector', id: reddit.connector_id }, [{ name: 'comments' }]),
-      ],
+      [detail({ kind: 'connector', id: github.connector_id }, [{ name: 'repositories' }])],
       { parent_package_id: rootPackageId },
     );
     assert.equal(second.status, 201);
-    const added = await approveBatch(asUrl, second.body.request_uri, [0, 1]);
+    const added = await approveBatch(asUrl, second.body.request_uri, [0]);
     assert.equal(added.status, 200);
     const addedPackageId = added.body.package_id;
     assert.ok(addedPackageId.startsWith('gpkg_'));
@@ -176,13 +170,13 @@ test('parent linkage: a later same-client ceremony links a new package and issue
     const addedMembers = db
       .prepare('SELECT grant_id FROM grant_package_members WHERE package_id = ?')
       .all(addedPackageId);
-    assert.equal(addedMembers.length, 2);
+    assert.equal(addedMembers.length, 1);
     for (const m of addedMembers) {
       assert.ok(!rootChildGrantIds.includes(m.grant_id), 'added grants must be distinct from root grants');
     }
 
-    // Four child grants total (2 root + 2 added), each independently revocable.
-    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM grants').get().n, 4);
+    // Three child grants total (2 root + 1 added), each independently revocable.
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM grants').get().n, 3);
   });
 });
 
@@ -197,13 +191,10 @@ test('parent linkage: cumulative per-client view unions child grants across link
 
     const second = await par(
       asUrl,
-      [
-        detail({ kind: 'connector', id: github.connector_id }, [{ name: 'repositories' }]),
-        detail({ kind: 'connector', id: reddit.connector_id }, [{ name: 'comments' }]),
-      ],
+      [detail({ kind: 'connector', id: github.connector_id }, [{ name: 'repositories' }])],
       { parent_package_id: rootPackageId },
     );
-    const added = await approveBatch(asUrl, second.body.request_uri, [0, 1]);
+    const added = await approveBatch(asUrl, second.body.request_uri, [0]);
     const addedPackageId = added.body.package_id;
 
     // Cumulative view, resolved from EITHER end of the lineage, must agree.
@@ -212,8 +203,8 @@ test('parent linkage: cumulative per-client view unions child grants across link
       assert.equal(view.root_package_id, rootPackageId, `lineage root from ${anchor}`);
       assert.equal(view.client_id, 'longview');
       assert.equal(view.package_count, 2);
-      assert.equal(view.children.length, 4, 'cumulative view unions all four child grants');
-      assert.equal(view.active_child_count, 4);
+      assert.equal(view.children.length, 3, 'cumulative view unions all three child grants');
+      assert.equal(view.active_child_count, 3);
       const lineagePackages = view.packages.map((p) => p.package_id).sort();
       assert.deepEqual(lineagePackages, [rootPackageId, addedPackageId].sort());
       // Each child carries its owning package id so the dashboard can group.
@@ -228,8 +219,8 @@ test('parent linkage: cumulative per-client view unions child grants across link
     assert.equal(routeBody.object, 'grant_package_cumulative_view');
     assert.equal(routeBody.root_package_id, rootPackageId);
     assert.equal(routeBody.package_count, 2);
-    assert.equal(routeBody.active_child_count, 4);
-    assert.equal(routeBody.children.length, 4);
+    assert.equal(routeBody.active_child_count, 3);
+    assert.equal(routeBody.children.length, 3);
     // No token / secret material leaks.
     const serialized = JSON.stringify(routeBody);
     assert.doesNotMatch(serialized, /access_token|refresh_token|"token"|token_hash/);
@@ -248,20 +239,17 @@ test('parent linkage: revoking one child grant updates the cumulative active cou
 
     const second = await par(
       asUrl,
-      [
-        detail({ kind: 'connector', id: github.connector_id }, [{ name: 'repositories' }]),
-        detail({ kind: 'connector', id: reddit.connector_id }, [{ name: 'comments' }]),
-      ],
+      [detail({ kind: 'connector', id: github.connector_id }, [{ name: 'repositories' }])],
       { parent_package_id: rootPackageId },
     );
-    const added = await approveBatch(asUrl, second.body.request_uri, [0, 1]);
+    const added = await approveBatch(asUrl, second.body.request_uri, [0]);
 
     // Revoke one root child grant directly (per-grant revocation stays primary).
     await revokeGrant(spotifyChild.grant_id, { request_id: 'parent-linkage-child-revoke-test' });
 
     const view = await getCumulativeClientAccessForPackage(added.body.package_id);
-    assert.equal(view.children.length, 4, 'cumulative view still lists every issued child');
-    assert.equal(view.active_child_count, 3, 'one child revoked, three remain active');
+    assert.equal(view.children.length, 3, 'cumulative view still lists every issued child');
+    assert.equal(view.active_child_count, 2, 'one child revoked, two remain active');
   });
 });
 
@@ -269,10 +257,7 @@ test('parent linkage: a non-existent parent fails closed before issuing', async 
   await withHarness(async ({ asUrl, github }) => {
     const resp = await par(
       asUrl,
-      [
-        detail({ kind: 'connector', id: github.connector_id }, [{ name: 'repositories' }]),
-        detail({ kind: 'connector', id: github.connector_id }, [{ name: 'repositories' }]),
-      ],
+      [detail({ kind: 'connector', id: github.connector_id }, [{ name: 'repositories' }])],
       { parent_package_id: 'gpkg_does_not_exist' },
     );
     assert.equal(resp.status, 400);
@@ -298,10 +283,7 @@ test('parent linkage: a cross-client parent fails closed', async () => {
     // A different registered client attempts to link to longview's package.
     const cross = await par(
       asUrl,
-      [
-        detail({ kind: 'connector', id: github.connector_id }, [{ name: 'repositories' }]),
-        detail({ kind: 'connector', id: reddit.connector_id }, [{ name: 'comments' }]),
-      ],
+      [detail({ kind: 'connector', id: github.connector_id }, [{ name: 'repositories' }])],
       { parent_package_id: rootPackageId },
       'concert_recommendation_app',
     );
@@ -329,10 +311,7 @@ test('parent linkage: an inactive (revoked) parent fails closed', async () => {
 
     const linked = await par(
       asUrl,
-      [
-        detail({ kind: 'connector', id: github.connector_id }, [{ name: 'repositories' }]),
-        detail({ kind: 'connector', id: reddit.connector_id }, [{ name: 'comments' }]),
-      ],
+      [detail({ kind: 'connector', id: github.connector_id }, [{ name: 'repositories' }])],
       { parent_package_id: rootPackageId },
     );
     assert.equal(linked.status, 400);
@@ -344,10 +323,7 @@ test('parent linkage: a malformed parent_package_id fails closed', async () => {
   await withHarness(async ({ asUrl, github }) => {
     const resp = await par(
       asUrl,
-      [
-        detail({ kind: 'connector', id: github.connector_id }, [{ name: 'repositories' }]),
-        detail({ kind: 'connector', id: github.connector_id }, [{ name: 'repositories' }]),
-      ],
+      [detail({ kind: 'connector', id: github.connector_id }, [{ name: 'repositories' }])],
       { parent_package_id: '   ' },
     );
     assert.equal(resp.status, 400);
@@ -355,14 +331,24 @@ test('parent linkage: a malformed parent_package_id fails closed', async () => {
   });
 });
 
-test('parent linkage: parent_package_id is rejected on the single-entry flow', async () => {
+test('parent linkage: a single-entry request without parent_package_id stays on the default grant path', async () => {
   await withHarness(async ({ asUrl, github }) => {
     const resp = await par(
       asUrl,
       [detail({ kind: 'connector', id: github.connector_id }, [{ name: 'repositories' }])],
-      { parent_package_id: 'gpkg_anything' },
     );
-    assert.equal(resp.status, 400);
-    assert.match(resp.body.error.message, /only supported on the staged batch path/);
+    assert.equal(resp.status, 201);
+
+    const approved = await approve(asUrl, {
+      request_uri: resp.body.request_uri,
+      subject_id: 'owner_local',
+    });
+    assert.equal(approved.status, 200);
+    assert.ok(approved.body.grant.grant_id.startsWith('grt_'));
+    assert.equal(approved.body.package_id, undefined);
+
+    const db = getDb();
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM grants').get().n, 1);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM grant_packages').get().n, 0);
   });
 });

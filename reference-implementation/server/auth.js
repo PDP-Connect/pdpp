@@ -608,9 +608,8 @@ function normalizePendingGrantRequest(input, opts = {}) {
   if (input.authorization_details.length !== 1) {
     invalidGrantInitiationRequest('Exactly one authorization_details entry is supported in this flow; use the staged batch path for multi-entry requests');
   }
-  // `parent_package_id` is incremental-add-source lineage for the batch
-  // ceremony only. A single-entry request that carries it is a client error,
-  // not a silent no-op; reject it before issuing.
+  // Defensive guard: `initiateGrant` routes parent-linked add-source requests
+  // to the staged lineage path, even when they add exactly one source.
   if (input.parent_package_id !== undefined && input.parent_package_id !== null) {
     invalidGrantInitiationRequest('parent_package_id is only supported on the staged batch path');
   }
@@ -2740,7 +2739,8 @@ export async function getManifestForStorageBinding(storageBinding, opts = {}) {
  * Returns the staged request URI plus the consent URL for the primary request/approval flow.
  */
 export async function initiateGrant(input, opts = {}) {
-  if (Array.isArray(input?.authorization_details) && input.authorization_details.length > 1) {
+  const hasParentPackageId = input?.parent_package_id !== undefined && input?.parent_package_id !== null;
+  if (Array.isArray(input?.authorization_details) && (input.authorization_details.length > 1 || hasParentPackageId)) {
     return initiateStagedGrantBatch(input, opts);
   }
   const normalized = normalizePendingGrantRequest(input, opts);
