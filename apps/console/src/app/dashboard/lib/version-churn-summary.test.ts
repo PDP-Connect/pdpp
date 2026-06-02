@@ -11,10 +11,15 @@ import {
   buildChurnDrilldownRows,
   churnDryRunCommand,
   churnRowLabel,
+  classifyChurnRow,
+  pointInTimeGuidance,
   summarizeVersionChurn,
 } from "./version-churn-summary.ts";
 
 const HIGHEST_SIGNAL_RE = /ynab \/ budgets retains 273\.75 versions per current record\./;
+const NOT_COMPACTABLE_RE = /[Nn]ot compactable/;
+const APPEND_KEYED_RE = /append-keyed/;
+const FOLLOWER_RE = /follower/;
 
 function row(overrides: Partial<RefRecordVersionStatsRow> = {}): RefRecordVersionStatsRow {
   return {
@@ -129,6 +134,87 @@ test("churnDryRunCommand builds the default read-only maintenance command", () =
     churnDryRunCommand(row()),
     "node reference-implementation/scripts/compact-record-history.mjs --connector-instance-id='cin_ynab_1' --stream='budgets' --connector-id='ynab'"
   );
+});
+
+// ─── Compaction-vs-redesign classification ──────────────────────────────
+//
+// github/user and slack/channels version on a genuinely changing real field
+// (follower counts, num_members), have NO compaction policy (the script exits
+// 2 for them), and must be split into append-keyed point-in-time streams — not
+// compacted. This pair set mirrors POINT_IN_TIME_REAL_FIELD_STREAMS in
+// reference-implementation/test/compact-record-history.test.js. Every other
+// churn row (gmail/labels, slack/channel_memberships, usaa/*, chase/accounts,
+// ynab/*) is a compaction candidate and keeps its dry-run command.
+
+test("classifyChurnRow flags github/user as a real-field point-in-time stream", () => {
+  assert.equal(classifyChurnRow(row({ connector_id: "github", stream: "user" })), "point_in_time_real_field");
+});
+
+test("classifyChurnRow flags slack/channels as a real-field point-in-time stream", () => {
+  assert.equal(classifyChurnRow(row({ connector_id: "slack", stream: "channels" })), "point_in_time_real_field");
+});
+
+test("classifyChurnRow resolves the registry-URL connector-id form too", () => {
+  assert.equal(
+    classifyChurnRow(row({ connector_id: "https://registry.pdpp.org/connectors/github", stream: "user" })),
+    "point_in_time_real_field"
+  );
+  assert.equal(
+    classifyChurnRow(row({ connector_id: "https://registry.pdpp.org/connectors/slack", stream: "channels" })),
+    "point_in_time_real_field"
+  );
+});
+
+test("classifyChurnRow treats the policied no-op/run-clock streams as compaction candidates", () => {
+  // These eight are the live dashboard churn rows; six are compaction
+  // candidates (registered policies), and the github/user + slack/channels
+  // pair above are the two real-field exceptions.
+  const compactable: [string, string][] = [
+    ["gmail", "labels"],
+    ["slack", "channel_memberships"],
+    ["usaa", "accounts"],
+    ["usaa", "credit_card_billing"],
+    ["chase", "accounts"],
+    ["usaa", "statements"],
+  ];
+  for (const [connector_id, stream] of compactable) {
+    assert.equal(
+      classifyChurnRow(row({ connector_id, stream })),
+      "compaction_candidate",
+      `${connector_id}/${stream} should be a compaction candidate`
+    );
+  }
+});
+
+test("classifyChurnRow does not over-match: slack/users and github/repos stay compaction candidates", () => {
+  // Only the exact (connector, stream) pairs are real-field; a different slack
+  // or github stream is not silently swept into the redesign bucket.
+  assert.equal(classifyChurnRow(row({ connector_id: "slack", stream: "users" })), "compaction_candidate");
+  assert.equal(classifyChurnRow(row({ connector_id: "github", stream: "repos" })), "compaction_candidate");
+});
+
+test("buildChurnDrilldownRows omits the dry-run command for real-field rows and carries guidance", () => {
+  const built = buildChurnDrilldownRows([
+    row({ connector_id: "github", stream: "user", connector_instance_id: "cin_gh_1" }),
+  ]);
+  assert.equal(built[0]?.remediation, "point_in_time_real_field");
+  assert.equal(built[0]?.dryRunCommand, null, "real-field rows must not offer a (failing) compaction command");
+  assert.ok(built[0]?.pointInTimeGuidance, "real-field rows must carry redesign guidance");
+  const guidance = built[0]?.pointInTimeGuidance ?? "";
+  assert.match(guidance, NOT_COMPACTABLE_RE);
+  assert.match(guidance, APPEND_KEYED_RE);
+  assert.match(guidance, FOLLOWER_RE);
+});
+
+test("buildChurnDrilldownRows keeps the dry-run command and no guidance for compaction candidates", () => {
+  const built = buildChurnDrilldownRows([row({ connector_id: "ynab", stream: "budgets" })]);
+  assert.equal(built[0]?.remediation, "compaction_candidate");
+  assert.ok(built[0]?.dryRunCommand, "compaction candidates keep their dry-run command");
+  assert.equal(built[0]?.pointInTimeGuidance, null);
+});
+
+test("pointInTimeGuidance returns null for a compaction candidate", () => {
+  assert.equal(pointInTimeGuidance(row({ connector_id: "ynab", stream: "budgets" })), null);
 });
 
 test("churnDryRunCommand shell-quotes metadata and omits absent connector id", () => {

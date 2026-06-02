@@ -611,14 +611,19 @@ export function VersionChurnNotice({ rows }: { rows: RefRecordVersionStatsRow[] 
         <p className="pdpp-caption mb-2 text-muted-foreground">
           These streams retain many historical versions per current record. This is kept{" "}
           <strong className="font-medium text-foreground">change history</strong>, not current data loss — your latest
-          records are intact. High churn usually means a connector re-emits unchanged records; compacting history starts
-          with a dry-run maintenance check and is a separate, non-destructive operator step.
+          records are intact. There are two reasons a stream churns, and they have different fixes. When a connector
+          re-emits unchanged records (a no-op or run-clock refresh), compacting history is safe and starts with a
+          dry-run maintenance check. When a stream versions on a value that{" "}
+          <strong className="font-medium text-foreground">genuinely changes</strong> (a follower count, a member count),
+          that history is real and must not be compacted — it needs an append-keyed point-in-time redesign instead.
         </p>
         <p className="pdpp-caption mb-3 text-muted-foreground" data-testid="version-churn-dry-run-safety">
-          Each row's command is the safe place to start: it is{" "}
+          Rows that show a command are compaction candidates: the command is the safe place to start because it is{" "}
           <strong className="font-medium text-foreground">read-only</strong> and prints the compaction plan (versions it
           would remove, bytes it would free) without changing anything. Nothing is removed until you re-run it with{" "}
-          <code className="font-mono text-foreground">--apply</code>, which backs up affected rows first.
+          <code className="font-mono text-foreground">--apply</code>, which backs up affected rows first. Rows marked{" "}
+          <strong className="font-medium text-foreground">not compactable</strong> have no compaction command on purpose
+          — compacting them would delete real history.
         </p>
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-left">
@@ -689,16 +694,26 @@ export function VersionChurnNotice({ rows }: { rows: RefRecordVersionStatsRow[] 
                     {row.lastHistoryAt ? <Timestamp value={row.lastHistoryAt} /> : "—"}
                   </td>
                   <td className="max-w-[28rem] py-2 pl-3">
-                    <div className="flex items-start gap-1.5">
-                      <code className="block min-w-0 flex-1 whitespace-normal rounded border border-border/70 bg-background px-2 py-1 font-mono text-[0.68rem] text-foreground leading-relaxed">
-                        {row.dryRunCommand}
-                      </code>
-                      <CopyButton
-                        ariaLabel={`Copy dry-run command for ${row.label}`}
-                        className="mt-0.5"
-                        value={row.dryRunCommand}
-                      />
-                    </div>
+                    {row.dryRunCommand ? (
+                      <div className="flex items-start gap-1.5">
+                        <code className="block min-w-0 flex-1 whitespace-normal rounded border border-border/70 bg-background px-2 py-1 font-mono text-[0.68rem] text-foreground leading-relaxed">
+                          {row.dryRunCommand}
+                        </code>
+                        <CopyButton
+                          ariaLabel={`Copy dry-run command for ${row.label}`}
+                          className="mt-0.5"
+                          value={row.dryRunCommand}
+                        />
+                      </div>
+                    ) : (
+                      <p
+                        className="pdpp-caption text-muted-foreground leading-relaxed"
+                        data-testid="version-churn-not-compactable"
+                      >
+                        {row.pointInTimeGuidance ??
+                          "Not compactable — needs an append-keyed point-in-time stream split, not compaction."}
+                      </p>
+                    )}
                   </td>
                 </tr>
               ))}
