@@ -3099,6 +3099,103 @@ test("drainCollectorOutbox dead-letters a malformed gap row instead of poisoning
   }
 });
 
+test("drainCollectorOutbox sanitizes secrets out of the persisted last_error on dead-letter", async () => {
+  // `last_error` is a durable, operator-readable field. Even though the
+  // network client (LocalDeviceHttpError) already exposes only a sanitized
+  // envelope detail, failOutboxItem is the generic persistence boundary for
+  // *every* error type, so it must guarantee no bearer token, cookie, OTP,
+  // long opaque credential, or unbounded body is ever stored.
+  const outbox = new LocalDeviceOutbox({ path: await tempQueuePath() });
+  try {
+    const records = transformRecordsToCollectorEnvelopes({
+      batchId: "leak-batch",
+      batchSeq: 1,
+      connectorId: "fixture-leak",
+      deviceId: "device-1",
+      messages: [
+        {
+          data: { id: "m-1", note: "ssn 123-45-6789 should never reach last_error" },
+          emitted_at: "2026-05-19T12:00:00.000Z",
+          key: "m-1",
+          stream: "messages",
+          type: "RECORD",
+        },
+      ],
+      sourceInstanceId: "src-leak",
+    });
+    outbox.enqueue({
+      id: "src-leak:record_batch:1",
+      kind: "record_batch",
+      payload: {
+        batchId: "leak-batch",
+        batchSeq: 1,
+        connectorId: "fixture-leak",
+        deviceId: "device-1",
+        records,
+        sourceInstanceId: "src-leak",
+      },
+      sourceInstanceId: "src-leak",
+    });
+
+    const bearer = "abcdefghijklmnopqrstuvwxyz0123456789";
+    const cookie = "session=ZZZZZZZZZZZZZZZZZZZZZZZZZZ";
+    const client: Pick<LocalDeviceClient, "ackLocalCollectorGap" | "ingestBatch" | "putSourceInstanceState"> = {
+      ackLocalCollectorGap() {
+        return Promise.reject(new Error("must not ack"));
+      },
+      ingestBatch() {
+        // An error message that carries secrets and a long body. A naive
+        // persistence path would write all of this into last_error verbatim.
+        return Promise.reject(
+          new Error(
+            `ingest failed 401 authorization: Bearer ${bearer} cookie: ${cookie} otp 482913 body=${"x".repeat(500)}`
+          )
+        );
+      },
+      putSourceInstanceState() {
+        return Promise.reject(new Error("must not write state"));
+      },
+    };
+
+    const result = await drainCollectorOutbox({
+      client,
+      connectorId: "fixture-leak",
+      holderId: "holder-leak",
+      outbox,
+      policy: {
+        drainBatchSize: 1,
+        leaseMs: 60_000,
+        maxAttempts: 1,
+        maxDrainDurationMs: 60_000,
+        maxDrainIterations: 2,
+        maxEnqueuedBatchesPerRun: 2048,
+        maxQueueDepth: 10_000,
+        retryBackoffMs: 1,
+      },
+      sourceInstanceId: "src-leak",
+    });
+
+    assert.equal(result.sent, 0);
+    assert.equal(result.deadLettered, 1);
+    const item = outbox.get("src-leak:record_batch:1");
+    assert.equal(item?.status, "dead_letter");
+    const lastError = item?.last_error ?? "";
+    // The status/code-shaped prefix survives so the row is still diagnosable.
+    assert.ok(lastError.includes("ingest failed 401"), `expected diagnosable prefix, got: ${lastError}`);
+    // No raw secrets, opaque credentials, OTP, or record bodies survive.
+    assert.ok(!lastError.includes(bearer), "bearer token leaked into last_error");
+    assert.ok(!lastError.includes("session=ZZZZ"), "cookie value leaked into last_error");
+    assert.ok(!lastError.includes("482913"), "OTP leaked into last_error");
+    assert.ok(!lastError.includes("123-45-6789"), "record data leaked into last_error");
+    assert.ok(!lastError.includes("xxxxxxxxxx"), "unbounded body leaked into last_error");
+    assert.ok(lastError.includes("[REDACTED]"), `expected redaction markers, got: ${lastError}`);
+    // Bounded length (sanitizer caps at 300 chars).
+    assert.ok(lastError.length <= 300, `last_error exceeded bound: ${lastError.length}`);
+  } finally {
+    outbox.close();
+  }
+});
+
 test("runCollectorConnector does not let a dead-lettered gap row permanently skip scans", async () => {
   // A failed diagnostic gap acknowledgement must keep checkpoints from
   // advancing, but it should not forever prevent the collector from

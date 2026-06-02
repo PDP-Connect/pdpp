@@ -3,8 +3,8 @@
 Status: sprint-needed
 Owner: RI owner
 Created: 2026-06-01
-Updated: 2026-06-01
-Related: `openspec/changes/add-browser-collector-enrollment-primitive`, `openspec/changes/add-owner-agent-control-surface`, `openspec/specs/reference-connector-instances/spec.md`
+Updated: 2026-06-02
+Related: `openspec/changes/add-browser-collector-enrollment-primitive`, `openspec/changes/add-owner-agent-control-surface`, `openspec/changes/canonicalize-connector-keys`, `openspec/specs/reference-connector-instances/spec.md`, `tmp/workstreams/ri-local-collector-deadletter-recovery-audit-v1-report.md`
 
 ## Question
 
@@ -48,3 +48,5 @@ Promote into OpenSpec before changing durable connection-instance states, adding
 - 2026-06-01: Captured owner feedback that zero-record unused connections should not exist as normal connections just because a connector is available; connector catalog entries are fine, connection instances need lifecycle semantics.
 - 2026-06-01: Captured owner feedback that "Check the collector host" is not actionable when the owner did not personally set up the collector; the UI should name the host/command/recovery path.
 - 2026-06-01: Captured owner feedback that version churn maintenance should be concrete and non-scary: latest records are intact, but dry-run compaction and connector re-emission review need an owner-operable path.
+- 2026-06-02: A safe local-collector recovery primitive now exists for the "stalled outbox / dead-letter" half of the degraded-connection state. `pdpp-local-collector retry-dead-letters` requeues dead-lettered outbox rows (dry-run by default; `--apply` mutates after a local SQLite `VACUUM INTO` backup; filterable by `--kind`/`--connection-id`/`--limit`; machine-readable JSON counts). `pdpp-local-collector doctor` now emits a `remediation` hint pointing at it when `dead_letter > 0`. This replaces the hand-edited-SQLite recovery the owner previously had to perform. The deeper console-actionability question (naming the stalled host/command in the UI) is still open per the 2026-06-01 entries; this primitive is the local-CLI building block that surface can point at. Source: dead-letter recovery audit (Related). Scope note: this is local CLI + outbox behavior, not a new durable protocol contract.
+- 2026-06-02: Audit recommendation #4 — in-flight collector batches enrolled before a connector-key/identity migration dead-letter under the pre-migration server guard and need a requeue once the canonical guard is live. Couple any future connector-key/identity migration (`canonicalize-connector-keys` and successors) with an explicit recovery step that runs `retry-dead-letters` (or documents the equivalent on-host requeue) so operators are not left hand-editing SQLite. Non-normative: this is operational guidance for migration rollouts, not a new spec requirement.

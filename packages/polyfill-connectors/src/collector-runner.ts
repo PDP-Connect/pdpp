@@ -1484,7 +1484,14 @@ function failOutboxItem(
   error: unknown,
   result: DrainCollectorOutboxResult
 ): void {
-  const message = error instanceof Error ? error.message : String(error);
+  // Redact and bound the error before it is persisted in `last_error`.
+  // `LocalDeviceHttpError` already exposes only a sanitized envelope detail
+  // (code/param/message), but `failOutboxItem` is the generic persistence
+  // boundary for every error type, so we re-apply the same secret/length
+  // sanitizer here. This guarantees the durable outbox never stores tokens,
+  // cookies, OTPs, opaque credentials, or unbounded request/response bodies
+  // regardless of which error reached this path.
+  const message = sanitizeCollectorGapDetails(error instanceof Error ? error.message : String(error));
   try {
     if (error instanceof OutboxPayloadShapeError || item.attempt_count + 1 >= input.policy.maxAttempts) {
       input.outbox.deadLetter({

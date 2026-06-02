@@ -237,6 +237,38 @@ test('local collector doctor flags missing db, expired leases, and dead letters'
       JSON.stringify(doctor),
       /dead-letter-payload|expired-lease-payload|retrying-payload|dead-letter-id|expired-lease-id|retrying-id/
     );
+
+    // When dead letters are present, doctor points the operator at the
+    // recovery primitive (dry-run preview, then --apply with backup).
+    assert.ok(Array.isArray(doctor.remediation));
+    assert.equal(doctor.remediation.length, 1);
+    assert.match(doctor.remediation[0], /retry-dead-letters/);
+    assert.match(doctor.remediation[0], /--apply/);
+  } finally {
+    outbox.close();
+  }
+});
+
+test('local collector doctor omits remediation when the outbox is healthy', async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    outbox.enqueue({
+      id: 'healthy-id',
+      kind: 'record_batch',
+      payload: { ok: true },
+      sourceInstanceId: 'src-1',
+    });
+    const doctor = buildLocalOutboxDoctor(
+      inspectLocalOutboxStatus({
+        baseUrl: 'http://127.0.0.1:7662',
+        command: 'doctor',
+        queuePath: path,
+        sourceInstanceId: 'src-1',
+      })
+    );
+    assert.equal(doctor.checks.outbox_failures, 'ok');
+    assert.equal(doctor.remediation, undefined);
   } finally {
     outbox.close();
   }

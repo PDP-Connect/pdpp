@@ -315,6 +315,13 @@ export interface LocalOutboxDoctorOutput extends LocalOutboxStatusOutput {
     outbox_db: "ok" | "missing";
     outbox_failures: "ok" | "fail";
   };
+  /**
+   * Operator-actionable hints, present only when a check is non-`ok`. The
+   * field is omitted when everything is healthy so a clean doctor run stays
+   * quiet. Hints are static guidance strings — counts/commands only, never
+   * payloads, paths from rows, tokens, or cookies.
+   */
+  remediation?: string[];
   status: "ok" | "warning" | "critical";
 }
 
@@ -380,9 +387,18 @@ export function buildLocalOutboxDoctor(status: LocalOutboxStatusOutput): LocalOu
     outbox_db: status.db.exists ? "ok" : "missing",
     outbox_failures: status.outbox.counts.dead_letter > 0 ? "fail" : "ok",
   };
+  const remediation: string[] = [];
+  if (checks.outbox_failures === "fail") {
+    remediation.push(
+      `${status.outbox.counts.dead_letter} dead-letter row(s) need recovery. ` +
+        "Preview with `pdpp-local-collector retry-dead-letters`, then requeue with " +
+        "`pdpp-local-collector retry-dead-letters --apply` (backs up the DB first)."
+    );
+  }
   return {
     ...status,
     checks,
+    ...(remediation.length > 0 ? { remediation } : {}),
     status:
       checks.outbox_failures === "fail"
         ? "critical"
