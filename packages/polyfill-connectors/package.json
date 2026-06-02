@@ -23,7 +23,7 @@
     "./connectors/codex": "./connectors/codex/index.ts"
   },
   "scripts": {
-    "postinstall": "patchright install chromium",
+    "postinstall": "node ./scripts/install-patchright-browser.mjs",
     "check": "ultracite check",
     "fix": "ultracite fix",
     "test": "node --test --test-timeout=30000 --import tsx 'bin/**/*.test.ts' 'connectors/**/*.test.ts' 'src/**/*.test.ts'",
