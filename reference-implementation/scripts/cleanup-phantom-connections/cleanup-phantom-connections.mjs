@@ -69,6 +69,36 @@
  * is MISSING (Postgres `to_regclass` is null), the row fails closed with a
  * `Px:<table>-table-missing` reason — missing evidence never silently passes.
  *
+ * Apply-time re-evaluation (TOCTOU safety)
+ * ----------------------------------------
+ * The dry-run plan is a SNAPSHOT. Between the plan and `--apply` a concurrent
+ * write (a new record, grant, schedule, or credential) can make a planned
+ * candidate no longer satisfy P4–P7 WITHOUT changing its status — so a bare
+ * `WHERE status='active'` re-assert is NOT sufficient. Therefore, at apply time,
+ * for EACH candidate the script re-fetches the instance and RE-EVALUATES the
+ * full P1–P7 predicate against current evidence before revoking:
+ *   - Postgres: inside ONE transaction, the row is locked with
+ *     `SELECT ... FOR UPDATE` and all evidence queries run on the SAME client,
+ *     so the re-check reads the same consistent snapshot the UPDATE mutates.
+ *   - SQLite: the re-check + revoke run inside one `writeTransaction`; SQLite's
+ *     single-writer lock serializes it against any other writer.
+ * A candidate that fails the re-evaluation is reported under
+ * `skipped_at_apply` and left untouched — never force-revoked.
+ *
+ * Missing-table fail-closed requires a NON-bootstrapping scan
+ * -----------------------------------------------------------
+ * The fail-closed missing-table guard is only real if the scan connection does
+ * not create the tables first. Both `initDb` (SQLite) and `initPostgresStorage`
+ * (Postgres) run `CREATE TABLE IF NOT EXISTS` for every known table at init, so
+ * scanning through them turns "missing table" into "empty table". The Postgres
+ * arm therefore opens its OWN `pg.Pool` directly and never calls
+ * `initPostgresStorage`/`bootstrapPostgresSchema`; `to_regclass(null)` then
+ * still blocks. The SQLite arm still goes through `initDb` (the store/query
+ * layer is bound to the module-scoped handle), so on SQLite the missing-table
+ * branch is a PREDICATE-LEVEL guarantee proven by `reasonsFromEvidence` tests,
+ * but is not reachable via the SQLite CLI path (initDb always bootstraps). The
+ * realistic divergent-deployment case is Postgres, where it IS reachable.
+ *
  * Output discipline
  * -----------------
  * Prints ONLY stable identifiers, counts, and reasons. Never prints secrets,
@@ -88,8 +118,8 @@
  * Exactly one backend is selected per run. A Postgres URL (flag or env) selects
  * the Postgres arm; otherwise the SQLite arm is used. Both arms share the same
  * deny-by-default predicate (`reasonsFromEvidence`) and the same revoke action
- * (`status='revoked'`, set `updated_at`/`revoked_at`); the Postgres apply wraps
- * all updates in one transaction.
+ * (`status='revoked'`, set `updated_at`/`revoked_at`); both wrap the apply-time
+ * re-evaluation + revoke in one transaction (see "Apply-time re-evaluation").
  *
  * Usage
  * -----
@@ -119,8 +149,8 @@ import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 
 import { closeDb, getDb, initDb } from '../../server/db.js';
+import { writeTransaction } from '../../lib/db.ts';
 import {
-  createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
   makeDefaultAccountConnectorInstanceId,
 } from '../../server/stores/connector-instance-store.js';
@@ -355,53 +385,89 @@ export function planCleanup({ ownerSubjectId = OWNER_AUTH_DEFAULT_SUBJECT_ID } =
 
 /**
  * Apply the revoke to a planned candidate set using the SQLite store soft-flip
- * primitive (the SAME primitive the owner-agent revoke route uses). No
- * cascade. Exported for in-process testing.
+ * primitive (the SAME primitive the owner-agent revoke route uses). Before
+ * revoking each candidate, RE-FETCH the instance and RE-EVALUATE the full
+ * P1–P7 predicate against current evidence inside ONE writeTransaction, so a
+ * record/grant/schedule/credential inserted after the plan but before apply
+ * causes the row to be skipped (reported under `skippedAtApply`) rather than
+ * force-revoked. Single-writer SQLite means the whole re-check-then-revoke
+ * sequence is serialized against other writers; the writeTransaction makes it
+ * atomic. No cascade. Exported for in-process testing.
  */
 export function applyRevoke(candidates, { now = new Date().toISOString() } = {}) {
-  const store = createSqliteConnectorInstanceStore();
   const revoked = [];
-  for (const entry of candidates) {
-    const result = store.updateStatus(entry.connector_instance_id, {
-      status: 'revoked',
-      updatedAt: now,
-      revokedAt: now,
-    });
-    revoked.push({
-      connector_instance_id: entry.connector_instance_id,
-      connector_id: entry.connector_id,
-      status: result.status,
-      revoked_at: result.revokedAt,
-    });
-  }
-  return revoked;
+  const skippedAtApply = [];
+  if (candidates.length === 0) return { revoked, skippedAtApply };
+  const db = getDb();
+  if (!db) throw new Error('Database is not initialized.');
+  const store = createSqliteConnectorInstanceStore();
+  writeTransaction(() => {
+    for (const entry of candidates) {
+      const instance = store.get(entry.connector_instance_id);
+      if (!instance) {
+        skippedAtApply.push({
+          connector_instance_id: entry.connector_instance_id,
+          connector_id: entry.connector_id,
+          reasons: ['apply:instance-not-found'],
+        });
+        continue;
+      }
+      // Re-evaluate the FULL predicate against current evidence.
+      const reasons = reasonsFromEvidence(instance, gatherSqliteEvidence(db, instance.connectorInstanceId));
+      if (reasons.length > 0) {
+        skippedAtApply.push({
+          connector_instance_id: instance.connectorInstanceId,
+          connector_id: instance.connectorId,
+          reasons,
+        });
+        continue;
+      }
+      const result = store.updateStatus(instance.connectorInstanceId, {
+        status: 'revoked',
+        updatedAt: now,
+        revokedAt: now,
+      });
+      revoked.push({
+        connector_instance_id: instance.connectorInstanceId,
+        connector_id: instance.connectorId,
+        status: result.status,
+        revoked_at: result.revokedAt,
+      });
+    }
+  });
+  return { revoked, skippedAtApply };
 }
 
 // ─── Postgres arm ────────────────────────────────────────────────────────────
 
 /** True if a regclass-qualified table exists in the connected Postgres db. */
-async function pgTableExists(pool, name) {
-  const r = await pool.query(`SELECT to_regclass($1) AS oid`, [name]);
+async function pgTableExists(runner, name) {
+  const r = await runner.query(`SELECT to_regclass($1) AS oid`, [name]);
   return Boolean(r.rows[0] && r.rows[0].oid);
 }
 
-async function pgCount(pool, sql, params) {
-  const r = await pool.query(sql, params);
+async function pgCount(runner, sql, params) {
+  const r = await runner.query(sql, params);
   const value = r.rows[0] ? Object.values(r.rows[0])[0] : 0;
   return typeof value === 'bigint' ? Number(value) : Number(value ?? 0);
 }
 
-/** Gather P4–P7 evidence for one instance from a Postgres pool (async). */
-async function gatherPostgresEvidence(pool, id) {
+/**
+ * Gather P4–P7 evidence for one instance from a Postgres query-runner (async).
+ * `runner` is anything with a `.query(sql, params)` method — a Pool for the
+ * read-only plan, or a transaction Client for the apply-time re-evaluation, so
+ * the re-check reads the SAME snapshot the UPDATE will mutate.
+ */
+async function gatherPostgresEvidence(runner, id) {
   const zeroData = {};
   for (const table of EVIDENCE_TABLES) {
-    zeroData[table] = (await pgTableExists(pool, table))
-      ? await pgCount(pool, `SELECT COUNT(*) AS c FROM ${table} WHERE connector_instance_id = $1`, [id])
+    zeroData[table] = (await pgTableExists(runner, table))
+      ? await pgCount(runner, `SELECT COUNT(*) AS c FROM ${table} WHERE connector_instance_id = $1`, [id])
       : 'missing';
   }
-  const grantStorageBindingRefs = (await pgTableExists(pool, 'grants'))
+  const grantStorageBindingRefs = (await pgTableExists(runner, 'grants'))
     ? await pgCount(
-        pool,
+        runner,
         // JSONB column: compare its text rendering. The deterministic id is an
         // opaque token (cin_<hex>) so a substring match is exact in practice.
         `SELECT COUNT(*) AS c FROM grants
@@ -410,9 +476,9 @@ async function gatherPostgresEvidence(pool, id) {
         [id],
       )
     : 'missing';
-  const grantPackageMemberRefs = (await pgTableExists(pool, 'grant_package_members'))
+  const grantPackageMemberRefs = (await pgTableExists(runner, 'grant_package_members'))
     ? await pgCount(
-        pool,
+        runner,
         `SELECT COUNT(*) AS c FROM grant_package_members
           WHERE position($1 IN COALESCE(source_json::text, '')) > 0`,
         [id],
@@ -420,59 +486,141 @@ async function gatherPostgresEvidence(pool, id) {
     : null;
   const activity = {};
   for (const { table } of ACTIVITY_TABLES) {
-    activity[table] = (await pgTableExists(pool, table))
-      ? await pgCount(pool, `SELECT COUNT(*) AS c FROM ${table} WHERE connector_instance_id = $1`, [id])
+    activity[table] = (await pgTableExists(runner, table))
+      ? await pgCount(runner, `SELECT COUNT(*) AS c FROM ${table} WHERE connector_instance_id = $1`, [id])
       : 'missing';
   }
   return { zeroData, grantStorageBindingRefs, grantPackageMemberRefs, activity };
 }
 
+const PG_INSTANCE_COLUMNS = `connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at`;
+
+function mapPgInstanceRow(row) {
+  if (!row) return null;
+  return {
+    connectorInstanceId: row.connector_instance_id,
+    ownerSubjectId: row.owner_subject_id,
+    connectorId: row.connector_id,
+    displayName: row.display_name,
+    status: row.status,
+    sourceKind: row.source_kind,
+    sourceBindingKey: row.source_binding_key,
+    sourceBinding:
+      typeof row.source_binding_json === 'string' ? JSON.parse(row.source_binding_json) : row.source_binding_json,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    revokedAt: row.revoked_at,
+  };
+}
+
 /**
- * Evaluate the safety predicate for one instance row against a Postgres pool.
- * Async sibling of `evaluateInstance`. Pure read-only. Exported for testing.
+ * List an owner's connector_instances directly from a Postgres query-runner.
+ * Inlined (rather than via createPostgresConnectorInstanceStore) so the scan
+ * can run on a plain pool that NEVER bootstrapped the schema — a genuinely
+ * missing evidence table then stays missing instead of being created empty.
  */
-export async function evaluateInstancePg(pool, instance) {
-  const reasons = reasonsFromEvidence(instance, await gatherPostgresEvidence(pool, instance.connectorInstanceId));
+async function listOwnerInstancesPg(runner, ownerSubjectId, { limit = 5000 } = {}) {
+  const r = await runner.query(
+    `SELECT ${PG_INSTANCE_COLUMNS}
+       FROM connector_instances
+      WHERE owner_subject_id = $1
+      ORDER BY connector_id ASC, created_at ASC, connector_instance_id ASC
+      LIMIT $2`,
+    [ownerSubjectId, limit],
+  );
+  return r.rows.map(mapPgInstanceRow);
+}
+
+/**
+ * Evaluate the safety predicate for one instance row against a Postgres
+ * query-runner (Pool or transaction Client). Async sibling of
+ * `evaluateInstance`. Pure read-only. Exported for testing.
+ */
+export async function evaluateInstancePg(runner, instance) {
+  const reasons = reasonsFromEvidence(instance, await gatherPostgresEvidence(runner, instance.connectorInstanceId));
   return { candidate: reasons.length === 0, reasons };
 }
 
 /**
- * Plan the cleanup over a Postgres pool. Pure read; identifies candidates and
- * skipped reasons WITHOUT mutation. Exported for in-process testing.
+ * Plan the cleanup over a Postgres query-runner. Pure read; identifies
+ * candidates and skipped reasons WITHOUT mutation. Exported for in-process
+ * testing. Accepts `pool` (back-compat) or any `runner` with `.query`.
  */
-export async function planCleanupPg({ pool, ownerSubjectId = OWNER_AUTH_DEFAULT_SUBJECT_ID }) {
-  const store = createPostgresConnectorInstanceStore();
-  const instances = await store.listByOwner(ownerSubjectId, { limit: 5000 });
+export async function planCleanupPg({ pool, runner, ownerSubjectId = OWNER_AUTH_DEFAULT_SUBJECT_ID }) {
+  const queryRunner = runner ?? pool;
+  const instances = await listOwnerInstancesPg(queryRunner, ownerSubjectId, { limit: 5000 });
   const evaluated = [];
   for (const instance of instances) {
-    evaluated.push({ instance, reasons: (await evaluateInstancePg(pool, instance)).reasons });
+    evaluated.push({ instance, reasons: (await evaluateInstancePg(queryRunner, instance)).reasons });
   }
-  return buildPlan(ownerSubjectId, evaluated.map((e) => e.instance), (instance) => {
-    const found = evaluated.find((e) => e.instance.connectorInstanceId === instance.connectorInstanceId);
-    return found.reasons;
-  });
+  return buildPlan(
+    ownerSubjectId,
+    evaluated.map((e) => e.instance),
+    (instance) => {
+      const found = evaluated.find((e) => e.instance.connectorInstanceId === instance.connectorInstanceId);
+      return found.reasons;
+    },
+  );
 }
 
 /**
  * Apply the revoke to a planned candidate set on Postgres inside ONE
- * transaction. Updates only candidate ids to status='revoked', setting
- * updated_at/revoked_at. No cascade. Exported for in-process testing.
+ * transaction. For EACH candidate, before revoking, re-fetch the row
+ * (SELECT ... FOR UPDATE, taking a row lock) and RE-EVALUATE the full P1–P7
+ * predicate against current evidence read through the SAME transaction client.
+ * Only a row that still satisfies the entire predicate is revoked; any row that
+ * gained a record/grant/schedule/credential (or otherwise changed) between plan
+ * and apply is skipped and reported under `skippedAtApply` with its fresh
+ * reasons. Re-asserting only status='active' (the prior shape) was insufficient
+ * because those concurrent inserts do not change status. No cascade. Exported
+ * for in-process testing.
  */
-export async function applyRevokePg({ pool, candidates, now = new Date().toISOString() }) {
+export async function applyRevokePg({ pool, runner, candidates, now = new Date().toISOString() }) {
+  const queryRunner = runner ?? pool;
   const revoked = [];
-  if (candidates.length === 0) return revoked;
-  const client = await pool.connect();
+  const skippedAtApply = [];
+  if (candidates.length === 0) return { revoked, skippedAtApply };
+  const client = await queryRunner.connect();
   try {
     await client.query('BEGIN');
     for (const entry of candidates) {
+      // Lock the instance row for the duration of the transaction so its
+      // status / provenance cannot change underneath the re-evaluation.
+      const sel = await client.query(
+        `SELECT ${PG_INSTANCE_COLUMNS}
+           FROM connector_instances
+          WHERE connector_instance_id = $1
+          FOR UPDATE`,
+        [entry.connector_instance_id],
+      );
+      const instance = mapPgInstanceRow(sel.rows[0]);
+      if (!instance) {
+        // The row disappeared between plan and apply (e.g. a delete). Nothing
+        // to revoke; record it as skipped-at-apply for the operator.
+        skippedAtApply.push({
+          connector_instance_id: entry.connector_instance_id,
+          connector_id: entry.connector_id,
+          reasons: ['apply:instance-not-found'],
+        });
+        continue;
+      }
+      // Re-evaluate the FULL predicate against evidence read through this same
+      // transaction client (consistent with the locked row).
+      const reasons = reasonsFromEvidence(instance, await gatherPostgresEvidence(client, instance.connectorInstanceId));
+      if (reasons.length > 0) {
+        skippedAtApply.push({
+          connector_instance_id: instance.connectorInstanceId,
+          connector_id: instance.connectorId,
+          reasons,
+        });
+        continue;
+      }
       const r = await client.query(
-        // Re-assert status='active' in the WHERE so a row that changed between
-        // plan and apply (a concurrent run, a new grant) is NOT revoked.
         `UPDATE connector_instances
             SET status = 'revoked', updated_at = $2, revoked_at = $2
           WHERE connector_instance_id = $1 AND status = 'active'
           RETURNING connector_instance_id, connector_id, status, revoked_at`,
-        [entry.connector_instance_id, now],
+        [instance.connectorInstanceId, now],
       );
       if (r.rowCount === 1) {
         const row = r.rows[0];
@@ -482,10 +630,15 @@ export async function applyRevokePg({ pool, candidates, now = new Date().toISOSt
           status: row.status,
           revoked_at: row.revoked_at,
         });
+      } else {
+        // P3 passed under the lock but the conditional UPDATE matched nothing:
+        // treat as skipped-at-apply rather than a silent revoke.
+        skippedAtApply.push({
+          connector_instance_id: instance.connectorInstanceId,
+          connector_id: instance.connectorId,
+          reasons: [`P3:status-${instance.status}`],
+        });
       }
-      // rowCount === 0 means the row was no longer an active candidate; skip it
-      // silently rather than forcing the revoke. It will reappear in the next
-      // dry-run with its blocking reason.
     }
     await client.query('COMMIT');
   } catch (err) {
@@ -498,7 +651,7 @@ export async function applyRevokePg({ pool, candidates, now = new Date().toISOSt
   } finally {
     client.release();
   }
-  return revoked;
+  return { revoked, skippedAtApply };
 }
 
 // ─── Shared plan/printing ────────────────────────────────────────────────────
@@ -519,7 +672,7 @@ function buildPlan(ownerSubjectId, instances, reasonsFor) {
   return { ownerSubjectId, scanned: instances.length, candidates, skipped };
 }
 
-function printHuman(plan, { apply, revoked }) {
+function printHuman(plan, { apply, revoked, skippedAtApply }) {
   const lines = [];
   lines.push(`owner_subject_id: ${plan.ownerSubjectId}`);
   lines.push(`scanned_connections: ${plan.scanned}`);
@@ -540,15 +693,25 @@ function printHuman(plan, { apply, revoked }) {
     }
     lines.push('');
   }
+  if (apply && skippedAtApply.length > 0) {
+    lines.push('Skipped at apply (predicate re-evaluation changed between plan and apply; NOT revoked):');
+    for (const s of skippedAtApply) {
+      lines.push(`  - ${s.connector_instance_id}  connector=${s.connector_id}  reasons=[${s.reasons.join(', ')}]`);
+    }
+    lines.push('');
+  }
   if (apply) {
-    lines.push(`applied: revoked ${revoked.length} connection(s).`);
+    lines.push(
+      `applied: revoked ${revoked.length} connection(s)` +
+        (skippedAtApply.length > 0 ? `; skipped ${skippedAtApply.length} at apply-time re-evaluation.` : '.'),
+    );
   } else {
     lines.push('dry-run: no changes were made. Re-run with --apply to revoke the candidates above.');
   }
   return lines.join('\n');
 }
 
-function emit(plan, { apply, json, revoked }) {
+function emit(plan, { apply, json, revoked, skippedAtApply }) {
   if (json) {
     process.stdout.write(
       `${JSON.stringify(
@@ -559,13 +722,14 @@ function emit(plan, { apply, json, revoked }) {
           candidates: plan.candidates,
           skipped: plan.skipped,
           revoked,
+          skipped_at_apply: skippedAtApply,
         },
         null,
         2,
       )}\n`,
     );
   } else {
-    process.stdout.write(`${printHuman(plan, { apply, revoked })}\n`);
+    process.stdout.write(`${printHuman(plan, { apply, revoked, skippedAtApply })}\n`);
   }
 }
 
@@ -576,10 +740,11 @@ async function runSqlite({ path, ownerSubjectId, apply, json }) {
   try {
     const plan = planCleanup({ ownerSubjectId });
     let revoked = [];
+    let skippedAtApply = [];
     if (apply && plan.candidates.length > 0) {
-      revoked = applyRevoke(plan.candidates);
+      ({ revoked, skippedAtApply } = applyRevoke(plan.candidates));
     }
-    emit(plan, { apply, json, revoked });
+    emit(plan, { apply, json, revoked, skippedAtApply });
   } finally {
     closeDb();
   }
@@ -587,26 +752,26 @@ async function runSqlite({ path, ownerSubjectId, apply, json }) {
 
 async function runPostgres({ url, ownerSubjectId, apply, json }) {
   // Lazy import so the SQLite arm (and `--print-predicate`) never requires `pg`.
-  const { initPostgresStorage, closePostgresStorage, getPostgresPool } = await import(
-    '../../server/postgres-storage.js'
-  );
-  // initPostgresStorage installs the module-scoped pool that the store layer
-  // (createPostgresConnectorInstanceStore → postgresQuery) and our evidence
-  // queries both talk through. Use that ONE pool for everything, including the
-  // apply transaction (pool.connect()). It also bootstraps the schema, so a
-  // missing-table fail-closed path only triggers on a genuinely divergent
-  // deployment, not a fresh db.
-  await initPostgresStorage({ backend: 'postgres', databaseUrl: url });
-  const pool = getPostgresPool();
+  const pg = (await import('pg')).default;
+  // Open OUR OWN pool directly. We deliberately do NOT call
+  // `initPostgresStorage`, because that runs `bootstrapPostgresSchema`
+  // (CREATE TABLE IF NOT EXISTS for every known table) before any scan. That
+  // bootstrap would turn a genuinely-missing evidence table into an empty one
+  // and silently defeat the P4–P7 missing-table fail-closed guard. Scanning on
+  // a non-bootstrapping pool keeps "missing table" missing, so `to_regclass`
+  // returning null still blocks. We only read and conditionally UPDATE
+  // connector_instances; we never create or migrate schema.
+  const pool = new pg.Pool({ connectionString: url });
   try {
-    const plan = await planCleanupPg({ pool, ownerSubjectId });
+    const plan = await planCleanupPg({ runner: pool, ownerSubjectId });
     let revoked = [];
+    let skippedAtApply = [];
     if (apply && plan.candidates.length > 0) {
-      revoked = await applyRevokePg({ pool, candidates: plan.candidates });
+      ({ revoked, skippedAtApply } = await applyRevokePg({ runner: pool, candidates: plan.candidates }));
     }
-    emit(plan, { apply, json, revoked });
+    emit(plan, { apply, json, revoked, skippedAtApply });
   } finally {
-    await closePostgresStorage().catch(() => {});
+    await pool.end().catch(() => {});
   }
 }
 

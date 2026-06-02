@@ -112,9 +112,10 @@ test(
     assert.equal(plan.candidates[0].connector_instance_id, id);
     assert.equal(plan.skipped.length, 0);
 
-    const revoked = applyRevoke(plan.candidates);
+    const { revoked, skippedAtApply } = applyRevoke(plan.candidates);
     assert.equal(revoked.length, 1);
     assert.equal(revoked[0].status, 'revoked');
+    assert.equal(skippedAtApply.length, 0);
 
     // Removed from the owner connection projection.
     const after = await listConnectorSummaries();
@@ -337,6 +338,75 @@ test(
   }),
 );
 
+test(
+  'apply-time re-evaluation (SQLite): a record inserted AFTER the plan but BEFORE apply blocks the revoke',
+  withDb(async () => {
+    await registerConnector(listedManifest);
+    const id = seedPhantom();
+
+    // Plan sees a clean phantom: one candidate, no skips.
+    const plan = planCleanup({ ownerSubjectId: OWNER });
+    assert.equal(plan.candidates.length, 1);
+    assert.equal(plan.candidates[0].connector_instance_id, id);
+
+    // Concurrent write between plan and apply: a record appears. The row's
+    // STATUS is unchanged (still 'active'), so a bare status re-assert would
+    // have force-revoked it. The full predicate re-evaluation must catch it.
+    getDb()
+      .prepare(
+        `INSERT INTO records(connector_id, connector_instance_id, stream, record_key, record_json, emitted_at)
+         VALUES(?, ?, ?, ?, ?, ?)`,
+      )
+      .run(CONNECTOR_ID, id, STREAM, 'r-late', '{"id":"r-late"}', '2026-06-02T00:00:01.000Z');
+
+    const { revoked, skippedAtApply } = applyRevoke(plan.candidates);
+    assert.equal(revoked.length, 0, 'the now-data-bearing row is NOT revoked');
+    assert.equal(skippedAtApply.length, 1, 'it is reported as skipped-at-apply');
+    assert.equal(skippedAtApply[0].connector_instance_id, id);
+    assert.ok(
+      skippedAtApply[0].reasons.some((r) => r.startsWith('P4:records=')),
+      `expected a P4 records reason at apply, got ${skippedAtApply[0].reasons.join(',')}`,
+    );
+    assert.equal(getInstance(id).status, 'active', 'the row is left active, untouched');
+  }),
+);
+
+test(
+  'apply-time re-evaluation (SQLite): a grant reference inserted before apply blocks the revoke',
+  withDb(async () => {
+    await registerConnector(listedManifest);
+    const id = seedPhantom();
+    const plan = planCleanup({ ownerSubjectId: OWNER });
+    assert.equal(plan.candidates.length, 1);
+
+    // A grant now references the connection (P5) — status still 'active'.
+    getDb()
+      .prepare(
+        `INSERT INTO grants(grant_id, subject_id, client_id, storage_binding_json, grant_json, access_mode, status, issued_at)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        'grant_late_ref',
+        OWNER,
+        'client_test',
+        JSON.stringify({ connector_instance_id: id }),
+        '{}',
+        'snapshot',
+        'active',
+        '2026-06-02T00:00:01.000Z',
+      );
+
+    const { revoked, skippedAtApply } = applyRevoke(plan.candidates);
+    assert.equal(revoked.length, 0);
+    assert.equal(skippedAtApply.length, 1);
+    assert.ok(
+      skippedAtApply[0].reasons.some((r) => r.startsWith('P5:grant-storage-binding=')),
+      `expected a P5 grant reason at apply, got ${skippedAtApply[0].reasons.join(',')}`,
+    );
+    assert.equal(getInstance(id).status, 'active');
+  }),
+);
+
 // ─── Pure-predicate tests (backend-agnostic; no DB) ──────────────────────────
 //
 // `reasonsFromEvidence` is the single source of truth both arms feed. These
@@ -517,10 +587,11 @@ if (!POSTGRES_URL) {
       assert.equal(plan.candidates[0].connector_instance_id, id);
       assert.equal(plan.skipped.length, 0);
 
-      const revoked = await applyRevokePg({ pool, candidates: plan.candidates });
+      const { revoked, skippedAtApply } = await applyRevokePg({ pool, candidates: plan.candidates });
       assert.equal(revoked.length, 1);
       assert.equal(revoked[0].status, 'revoked');
       assert.ok(revoked[0].revoked_at, 'revoked_at is set');
+      assert.equal(skippedAtApply.length, 0);
 
       // Next scan: no candidate, skipped P3, no re-materialization.
       const reread = await planCleanupPg({ pool, ownerSubjectId: owner });
@@ -539,6 +610,73 @@ if (!POSTGRES_URL) {
       // planCleanupPg did not mutate.
       const store = createPostgresConnectorInstanceStore();
       assert.equal((await store.get(id)).status, 'active', 'planning left the row active');
+    });
+  });
+
+  test('Postgres apply-time re-evaluation: a record inserted AFTER the plan but BEFORE apply blocks the revoke', async () => {
+    await withPg(async ({ pool, owner }) => {
+      const id = await seedPgPhantom(pool, owner);
+
+      // Plan sees a clean phantom.
+      const plan = await planCleanupPg({ pool, ownerSubjectId: owner });
+      assert.equal(plan.candidates.length, 1);
+      assert.equal(plan.candidates[0].connector_instance_id, id);
+
+      // Concurrent write between plan and apply: a record appears. Status is
+      // unchanged (still 'active'), so a bare status re-assert would have
+      // force-revoked it. The in-transaction full re-evaluation must catch it.
+      await pool.query(
+        `INSERT INTO records(connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, primary_key_text)
+         VALUES($1, $2, $3, $4, $5::jsonb, $6, $7)`,
+        [PG_CONNECTOR_ID, id, 'messages', 'r-late', JSON.stringify({ id: 'r-late' }), '2026-06-02T00:00:01.000Z', 'r-late'],
+      );
+
+      const { revoked, skippedAtApply } = await applyRevokePg({ pool, candidates: plan.candidates });
+      assert.equal(revoked.length, 0, 'the now-data-bearing row is NOT revoked');
+      assert.equal(skippedAtApply.length, 1, 'it is reported as skipped-at-apply');
+      assert.equal(skippedAtApply[0].connector_instance_id, id);
+      assert.ok(
+        skippedAtApply[0].reasons.some((r) => r.startsWith('P4:records=')),
+        `expected a P4 records reason at apply, got ${skippedAtApply[0].reasons.join(',')}`,
+      );
+      const store = createPostgresConnectorInstanceStore();
+      assert.equal((await store.get(id)).status, 'active', 'the row is left active, untouched');
+
+      // Clean the record so owner-scoped teardown does not orphan an FK row.
+      await pool.query(`DELETE FROM records WHERE connector_instance_id = $1`, [id]);
+    });
+  });
+
+  test('Postgres apply-time re-evaluation: a grant reference inserted before apply blocks the revoke', async () => {
+    await withPg(async ({ pool, owner }) => {
+      const id = await seedPgPhantom(pool, owner);
+      const plan = await planCleanupPg({ pool, ownerSubjectId: owner });
+      assert.equal(plan.candidates.length, 1);
+
+      await pool.query(
+        `INSERT INTO grants(grant_id, subject_id, client_id, storage_binding_json, grant_json, access_mode, status, issued_at)
+         VALUES($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8)`,
+        [
+          `grant_pg_late_${owner}`,
+          owner,
+          'client_test',
+          JSON.stringify({ connector_instance_id: id }),
+          '{}',
+          'snapshot',
+          'active',
+          '2026-06-02T00:00:01.000Z',
+        ],
+      );
+
+      const { revoked, skippedAtApply } = await applyRevokePg({ pool, candidates: plan.candidates });
+      assert.equal(revoked.length, 0);
+      assert.equal(skippedAtApply.length, 1);
+      assert.ok(
+        skippedAtApply[0].reasons.some((r) => r.startsWith('P5:grant-storage-binding=')),
+        `expected a P5 grant reason at apply, got ${skippedAtApply[0].reasons.join(',')}`,
+      );
+      const store = createPostgresConnectorInstanceStore();
+      assert.equal((await store.get(id)).status, 'active');
     });
   });
 
@@ -627,5 +765,82 @@ if (!POSTGRES_URL) {
       const plan = await planCleanupPg({ pool, ownerSubjectId: owner });
       assert.equal(plan.candidates.length, 0);
     });
+  });
+
+  // Blocker #2 proof: a NON-bootstrapping scan keeps a genuinely-missing
+  // evidence table missing, so the P4–P7 fail-closed guard is reachable. We
+  // build an isolated schema that has ONLY connectors + connector_instances
+  // (no records/grants/etc.), put it first on search_path, and scan it with a
+  // PLAIN pg.Pool — exactly as runPostgres() does. If the scan ran schema
+  // bootstrap (the old initPostgresStorage path), the missing tables would be
+  // created empty and the phantom would (wrongly) become a candidate. With the
+  // no-bootstrap scan, every absent evidence table yields `<table>-table-missing`
+  // and the row is fail-closed SKIPPED.
+  test('Postgres no-bootstrap scan: missing evidence tables fail closed (not created empty)', async () => {
+    const pg = (await import('pg')).default;
+    const schema = `phantom_missing_tbl_${process.pid}_${suiteCounter++}`;
+    const admin = new pg.Pool({ connectionString: POSTGRES_URL });
+    try {
+      await admin.query(`CREATE SCHEMA IF NOT EXISTS ${schema}`);
+      // Only the two tables the scan reads structurally + lists from. NO
+      // evidence/activity/grants tables exist in this schema.
+      await admin.query(`
+        CREATE TABLE ${schema}.connectors (connector_id TEXT PRIMARY KEY, manifest JSONB NOT NULL);
+        CREATE TABLE ${schema}.connector_instances (
+          connector_instance_id TEXT PRIMARY KEY,
+          owner_subject_id TEXT NOT NULL,
+          connector_id TEXT NOT NULL,
+          display_name TEXT NOT NULL,
+          status TEXT NOT NULL,
+          source_kind TEXT NOT NULL,
+          source_binding_key TEXT NOT NULL,
+          source_binding_json JSONB NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          revoked_at TEXT
+        );
+      `);
+      const owner = `owner_missing_tbl_${process.pid}`;
+      const id = makeDefaultAccountConnectorInstanceId(owner, PG_CONNECTOR_ID);
+      await admin.query(`INSERT INTO ${schema}.connectors(connector_id, manifest) VALUES($1, $2::jsonb)`, [
+        PG_CONNECTOR_ID,
+        JSON.stringify({ connector_id: PG_CONNECTOR_ID }),
+      ]);
+      await admin.query(
+        `INSERT INTO ${schema}.connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at)
+         VALUES($1, $2, $3, $4, 'active', 'account', 'default', $5::jsonb, $6, $6, NULL)`,
+        [id, owner, PG_CONNECTOR_ID, 'PG Phantom', JSON.stringify({ kind: 'default_account' }), '2026-06-02T00:00:00.000Z'],
+      );
+
+      // Plain pool scoped to the isolated schema; pg.Pool does NOT bootstrap.
+      const scanPool = new pg.Pool({ connectionString: POSTGRES_URL, options: `-c search_path=${schema}` });
+      try {
+        const plan = await planCleanupPg({ runner: scanPool, ownerSubjectId: owner });
+        assert.equal(plan.candidates.length, 0, 'missing evidence tables must fail closed, never a candidate');
+        assert.equal(plan.skipped.length, 1);
+        const reasons = plan.skipped[0].reasons;
+        assert.ok(
+          reasons.includes('P4:records-table-missing'),
+          `expected P4:records-table-missing, got ${reasons.join(',')}`,
+        );
+        assert.ok(
+          reasons.includes('P5:grants-table-missing'),
+          `expected P5:grants-table-missing, got ${reasons.join(',')}`,
+        );
+        assert.ok(
+          reasons.includes('P7:connector_instance_credentials-table-missing'),
+          `expected P7 credential-table-missing, got ${reasons.join(',')}`,
+        );
+        // Proof the scan did NOT bootstrap: the evidence table still does not
+        // exist in the schema after the scan.
+        const stillMissing = await admin.query(`SELECT to_regclass('${schema}.records') AS oid`);
+        assert.equal(stillMissing.rows[0].oid, null, 'scan must not have created the missing table');
+      } finally {
+        await scanPool.end().catch(() => {});
+      }
+    } finally {
+      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`).catch(() => {});
+      await admin.end().catch(() => {});
+    }
   });
 }
