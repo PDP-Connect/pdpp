@@ -115,6 +115,34 @@ export interface LocalDeviceOutboxRequeueDeadLettersResult {
   requeued: number;
 }
 
+export interface LocalDeviceOutboxDeadLetterErrorClass {
+  /** Count of dead-letter rows whose `last_error` collapses to this class. */
+  count: number;
+  /**
+   * Stable, redacted error class. Derived from the row's `last_error` first
+   * line with filesystem paths, credential markers, OTP-shaped digits, long
+   * opaque tokens, and volatile ids/numbers scrubbed so structurally
+   * identical failures group together. Never contains payloads, tokens,
+   * cookies, or host paths.
+   */
+  error_class: string;
+}
+
+export interface LocalDeviceOutboxDeadLetterErrorSummary {
+  /** Total dead-letter rows considered (after the optional source scope). */
+  dead_letter_count: number;
+  /** Dead-letter rows whose `last_error` was null/empty (uncategorized). */
+  null_error_count: number;
+  /** Top error classes by count, descending, truncated to `limit`. */
+  top_classes: LocalDeviceOutboxDeadLetterErrorClass[];
+}
+
+export interface LocalDeviceOutboxDeadLetterErrorSummaryInput {
+  /** Max distinct classes to return (default 5). */
+  limit?: number;
+  sourceInstanceId?: string;
+}
+
 export class LocalDeviceOutbox {
   readonly #clock: () => Date;
   readonly #db: DatabaseSync;
@@ -578,6 +606,72 @@ export class LocalDeviceOutbox {
     return summary;
   }
 
+  /**
+   * Aggregate the top redacted dead-letter error classes.
+   *
+   * Reads only the indexed `status` filter plus the `last_error` text column
+   * — never `payload_json`. Each `last_error` is collapsed to a stable class
+   * (see {@link classifyDeadLetterError}) so 3,420 identical
+   * `400 invalid_request` rejections report as one class with `count: 3420`
+   * rather than 3,420 opaque rows. This is what lets `doctor` and the device
+   * heartbeat answer "why did these dead-letter?" without the operator
+   * opening the SQLite file by hand.
+   *
+   * Output is redaction-safe at this boundary, and the reference server
+   * re-sanitizes it again before persistence.
+   */
+  deadLetterErrorSummary(
+    input: LocalDeviceOutboxDeadLetterErrorSummaryInput = {}
+  ): LocalDeviceOutboxDeadLetterErrorSummary {
+    const limit = input.limit && input.limit > 0 ? input.limit : 5;
+    const rows = input.sourceInstanceId
+      ? this.#db
+          .prepare(
+            `SELECT last_error AS last_error, COUNT(*) AS total
+               FROM local_device_outbox
+              WHERE status = 'dead_letter' AND source_instance_id = ?
+              GROUP BY last_error`
+          )
+          .all(input.sourceInstanceId)
+      : this.#db
+          .prepare(
+            `SELECT last_error AS last_error, COUNT(*) AS total
+               FROM local_device_outbox
+              WHERE status = 'dead_letter'
+              GROUP BY last_error`
+          )
+          .all();
+
+    const classCounts = new Map<string, number>();
+    let deadLetterCount = 0;
+    let nullErrorCount = 0;
+    for (const rowLike of rows) {
+      if (!isRecord(rowLike)) {
+        continue;
+      }
+      const total = numberFrom(rowLike.total);
+      deadLetterCount += total;
+      const raw = rowLike.last_error;
+      if (typeof raw !== "string" || raw.trim() === "") {
+        nullErrorCount += total;
+        continue;
+      }
+      const errorClass = classifyDeadLetterError(raw);
+      classCounts.set(errorClass, (classCounts.get(errorClass) ?? 0) + total);
+    }
+
+    const top_classes = [...classCounts.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, limit)
+      .map(([error_class, count]) => ({ count, error_class }));
+
+    return {
+      dead_letter_count: deadLetterCount,
+      null_error_count: nullErrorCount,
+      top_classes,
+    };
+  }
+
   #countWhere(clauses: readonly string[], params: readonly string[], limit: number | null): number {
     if (limit == null) {
       const row = this.#db
@@ -758,6 +852,41 @@ function normalizeLimit(value: number | undefined): number | null {
 
 function sqlStringLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
+}
+
+const DEAD_LETTER_SECRET_RE =
+  /\b(authorization|bearer|token|password|passwd|cookie|secret|otp|api[_-]?key)\b\s*[:=]\s*\S+/gi;
+const DEAD_LETTER_OTP_RE = /\b\d{6}\b/g;
+const DEAD_LETTER_LONG_OPAQUE_RE = /\b[A-Za-z0-9_-]{24,}\b/g;
+const DEAD_LETTER_PATH_RE = /(?:\/home|\/Users|\/root)\/[^\s"',)]+|[A-Za-z]:\\Users\\[^\s"',)]+/g;
+const DEAD_LETTER_URL_RE = /https?:\/\/[^\s"',)]+/gi;
+const DEAD_LETTER_HEX_ID_RE = /\b[0-9a-f]{8,}\b/gi;
+const DEAD_LETTER_NUMBER_RE = /\b\d{4,}\b/g;
+const DEAD_LETTER_MAX_LENGTH = 160;
+
+/**
+ * Collapse a raw `last_error` string into a stable, redaction-safe class.
+ *
+ * The goal is grouping, not preservation: HTTP status codes and the error
+ * shape stay so `400 invalid_request` reads clearly, while host paths,
+ * credential markers, OTP-shaped digits, opaque tokens, URLs, and long
+ * volatile ids/sequence numbers are scrubbed so structurally identical
+ * failures map to one class. First line only; never the payload body.
+ */
+export function classifyDeadLetterError(raw: string): string {
+  let s = raw.split("\n", 1)[0] ?? "";
+  s = s.replace(DEAD_LETTER_PATH_RE, "[PATH]");
+  s = s.replace(DEAD_LETTER_URL_RE, "[URL]");
+  s = s.replace(DEAD_LETTER_SECRET_RE, (_match, marker: string) => `${marker}=[REDACTED]`);
+  s = s.replace(DEAD_LETTER_OTP_RE, "[REDACTED_OTP]");
+  s = s.replace(DEAD_LETTER_LONG_OPAQUE_RE, "[REDACTED]");
+  s = s.replace(DEAD_LETTER_HEX_ID_RE, "[ID]");
+  s = s.replace(DEAD_LETTER_NUMBER_RE, "[N]");
+  s = s.replace(/\s+/g, " ").trim();
+  if (s === "") {
+    return "(unclassified)";
+  }
+  return s.length > DEAD_LETTER_MAX_LENGTH ? `${s.slice(0, DEAD_LETTER_MAX_LENGTH - 1)}…` : s;
 }
 
 function asOutboxRow(row: unknown): LocalDeviceOutboxRow {

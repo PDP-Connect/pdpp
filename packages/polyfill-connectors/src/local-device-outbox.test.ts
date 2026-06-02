@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { buildLocalDeviceOutboxId, LocalDeviceOutbox } from "./local-device-outbox.ts";
+import { buildLocalDeviceOutboxId, classifyDeadLetterError, LocalDeviceOutbox } from "./local-device-outbox.ts";
 
 test("LocalDeviceOutbox persists ready work and reopens from disk", async () => {
   const path = await tempOutboxPath();
@@ -674,6 +674,79 @@ test("LocalDeviceOutbox preserves gap rows durably with source-instance scoping 
     outbox.close();
     throw err;
   }
+});
+
+test("LocalDeviceOutbox.deadLetterErrorSummary groups by redacted error class with counts", async () => {
+  const outbox = new LocalDeviceOutbox({
+    clock: fixedClock("2026-05-19T12:00:00.000Z"),
+    path: await tempOutboxPath(),
+  });
+  try {
+    // Three rows fail with the same server-rejection shape, one with a
+    // distinct transport error, one with a host path that must be scrubbed.
+    const rows: [string, string][] = [
+      ["src-1:record_batch:1", "local device request failed: 400 invalid_request"],
+      ["src-1:record_batch:2", "local device request failed: 400 invalid_request"],
+      ["src-1:record_batch:3", "local device request failed: 400 invalid_request"],
+      ["src-1:record_batch:4", "fetch failed: ECONNREFUSED"],
+      ["src-1:record_batch:5", "ENOENT: no such file /home/user/.local/state/pdpp/x.sqlite"],
+    ];
+    for (const [id, error] of rows) {
+      outbox.enqueue({ id, kind: "record_batch", payload: { id }, sourceInstanceId: "src-1" });
+      const [claim] = outbox.claimReady({ holder: "w", leaseMs: 60_000, sourceInstanceId: "src-1" });
+      assert.ok(claim);
+      outbox.deadLetter({ error, holder: "w", id: claim.id, leaseEpoch: claim.lease_epoch });
+    }
+
+    const summary = outbox.deadLetterErrorSummary({ sourceInstanceId: "src-1" });
+    assert.equal(summary.dead_letter_count, 5);
+    assert.equal(summary.null_error_count, 0);
+    // Most common class first, with its count collapsed across the 3 rows.
+    assert.equal(summary.top_classes[0]?.error_class, "local device request failed: 400 invalid_request");
+    assert.equal(summary.top_classes[0]?.count, 3);
+    // The host path must be scrubbed in the surfaced class.
+    const pathClass = summary.top_classes.find((c) => c.error_class.includes("ENOENT"));
+    assert.ok(pathClass, "expected an ENOENT class");
+    assert.ok(!pathClass?.error_class.includes("/home/user"), "host path must be redacted");
+    assert.ok(pathClass?.error_class.includes("[PATH]"), "host path must be replaced with [PATH]");
+  } finally {
+    outbox.close();
+  }
+});
+
+test("LocalDeviceOutbox.deadLetterErrorSummary is empty on a clean outbox", async () => {
+  const outbox = new LocalDeviceOutbox({ path: await tempOutboxPath() });
+  try {
+    outbox.enqueue({ id: "src-1:record_batch:1", kind: "record_batch", payload: { k: 1 }, sourceInstanceId: "src-1" });
+    const summary = outbox.deadLetterErrorSummary({ sourceInstanceId: "src-1" });
+    assert.equal(summary.dead_letter_count, 0);
+    assert.equal(summary.null_error_count, 0);
+    assert.deepEqual(summary.top_classes, []);
+  } finally {
+    outbox.close();
+  }
+});
+
+test("classifyDeadLetterError preserves status shape and scrubs secrets, paths, and volatile ids", () => {
+  // HTTP status code (3 digits) survives so the class stays readable.
+  assert.equal(
+    classifyDeadLetterError("local device request failed: 400 invalid_request"),
+    "local device request failed: 400 invalid_request"
+  );
+  // Credential markers are redacted.
+  assert.equal(
+    classifyDeadLetterError("auth error authorization=Bearer-supersecretvalue123456789 denied").includes("supersecret"),
+    false
+  );
+  // 6-digit OTP-shaped runs are redacted.
+  assert.ok(classifyDeadLetterError("otp mismatch 482913").includes("[REDACTED_OTP]"));
+  // Long volatile ids and multi-digit sequence numbers collapse so classes group.
+  const a = classifyDeadLetterError("batch 1780341172584 rejected for run abcdef0123456789");
+  const b = classifyDeadLetterError("batch 1780341199999 rejected for run 99887766aabbccdd");
+  assert.equal(a, b, "structurally identical errors must collapse to one class");
+  assert.equal(a, "batch [ID] rejected for run [ID]");
+  // Only the first line is used.
+  assert.equal(classifyDeadLetterError("first line\nsecond line with /root/secret"), "first line");
 });
 
 async function tempOutboxPath(): Promise<string> {

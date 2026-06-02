@@ -38,6 +38,7 @@ import {
   COLLECTOR_RUNTIME_CAPABILITIES,
   type CollectorConnectorSpec,
   LocalDeviceOutbox,
+  type LocalDeviceOutboxDeadLetterErrorSummary,
   type LocalDeviceOutboxKind,
   type LocalDeviceOutboxSummary,
   enrollCollector,
@@ -172,9 +173,12 @@ async function main(): Promise<void> {
 
   if (options.command === "status" || options.command === "doctor") {
     const status = inspectLocalOutboxStatus(options);
-    process.stdout.write(
-      `${JSON.stringify(options.command === "doctor" ? buildLocalOutboxDoctor(status) : status, null, 2)}\n`
-    );
+    if (options.command === "doctor") {
+      const errorSummary = readLocalOutboxDeadLetterErrorSummary(options);
+      process.stdout.write(`${JSON.stringify(buildLocalOutboxDoctor(status, errorSummary), null, 2)}\n`);
+      return;
+    }
+    process.stdout.write(`${JSON.stringify(status, null, 2)}\n`);
     return;
   }
 
@@ -316,6 +320,13 @@ export interface LocalOutboxDoctorOutput extends LocalOutboxStatusOutput {
     outbox_failures: "ok" | "fail";
   };
   /**
+   * Top redacted dead-letter error classes, present only when there are
+   * dead-letter rows. This is the "why did these dead-letter?" answer: the
+   * `last_error` text already stored on each row, collapsed into stable
+   * classes with counts (paths/tokens/ids scrubbed). Omitted on a clean run.
+   */
+  dead_letter_error_summary?: LocalDeviceOutboxDeadLetterErrorSummary;
+  /**
    * Operator-actionable hints, present only when a check is non-`ok`. The
    * field is omitted when everything is healthy so a clean doctor run stays
    * quiet. Hints are static guidance strings — counts/commands only, never
@@ -331,6 +342,13 @@ export interface RetryDeadLettersOutput {
     exists: boolean;
     path: string;
   };
+  /**
+   * Top redacted dead-letter error classes for the rows this command
+   * matched. Present whenever there are dead-letter rows, so a `--dry-run`
+   * preview shows *why* before `--apply` requeues. Omitted when nothing
+   * matched.
+   */
+  dead_letter_error_summary?: LocalDeviceOutboxDeadLetterErrorSummary;
   dry_run: boolean;
   filter: {
     kind: LocalDeviceOutboxKind | null;
@@ -338,6 +356,14 @@ export interface RetryDeadLettersOutput {
     source_instance_id: string | null;
   };
   matched: number;
+  /**
+   * One-line operator guidance distinguishing the two stall shapes:
+   * - dead-letter backlog (matched > 0): requeue then re-run drains it.
+   * - state-read block (matched == 0 with a `blocked` heartbeat): there is
+   *   nothing to requeue; recovery is simply re-running the collector, which
+   *   re-reads prior state and clears the block.
+   */
+  note: string;
   requeued: number;
   status_after: LocalOutboxStatusOutput["outbox"]["counts"] | null;
   status_before: LocalOutboxStatusOutput["outbox"]["counts"] | null;
@@ -381,7 +407,10 @@ export function inspectLocalOutboxStatus(options: CliOptions): LocalOutboxStatus
   };
 }
 
-export function buildLocalOutboxDoctor(status: LocalOutboxStatusOutput): LocalOutboxDoctorOutput {
+export function buildLocalOutboxDoctor(
+  status: LocalOutboxStatusOutput,
+  errorSummary?: LocalDeviceOutboxDeadLetterErrorSummary | null
+): LocalOutboxDoctorOutput {
   const checks: LocalOutboxDoctorOutput["checks"] = {
     expired_leases: status.outbox.expired_leases > 0 ? "warn" : "ok",
     outbox_db: status.db.exists ? "ok" : "missing",
@@ -389,15 +418,22 @@ export function buildLocalOutboxDoctor(status: LocalOutboxStatusOutput): LocalOu
   };
   const remediation: string[] = [];
   if (checks.outbox_failures === "fail") {
+    const topClass = errorSummary?.top_classes?.[0];
+    const causeHint = topClass
+      ? ` Most common cause: ${topClass.error_class} (${topClass.count} row(s)).`
+      : "";
     remediation.push(
-      `${status.outbox.counts.dead_letter} dead-letter row(s) need recovery. ` +
+      `${status.outbox.counts.dead_letter} dead-letter row(s) need recovery.${causeHint} ` +
         "Preview with `pdpp-local-collector retry-dead-letters`, then requeue with " +
-        "`pdpp-local-collector retry-dead-letters --apply` (backs up the DB first)."
+        "`pdpp-local-collector retry-dead-letters --apply` (backs up the DB first), " +
+        "then re-run the collector to drain the requeued rows."
     );
   }
+  const includeSummary = Boolean(errorSummary) && status.outbox.counts.dead_letter > 0;
   return {
     ...status,
     checks,
+    ...(includeSummary && errorSummary ? { dead_letter_error_summary: errorSummary } : {}),
     ...(remediation.length > 0 ? { remediation } : {}),
     status:
       checks.outbox_failures === "fail"
@@ -406,6 +442,46 @@ export function buildLocalOutboxDoctor(status: LocalOutboxStatusOutput): LocalOu
           ? "warning"
           : "ok",
   };
+}
+
+/**
+ * Read the top dead-letter error classes from the local outbox, if the DB
+ * exists and has dead-letter rows. Returns null otherwise so `doctor` stays
+ * quiet on a clean host. Selects only the `last_error` column — never
+ * payloads, paths, tokens, or record bodies.
+ */
+export function readLocalOutboxDeadLetterErrorSummary(
+  options: CliOptions
+): LocalDeviceOutboxDeadLetterErrorSummary | null {
+  const dbPath = resolveOutboxPath(options);
+  if (!existsSync(dbPath)) {
+    return null;
+  }
+  const outbox = new LocalDeviceOutbox({ path: dbPath });
+  try {
+    const summary = outbox.deadLetterErrorSummary(
+      options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {}
+    );
+    return summary.dead_letter_count > 0 ? summary : null;
+  } finally {
+    outbox.close();
+  }
+}
+
+const RETRY_DEAD_LETTERS_NO_MATCH_NOTE =
+  "No dead-letter rows matched. If the dashboard shows this connection as " +
+  "blocked/stalled, that is a state-read block, not a dead-letter backlog — " +
+  "there is nothing to requeue. Recovery is to re-run the collector " +
+  "(`pdpp-local-collector run …`), which re-reads prior state and clears the block.";
+
+function retryDeadLettersMatchNote(matched: number, dryRun: boolean): string {
+  if (matched === 0) {
+    return RETRY_DEAD_LETTERS_NO_MATCH_NOTE;
+  }
+  const requeued = dryRun
+    ? `${matched} dead-letter row(s) would be requeued (dry run). Re-run with --apply to requeue (backs up the DB first), `
+    : `${matched} dead-letter row(s) matched and were requeued to pending. `;
+  return `${requeued}then re-run the collector (\`pdpp-local-collector run …\`) to drain them — requeue moves rows to pending, it does not ingest.`;
 }
 
 export function retryLocalOutboxDeadLetters(options: CliOptions): RetryDeadLettersOutput {
@@ -422,6 +498,7 @@ export function retryLocalOutboxDeadLetters(options: CliOptions): RetryDeadLette
         source_instance_id: options.sourceInstanceId ?? null,
       },
       matched: 0,
+      note: retryDeadLettersMatchNote(0, !options.apply),
       requeued: 0,
       status_after: null,
       status_before: null,
@@ -431,6 +508,9 @@ export function retryLocalOutboxDeadLetters(options: CliOptions): RetryDeadLette
   const outbox = new LocalDeviceOutbox({ path: dbPath });
   try {
     const statusBefore = summaryCounts(outbox.summary(options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {}));
+    const errorSummary = outbox.deadLetterErrorSummary(
+      options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {}
+    );
     const dryRun = !options.apply;
     const backupPath = dryRun ? null : backupSqliteDb(outbox, dbPath);
     const result = outbox.requeueDeadLetters({
@@ -443,6 +523,7 @@ export function retryLocalOutboxDeadLetters(options: CliOptions): RetryDeadLette
     return {
       backup_path: backupPath,
       db: { exists: true, path: dbPath },
+      ...(errorSummary.dead_letter_count > 0 ? { dead_letter_error_summary: errorSummary } : {}),
       dry_run: dryRun,
       filter: {
         kind: options.deadLetterKind ?? null,
@@ -450,6 +531,7 @@ export function retryLocalOutboxDeadLetters(options: CliOptions): RetryDeadLette
         source_instance_id: options.sourceInstanceId ?? null,
       },
       matched: result.matched,
+      note: retryDeadLettersMatchNote(result.matched, dryRun),
       requeued: result.requeued,
       status_after: statusAfter,
       status_before: statusBefore,

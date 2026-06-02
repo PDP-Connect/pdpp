@@ -24,6 +24,7 @@ import {
   buildLocalOutboxDoctor,
   inspectLocalOutboxStatus,
   parseArgs,
+  readLocalOutboxDeadLetterErrorSummary,
   resolveLocalCollectorPackageVersion,
   retryLocalOutboxDeadLetters,
   scopedDefaultQueuePath,
@@ -244,6 +245,32 @@ test('local collector doctor flags missing db, expired leases, and dead letters'
     assert.equal(doctor.remediation.length, 1);
     assert.match(doctor.remediation[0], /retry-dead-letters/);
     assert.match(doctor.remediation[0], /--apply/);
+
+    // When an error summary is supplied, doctor surfaces the top redacted
+    // error class (the "why") and names it in the remediation hint.
+    const doctorWithCause = buildLocalOutboxDoctor(
+      inspectLocalOutboxStatus({
+        baseUrl: 'http://127.0.0.1:7662',
+        command: 'doctor',
+        queuePath: path,
+        sourceInstanceId: 'src-1',
+      }),
+      readLocalOutboxDeadLetterErrorSummary({
+        baseUrl: 'http://127.0.0.1:7662',
+        command: 'doctor',
+        queuePath: path,
+        sourceInstanceId: 'src-1',
+      })
+    );
+    assert.ok(doctorWithCause.dead_letter_error_summary);
+    assert.equal(doctorWithCause.dead_letter_error_summary.dead_letter_count, 1);
+    assert.equal(doctorWithCause.dead_letter_error_summary.top_classes[0].error_class, 'bounded error');
+    assert.match(doctorWithCause.remediation[0], /bounded error/);
+    // Payloads/ids still never leak even with the cause surfaced.
+    assert.doesNotMatch(
+      JSON.stringify(doctorWithCause),
+      /dead-letter-payload|expired-lease-payload|retrying-payload|dead-letter-id|expired-lease-id|retrying-id/
+    );
   } finally {
     outbox.close();
   }
@@ -314,6 +341,10 @@ test('local collector retry-dead-letters is dry-run by default and backs up befo
   assert.equal(dryRun.backup_path, null);
   assert.equal(dryRun.status_before.dead_letter, 1);
   assert.equal(dryRun.status_after.dead_letter, 1);
+  // Dry run previews the cause and points at the next step.
+  assert.equal(dryRun.dead_letter_error_summary.top_classes[0].error_class, 'terminal');
+  assert.match(dryRun.note, /dry run/);
+  assert.match(dryRun.note, /--apply/);
 
   const applied = retryLocalOutboxDeadLetters({ ...parsed, apply: true });
   assert.equal(applied.dry_run, false);
@@ -324,9 +355,35 @@ test('local collector retry-dead-letters is dry-run by default and backs up befo
   assert.equal(applied.status_before.dead_letter, 1);
   assert.equal(applied.status_after.dead_letter, 0);
   assert.equal(applied.status_after.pending, 1);
+  // After requeue the note is explicit that a collector re-run drains it.
+  assert.match(applied.note, /re-run the collector/);
+  assert.match(applied.note, /does not ingest/);
 
+  // Payloads and ids never leak; the redacted error class ("terminal") is
+  // intentionally surfaced as the recovery cause.
   const rendered = JSON.stringify(applied);
-  assert.doesNotMatch(rendered, /dead-letter-payload|dead-letter-id|terminal/);
+  assert.doesNotMatch(rendered, /dead-letter-payload|dead-letter-id/);
+});
+
+test('local collector retry-dead-letters explains a state-read block when nothing matches', async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    // A healthy (no dead-letter) outbox: nothing to requeue.
+    outbox.enqueue({ id: 'ok-id', kind: 'record_batch', payload: { ok: true }, sourceInstanceId: 'src-1' });
+  } finally {
+    outbox.close();
+  }
+  const result = retryLocalOutboxDeadLetters(
+    parseArgs(['retry-dead-letters', '--queue', path, '--connection-id', 'src-1'])
+  );
+  assert.equal(result.matched, 0);
+  assert.equal(result.requeued, 0);
+  assert.equal(result.dead_letter_error_summary, undefined);
+  // The note distinguishes a state-read block (nothing to requeue, re-run to
+  // clear) from a dead-letter backlog.
+  assert.match(result.note, /state-read block/);
+  assert.match(result.note, /re-run the collector/);
 });
 
 test('local collector run output summarizes state cursors without dumping payload maps', () => {

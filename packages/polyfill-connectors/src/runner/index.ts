@@ -94,8 +94,12 @@ export {
 export {
   type BuildLocalDeviceOutboxIdInput,
   buildLocalDeviceOutboxId,
+  classifyDeadLetterError,
   LocalDeviceOutbox,
   type LocalDeviceOutboxClaimInput,
+  type LocalDeviceOutboxDeadLetterErrorClass,
+  type LocalDeviceOutboxDeadLetterErrorSummary,
+  type LocalDeviceOutboxDeadLetterErrorSummaryInput,
   type LocalDeviceOutboxDeadLetterInput,
   type LocalDeviceOutboxEnqueueInput,
   type LocalDeviceOutboxFailInput,

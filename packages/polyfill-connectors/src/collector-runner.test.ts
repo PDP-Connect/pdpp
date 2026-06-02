@@ -674,7 +674,16 @@ test("runCollectorConnector does not checkpoint when record work dead-letters", 
     assert.equal(result.flushedState, null);
     assert.equal(result.outboxSummary.deadLetter, 1);
     assert.equal(harness.stateOps.filter((op) => op.method === "PUT").length, 0);
-    assert.equal(harness.heartbeats.at(-1)?.status, "blocked");
+    const blockedHeartbeat = harness.heartbeats.at(-1);
+    assert.equal(blockedHeartbeat?.status, "blocked");
+    // The blocked-on-backlog heartbeat now carries the redacted cause so the
+    // dashboard can answer "why did these dead-letter?" without host access.
+    const lastError = blockedHeartbeat?.last_error as
+      | { kind?: string; top_dead_letter_classes?: { count: number; error_class: string }[] }
+      | undefined;
+    assert.equal(lastError?.kind, "dead_letter_backlog");
+    assert.ok((lastError?.top_dead_letter_classes?.length ?? 0) >= 1, "expected at least one error class");
+    assert.equal(lastError?.top_dead_letter_classes?.[0]?.count, 1);
   } finally {
     await harness.close();
   }
@@ -1106,6 +1115,11 @@ test("runCollectorConnector surfaces state-read failure as a blocked heartbeat a
       blockedHeartbeats.length >= 1,
       `expected at least one blocked heartbeat, saw ${harness.heartbeats.map((h) => h.status).join(",")}`
     );
+    // The blocked-on-state-read heartbeat discriminates the stall shape so the
+    // dashboard distinguishes a state-read block (re-run to clear) from a
+    // dead-letter backlog — without leaking the raw state-read error text.
+    const stateBlocked = blockedHeartbeats.at(-1)?.last_error as { kind?: string } | undefined;
+    assert.equal(stateBlocked?.kind, "state_read_failed");
   } finally {
     await harness.close();
   }

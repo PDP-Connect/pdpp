@@ -30,6 +30,7 @@ import { fileURLToPath } from "node:url";
 import type { EmittedMessage, StartMessage, StreamScope } from "./connector-runtime-protocol.ts";
 import {
   type EnrollmentExchangeResponse,
+  type HeartbeatLastError,
   type HeartbeatOutboxDiagnostics,
   LocalDeviceClient,
 } from "./local-device-client.ts";
@@ -441,8 +442,10 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     const recordsPending = pendingOutboxWorkCount(finalSummary);
 
     if (!checkpointResult.statePutFailed) {
+      const finalDeadLetterError = buildHeartbeatDeadLetterError(outbox, config.sourceInstanceId);
       await client.heartbeat({
         connector_id: config.connector.connector_id,
+        ...(finalDeadLetterError ? { last_error: finalDeadLetterError } : {}),
         outbox: buildHeartbeatOutboxDiagnostics(finalSummary, {
           backlogOpen: countOpenBacklogGaps(outbox, config.sourceInstanceId),
         }),
@@ -551,6 +554,11 @@ async function readPriorStateOrBlock(input: {
   } catch (error) {
     await safeHeartbeat(input.client, {
       connector_id: input.config.connector.connector_id,
+      // Discriminate the stall shape only — never the raw state-read error,
+      // which may carry AS-reach detail. The dashboard now learns this is a
+      // state-read block (cleared by re-running the collector), not a
+      // dead-letter backlog, instead of an undifferentiated `blocked`.
+      last_error: { kind: "state_read_failed" },
       records_pending: input.recordsPending,
       source_instance_id: input.config.sourceInstanceId,
       status: "blocked",
@@ -1791,6 +1799,28 @@ export function buildHeartbeatOutboxDiagnostics(
     stale_leases: summary.staleLeases,
     succeeded: summary.succeeded,
     total: summary.total,
+  };
+}
+
+/**
+ * Build the redacted `last_error` carried on a heartbeat when the source
+ * instance has a dead-letter backlog. Returns null when there are no
+ * dead-letter rows so a healthy/draining heartbeat stays quiet. The
+ * `top_dead_letter_classes` are already redaction-safe at the outbox
+ * boundary; the reference server re-sanitizes them before persistence.
+ *
+ * This is what lets the dashboard answer "why did these dead-letter?"
+ * instead of showing `last_error_json: null` — the cause already lives on
+ * each row's `last_error` column but was never propagated up the heartbeat.
+ */
+function buildHeartbeatDeadLetterError(outbox: LocalDeviceOutbox, sourceInstanceId: string): HeartbeatLastError | null {
+  const summary = outbox.deadLetterErrorSummary({ sourceInstanceId });
+  if (summary.dead_letter_count === 0) {
+    return null;
+  }
+  return {
+    kind: "dead_letter_backlog",
+    top_dead_letter_classes: summary.top_classes,
   };
 }
 

@@ -50,8 +50,25 @@ export interface HeartbeatOutboxDiagnostics {
   total: number;
 }
 
+/**
+ * Optional redacted "why" carried alongside a heartbeat. The reference
+ * server already accepts and re-sanitizes `last_error` on a heartbeat
+ * source instance (it persists to `last_error_json`, which the dashboard
+ * reads), so this lets the control plane answer "why did these block /
+ * dead-letter?" without host-local spelunking. Reference-only and additive:
+ * stable error classes and counts, never payloads, paths, tokens, cookies,
+ * or auth material.
+ */
+export interface HeartbeatLastError {
+  /** Discriminates the stall shape so the dashboard can pick remediation. */
+  kind: "state_read_failed" | "dead_letter_backlog";
+  /** Top redacted dead-letter error classes (present for backlog stalls). */
+  top_dead_letter_classes?: { count: number; error_class: string }[];
+}
+
 export interface HeartbeatRequest {
   connector_id: string;
+  last_error?: HeartbeatLastError | null;
   outbox?: HeartbeatOutboxDiagnostics;
   records_pending?: number;
   source_instance_id: string;
