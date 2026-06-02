@@ -403,29 +403,9 @@ function unsupportedModalityCopy(modality: "browser_bound" | "api_network") {
 }
 
 /**
- * Honest add-connection picker, driven by the live connector catalog.
- *
- * The owner-agent typed connection-intent route now exists
- * (`POST /v1/owner/connections/intents`), and the owner-agent catalog route
- * (`GET /v1/owner/connector-templates`) returns this same catalog — but both are
- * owner-*bearer* REST for trusted local agents. A browser owner session has no
- * owner bearer, so the console must not call them. The cookie-safe equivalent is
- * reading the shipped manifests directly in the server component; that catalog is
- * passed in as `catalog`.
- *
- * The picker shows EVERY shipped connector, grouped by its binding-derived
- * modality, each routed to the honest next step the reference can complete today:
- * filesystem-class connectors deep-link into the one-click enrollment form
- * pre-selected; Amazon deep-links into the manual `browser_collector` proof-run
- * path; other browser-bound connectors are named and pointed at the owner-run
- * runbook without a deep-link; API/network connectors are named with their
- * missing primitive. No gated connector renders an "Add connection" affordance
- * the reference cannot complete (no phantom zero-record connections).
- *
- * The catalog classification reuses the shared `connection-catalog` /
- * `connection-modality` modules — the cookie-session siblings of the backend
- * intent route's classifier — so both surfaces tell the same story
- * (`docs/voice-and-framing.md`: qualify connector claims; name the gap).
+ * Honest add-connection picker. The catalog is read server-side from shipped
+ * manifests, then rendered as: startable now, manual browser proof, or visible
+ * but gated. Gated entries never render enrollment links.
  */
 function AddConnectionGuidance({
   catalog,
@@ -444,7 +424,7 @@ function AddConnectionGuidance({
   return (
     <Callout
       className="mb-4"
-      description="Connections are added by connector modality, not per brand: the reference classifies every connector by its runtime bindings. Every connector it ships is listed below, grouped by modality. Filesystem connectors enroll directly. Browser-bound connectors mint a browser-collector code and then need the owner-run browser procedure. API/network sources have no owner-approved connect flow yet."
+      description="Choose a connector. Entries with arrows can start here; the rest show the missing setup path instead of creating an empty connection."
       surface="human"
       title="Add a connection"
     >
@@ -470,8 +450,7 @@ function AddConnectionGuidance({
               ))}
             </ul>
             <p className="pdpp-caption mt-1.5 text-muted-foreground">
-              Each opens the enrollment form pre-selected. You run the collector on the host that has the data; the
-              connection materializes when the device enrolls and ingests.
+              Opens the enrollment form pre-selected. Run the collector on the host that has the data.
             </p>
           </div>
         ) : null}
@@ -497,10 +476,8 @@ function AddConnectionGuidance({
               ))}
             </ul>
             <p className="pdpp-caption mt-1.5 text-muted-foreground">
-              This is the same generic <code className="font-mono">browser_collector</code> enrollment any browser-bound
-              connector uses; the connector(s) above are listed here because they have a committed runner profile today.
-              It mints a <code className="font-mono">browser_collector</code> enrollment code. It is not a one-click
-              browser flow: finish the local, owner-logged-in browser run with{" "}
+              Mints a <code className="font-mono">browser_collector</code> enrollment code. It is not a one-click
+              browser flow; finish the owner-run browser proof with{" "}
               <code className="pdpp-eyebrow font-mono text-foreground">{BROWSER_BOUND_RUNBOOK_PATH}</code>.
             </p>
           </div>
@@ -524,7 +501,7 @@ function AddConnectionGuidance({
             <p className="pdpp-caption mt-1.5 text-muted-foreground">
               {browserCopy?.ownerFacingReason ??
                 "needs a supported browser-collector run profile before the console can generate setup commands"}
-              . To add one today, follow{" "}
+              . Manual path:{" "}
               <code className="pdpp-eyebrow font-mono text-foreground" data-testid="runbook-path-browser_bound">
                 {BROWSER_BOUND_RUNBOOK_PATH}
               </code>
@@ -549,9 +526,7 @@ function AddConnectionGuidance({
               ))}
             </ul>
             <p className="pdpp-caption mt-1.5 text-muted-foreground">
-              These are filesystem-class connectors: they collect from a local export or host file via a local
-              collector, the same mechanism as the supported set above. The console does not have a committed enrollment
-              proof for them yet, so they are listed here rather than offered as a one-click enroll.
+              Filesystem-class connectors without a committed console enrollment proof yet.
             </p>
           </div>
         ) : null}

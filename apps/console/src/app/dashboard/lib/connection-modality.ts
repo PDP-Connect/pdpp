@@ -21,12 +21,12 @@
  * flips the owner-agent intent route. API/network sources (GitHub/Gmail) have no
  * owner connect route at all and remain flatly unsupported from the console.
  *
- * Keep this list and the backend classifier in lockstep. The backend classifies
- * from a connector manifest's `runtime_requirements.bindings`; the console has no
- * manifest at the records list, so it enumerates the proven set by key. If the
- * reference gains a new proven local-collector connector (or a browser-collector
- * enrollment primitive ships and flips a browser-bound connector to supported),
- * update both surfaces together.
+ * Keep this list and the backend classifier in lockstep. The add-connection
+ * picker reads shipped manifests for the full catalog, while this module still
+ * owns the proven enrollment sets and key canonicalization. If the reference
+ * gains a new proven local-collector connector (or a browser-collector enrollment
+ * primitive ships and flips a browser-bound connector to supported), update both
+ * surfaces together.
  */
 
 /**
