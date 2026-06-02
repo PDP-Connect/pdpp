@@ -12,6 +12,11 @@ const collapsedStatePattern = /const \[collapsed, setCollapsed\] = useState\(fal
 const hideClickPattern = /onClick=\{\(\) => setCollapsed\(true\)\}/;
 const showClickPattern = /onClick=\{\(\) => setCollapsed\(false\)\}/;
 const hideButtonSubmitPattern = /onClick=\{\(\) => submitInteraction\(\)\}[\s\S]{0,120}>[\s\S]{0,80}Hide instructions/;
+// The corner close button is the only stream-killer on this surface. An owner
+// mid-auth read the icon-only X as "dismiss this notice" and lost the session,
+// so its label must say it ENDS the browser session, never an ambiguous "Close".
+const endSessionLabelPattern = /aria-label=\{`End \$\{connectorName\} browser session`\}/;
+const oldCloseLabelPattern = /aria-label=\{`Close \$\{connectorName\} browser`\}/;
 
 test("manual browser step controls distinguish hiding from completion", () => {
   assert.match(source, manualCompletionLabelPattern);
@@ -25,4 +30,9 @@ test("hiding browser step instructions does not submit the interaction", () => {
   assert.match(source, hideClickPattern);
   assert.match(source, showClickPattern);
   assert.doesNotMatch(source, hideButtonSubmitPattern);
+});
+
+test("the stream-killer corner control names itself as ending the session", () => {
+  assert.match(source, endSessionLabelPattern);
+  assert.doesNotMatch(source, oldCloseLabelPattern);
 });

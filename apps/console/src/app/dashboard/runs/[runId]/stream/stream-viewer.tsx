@@ -4714,9 +4714,15 @@ function CornerControls({
           </button>
         ) : null}
         <button
-          aria-label={`Close ${connectorName} browser`}
+          // Disambiguate the stream-killer from the dock's non-destructive
+          // "Hide instructions" collapse: an owner mid-auth read the corner X
+          // as "dismiss this notice" and lost their session. Say plainly that
+          // this ends the live browser session, in both the tooltip and the
+          // assistive label.
+          aria-label={`End ${connectorName} browser session`}
           className="pdpp-stream-control-button"
           onClick={onClose}
+          title={`End ${connectorName} browser session`}
           type="button"
         >
           <svg
@@ -4729,7 +4735,7 @@ function CornerControls({
             viewBox="0 0 16 16"
             width="16"
           >
-            <title>Close</title>
+            <title>End browser session</title>
             <path d="M3.5 3.5l9 9M12.5 3.5l-9 9" />
           </svg>
         </button>
