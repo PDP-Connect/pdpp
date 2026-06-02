@@ -26,13 +26,11 @@
  *
  * Correctness note
  * ----------------
- * `source_kind`/`source_id` are a query-acceleration cache; the canonical
- * source lives in `data_json`. The read path (`sourceFromEvent` in
- * `reference-implementation/lib/spine.ts`) derives source from `data_json`
- * when the columns are NULL, so source-unfiltered correlation/timeline reads
- * and run/trace/grant hydration stay correct with NULL columns. The columns
- * matter only for source-*filtered* correlation queries, which under-count
- * not-yet-backfilled legacy rows until this script runs.
+ * `source_kind`/`source_id` are a query-acceleration cache. Source-unfiltered
+ * correlation summaries derive source from canonical event payloads or runtime
+ * actor fallback when the columns are NULL. The columns matter for
+ * source-*filtered* correlation queries, which under-count not-yet-backfilled
+ * legacy rows until this script runs.
  *
  * Authorization is by direct database access — possession of
  * `PDPP_DATABASE_URL` (or `PDPP_TEST_POSTGRES_URL`). There is no HTTP route,

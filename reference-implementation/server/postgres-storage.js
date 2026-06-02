@@ -2057,11 +2057,11 @@ async function migratePostgresConnectorInstancesSourceKindBrowserCollector(clien
 // and they stay NULL forever. The backfill now lives in an explicit operator
 // maintenance script (`scripts/backfill-spine-source/`).
 //
-// NULL legacy `source_*` columns are tolerable: the read path
-// (`sourceFromEvent` in `lib/spine.ts`) derives source from `data_json` when
-// the columns are NULL, so unfiltered correlation/timeline reads stay honest.
-// Only source-*filtered* spine correlations under-count not-yet-backfilled
-// legacy rows, which the maintenance script repairs on demand. See
+// NULL legacy `source_*` columns are tolerable: unfiltered correlation
+// summaries derive source from canonical event payloads or runtime actor
+// fallback when the columns are NULL. Source-*filtered* spine correlations
+// under-count not-yet-backfilled legacy rows, which the maintenance script
+// repairs on demand. See
 // openspec/changes/harden-startup-data-backfills.
 async function migratePostgresSpineSourceColumns(client) {
   await client.query(`

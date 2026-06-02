@@ -712,7 +712,20 @@ function sourceFromEvent(ev: SpineEventRecord): SourceObject | null {
     return { kind: sourceKind, id: ev.source_id };
   }
   const data = ev.data && typeof ev.data === "object" ? (ev.data as Record<string, unknown>) : {};
-  return normalizeSourceObject(data.source) ?? normalizeSourceObject(data.source_binding);
+  const source = normalizeSourceObject(data.source) ?? normalizeSourceObject(data.source_binding);
+  if (source) {
+    return source;
+  }
+  if (typeof data.connector_id === "string") {
+    return { kind: "connector", id: data.connector_id };
+  }
+  if (typeof data.provider_id === "string") {
+    return { kind: "provider_native", id: data.provider_id };
+  }
+  if (ev.actor_type === "runtime" && ev.actor_id) {
+    return { kind: "connector", id: ev.actor_id };
+  }
+  return null;
 }
 
 function pickFirstNonNull<T extends keyof SpineEventRecord>(

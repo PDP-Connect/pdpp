@@ -21,9 +21,9 @@ for zero steady-state writes.
 
 The denormalized `spine_events.source_kind`/`source_id` columns are a
 query-acceleration cache, not the source of truth: the read path
-(`sourceFromEvent` in `reference-implementation/lib/spine.ts`) recovers the
-source from `data_json` when the columns are NULL. The same unbounded backfill
-exists in the SQLite path (`migrateSpineSourceColumns` in
+recovers the source from canonical event payloads or runtime actor fallback
+when the columns are NULL. The same unbounded backfill exists in the SQLite path
+(`migrateSpineSourceColumns` in
 `reference-implementation/server/db.js`); it is far less harmful there
 (embedded, single-process) but is still an unbounded boot scan with a dead
 `user_version` write that gates nothing.
@@ -47,12 +47,12 @@ exists in the SQLite path (`migrateSpineSourceColumns` in
   full-table data backfill that holds a long transaction or reader-blocking
   locks.
 
-Read behavior is unchanged: source-unfiltered correlation/timeline reads and
-run/trace/grant hydration already derive source from `data_json`, so leaving
-legacy `source_*` columns NULL does not make any dashboard dishonest. The one
-read affected by NULL columns — a source-*filtered* correlation query for
-legacy rows — is documented as a known, operator-repairable limitation rather
-than something boot silently papers over.
+Read behavior is unchanged for source-unfiltered correlation summaries: they
+derive source from canonical event payloads or runtime actor fallback, so
+leaving legacy `source_*` columns NULL does not make dashboard summaries
+dishonest. The read affected by NULL columns — a source-*filtered* correlation
+query for legacy rows — is documented as a known, operator-repairable limitation
+rather than something boot silently papers over.
 
 ## Capabilities
 

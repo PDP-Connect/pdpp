@@ -308,7 +308,12 @@ test('event spine', async (t) => {
       assert.equal(columns.includes('provider_id'), false);
       assert.ok(columns.includes('source_kind'));
       assert.ok(columns.includes('source_id'));
-      assert.equal(migrations[0]?.rowCount, 3);
+      assert.equal(migrations[0]?.droppedProviderId, true);
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(migrations[0] || {}, 'rowCount'),
+        false,
+        'schema migration telemetry must not count spine rows during boot'
+      );
     } finally {
       closeDb();
       rmSync(dir, { recursive: true, force: true });

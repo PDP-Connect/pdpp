@@ -26,8 +26,9 @@ Denormalized cache columns SHALL NOT be treated as the source of truth. When a
 denormalized column (such as `spine_events.source_kind`/`source_id`) is NULL
 for legacy rows, reads that do not filter on that column SHALL still return
 correct results by deriving the value from the canonical payload
-(`spine_events.data_json`). Dashboards and unfiltered correlation/timeline reads
-SHALL remain honest when legacy denormalized columns are NULL.
+(`spine_events.data_json`) or runtime actor fallback. Dashboards and unfiltered
+correlation summaries SHALL remain honest when legacy denormalized columns are
+NULL.
 
 #### Scenario: Normal Postgres startup does not backfill the spine table
 
@@ -61,9 +62,9 @@ SHALL remain honest when legacy denormalized columns are NULL.
 #### Scenario: Reads derive source for NULL legacy rows
 
 - **WHEN** a `spine_events` row has NULL `source_kind`/`source_id` columns but a
-  resolvable source in its `data_json` payload
-- **THEN** a correlation or timeline read that does not filter on source SHALL
-  still surface the correct source for that row
+  resolvable source in its `data_json` payload or runtime actor identity
+- **THEN** a correlation summary read that does not filter on source SHALL still
+  surface the correct source for that row
 - **AND** any limitation of source-*filtered* reads over not-yet-backfilled
   legacy rows SHALL be a documented, operator-repairable condition rather than a
   behavior that startup silently changes

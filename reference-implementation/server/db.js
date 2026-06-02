@@ -2804,13 +2804,14 @@ function deriveSpineSource(payload, row) {
 // every boot, never converging (legitimately sourceless events stay NULL). It
 // now lives in an explicit operator maintenance script
 // (`scripts/backfill-spine-source/`). NULL legacy `source_*` columns are
-// tolerable because the read path derives source from `data_json`. The prior
-// `user_version = 1` stamp gated nothing (the migration ran every boot
+// tolerable because unfiltered summaries derive source from canonical event
+// payloads or runtime actor fallback. The prior `user_version = 1` stamp gated
+// nothing (the migration ran every boot
 // regardless) and is removed to avoid implying convergence. See
 // openspec/changes/harden-startup-data-backfills.
 function migrateSpineSourceColumns(raw, opts = {}) {
   if (!tableColumns(raw, 'spine_events').length) {
-    return { rowCount: 0, droppedProviderId: false };
+    return { droppedProviderId: false };
   }
 
   const hadProviderId = hasTableColumn(raw, 'spine_events', 'provider_id');
@@ -2826,8 +2827,7 @@ function migrateSpineSourceColumns(raw, opts = {}) {
         ON spine_events(source_kind, source_id, occurred_at, recorded_at)`
     );
 
-    const rowCount = raw.prepare('SELECT COUNT(*) AS count FROM spine_events').get().count;
-    return { rowCount, droppedProviderId: hadProviderId };
+    return { droppedProviderId: hadProviderId };
   });
 
   const result = migration();

@@ -47,19 +47,20 @@ migration value of this function is spent.
 ### Why NULL columns are tolerable
 
 `spine_events.source_kind`/`source_id` are a denormalized cache. The canonical
-source lives in `data_json`. The read path proves this:
+source lives in the event payload, with runtime actor identity as the fallback
+used by current emitters. The read path proves this:
 
 - `sourceFromEvent()` (`reference-implementation/lib/spine.ts`): reads the
   columns first, then **falls back to deriving from `ev.data`** (the
-  `data_json` payload). Source-unfiltered correlation/timeline reads and
-  run/trace/grant hydration recover source correctly with NULL columns.
+  `data_json` payload) and runtime actor identity. Source-unfiltered
+  correlation summaries recover source correctly with NULL columns.
 - The columns matter for exactly one read: a source-*filtered* correlation
   query pushes `WHERE source_kind = ?` / `source_id = ?` into the GROUP BY
   (`reference-implementation/lib/spine.ts` `buildCorrelationQuery`). A legacy
   row with NULL columns will not match such a filter even if its `data_json`
   carries a source. That is a bounded under-count of legacy rows in
-  source-filtered spine correlations — not a correctness break in any
-  unfiltered dashboard or run view.
+  source-filtered spine correlations — not a correctness break in unfiltered
+  dashboard summary views.
 
 So the safe move is: stop doing the backfill at boot, keep deriving at read
 time, and offer an explicit operator backfill for operators who want
@@ -142,9 +143,8 @@ embedded, and already converges to zero once seeded).
    and writes nothing; with `--apply` it resolves resolvable NULL rows in
    bounded batches and leaves genuinely-sourceless rows NULL; re-running is a
    no-op. (test, against a temporary Postgres DB seeded with mixed rows)
-4. A source-unfiltered correlation read returns the correct source for a row
-   whose `source_*` columns are NULL but whose `data_json.source` is set
-   (read-time derivation unbroken). (existing behavior; covered by spine read
-   tests)
+4. A source-unfiltered correlation read returns the correct source for rows
+   whose `source_*` columns are NULL but whose `data_json.source` or runtime
+   actor identity is resolvable. (test)
 5. `openspec validate harden-startup-data-backfills --strict` and
    `openspec validate --all --strict` pass.

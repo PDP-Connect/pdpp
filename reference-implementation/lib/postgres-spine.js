@@ -139,6 +139,26 @@ function hydrate(row) {
   };
 }
 
+function sourceFromEvent(event) {
+  const sourceKind = isSourceKind(event.source_kind) ? event.source_kind : null;
+  if (sourceKind && event.source_id) {
+    return { kind: sourceKind, id: event.source_id };
+  }
+
+  const data = event.data && typeof event.data === 'object' && !Array.isArray(event.data) ? event.data : {};
+  const source = normalizeSourceObject(data.source) || normalizeSourceObject(data.source_binding);
+  if (source) {
+    return source;
+  }
+
+  const connectorId = nonEmptyString(data.connector_id);
+  const providerId = nonEmptyString(data.provider_id);
+  if (connectorId && !providerId) return { kind: 'connector', id: connectorId };
+  if (providerId && !connectorId) return { kind: 'provider_native', id: providerId };
+  if (event.actor_type === 'runtime' && event.actor_id) return { kind: 'connector', id: event.actor_id };
+  return null;
+}
+
 function encodeEventCursor(eventSeq) {
   return eventSeq == null ? null : Buffer.from(JSON.stringify({ event_seq: Number(eventSeq) })).toString('base64url');
 }
@@ -172,8 +192,9 @@ function summarizeRows(id, rows) {
   const last = events[events.length - 1] || first;
   const kinds = [...new Set(events.map((event) => event.event_type).filter(Boolean))];
   const failureEvent = events.find((event) => event.status === 'failed' || event.status === 'rejected');
-  const source = events.find((event) => event.source_kind && event.source_id);
-  const connector = events.find((event) => event.source_kind === 'connector' && event.source_id);
+  const sources = events.map(sourceFromEvent).filter(Boolean);
+  const source = sources[0] || null;
+  const connector = sources.find((candidate) => candidate.kind === 'connector') || null;
 
   // Status projection — mirror lib/spine.ts summarizeEvents logic.
   //
@@ -218,7 +239,7 @@ function summarizeRows(id, rows) {
     actor_id: last.actor_id || null,
     actor_type: last.actor_type || null,
     client_id: last.client_id || null,
-    connector_id: connector?.source_id || null,
+    connector_id: connector?.id || null,
     event_count: events.length,
     failure: failureEvent
       ? {
@@ -233,9 +254,9 @@ function summarizeRows(id, rows) {
     needs_input: events.some((event) => event.status === 'needs_input'),
     request_id: last.request_id || null,
     run_id: last.run_id || null,
-    source: source ? { kind: source.source_kind, id: source.source_id } : null,
-    source_id: source?.source_id || null,
-    source_kind: source?.source_kind || null,
+    source,
+    source_id: source?.id || null,
+    source_kind: source?.kind || null,
     status,
     trace_id: last.trace_id || null,
   };

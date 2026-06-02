@@ -26,6 +26,7 @@ import {
   closePostgresStorage,
   getPostgresPool,
 } from '../server/postgres-storage.js';
+import { postgresListSpineCorrelations } from '../lib/postgres-spine.js';
 import { backfillSpineSource } from '../scripts/backfill-spine-source/backfill-spine-source.mjs';
 
 const { Pool } = pg;
@@ -85,14 +86,14 @@ async function withTempDb(fn) {
 // Insert a minimal spine_events row with NULL source columns. `actorType`
 // 'runtime' + actorId makes the row resolvable (deriveSpineSource → connector);
 // any other actor_type with an empty payload is genuinely sourceless.
-async function insertEvent(pool, { eventId, actorType, actorId, dataJson }) {
+async function insertEvent(pool, { eventId, actorType, actorId, dataJson, runId = null }) {
   await pool.query(
     `INSERT INTO spine_events (
        event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
-       actor_type, actor_id, object_type, object_id, status, data_json, version
+       actor_type, actor_id, object_type, object_id, status, run_id, data_json, version
      ) VALUES ($1,'test.event','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',
-       'scn','trace-1',$2,$3,'obj','obj-1','ok',$4::jsonb,'v1')`,
-    [eventId, actorType, actorId, JSON.stringify(dataJson ?? {})],
+       'scn','trace-1',$2,$3,'obj','obj-1','ok',$4,$5::jsonb,'v1')`,
+    [eventId, actorType, actorId, runId, JSON.stringify(dataJson ?? {})],
   );
 }
 
@@ -227,6 +228,42 @@ if (!POSTGRES_URL) {
       } finally {
         await pool.end();
       }
+    });
+  });
+
+  test('unfiltered Postgres summaries derive source for legacy NULL-source rows', async () => {
+    await withTempDb(async (url) => {
+      await initPostgresStorage({ backend: 'postgres', databaseUrl: url });
+      const pool = getPostgresPool();
+
+      await insertEvent(pool, {
+        eventId: 'legacy-json-source',
+        actorType: 'system',
+        actorId: 'pdpp_reference',
+        runId: 'run_json_source',
+        dataJson: { source: { kind: 'connector', id: 'gmail' } },
+      });
+      await insertEvent(pool, {
+        eventId: 'legacy-runtime-source',
+        actorType: 'runtime',
+        actorId: 'slack',
+        runId: 'run_runtime_source',
+        dataJson: {},
+      });
+
+      const page = await postgresListSpineCorrelations('run', { limit: 10 });
+      const byRun = new Map(page.summaries.map((summary) => [summary.run_id, summary]));
+
+      assert.deepEqual(byRun.get('run_json_source')?.source, {
+        kind: 'connector',
+        id: 'gmail',
+      });
+      assert.equal(byRun.get('run_json_source')?.connector_id, 'gmail');
+      assert.deepEqual(byRun.get('run_runtime_source')?.source, {
+        kind: 'connector',
+        id: 'slack',
+      });
+      assert.equal(byRun.get('run_runtime_source')?.connector_id, 'slack');
     });
   });
 }
