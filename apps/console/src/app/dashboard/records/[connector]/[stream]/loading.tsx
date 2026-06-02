@@ -1,0 +1,21 @@
+import { TableLoadingSkeleton } from "../../../components/route-loading.tsx";
+import { DashboardShell } from "../../../components/shell.tsx";
+
+/**
+ * Route-level loading state for a stream's records table.
+ *
+ * `/dashboard/records/[connector]/[stream]` is `force-dynamic` and awaits the
+ * connection resolution, a paged `queryRecords` read, and the connector
+ * manifests before it can paint — the surface the owner specifically reported
+ * as slow. Without its own `loading.tsx` it inherited the connection-detail
+ * skeleton (two stacked prose blocks), which is the wrong shape for a dense
+ * record table and shifts the layout when the table arrives. A table-shaped
+ * skeleton inside the stable shell gives immediate, correctly-shaped feedback.
+ */
+export default function StreamRecordsLoading() {
+  return (
+    <DashboardShell active="records">
+      <TableLoadingSkeleton label="records" rows={8} />
+    </DashboardShell>
+  );
+}
