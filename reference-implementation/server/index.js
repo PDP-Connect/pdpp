@@ -4160,7 +4160,17 @@ export async function startServer(opts = {}) {
   const logger = opts.logger ?? buildLogger({ quiet: !!opts.quiet });
   const nativeConfig = validateNativeConfiguration(opts);
   const storageBackend = resolveStorageBackend({ opts });
-  await initDb(opts.dbPath || DB_PATH, {
+  // Storage-mode boundary: in Postgres mode, Postgres owns runtime persistence,
+  // so startup MUST NOT open or migrate the configured *persistent* SQLite file.
+  // We still init SQLite as an explicitly non-durable in-memory handle so guarded
+  // modules that hold a `getDb()` reference never observe `null`; it opens no
+  // file, runs no persistent migration, serves no durable answer, and is dropped
+  // on shutdown. See openspec/changes/exclude-persistent-sqlite-from-postgres-boot
+  // and design-notes/postgres-runtime-boundary-sqlite-classification-2026-05-28.md.
+  const sqliteInitPath = storageBackend.backend === 'postgres'
+    ? ':memory:'
+    : (opts.dbPath || DB_PATH);
+  await initDb(sqliteInitPath, {
     busyTimeoutMs: opts.sqliteBusyTimeoutMs,
     onSchemaRetry: ({ attempt, delay, err }) => {
       logger.warn(
@@ -4169,6 +4179,15 @@ export async function startServer(opts = {}) {
       );
     },
   });
+  // Establish the active runtime backend BEFORE any backend-dispatching startup
+  // write. `seedPreRegisteredClients` dispatches on `isPostgresStorageBackend()`,
+  // which only reports `postgres` once `initPostgresStorage` has run; seeding
+  // before this point would persist pre-registered clients to SQLite even in
+  // Postgres mode.
+  await initPostgresStorage(storageBackend);
+  if (storageBackend.backend === 'postgres') {
+    logger.info('postgres runtime storage initialized');
+  }
   await seedPreRegisteredClients(
     resolvePreRegisteredPublicClients(opts),
     {
@@ -4181,10 +4200,6 @@ export async function startServer(opts = {}) {
     },
   );
   logger.info('database initialized');
-  await initPostgresStorage(storageBackend);
-  if (storageBackend.backend === 'postgres') {
-    logger.info('postgres runtime storage initialized');
-  }
 
   // Boot-epoch reconciliation — STAGE 5.
   // Emit `controller.booted` as the FIRST spine event of this process
