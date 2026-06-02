@@ -19,11 +19,13 @@ import {
   formatOutboxAxis,
   formatProjectionFreshness,
   formatSourceOutboxState,
+  outboxAxisIsApplicable,
   resolveRecordCountDisplay,
   summarizeAxisChips,
   summarizeOutboxForRow,
   summarizeOutboxStallRemediation,
   summarizeSchedule,
+  syncStartFailureLead,
 } from "./connection-evidence.ts";
 import type { RefConnectionHealthCondition, RefConnectionHealthSnapshot, RefSchedule } from "./ref-client.ts";
 import type { ConnectorOverview } from "./rs-client.ts";
@@ -74,22 +76,66 @@ test("coverage axis covers the full reference-server vocabulary", () => {
   }
 });
 
+const TERMINAL_GAP_JARGON_RE = /terminal gap/i;
+const RECORDS_SAFE_RE = /stay valid|not current data loss/i;
+const RECOVERY_POINTER_RE = /run|stream|recovery/i;
+const RETRYABLE_REASSURANCE_RE = /later run|no owner action|stay valid/i;
+
+test("terminal_gap copy reassures records are safe and points at a recovery step (report 3)", () => {
+  // The owner reported "Coverage · terminal gap" was unclear: it did not say
+  // what terminated, whether records are safe, or how to recover. The chip
+  // value drops the jargon; the title carries the three required signals.
+  const chip = formatCoverageAxis("terminal_gap");
+  assert.equal(chip.tone, "danger");
+  assert.doesNotMatch(chip.value, TERMINAL_GAP_JARGON_RE);
+  // Records-safe reassurance (not current data loss).
+  assert.match(chip.title, RECORDS_SAFE_RE);
+  // A concrete recovery pointer (the latest run / affected streams).
+  assert.match(chip.title, RECOVERY_POINTER_RE);
+});
+
+test("retryable_gap copy reassures no owner action is needed yet (report 3)", () => {
+  const chip = formatCoverageAxis("retryable_gap");
+  assert.equal(chip.tone, "warning");
+  assert.match(chip.title, RETRYABLE_REASSURANCE_RE);
+});
+
 test("axis chips degrade safely when runtime axes are missing or novel", () => {
+  // A novel outbox value is not a concrete verdict (stalled/active/idle), so for
+  // a non-local connection it is suppressed like the absence-default `unknown`.
   const out = summarizeAxisChips({
     attention: "none",
     coverage: "future_gap",
     freshness: undefined,
     outbox: "future_outbox",
   } as unknown as RefConnectionHealthSnapshot["axes"]);
-  assert.equal(out.length, 3);
+  assert.equal(out.length, 2);
   assert.deepEqual(
     out.map((c) => c.label),
-    ["Coverage · unknown", "Freshness · unknown", "Outbox · unknown"]
+    ["Coverage · unknown", "Freshness · unknown"]
   );
   assert.equal(
     out.every((c) => c.tone === "neutral"),
     true
   );
+});
+
+test("axis chips: a novel outbox value still degrades to neutral 'unknown' for a local-backed connection", () => {
+  const out = summarizeAxisChips(
+    {
+      attention: "none",
+      coverage: "future_gap",
+      freshness: undefined,
+      outbox: "future_outbox",
+    } as unknown as RefConnectionHealthSnapshot["axes"],
+    { isLocalDeviceBacked: true }
+  );
+  // Local-backed: the outbox axis is applicable. A novel (non-"unknown") value
+  // degrades through formatOutboxAxis to the neutral unknown fallback chip; the
+  // "evidence unavailable" sharpening only applies to a literal `unknown` axis.
+  assert.equal(out.length, 3);
+  assert.equal(out[2]?.label, "Outbox · unknown");
+  assert.equal(out[2]?.tone, "neutral");
 });
 
 test("freshness axis maps known states honestly", () => {
@@ -102,6 +148,16 @@ test("outbox stalled is danger, unknown is neutral, idle is success", () => {
   assert.equal(formatOutboxAxis("stalled").tone, "danger");
   assert.equal(formatOutboxAxis("unknown").tone, "neutral");
   assert.equal(formatOutboxAxis("idle").tone, "success");
+});
+
+test("outbox active is colour-coded as a progressing (non-neutral) state", () => {
+  // Report 2 (2026-06-01): `Outbox · active` previously shared the muted
+  // `neutral` tone with `unknown`, so a draining outbox was visually
+  // indistinguishable from one whose evidence we could not read. It must now
+  // carry a distinct, non-neutral tone.
+  const active = formatOutboxAxis("active");
+  assert.equal(active.tone, "success");
+  assert.notEqual(active.tone, "neutral");
 });
 
 test("formatSourceOutboxState distinguishes granular local collector states", () => {
@@ -158,6 +214,92 @@ test("summarizeAxisChips surfaces attention when open", () => {
 test("summarizeAxisChips returns empty when axes are missing (no false success)", () => {
   assert.deepEqual(summarizeAxisChips(null), []);
   assert.deepEqual(summarizeAxisChips(undefined), []);
+});
+
+const OUTBOX_NOT_DATA_LOSS_RE = /not a current data-loss signal/i;
+
+// ─── outbox applicability gate (report 1) ─────────────────────────────────
+//
+// The reference defaults `outbox: "unknown"` for every non-local connection
+// (no device-exporter heartbeats). The console must NOT render that as an
+// "Outbox · unknown" chip on API/browser connectors. It renders only for
+// local/device-backed connections, or when the axis carries a real verdict.
+
+test("outboxAxisIsApplicable: concrete verdicts always apply, even for non-local", () => {
+  for (const axis of ["stalled", "active", "idle"] as const) {
+    assert.equal(outboxAxisIsApplicable(axis, false), true, `verdict ${axis} should apply`);
+  }
+});
+
+test("outboxAxisIsApplicable: unknown applies only for local-device-backed connections", () => {
+  assert.equal(outboxAxisIsApplicable("unknown", false), false);
+  assert.equal(outboxAxisIsApplicable("unknown", true), true);
+  // A novel / absent value behaves like unknown.
+  assert.equal(outboxAxisIsApplicable("future_outbox", false), false);
+  assert.equal(outboxAxisIsApplicable(null, false), false);
+  assert.equal(outboxAxisIsApplicable(undefined, true), true);
+});
+
+test("summarizeAxisChips omits the outbox chip for a non-local connection with unknown outbox", () => {
+  // The exact owner-reported defect: a Gmail/Chase-class connection shows
+  // "Outbox · unknown" purely because the reference has no heartbeats for it.
+  const out = summarizeAxisChips(
+    snapshot({ axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "unknown" } }).axes,
+    { isLocalDeviceBacked: false }
+  );
+  assert.equal(out.length, 2);
+  assert.equal(
+    out.some((c) => c.dimension === "Outbox"),
+    false
+  );
+});
+
+test("summarizeAxisChips keeps the outbox chip for a local-backed connection with unknown outbox, sharpened to 'evidence unavailable'", () => {
+  const out = summarizeAxisChips(
+    snapshot({ axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "unknown" } }).axes,
+    { isLocalDeviceBacked: true }
+  );
+  assert.equal(out.length, 3);
+  const outbox = out.find((c) => c.dimension === "Outbox");
+  assert.ok(outbox);
+  assert.equal(outbox?.label, "Outbox · evidence unavailable");
+  // Still neutral — an unreadable outbox is not a current data-loss signal.
+  assert.equal(outbox?.tone, "neutral");
+  assert.match(outbox?.title ?? "", OUTBOX_NOT_DATA_LOSS_RE);
+});
+
+test("summarizeAxisChips shows a stalled outbox even for a non-local connection (concrete verdict wins)", () => {
+  // Defensive: if the reference ever projects a real stalled verdict without a
+  // local_device_progress row, the danger signal must not be hidden.
+  const out = summarizeAxisChips(
+    snapshot({ axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "stalled" } }).axes,
+    { isLocalDeviceBacked: false }
+  );
+  const outbox = out.find((c) => c.dimension === "Outbox");
+  assert.ok(outbox);
+  assert.equal(outbox?.tone, "danger");
+});
+
+test("summarizeAxisChips shows a colour-coded active outbox for a local-backed connection", () => {
+  const out = summarizeAxisChips(
+    snapshot({ axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "active" } }).axes,
+    { isLocalDeviceBacked: true }
+  );
+  const outbox = out.find((c) => c.dimension === "Outbox");
+  assert.equal(outbox?.value, "active");
+  assert.equal(outbox?.tone, "success");
+});
+
+test("summarizeAxisChips defaults to omitting an unknown outbox when no local-backing signal is passed", () => {
+  // Back-compat: callers that have not threaded the signal get the honest
+  // (non-local) default — an absence-default unknown outbox is suppressed.
+  const out = summarizeAxisChips(
+    snapshot({ axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "unknown" } }).axes
+  );
+  assert.equal(
+    out.some((c) => c.dimension === "Outbox"),
+    false
+  );
 });
 
 test("formatProjectionFreshness flags unreliable when unknown_reasons is non-empty", () => {
@@ -496,6 +638,31 @@ test("summarizeOutboxStallRemediation: counts never attach to a quiet (non-stall
       `expected no remediation (and thus no counts) for outbox=${outbox}`
     );
   }
+});
+
+// ─── syncStartFailureLead (report 5) ──────────────────────────────────────
+//
+// A failed `Sync now` must stay a row-local toast that tells the owner whether
+// the run-start request reached the reference server, never fall through to the
+// dashboard error boundary.
+
+const LEAD_UNREACHABLE_RE = /reach the reference server/i;
+const LEAD_DID_NOT_START_RE = /did not start/i;
+const LEAD_REJECTED_RE = /reference server rejected/i;
+
+test("syncStartFailureLead distinguishes a before-server (unreachable) failure", () => {
+  const lead = syncStartFailureLead("before_server");
+  assert.match(lead, LEAD_UNREACHABLE_RE);
+  assert.match(lead, LEAD_DID_NOT_START_RE);
+});
+
+test("syncStartFailureLead distinguishes an after-server (rejected) failure", () => {
+  const lead = syncStartFailureLead("after_server");
+  assert.match(lead, LEAD_REJECTED_RE);
+  assert.match(lead, LEAD_DID_NOT_START_RE);
+  // The two phases must read differently so the owner knows where the failure
+  // happened.
+  assert.notEqual(lead, syncStartFailureLead("before_server"));
 });
 
 function baseSchedule(overrides: Partial<RefSchedule> = {}): RefSchedule {

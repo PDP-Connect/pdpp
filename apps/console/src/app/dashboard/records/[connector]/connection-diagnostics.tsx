@@ -77,6 +77,7 @@ export function ConnectionDiagnostics({
               connectionHealth={connectionHealth}
               connectionId={connectionId}
               localDeviceProgress={localDeviceProgress}
+              sourceInstances={sourceInstances}
             />
           </DiagnosticsBlock>
 
@@ -93,14 +94,37 @@ export function ConnectionDiagnostics({
   );
 }
 
+/**
+ * The bound device/host label(s) for a connection, derived from its source
+ * instances. The stalled-outbox remediation tells the owner to "run this on
+ * the host that holds the data" — but an owner who did not personally set up
+ * the collector cannot act on that without knowing *which* host. We surface the
+ * owner-meaningful label (display name, else the local binding) so the command
+ * has a named target. Falls back to `[]` when no source instance carries a
+ * usable label, so the panel degrades to the generic "the host that holds the
+ * data" wording rather than printing an opaque device id.
+ */
+function boundHostLabels(sourceInstances: readonly DeviceSourceInstance[]): string[] {
+  const labels: string[] = [];
+  for (const source of sourceInstances) {
+    const label = source.display_name ?? source.local_binding_name;
+    if (typeof label === "string" && label.length > 0 && !labels.includes(label)) {
+      labels.push(label);
+    }
+  }
+  return labels;
+}
+
 function ProjectedStateDiagnostics({
   connectionHealth,
   connectionId,
   localDeviceProgress,
+  sourceInstances,
 }: {
   connectionHealth: RefConnectionHealthSnapshot | null;
   connectionId: string | null;
   localDeviceProgress: RefLocalDeviceProgress | null;
+  sourceInstances: readonly DeviceSourceInstance[];
 }) {
   if (!connectionHealth) {
     return (
@@ -115,7 +139,13 @@ function ProjectedStateDiagnostics({
   }
 
   const projection = formatProjectionFreshness(connectionHealth);
-  const axisChips = summarizeAxisChips(connectionHealth.axes);
+  // Mirror the records-row gate: the outbox axis only renders for
+  // local/device-backed connections (or when it carries a concrete verdict).
+  // The diagnostics block already receives the connection's local-device
+  // progress, so reuse it as the local-backing signal.
+  const axisChips = summarizeAxisChips(connectionHealth.axes, {
+    isLocalDeviceBacked: Boolean(localDeviceProgress),
+  });
   const outbox = summarizeOutboxForRow(connectionHealth);
   const outboxRemediation = summarizeOutboxStallRemediation(connectionHealth, localDeviceProgress);
   const dominantCondition = formatDominantCondition(connectionHealth);
@@ -173,7 +203,11 @@ function ProjectedStateDiagnostics({
         </p>
       ) : null}
       {outboxRemediation ? (
-        <OutboxStallRemediationPanel connectionId={connectionId} remediation={outboxRemediation} />
+        <OutboxStallRemediationPanel
+          connectionId={connectionId}
+          hostLabels={boundHostLabels(sourceInstances)}
+          remediation={outboxRemediation}
+        />
       ) : null}
       {visibleConditions.length ? (
         <ul className="pdpp-caption flex flex-col gap-1 text-muted-foreground" data-testid="diagnostics-conditions">
@@ -338,7 +372,7 @@ function SourceInstanceDiagnostics({ source }: { source: DeviceSourceInstance })
             data-testid="diagnostics-source-error"
             title={JSON.stringify(source.last_error)}
           >
-            Last error reported
+            Last error: {formatSourceLastError(source.last_error)}
           </span>
         ) : null}
         <Link
@@ -350,6 +384,27 @@ function SourceInstanceDiagnostics({ source }: { source: DeviceSourceInstance })
       </div>
     </li>
   );
+}
+
+/**
+ * Render a source instance's structured `last_error` as one short operator
+ * line. The reference reports `last_error` as a free-form object; we surface
+ * the most specific human field we can find (`message`, else `reason`, else
+ * `code`/`type`) and cap its length so a stalled collector shows *what* failed
+ * inline — not just "Last error reported" with the detail hidden in a title.
+ * The full object stays in the `title` for deeper inspection.
+ */
+function formatSourceLastError(error: Record<string, unknown>): string {
+  const pick = (key: string): string | null => {
+    const value = error[key];
+    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  };
+  const message = pick("message") ?? pick("reason") ?? pick("error") ?? pick("detail");
+  const code = pick("code") ?? pick("type");
+  const human = message ?? code ?? "reported (open the device for detail)";
+  const withCode = message && code ? `${human} (${code})` : human;
+  const MAX = 160;
+  return withCode.length > MAX ? `${withCode.slice(0, MAX - 1)}…` : withCode;
 }
 
 function LocalCollectorGapDiagnostics({ source }: { source: DeviceSourceInstance }) {
@@ -428,12 +483,25 @@ function sourceOutboxToneClass(tone: ReturnType<typeof formatSourceOutboxState>[
  */
 function OutboxStallRemediationPanel({
   connectionId,
+  hostLabels,
   remediation,
 }: {
   connectionId: string | null;
+  /**
+   * Owner-meaningful label(s) for the host(s) bound to this connection. Names
+   * the remediation target so an owner who did not set up the collector knows
+   * which host to run the command on. Empty → generic "the host that holds
+   * the data" wording.
+   */
+  hostLabels: readonly string[];
   remediation: NonNullable<ReturnType<typeof summarizeOutboxStallRemediation>>;
 }) {
   const command = pdppLocalCollectorDoctorCommand(connectionId ? { connectionId } : undefined);
+  // Name the host when we know it; otherwise keep the honest generic phrasing.
+  const hostPhrase =
+    hostLabels.length === 0
+      ? "the host that holds the data"
+      : `the host${hostLabels.length === 1 ? "" : "s"} that hold${hostLabels.length === 1 ? "s" : ""} the data (${hostLabels.join(", ")})`;
   return (
     <div
       className="flex flex-col gap-1.5 border border-destructive/40 bg-destructive/5 px-3 py-2"
@@ -442,9 +510,15 @@ function OutboxStallRemediationPanel({
       <p className="pdpp-caption font-medium text-foreground" data-testid="diagnostics-outbox-remediation-label">
         {remediation.label}
       </p>
+      {hostLabels.length > 0 ? (
+        <p className="pdpp-caption text-muted-foreground" data-testid="diagnostics-outbox-remediation-host">
+          Bound device{hostLabels.length === 1 ? "" : "s"}:{" "}
+          <span className="font-medium text-foreground">{hostLabels.join(", ")}</span>
+        </p>
+      ) : null}
       <p className="pdpp-caption text-muted-foreground" title={remediation.reason ?? undefined}>
-        Retryable outbound work on the local collector host is not draining. The dashboard cannot clear it remotely —
-        run this on the host that holds the data:
+        Retryable outbound work on the local collector is not draining. The dashboard cannot clear it remotely — run
+        this on {hostPhrase}:
       </p>
       {remediation.scale ? (
         <p

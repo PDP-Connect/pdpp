@@ -20,6 +20,7 @@ import {
   type PrimaryRowAction,
   resolveRecordCountDisplay,
   summarizeAxisChips,
+  syncStartFailureLead,
 } from "../lib/connection-evidence.ts";
 import { formatNextAction } from "../lib/next-action.ts";
 import type { ConnectorOverview, ConnectorRunRef } from "../lib/rs-client.ts";
@@ -36,7 +37,10 @@ interface RowProps {
   runsHref: string;
 }
 
-type ToastState = { kind: "none" } | { kind: "already_running" } | { kind: "error"; message: string };
+type ToastState =
+  | { kind: "none" }
+  | { kind: "already_running" }
+  | { kind: "error"; message: string; phase: "before_server" | "after_server" };
 
 function useConnectorSyncState({
   connectionId,
@@ -96,7 +100,7 @@ function useConnectorSyncState({
         router.refresh();
         return;
       }
-      setToast({ kind: "error", message: res.message });
+      setToast({ kind: "error", message: res.message, phase: res.phase });
     });
   }, [connectionId, connectorId, connectorInstanceId, router]);
 
@@ -164,7 +168,13 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
   const displayedStreamCount = streamCount ?? streams.length;
   const nextAction = formatNextAction(connectionHealth?.next_action ?? null);
   const recordCount = resolveRecordCountDisplay(overview);
-  const axisChips = summarizeAxisChips(connectionHealth?.axes);
+  // The outbox axis is only meaningful for local/device-backed connections.
+  // `localDeviceProgress` is populated by the reference exactly for
+  // `sourceKind === "local_device"`, so it is the honest console-side signal:
+  // pass it so non-local connections never render "Outbox · unknown".
+  const axisChips = summarizeAxisChips(connectionHealth?.axes, {
+    isLocalDeviceBacked: Boolean(overview.localDeviceProgress),
+  });
   const projectionFreshness = formatProjectionFreshness(connectionHealth);
   const dominantCondition = formatDominantCondition(connectionHealth);
   // Per-state "what next" guidance for non-green states the structured
@@ -433,15 +443,35 @@ function ConnectorRowToast({ toast }: { toast: ToastState }) {
   if (toast.kind === "none") {
     return null;
   }
-  const className =
-    toast.kind === "error"
-      ? "pdpp-caption mx-3 mb-2 border-l-2 border-l-destructive bg-destructive/5 px-3 py-2 text-destructive"
-      : "pdpp-caption mx-3 mb-2 bg-muted/60 px-3 py-2 text-muted-foreground";
-  const message =
-    toast.kind === "already_running" ? "A sync for this connector is already in progress." : toast.message;
+  if (toast.kind === "already_running") {
+    return (
+      <div
+        aria-live="polite"
+        className="pdpp-caption mx-3 mb-2 bg-muted/60 px-3 py-2 text-muted-foreground"
+        role="status"
+      >
+        A sync for this connector is already in progress.
+      </div>
+    );
+  }
+  // Error: keep the owner on this connection's row and say whether the
+  // run-start request reached the reference server, so they know whether to
+  // check their deployment (before) or read the server's reason (after).
+  const isBeforeServer = toast.phase === "before_server";
+  const lead = syncStartFailureLead(toast.phase);
   return (
-    <div aria-live="polite" className={className} role="status">
-      {message}
+    <div
+      aria-live="polite"
+      className={
+        isBeforeServer
+          ? "pdpp-caption mx-3 mb-2 border-l-2 border-l-[color:var(--warning)] bg-[color:var(--warning)]/5 px-3 py-2 text-[color:var(--warning)]"
+          : "pdpp-caption mx-3 mb-2 border-l-2 border-l-destructive bg-destructive/5 px-3 py-2 text-destructive"
+      }
+      data-sync-error-phase={toast.phase}
+      data-testid="sync-now-error"
+      role="status"
+    >
+      <span className="font-medium">{lead}</span> {toast.message}
     </div>
   );
 }

@@ -543,11 +543,17 @@ function VersionChurnNotice({ rows }: { rows: RefRecordVersionStatsRow[] }) {
         </span>
       </summary>
       <div className="border-[color:var(--warning)]/30 border-t px-4 py-3">
-        <p className="pdpp-caption mb-3 text-muted-foreground">
+        <p className="pdpp-caption mb-2 text-muted-foreground">
           These streams retain many historical versions per current record. This is kept{" "}
           <strong className="font-medium text-foreground">change history</strong>, not current data loss — your latest
           records are intact. High churn usually means a connector re-emits unchanged records; compacting history starts
           with a dry-run maintenance check and is a separate, non-destructive operator step.
+        </p>
+        <p className="pdpp-caption mb-3 text-muted-foreground" data-testid="version-churn-dry-run-safety">
+          Each row's command is the safe place to start: it is{" "}
+          <strong className="font-medium text-foreground">read-only</strong> and prints the compaction plan (versions it
+          would remove, bytes it would free) without changing anything. Nothing is removed until you re-run it with{" "}
+          <code className="font-mono text-foreground">--apply</code>, which backs up affected rows first.
         </p>
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-left">

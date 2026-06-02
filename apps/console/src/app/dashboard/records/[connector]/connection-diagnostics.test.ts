@@ -230,3 +230,44 @@ test("connector detail page surfaces pending-on-devices delta when source instan
   assert.match(page, PAGE_DERIVES_PENDING_ON_DEVICES);
   assert.match(page, PAGE_RENDERS_PENDING_ON_DEVICES);
 });
+
+// Local-collector recovery (connection-lifecycle objective #2): a stalled
+// outbox is host-local — the dashboard cannot drain it remotely. "Check the
+// collector host" is only actionable when the panel names *which* host, the
+// pending/dead-letter scale, and surfaces the last error inline rather than
+// hiding it in a title an owner who did not set up the collector won't open.
+
+const REMEDIATION_THREADS_HOST_LABELS =
+  /OutboxStallRemediationPanel[\s\S]{0,160}hostLabels=\{boundHostLabels\(sourceInstances\)\}/;
+const REMEDIATION_HOST_TESTID = /data-testid="diagnostics-outbox-remediation-host"/;
+const REMEDIATION_NAMES_BOUND_DEVICE = /Bound device/;
+const BOUND_HOST_LABELS_PREFERS_DISPLAY_NAME = /source\.display_name \?\? source\.local_binding_name/;
+const SOURCE_ERROR_RENDERS_MESSAGE = /Last error: \{formatSourceLastError\(source\.last_error\)\}/;
+const SOURCE_ERROR_FORMATTER_PICKS_MESSAGE = /pick\("message"\) \?\? pick\("reason"\)/;
+const BOUND_HOST_LABELS_NO_DEVICE_ID = /device_id/;
+const SOURCE_ERROR_PRESERVES_TITLE = /title=\{JSON\.stringify\(source\.last_error\)\}/;
+
+test("stalled-outbox remediation panel is threaded the bound host label(s)", async () => {
+  const src = await readFile(DIAG_FILE, "utf8");
+  assert.match(src, REMEDIATION_THREADS_HOST_LABELS);
+  assert.match(src, REMEDIATION_HOST_TESTID);
+  assert.match(src, REMEDIATION_NAMES_BOUND_DEVICE);
+});
+
+test("bound host labels prefer the owner-meaningful display name over the opaque device id", async () => {
+  const src = await readFile(DIAG_FILE, "utf8");
+  assert.match(src, BOUND_HOST_LABELS_PREFERS_DISPLAY_NAME);
+  // The label derivation must NOT fall back to device_id — an opaque id is
+  // not an owner-facing "host" name. (boundHostLabels stops at local_binding_name.)
+  const helperBody = src.slice(src.indexOf("function boundHostLabels"));
+  const helperSlice = helperBody.slice(0, helperBody.indexOf("\n}"));
+  assert.doesNotMatch(helperSlice, BOUND_HOST_LABELS_NO_DEVICE_ID);
+});
+
+test("source last_error renders an inline human message, not just a hidden title", async () => {
+  const src = await readFile(DIAG_FILE, "utf8");
+  assert.match(src, SOURCE_ERROR_RENDERS_MESSAGE);
+  assert.match(src, SOURCE_ERROR_FORMATTER_PICKS_MESSAGE);
+  // The full object is still preserved in the title for deeper inspection.
+  assert.match(src, SOURCE_ERROR_PRESERVES_TITLE);
+});
