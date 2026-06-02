@@ -5,6 +5,17 @@ export type AdaptiveLaneOutcomeKind = "ok" | "retryable" | "rate_limited" | "ter
 export type AdaptiveLanePressureKind = "rate_limited" | "transient_error";
 
 export interface AdaptiveLanePressure {
+  /**
+   * Set when the reporting task has *already* slept `delayMs` itself before
+   * reporting (e.g. a per-request retry loop that sleeps and then succeeds on
+   * a later attempt). In that case the lane still reduces concurrency and emits
+   * the pressure event, but does NOT mirror the same wait into the next launch
+   * cooldown — that would double-pay the backoff the request already absorbed.
+   *
+   * Leave unset (the default) when the next launch genuinely still owes the
+   * wait, i.e. the reporting task observed pressure without sleeping for it.
+   */
+  absorbedByRequestWait?: boolean;
   delayMs?: number;
   kind: AdaptiveLanePressureKind;
   retryAfterMs?: number;
@@ -267,7 +278,14 @@ export function createAdaptiveLane<T>(options: AdaptiveLaneOptions<T>): Adaptive
       pressure.delayMs == null
         ? boundedDelay(outcome, pressureMinDelayMs, pressureMaxDelayMs)
         : boundedExplicitDelay(pressure.delayMs);
-    pendingLaunchCooldownMs = Math.max(pendingLaunchCooldownMs, delayMs);
+    // When the reporting task already slept `delayMs` inside its own retry loop
+    // and then succeeded, mirroring the same wait into the next-launch cooldown
+    // double-pays the backoff. Reduce concurrency and surface the event, but
+    // skip the cooldown — the normal inter-launch pace (launchDelay) still
+    // applies, so this removes duplicated waiting without becoming aggressive.
+    if (!pressure.absorbedByRequestWait) {
+      pendingLaunchCooldownMs = Math.max(pendingLaunchCooldownMs, delayMs);
+    }
     await emit(
       outcomeEvent({
         attempt,

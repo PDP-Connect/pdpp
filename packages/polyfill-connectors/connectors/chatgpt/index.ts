@@ -375,7 +375,13 @@ function createChatGptApi({
         maxDelayMs: CHATGPT_RATE_LIMIT_MAX_DELAY_MS,
         maxRetryAfterMs: CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS,
         onRetry: async ({ attempt, delayMs, maxAttempts, response, retryAfterMs }) => {
+          // retryHttp sleeps `delayMs` itself immediately after this callback,
+          // inside the same (serialized) detail attempt. Report the pressure so
+          // the lane reduces concurrency and surfaces a cooldown event, but mark
+          // it absorbed so the lane does not *also* delay the next launch by the
+          // same amount — that double-paid the backoff the request already slept.
           await currentAdaptiveLaneRunContext()?.reportPressure({
+            absorbedByRequestWait: true,
             delayMs,
             kind: response?.status === 429 ? "rate_limited" : "transient_error",
             ...(retryAfterMs == null ? {} : { retryAfterMs }),

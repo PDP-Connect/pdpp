@@ -571,16 +571,25 @@ test("runMessagesAndConversationsWithDetail: intermediate pressure is bounded an
   const pauses: number[] = [];
   let activeFetches = 0;
   let maxActiveFetches = 0;
+  // Faithful model of the production retryHttp path: a 429 retry reports the
+  // pressure to the lane AND sleeps `delayMs` itself within the same attempt,
+  // then succeeds. Because the wait was already paid inside the request, the
+  // report is marked absorbed so the lane must NOT also delay the next launch
+  // by the same amount (that was the double-pay this lane previously had).
   const api: ChatGptApi = {
     auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
     fetch: async (): Promise<ChatGptFetchResult> => {
       activeFetches += 1;
       maxActiveFetches = Math.max(maxActiveFetches, activeFetches);
       await currentAdaptiveLaneRunContext()?.reportPressure({
+        absorbedByRequestWait: true,
         delayMs: 45_000,
         kind: "rate_limited",
         retryAfterMs: 99_000,
       });
+      // retryHttp sleeps the backoff inside the attempt; model that wait so the
+      // test sees what production actually pays per request.
+      pauses.push(45_000);
       activeFetches -= 1;
       return makeDetailOk();
     },
@@ -606,7 +615,14 @@ test("runMessagesAndConversationsWithDetail: intermediate pressure is bounded an
   );
 
   assert.equal(maxActiveFetches, 1, "intermediate pressure must not raise detail concurrency");
-  assert.deepEqual(pauses, [45_000], "retryHttp delay is mirrored as a pressure cooldown before the next launch");
+  // Each conversation's request absorbs its own 45_000 backoff (2 requests).
+  // The launch between them pays only the ordinary minimum pause (1500ms), NOT
+  // a second mirrored 45_000 cooldown. Pre-fix this was [45_000, 45_000, 45_000].
+  assert.deepEqual(
+    pauses,
+    [45_000, 1500, 45_000],
+    "absorbed retry backoff is not double-paid as a launch cooldown; only the ordinary inter-launch pause remains"
+  );
   const progressMessages = harness.protocolMessages.filter(
     (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> => m.type === "PROGRESS" && m.stream === "messages"
   );
@@ -615,7 +631,7 @@ test("runMessagesAndConversationsWithDetail: intermediate pressure is bounded an
   assert.equal(
     laneMessages.some((m) => m.message.includes("lane cooldown") && m.message.includes("retry_after_ms=99000")),
     true,
-    "intermediate pressure should be visible as bounded lane cooldown progress"
+    "intermediate pressure should still be visible as bounded lane cooldown progress"
   );
   assert.equal(
     laneMessages.every((m) => m.message.includes("concurrency=1/1")),
