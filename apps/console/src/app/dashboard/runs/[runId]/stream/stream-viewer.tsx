@@ -1659,6 +1659,10 @@ function StreamStage({
   const presentationControlStateRef = useRef(createStreamViewerControlState());
   const [location, setLocation] = useState<LocationInfo | null>(null);
   const [popup, setPopup] = useState<PopupNotice | null>(null);
+  // Armed when the corner X is pressed while a manual/browser interaction is
+  // pending; renders the inline close-confirmation bubble instead of ending
+  // the session outright. See `handleCloseRequest`.
+  const [closeConfirmArmed, setCloseConfirmArmed] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [containerNode, setContainerNode] = useState<HTMLDivElement | null>(null);
@@ -2927,6 +2931,35 @@ function StreamStage({
     setClipboardSheetOpen(true);
   }, [clipboardPolicy.surface, logDebug]);
 
+  // Ending the browser session is destructive — it tears down the live
+  // session and abandons whatever login/manual step is mid-flight. When a
+  // manual_action or otp interaction is pending (the same predicate that makes
+  // the StreamInteractionDock render), an accidental corner-X click would
+  // silently kill that in-progress step. Guard it: the first click arms an
+  // inline confirmation bubble instead of closing; only an explicit "End
+  // browser session" press in that bubble tears the session down. When nothing
+  // is pending, the corner X closes immediately — behavior is unchanged.
+  const interactionPending = SUPPORTED_KINDS.has(interactionKind);
+  const handleCloseRequest = useCallback(() => {
+    if (interactionPending) {
+      logDebug("neko.corner.close", { phase: "close-guard-armed", interactionKind });
+      setCloseConfirmArmed(true);
+      return;
+    }
+    onClose();
+  }, [interactionKind, interactionPending, logDebug, onClose]);
+
+  const handleCloseConfirm = useCallback(() => {
+    logDebug("neko.corner.close", { phase: "close-guard-confirmed", interactionKind });
+    setCloseConfirmArmed(false);
+    onClose();
+  }, [interactionKind, logDebug, onClose]);
+
+  const handleCloseCancel = useCallback(() => {
+    logDebug("neko.corner.close", { phase: "close-guard-cancelled", interactionKind });
+    setCloseConfirmArmed(false);
+  }, [interactionKind, logDebug]);
+
   const nekoViewportInfo = useStableNekoNativeViewportInfo(!!nekoSession, viewportInfo);
   const nekoLocalSurfaceViewportInfo = useStableNekoNativeViewportInfo(!!nekoSession, localSurfaceViewportInfo);
   const nekoPresentationViewportInfo = useStableNekoNativeViewportInfo(!!nekoSession, presentationViewportInfo);
@@ -2962,7 +2995,7 @@ function StreamStage({
       <CornerControls
         connectorName={connectorName}
         location={location}
-        onClose={onClose}
+        onClose={handleCloseRequest}
         onCopy={nekoSession && clipboardPolicy.showMobileCopyButton ? handleMobileCopy : undefined}
         onKeyboard={
           nekoSession && clipboardPolicy.showKeyboardButton
@@ -2994,6 +3027,9 @@ function StreamStage({
         onPaste={nekoSession && clipboardPolicy.showMobilePasteButton ? handleMobilePaste : undefined}
         status={status}
       />
+      {closeConfirmArmed ? (
+        <CloseConfirmBubble connectorName={connectorName} onCancel={handleCloseCancel} onConfirm={handleCloseConfirm} />
+      ) : null}
       <StreamInteractionDock
         interactionId={interactionId}
         interactionKind={interactionKind}
@@ -4800,6 +4836,54 @@ function StatusDot({ status }: { status: ConnectionStatus }) {
         {label}
       </span>
     </span>
+  );
+}
+
+// ─── Close-confirmation bubble (mid-interaction guard) ───────────────────────
+
+/**
+ * Inline confirmation shown when the operator presses the corner X while a
+ * manual_action/otp interaction is pending. The corner X is the only
+ * stream-killer on this surface; an owner mid-auth previously read it as
+ * "dismiss this notice" and lost the session. Rather than a native
+ * `window.confirm` (banned by the lint rules and obtrusive on mobile), arming
+ * shows this bubble with two explicit choices: end the session (destructive)
+ * or keep working. Hiding the step instructions is a separate, non-destructive
+ * control on the dock — this copy points back at it so the two never blur.
+ */
+function CloseConfirmBubble({
+  connectorName,
+  onCancel,
+  onConfirm,
+}: {
+  connectorName: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div
+      aria-label="Confirm ending the browser session"
+      className="pdpp-stream-toast-zone"
+      data-pdpp-stream-ui
+      data-slot="close-confirm"
+      role="alertdialog"
+    >
+      <div className="pdpp-stream-toast-bubble flex w-full flex-col gap-2 text-left">
+        <p className="pdpp-caption font-medium text-foreground">End the {connectorName} browser session now?</p>
+        <p className="pdpp-caption text-muted-foreground">
+          The step in progress will be abandoned. To get the panel out of the way without ending the session, use “Hide
+          instructions” instead.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={onConfirm} size="sm" type="button" variant="destructive">
+            End browser session
+          </Button>
+          <Button onClick={onCancel} size="sm" type="button" variant="outline">
+            Keep working
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
 
