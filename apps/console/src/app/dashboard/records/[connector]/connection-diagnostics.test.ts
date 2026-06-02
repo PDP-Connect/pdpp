@@ -56,6 +56,9 @@ const OUTBOX_REMEDIATION_TESTID = /data-testid="diagnostics-outbox-remediation"/
 const OUTBOX_REMEDIATION_LABEL_TESTID = /data-testid="diagnostics-outbox-remediation-label"/;
 const OUTBOX_REMEDIATION_COMMAND_TESTID = /data-testid="diagnostics-outbox-remediation-command"/;
 const OUTBOX_REMEDIATION_DOCTOR_COMMAND = /pdppLocalCollectorDoctorCommand/;
+const OUTBOX_REMEDIATION_RETRY_COMMAND = /pdppLocalCollectorRetryDeadLettersCommand/;
+const OUTBOX_REMEDIATION_RETRY_APPLY = /pdppLocalCollectorRetryDeadLettersCommand\(\{ \.\.\.scope, apply: true \}\)/;
+const OUTBOX_REMEDIATION_STEPS_TESTID = /data-testid="diagnostics-outbox-remediation-steps"/;
 const OUTBOX_REMEDIATION_COPY_BUTTON = /CopyButton/;
 const OUTBOX_REMEDIATION_NO_BASE_URL = /diagnostics-outbox-remediation-command[\s\S]{0,400}--base-url/;
 const OUTBOX_REMEDIATION_NO_DEVICE_TOKEN = /diagnostics-outbox-remediation-command[\s\S]{0,400}--device-token/;
@@ -168,6 +171,18 @@ test("connection-diagnostics renders visible stalled-outbox remediation copy and
   assert.match(src, OUTBOX_REMEDIATION_COMMAND_TESTID);
   assert.match(src, OUTBOX_REMEDIATION_DOCTOR_COMMAND);
   assert.match(src, OUTBOX_REMEDIATION_COPY_BUTTON);
+});
+
+test("stalled-outbox remediation surfaces the actual recovery command, not just doctor", async () => {
+  // The owner-reported gap: "Check the collector host" told the operator to run
+  // `doctor` (which only diagnoses) but never named `retry-dead-letters`, the
+  // command that actually requeues the stuck rows. The panel now renders the
+  // documented three-step flow: diagnose → preview the requeue → apply it.
+  const src = await readFile(DIAG_FILE, "utf8");
+  assert.match(src, OUTBOX_REMEDIATION_STEPS_TESTID);
+  // Both the dry-run preview and the --apply recovery command are present.
+  assert.match(src, OUTBOX_REMEDIATION_RETRY_COMMAND);
+  assert.match(src, OUTBOX_REMEDIATION_RETRY_APPLY);
 });
 
 test("connection-diagnostics remediation command carries no base-url, token, or filesystem path", async () => {

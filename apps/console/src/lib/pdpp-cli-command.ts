@@ -186,7 +186,40 @@ export function pdppLocalCollectorStatusCommand(args?: { connectionId?: string |
   return pdppLocalCollectorDiagnosticCommand("status", args);
 }
 
+/**
+ * Render the public `@pdpp/local-collector@beta retry-dead-letters` command.
+ * This is the *recovery* primitive (shipped in `94afba46` / `63a4eec5`): it
+ * requeues dead-letter outbox rows so a stalled local collector can drain. The
+ * doctor command only diagnoses; this is the command that actually fixes a
+ * stalled outbox, so the remediation surface must name it, not just `doctor`.
+ *
+ * It is safe to render remotely for the same reasons as `doctor`/`status`: it
+ * runs on the host that owns the data, takes no `--base-url`, exchanges no
+ * credentials, and we deliberately omit `--queue` (a device-local filesystem
+ * path) so the dashboard never leaks or guesses host paths.
+ *
+ * The command is dry-run by default — pass `{ apply: true }` to render the
+ * `--apply` variant that mutates after an automatic DB backup. The two-step
+ * preview-then-apply flow matches the CLI's own help and the doctor remediation
+ * hint, so the operator runs exactly what the collector documents.
+ */
+export function pdppLocalCollectorRetryDeadLettersCommand(args?: {
+  apply?: boolean;
+  connectionId?: string | null | undefined;
+}): string {
+  const parts = ["npx", "-y", localCollectorPackageSpecifier, "retry-dead-letters"];
+  const connectionId = args?.connectionId?.trim();
+  if (connectionId) {
+    parts.push("--connection-id", connectionId);
+  }
+  if (args?.apply) {
+    parts.push("--apply");
+  }
+  return parts.join(" ");
+}
+
 export const pdppCliCollectorEnrollCommand = pdppLocalCollectorEnrollCommand;
 export const pdppCliCollectorRunCommand = pdppLocalCollectorRunCommand;
 export const pdppCliCollectorDoctorCommand = pdppLocalCollectorDoctorCommand;
 export const pdppCliCollectorStatusCommand = pdppLocalCollectorStatusCommand;
+export const pdppCliCollectorRetryDeadLettersCommand = pdppLocalCollectorRetryDeadLettersCommand;

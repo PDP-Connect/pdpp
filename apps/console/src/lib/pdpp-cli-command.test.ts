@@ -17,6 +17,7 @@ import {
   pdppCliNoInstallCommand,
   pdppCliPackageInfo,
   pdppLocalCollectorDoctorCommand,
+  pdppLocalCollectorRetryDeadLettersCommand,
   pdppLocalCollectorStatusCommand,
 } from "./pdpp-cli-command.ts";
 
@@ -128,13 +129,50 @@ test("pdppLocalCollectorStatusCommand renders the status form", () => {
   );
 });
 
+test("pdppLocalCollectorRetryDeadLettersCommand renders a dry-run-default recovery command", () => {
+  // The recovery primitive is dry-run by default; the operator previews first.
+  assert.equal(pdppLocalCollectorRetryDeadLettersCommand(), "npx -y @pdpp/local-collector@beta retry-dead-letters");
+});
+
+test("pdppLocalCollectorRetryDeadLettersCommand appends --apply only when asked", () => {
+  assert.equal(
+    pdppLocalCollectorRetryDeadLettersCommand({ apply: true }),
+    "npx -y @pdpp/local-collector@beta retry-dead-letters --apply"
+  );
+});
+
+test("pdppLocalCollectorRetryDeadLettersCommand scopes to a connection id and orders --connection-id before --apply", () => {
+  assert.equal(
+    pdppLocalCollectorRetryDeadLettersCommand({ connectionId: "claude_code:laptop" }),
+    "npx -y @pdpp/local-collector@beta retry-dead-letters --connection-id claude_code:laptop"
+  );
+  assert.equal(
+    pdppLocalCollectorRetryDeadLettersCommand({ connectionId: "claude_code:laptop", apply: true }),
+    "npx -y @pdpp/local-collector@beta retry-dead-letters --connection-id claude_code:laptop --apply"
+  );
+});
+
+test("pdppLocalCollectorRetryDeadLettersCommand ignores blank connection ids", () => {
+  assert.equal(
+    pdppLocalCollectorRetryDeadLettersCommand({ connectionId: "   " }),
+    "npx -y @pdpp/local-collector@beta retry-dead-letters"
+  );
+  assert.equal(
+    pdppLocalCollectorRetryDeadLettersCommand({ connectionId: null }),
+    "npx -y @pdpp/local-collector@beta retry-dead-letters"
+  );
+});
+
 test("local collector diagnostic commands never leak a filesystem path or base-url", () => {
-  // The doctor/status commands run on the device that owns the data. They must
-  // not embed a host-local queue path or the reference base URL — that would
-  // leak device-local internals into a remotely-rendered command.
+  // The doctor/status/retry-dead-letters commands run on the device that owns
+  // the data. They must not embed a host-local queue path or the reference base
+  // URL — that would leak device-local internals into a remotely-rendered
+  // command.
   for (const command of [
     pdppLocalCollectorDoctorCommand({ connectionId: "claude_code:laptop" }),
     pdppLocalCollectorStatusCommand({ connectionId: "claude_code:laptop" }),
+    pdppLocalCollectorRetryDeadLettersCommand({ connectionId: "claude_code:laptop" }),
+    pdppLocalCollectorRetryDeadLettersCommand({ connectionId: "claude_code:laptop", apply: true }),
   ]) {
     assert.doesNotMatch(command, QUEUE_FLAG);
     assert.doesNotMatch(command, BASE_URL_FLAG);

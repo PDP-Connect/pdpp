@@ -2,7 +2,7 @@ import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { DataList, Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { pdppLocalCollectorDoctorCommand } from "@/lib/pdpp-cli-command.ts";
+import { pdppLocalCollectorDoctorCommand, pdppLocalCollectorRetryDeadLettersCommand } from "@/lib/pdpp-cli-command.ts";
 import {
   formatDominantCondition,
   formatProjectionFreshness,
@@ -470,9 +470,19 @@ function sourceOutboxToneClass(tone: ReturnType<typeof formatSourceOutboxState>[
  * The reference projects the stall and an `Inspect the local collector backlog`
  * remediation, but the dashboard cannot drain a device-local outbox remotely —
  * the host that owns the data has to run the local collector. So we surface the
- * reference's own remediation label as readable copy (not hover-only) plus a
- * deterministic, non-secret command the operator runs on that host. The command
+ * reference's own remediation label as readable copy (not hover-only) plus the
+ * exact, deterministic commands the operator runs on that host. Each command
  * carries no base URL, token, or filesystem path.
+ *
+ * Crucially, we surface the *recovery* flow, not just diagnosis. `doctor` only
+ * reports the dead-letter rows; the operator then has to know that
+ * `retry-dead-letters` is what requeues them. Leaving that as an exercise was
+ * the owner-reported gap — "Check the collector host" did not tell the operator
+ * which command to run. We render the collector's own documented three steps:
+ *
+ *   1. diagnose (`doctor`)
+ *   2. preview the requeue (`retry-dead-letters`, dry-run by default)
+ *   3. apply it (`retry-dead-letters --apply`, which backs up the DB first)
  */
 function OutboxStallRemediationPanel({
   connectionId,
@@ -489,7 +499,27 @@ function OutboxStallRemediationPanel({
   hostLabels: readonly string[];
   remediation: NonNullable<ReturnType<typeof summarizeOutboxStallRemediation>>;
 }) {
-  const command = pdppLocalCollectorDoctorCommand(connectionId ? { connectionId } : undefined);
+  const scope = connectionId ? { connectionId } : undefined;
+  // The three documented recovery steps, in the order the operator runs them.
+  // Sourced from the safe CLI builders so none can leak a base URL, token, or
+  // device-local filesystem path.
+  const steps: { caption: string; command: string; label: string }[] = [
+    {
+      label: "1. Diagnose",
+      caption: "See the dead-letter rows and outbox health.",
+      command: pdppLocalCollectorDoctorCommand(scope),
+    },
+    {
+      label: "2. Preview the requeue",
+      caption: "Dry run — shows what would be requeued, changes nothing.",
+      command: pdppLocalCollectorRetryDeadLettersCommand(scope),
+    },
+    {
+      label: "3. Requeue",
+      caption: "Requeues the dead-letter rows after backing up the database first.",
+      command: pdppLocalCollectorRetryDeadLettersCommand({ ...scope, apply: true }),
+    },
+  ];
   // Name the host when we know it; otherwise keep the honest generic phrasing.
   const hostPhrase =
     hostLabels.length === 0
@@ -511,7 +541,7 @@ function OutboxStallRemediationPanel({
       ) : null}
       <p className="pdpp-caption text-muted-foreground" title={remediation.reason ?? undefined}>
         Retryable outbound work on the local collector is not draining. The dashboard cannot clear it remotely — run
-        this on {hostPhrase}:
+        these on {hostPhrase}, in order:
       </p>
       {remediation.scale ? (
         <p
@@ -521,15 +551,23 @@ function OutboxStallRemediationPanel({
           Stuck on the device: {remediation.scale}.
         </p>
       ) : null}
-      <div className="flex min-w-0 items-center gap-2 border border-border/70 bg-muted/30 px-3 py-2">
-        <code
-          className="pdpp-caption min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-foreground"
-          data-testid="diagnostics-outbox-remediation-command"
-        >
-          {command}
-        </code>
-        <CopyButton ariaLabel="Copy local collector doctor command" value={command} />
-      </div>
+      <ol className="flex flex-col gap-2" data-testid="diagnostics-outbox-remediation-steps">
+        {steps.map((step) => (
+          <li className="flex flex-col gap-0.5" key={step.label}>
+            <span className="pdpp-caption font-medium text-foreground">{step.label}</span>
+            <span className="pdpp-caption text-muted-foreground">{step.caption}</span>
+            <div className="flex min-w-0 items-center gap-2 border border-border/70 bg-muted/30 px-3 py-2">
+              <code
+                className="pdpp-caption min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-foreground"
+                data-testid="diagnostics-outbox-remediation-command"
+              >
+                {step.command}
+              </code>
+              <CopyButton ariaLabel={`Copy command: ${step.label}`} value={step.command} />
+            </div>
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }
