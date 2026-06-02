@@ -96,3 +96,29 @@ test("unsupported browser-bound deep-link still renders an honest notice pointin
   assert.match(src, RUNBOOK_TESTID, "the notice must expose a stable hook for the runbook path");
   assert.match(src, RENDERS_RUNBOOK_CONST, "the notice must render the shared runbook path constant");
 });
+
+// ─── Add-connection landing framing ───────────────────────────────────────
+//
+// When the owner reaches this page from the records-list "Add connection"
+// picker (a validated `?connector=` deep-link), the page must frame itself as
+// finishing the connector they chose — a "Connections / Add <Connector>"
+// breadcrumb gated on the already-validated `defaultConnectorId` — rather than
+// reading purely as a "Local device exporters" diagnostics console. The bare
+// page (no deep-link) keeps its existing header, so the breadcrumb must be
+// derived from `defaultConnectorId`, not rendered unconditionally.
+
+const BREADCRUMB_GATED_ON_DEFAULT_CONNECTOR = /const addConnectionBreadcrumbs = defaultConnectorId/;
+const BREADCRUMB_LINKS_BACK_TO_CONNECTIONS = /label: "Connections", href: "\/dashboard\/records"/;
+const BREADCRUMB_NAMES_THE_CHOSEN_CONNECTOR = /label: `Add \$\{formatConnectorKeyForDisplay\(defaultConnectorId\)\}`/;
+const PAGE_HEADER_RENDERS_BREADCRUMB = /breadcrumbs=\{addConnectionBreadcrumbs\}/;
+
+test("a validated add-connection deep-link frames the page as 'Connections / Add <Connector>'", async () => {
+  const src = await read(PAGE_PATH);
+  // The breadcrumb is derived from the already-validated connector key (never an
+  // arbitrary `?connector=` value) and is only present on a deep-link landing.
+  assert.match(src, BREADCRUMB_GATED_ON_DEFAULT_CONNECTOR);
+  assert.match(src, BREADCRUMB_LINKS_BACK_TO_CONNECTIONS);
+  assert.match(src, BREADCRUMB_NAMES_THE_CHOSEN_CONNECTOR);
+  // And the header actually renders it.
+  assert.match(src, PAGE_HEADER_RENDERS_BREADCRUMB);
+});

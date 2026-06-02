@@ -67,6 +67,19 @@ export default async function DeviceExportersPage({
   const browserBoundRequest =
     !defaultConnectorId && isBrowserBoundConnector(requestedConnector) ? (requestedConnector as string) : undefined;
 
+  // When the owner arrives here from the "Add connection" picker (a validated
+  // `?connector=` deep-link), frame the page as finishing the connector they
+  // chose — a "Connections / Add <Connector>" breadcrumb — instead of the bare
+  // diagnostics-console header. The breadcrumb is only shown for a connector key
+  // already validated against the supported sets, so it never names an arbitrary
+  // value. The bare page (no deep-link) keeps its existing diagnostics framing.
+  const addConnectionBreadcrumbs = defaultConnectorId
+    ? [
+        { label: "Connections", href: "/dashboard/records" },
+        { label: `Add ${formatConnectorKeyForDisplay(defaultConnectorId)}` },
+      ]
+    : undefined;
+
   try {
     const [diagnostics, sourceInstances, referenceBaseUrl] = await Promise.all([
       listDeviceExporterDiagnostics(),
@@ -78,6 +91,7 @@ export default async function DeviceExportersPage({
     return (
       <DashboardShell active="device-exporters">
         <PageHeader
+          breadcrumbs={addConnectionBreadcrumbs}
           count={`${devices.length}`}
           description="Reference-experimental diagnostics for local collector agents. The device or host supervisor decides when local collectors run; the server owns enrollment, ingestion, state, health, and advisory freshness/run signals."
           meta={

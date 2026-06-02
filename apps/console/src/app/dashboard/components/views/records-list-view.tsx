@@ -424,7 +424,7 @@ function AddConnectionGuidance({
   return (
     <Callout
       className="mb-4"
-      description="Choose a connector. Entries with arrows can start here; the rest show the missing setup path instead of creating an empty connection."
+      description="Choose a connector. Entries with an arrow set up here; the rest name the setup path they still need."
       surface="human"
       title="Add a connection"
     >
