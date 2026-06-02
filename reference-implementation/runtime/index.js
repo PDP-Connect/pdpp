@@ -18,6 +18,63 @@ import { getDefaultConnectorAttentionStore } from '../server/stores/connector-at
 import { createAttentionWriter } from './attention-writer.js';
 import { canonicalConnectorKey } from '../server/connector-key.js';
 
+// ─── Owned connector-child process-group registry ──────────────────────────
+//
+// Every connector child is spawned `detached` (its own process group; see the
+// spawn site in `runConnector`). The runtime reaps that group on the run's own
+// terminal paths (cancel / failure / protocol violation / error). But if the
+// PARENT process dies abnormally — an `uncaughtException`/`unhandledRejection`
+// that takes `process.exit(1)` (server/index.js handleUncaught), or any
+// `process.exit()` with in-flight runs — Node does NOT propagate a signal to
+// children, so a still-running connector group would reparent to PID 1 and
+// orphan. That is exactly the run_1780436796334 / run_1780436796294 symptom.
+//
+// This registry closes that last gap: each live child's PID (== its PGID,
+// because it leads its own group) is tracked while the run is in flight and
+// removed on the run's terminal path. A SINGLE, idempotent `process.on('exit')`
+// handler sweeps the registry and best-effort SIGTERMs each surviving group, so
+// the runtime never leaves an owned connector subtree behind when its own
+// process exits.
+//
+// `process.on('exit')` handlers must be synchronous; `process.kill(-pgid,...)`
+// is synchronous and best-effort, which is the right shape here. The handler is
+// installed at most once per module instance (the install-once guard) so the
+// many-`runConnector`-calls-per-process test harness can't accumulate
+// listeners — the same accumulation hazard that keeps the signal handlers in
+// server/index.js behind an `argv[1]` guard.
+const ownedConnectorChildPids = new Set();
+let connectorChildExitSweepInstalled = false;
+
+function installConnectorChildExitSweepOnce() {
+  if (connectorChildExitSweepInstalled) return;
+  connectorChildExitSweepInstalled = true;
+  // 'exit' fires on normal exit AND on process.exit()/fatal-handler exit, but
+  // NOT on SIGKILL/SIGSTOP (uninterceptable) — those are covered at the
+  // container/orchestrator layer. Synchronous, best-effort, never throws.
+  process.on('exit', () => {
+    for (const pid of ownedConnectorChildPids) {
+      if (typeof pid !== 'number' || pid <= 1) continue;
+      try {
+        process.kill(-pid, 'SIGTERM');
+      } catch {
+        // Group already gone, or un-signalable; nothing else we can do
+        // synchronously from an exit handler.
+      }
+    }
+  });
+}
+
+function registerOwnedConnectorChild(pid) {
+  if (typeof pid !== 'number' || pid <= 1) return;
+  installConnectorChildExitSweepOnce();
+  ownedConnectorChildPids.add(pid);
+}
+
+function unregisterOwnedConnectorChild(pid) {
+  if (typeof pid !== 'number') return;
+  ownedConnectorChildPids.delete(pid);
+}
+
 function encodeScopeResourceKey(key) {
   return Array.isArray(key) ? JSON.stringify(key) : String(key);
 }
@@ -1376,7 +1433,24 @@ export async function runConnector(opts) {
   const args = isTsConnector
     ? ['--import', 'tsx/esm', connectorPath]
     : [connectorPath];
+  // `detached: true` puts the connector child into its OWN process group
+  // (POSIX setsid), with the child's PID as the group leader. This is the
+  // load-bearing half of the run-lifecycle lease invariant: any grandchild
+  // the connector spawns (a Playwright/Chromium helper, a shelled-out tool)
+  // inherits this process group, so terminating the GROUP (see
+  // `terminateConnectorChildGroup` below) reaps the connector AND its whole
+  // subtree as one unit. Without it, `proc.kill()` signals only the direct
+  // child PID; grandchildren reparent to PID 1 and orphan — the failure mode
+  // captured by run_1780436796334 / run_1780436796294 (started-only runs whose
+  // GitHub/YNAB children outlived the run under PID 1).
+  //
+  // We keep `stdio: ['pipe','pipe','pipe']` and do NOT `proc.unref()`: the
+  // parent stays attached to the child's stdio and awaits its close, exactly
+  // as before. `detached` here only changes the process-GROUP topology, not
+  // ownership of the handle. This is a Linux/Docker runtime (no Windows
+  // support anywhere in the tree), so the POSIX process-group semantics hold.
   const proc = spawn(process.execPath, args, {
+    detached: true,
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
       ...process.env,
@@ -1390,6 +1464,36 @@ export async function runConnector(opts) {
       ...staticSecretLaunchEnv,
     },
   });
+
+  // Group-aware termination. Because the child leads its own process group
+  // (see `detached: true` above), signalling the NEGATIVE pid delivers to
+  // every process in that group — the connector and any descendants it
+  // spawned. We fall back to a direct single-PID `proc.kill(signal)` if the
+  // group signal fails (e.g. the leader already exited so the group is gone,
+  // surfacing as ESRCH), which preserves the prior best-effort behaviour.
+  // Guarded on a real, post-spawn pid (> 1) so we can never accidentally
+  // signal our own group (pid 0) or init.
+  const terminateConnectorChildGroup = (signal) => {
+    const pid = proc.pid;
+    if (typeof pid === 'number' && pid > 1) {
+      try {
+        process.kill(-pid, signal);
+        return;
+      } catch {
+        // Group gone or un-signalable; fall through to the direct kill.
+      }
+    }
+    if (proc.exitCode != null || proc.signalCode != null) return;
+    try {
+      proc.kill(signal);
+    } catch {}
+  };
+
+  // Track this child's process group for the parent-exit sweep (see the
+  // `ownedConnectorChildPids` registry near the top of this module). The PID
+  // is the group leader because the child was spawned `detached`. It is
+  // removed again in `cleanupChildHandles` on every terminal path.
+  registerOwnedConnectorChild(proc.pid);
 
   // Closed-pipe defenses on the connector child stdio we own. Without
   // these, an EPIPE on `proc.stdin.write(...)` (child exited early) or on
@@ -1555,9 +1659,12 @@ export async function runConnector(opts) {
     });
     startDetailGaps = pendingGaps.map(buildStartDetailGap);
   } catch (err) {
-    try {
-      proc.kill();
-    } catch {}
+    // Pre-START failure (before the run promise / cleanupChildHandles exists):
+    // reap the just-spawned connector group rather than leaking it, and drop
+    // it from the parent-exit registry so a later exit can't re-signal a group
+    // we already terminated.
+    terminateConnectorChildGroup('SIGTERM');
+    unregisterOwnedConnectorChild(proc.pid);
     throw err;
   }
 
@@ -2039,9 +2146,10 @@ export async function runConnector(opts) {
 
     function terminateChild() {
       if (proc.exitCode != null || proc.signalCode != null) return;
-      try {
-        proc.kill();
-      } catch {}
+      // SIGTERM the WHOLE process group, not just the direct child PID, so a
+      // connector's grandchildren (browser helpers, shelled-out tools) are
+      // terminated with it rather than reparenting to PID 1.
+      terminateConnectorChildGroup('SIGTERM');
 
       if (terminateTimer || proc.exitCode != null || proc.signalCode != null) return;
       terminateTimer = setTimeout(() => {
@@ -2053,9 +2161,9 @@ export async function runConnector(opts) {
         if (ownerCancelRequested) {
           ownerCancelForced = true;
         }
-        try {
-          proc.kill('SIGKILL');
-        } catch {}
+        // Escalate to a group-wide SIGKILL: an unkillable grandchild can no
+        // longer keep the subtree alive after the connector leader is gone.
+        terminateConnectorChildGroup('SIGKILL');
       }, 250);
       terminateTimer.unref?.();
     }
@@ -2103,6 +2211,10 @@ export async function runConnector(opts) {
       if (cancelSignal) {
         cancelSignal.removeEventListener('abort', handleOwnerCancel);
       }
+      // The run reached a terminal path; this child's group no longer needs
+      // the parent-exit sweep. Removing it here keeps the registry bounded to
+      // genuinely in-flight runs across a long-lived process.
+      unregisterOwnedConnectorChild(proc.pid);
       rl.close();
       proc.stdin.destroy();
       proc.stdout.destroy();
