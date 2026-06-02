@@ -451,7 +451,10 @@ export function feedCountLabel(count: number, fromSearch: boolean, truncated: bo
   // Singular only when the count is exactly one *and* not truncated — a
   // truncated "1+" is still a plural ("1+ records"), never "1+ record".
   const singular = count === 1 && !truncated;
-  const noun = fromSearch ? (singular ? "match" : "matches") : singular ? "record" : "records";
+  let noun = singular ? "record" : "records";
+  if (fromSearch) {
+    noun = singular ? "match" : "matches";
+  }
   const suffix = truncated ? "+" : "";
   return `${count.toLocaleString()}${suffix} ${noun}`;
 }
