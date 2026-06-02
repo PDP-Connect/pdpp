@@ -20,6 +20,7 @@ import {
   catalogModalityFromManifest,
   localCollectorEntries,
   localCollectorUnprovenEntries,
+  staticSecretConnectEntries,
   unsupportedNetworkEntries,
 } from "./connection-catalog.ts";
 
@@ -106,9 +107,44 @@ test("no browser-bound or API/network connector is one-click-creatable", async (
       assert.equal(entry.enrollmentKey, undefined);
     }
     if (entry.modality === "api_network") {
-      assert.equal(entry.disposition, "api_network_unsupported");
+      // A network-class connector is either flatly unsupported OR a static-secret
+      // connector with a draft-create path. Neither is one-click-creatable from
+      // the console (no enrollment deep-link).
+      assert.ok(
+        entry.disposition === "api_network_unsupported" || entry.disposition === "static_secret_connect",
+        `${entry.connectorKey} must be api_network_unsupported or static_secret_connect, got ${entry.disposition}`
+      );
       assert.equal(entry.enrollmentKey, undefined);
     }
+  }
+});
+
+test("gmail and github are static-secret connect entries, not flatly unsupported", async () => {
+  // Gmail/GitHub gained an owner-session static-secret draft-create path. They
+  // must route to the static_secret_connect disposition (real path, runbook,
+  // live-proof-gated) — never the api_network_unsupported "appears only after
+  // first ingest" bucket, which is now false for them. They must NOT deep-link.
+  const catalog = buildConnectorCatalog(await loadCommittedManifests());
+  for (const key of ["gmail", "github"]) {
+    const entry = catalog.find((e) => e.connectorKey === key);
+    assert.ok(entry, `${key} must be in the catalog`);
+    assert.equal(entry.modality, "api_network");
+    assert.equal(entry.disposition, "static_secret_connect");
+    assert.equal(entry.enrollmentKey, undefined, `${key} must not deep-link into enrollment`);
+  }
+});
+
+test("other network connectors stay flatly api_network_unsupported", async () => {
+  // Only gmail/github are static-secret. The remaining network-class connectors
+  // (notion, oura, pocket, spotify, strava, ynab) still have no owner connect
+  // route and must stay in the honest api_network_unsupported bucket.
+  const catalog = buildConnectorCatalog(await loadCommittedManifests());
+  const stillUnsupported = catalog.filter(
+    (e) => e.modality === "api_network" && e.disposition === "api_network_unsupported"
+  );
+  assert.ok(stillUnsupported.length >= 1, "expected non-static-secret network connectors to remain unsupported");
+  for (const entry of stillUnsupported) {
+    assert.equal(entry.connectorKey === "gmail" || entry.connectorKey === "github", false);
   }
 });
 
@@ -139,6 +175,7 @@ test("the grouping helpers partition the catalog without overlap or loss", async
     localCollectorUnprovenEntries(catalog),
     browserCollectorEntries(catalog),
     browserBoundRunbookEntries(catalog),
+    staticSecretConnectEntries(catalog),
     unsupportedNetworkEntries(catalog),
   ];
   const total = groups.reduce((sum, g) => sum + g.length, 0);
@@ -147,6 +184,8 @@ test("the grouping helpers partition the catalog without overlap or loss", async
   assert.ok(localCollectorEntries(catalog).length >= 2, "claude_code + codex");
   assert.equal(browserCollectorEntries(catalog).length, 1, "amazon only");
   assert.ok(browserBoundRunbookEntries(catalog).length >= 1);
+  // Exactly the two static-secret connectors (gmail, github).
+  assert.equal(staticSecretConnectEntries(catalog).length, 2, "gmail + github");
   assert.ok(unsupportedNetworkEntries(catalog).length >= 1);
 });
 

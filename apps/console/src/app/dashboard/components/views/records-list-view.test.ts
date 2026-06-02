@@ -404,6 +404,39 @@ test("collapsing is not omission: all four secondary groups still render inside 
   assert.match(src, ADD_OTHER_CONTAINS_SECONDARY_GROUPS);
 });
 
+// ─── Static-secret connect group is surfaced honestly (not "unsupported") ──
+//
+// Gmail/GitHub gained an owner-session static-secret draft-create path. The
+// picker must surface them as a real creation path inside the "Other connectors"
+// disclosure — named, runbook-pointed, live-proof-caveated — NOT as a dead
+// "appears only after first ingest" notice and NOT deep-linked into the
+// device-collector enrollment form (which they don't use). The group and its copy
+// come from the shared catalog/modality modules (single source of truth with the
+// backend's static-secret connector set).
+const ADD_STATIC_SECRET_GROUP = /staticSecretConnectEntries\(catalog\)/;
+const ADD_STATIC_SECRET_SECTION = /Static-secret — owner-session setup/;
+const ADD_STATIC_SECRET_USES_SHARED_COPY = /STATIC_SECRET_ADD_MODALITY\.ownerFacingReason/;
+const ADD_STATIC_SECRET_SURFACES_RUNBOOK =
+  /data-testid="runbook-path-static_secret"[\s\S]*?STATIC_SECRET_ADD_MODALITY\.runbookPath/;
+const ADD_STATIC_SECRET_NO_DEEP_LINK = /catalog-static-secret-[\s\S]{0,400}deviceExportersHref/;
+
+test("static-secret connectors are surfaced as a real owner-session path, not an unsupported notice", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.match(src, ADD_STATIC_SECRET_GROUP);
+  assert.match(src, ADD_STATIC_SECRET_SECTION);
+  // Copy + runbook come from the shared modality descriptor, not re-hardcoded.
+  assert.match(src, ADD_STATIC_SECRET_USES_SHARED_COPY);
+  assert.match(src, ADD_STATIC_SECRET_SURFACES_RUNBOOK);
+});
+
+test("static-secret group never deep-links into the device-collector enrollment form", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  // The static-secret rows must be display-only (no `?connector=` enrollment
+  // href near them) — Gmail/GitHub are not device-collectors. The two-deep-link
+  // invariant above already pins the global count; this guards the specific group.
+  assert.doesNotMatch(src, ADD_STATIC_SECRET_NO_DEEP_LINK);
+});
+
 test("page header no longer promises every connection supports Sync now", async () => {
   const src = await readFile(VIEW_FILE, "utf8");
   assert.doesNotMatch(src, NO_BLANKET_SYNC_NOW_PROMISE);

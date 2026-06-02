@@ -218,8 +218,13 @@ writes only a status + timestamp.
 
 - Should a stale-draft cleanup/TTL primitive ship with this change? Deferred:
   drafts are invisible and harmless; a cleanup primitive is a separate slice.
-- Should the dashboard show an explicit "setup in progress" affordance for
-  drafts? Deferred to a console lane; the backend leaves room via a future
+- Should the dashboard surface the static-secret path? The **creation entry
+  point** is now surfaced: the console add-connection picker routes Gmail/GitHub
+  to a `static_secret_connect` disposition (runbook-pointed, live-proof-caveated,
+  not one-click) instead of the flatly-unsupported `api_network` bucket
+  (tasks §8, lane `ri-static-secret-owner-connect-live-closeout-v1`). An explicit
+  "setup in progress" affordance that lists existing `draft` connections mid-flow
+  remains deferred (task 8.6); the backend leaves room via a future
   `includeStatuses` list option.
 
 ## Acceptance Checks

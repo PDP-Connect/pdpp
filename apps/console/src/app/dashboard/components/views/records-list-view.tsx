@@ -26,9 +26,14 @@ import {
   type ConnectorCatalogEntry,
   localCollectorEntries,
   localCollectorUnprovenEntries,
+  staticSecretConnectEntries,
   unsupportedNetworkEntries,
 } from "../../lib/connection-catalog.ts";
-import { BROWSER_BOUND_RUNBOOK_PATH, UNSUPPORTED_ADD_MODALITIES } from "../../lib/connection-modality.ts";
+import {
+  BROWSER_BOUND_RUNBOOK_PATH,
+  STATIC_SECRET_ADD_MODALITY,
+  UNSUPPORTED_ADD_MODALITIES,
+} from "../../lib/connection-modality.ts";
 import { summarizeConnectionHealth } from "../../lib/connection-summary-stats.ts";
 import { shouldShowInPrimaryConnections } from "../../lib/records-list-classification.ts";
 import type { RefRecordVersionStatsRow } from "../../lib/ref-client.ts";
@@ -410,14 +415,18 @@ function unsupportedModalityCopy(modality: "browser_bound" | "api_network") {
  * Presentation contract (owner feedback: the picker felt "too Amazon-specific,
  * too verbose, confusing"): the ONE easy path — one-click local-collector
  * enrollment — leads and stays open. Every other group (manual browser-collector
- * / Amazon, browser-bound runbook, local-collector unproven, api_network
- * unsupported) is honest but secondary, so it lives inside a native
- * `<details>` disclosure that names its count. Collapsing is not omission: each
- * connector is still in the DOM, grouped by modality, keyboard-reachable, with
- * its honest reason and (where it exists) its deep-link — the same standard the
- * version-churn disclosure in this file already meets. Amazon is one entry inside
- * the disclosure, no longer the headline. The honesty model — five dispositions,
- * gated reasons, runbook pointer, exactly-two deep-links — is unchanged.
+ * / Amazon, browser-bound runbook, local-collector unproven, static-secret
+ * connect / Gmail+GitHub, api_network unsupported) is honest but secondary, so it
+ * lives inside a native `<details>` disclosure that names its count. Collapsing is
+ * not omission: each connector is still in the DOM, grouped by modality,
+ * keyboard-reachable, with its honest reason and (where it exists) its deep-link —
+ * the same standard the version-churn disclosure in this file already meets.
+ * Amazon is one entry inside the disclosure, no longer the headline. The
+ * static-secret group is a real owner-session creation path (draft → capture →
+ * first ingest), surfaced runbook-pointed and live-proof-caveated, NOT deep-linked
+ * (Gmail/GitHub are not device-collectors) and NOT flipped to one-click-supported
+ * until the live end-to-end proof lands. The honesty model — six dispositions,
+ * gated reasons, runbook pointers, exactly-two deep-links — is unchanged.
  */
 function AddConnectionGuidance({
   catalog,
@@ -430,11 +439,16 @@ function AddConnectionGuidance({
   const localUnproven = localCollectorUnprovenEntries(catalog);
   const browserManualEntries = browserCollectorEntries(catalog);
   const browserRunbook = browserBoundRunbookEntries(catalog);
+  const staticSecretEntries = staticSecretConnectEntries(catalog);
   const networkUnsupported = unsupportedNetworkEntries(catalog);
   const browserCopy = unsupportedModalityCopy("browser_bound");
   const networkCopy = unsupportedModalityCopy("api_network");
   const otherCount =
-    browserManualEntries.length + browserRunbook.length + localUnproven.length + networkUnsupported.length;
+    browserManualEntries.length +
+    browserRunbook.length +
+    localUnproven.length +
+    staticSecretEntries.length +
+    networkUnsupported.length;
   return (
     <Callout
       className="mb-4"
@@ -554,6 +568,31 @@ function AddConnectionGuidance({
                   </ul>
                   <p className="pdpp-caption mt-1.5 text-muted-foreground">
                     Filesystem-class connectors without a committed console enrollment proof yet.
+                  </p>
+                </div>
+              ) : null}
+
+              {staticSecretEntries.length > 0 ? (
+                <div>
+                  <p className="pdpp-caption mb-1.5 font-medium text-foreground">Static-secret — owner-session setup</p>
+                  <ul className="flex flex-wrap gap-2">
+                    {staticSecretEntries.map((entry) => (
+                      <li
+                        className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/20 px-2.5 py-1"
+                        data-testid={`catalog-static-secret-${entry.connectorKey}`}
+                        key={entry.connectorKey}
+                      >
+                        <span className="pdpp-caption font-medium text-foreground">{entry.displayName}</span>
+                        <code className="pdpp-eyebrow font-mono text-muted-foreground">{entry.connectorKey}</code>
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="pdpp-caption mt-1.5 text-muted-foreground">
+                    {STATIC_SECRET_ADD_MODALITY.ownerFacingReason}. Owner runbook:{" "}
+                    <code className="pdpp-eyebrow font-mono text-foreground" data-testid="runbook-path-static_secret">
+                      {STATIC_SECRET_ADD_MODALITY.runbookPath}
+                    </code>
+                    {"."}
                   </p>
                 </div>
               ) : null}

@@ -18,8 +18,12 @@
  * for Amazon, but that remains a manual owner-run proof path: the owner must run
  * the monorepo browser collector against a real local browser session. Do not
  * advertise it as a one-click browser-bound flow until the committed live proof
- * flips the owner-agent intent route. API/network sources (GitHub/Gmail) have no
- * owner connect route at all and remain flatly unsupported from the console.
+ * flips the owner-agent intent route. The static-secret API sources (Gmail,
+ * GitHub) DO have an owner-session connect route — the static-secret draft path
+ * (`STATIC_SECRET_CONNECTORS` below) — surfaced runbook-pointed and
+ * live-proof-caveated, NOT one-click and NOT flipped to supported. The remaining
+ * API/network sources (Notion, Oura, Spotify, …) have no owner connect route at
+ * all and remain flatly unsupported from the console.
  *
  * Keep this list and the backend classifier in lockstep. The add-connection
  * picker reads shipped manifests for the full catalog, while this module still
@@ -50,6 +54,32 @@ export type SupportedLocalCollectorConnector = (typeof SUPPORTED_LOCAL_COLLECTOR
 export const SUPPORTED_BROWSER_COLLECTOR_CONNECTORS = ["amazon"] as const;
 
 export type SupportedBrowserCollectorConnector = (typeof SUPPORTED_BROWSER_COLLECTOR_CONNECTORS)[number];
+
+/**
+ * Static-secret connectors: network-class connectors whose first connection is
+ * created from the owner session via the static-secret DRAFT path
+ * (`POST /_ref/connectors/:connectorId/draft-connection` →
+ * `POST /_ref/connections/:id/static-secret-credential` → first ingest activates
+ * the draft). This is the owner connect route the `api_network` bucket's copy
+ * historically said did not exist; for these two connectors it now does.
+ *
+ * This MUST stay exactly the keys of `STATIC_SECRET_CREDENTIAL_KIND_BY_CONNECTOR`
+ * in `reference-implementation/server/routes/ref-static-secret-credentials.ts`
+ * (the backend's single source of truth for "which connectors are static
+ * secret"). `connection-modality.test.ts` reads that file and pins the two sets
+ * together so the console can never advertise a static-secret path the backend
+ * draft route would refuse, nor miss one the backend supports.
+ *
+ * Surfacing these here does NOT flip the owner-agent `api_network` intent branch
+ * or the catalog descriptor to "supported" — that flip stays gated on the
+ * committed live end-to-end proof (archived design Decision 6 /
+ * add-static-secret-owner-session-connect-path tasks D.1/D.2). The console
+ * surfaces the path with its honest live-proof caveat and a runbook pointer; it
+ * never claims a working connection before a real provider secret has ingested.
+ */
+export const STATIC_SECRET_CONNECTORS = ["gmail", "github"] as const;
+
+export type StaticSecretConnector = (typeof STATIC_SECRET_CONNECTORS)[number];
 
 /**
  * Connector creation modalities the console understands, matching the backend
@@ -86,6 +116,20 @@ export function browserCollectorConnectorLabel(connectorId: SupportedBrowserColl
   }
 }
 
+/** Owner-meaningful display name for a static-secret connector and its secret kind. */
+export function staticSecretConnectorLabel(connectorId: StaticSecretConnector): string {
+  switch (connectorId) {
+    case "gmail":
+      return "Gmail";
+    case "github":
+      return "GitHub";
+    default: {
+      const _exhaustive: never = connectorId;
+      return _exhaustive;
+    }
+  }
+}
+
 /** True when this connector key can be created from the console today. */
 export function isSupportedLocalCollectorConnector(
   connectorId: string | null | undefined
@@ -102,6 +146,19 @@ export function isSupportedBrowserCollectorConnector(
   return (
     typeof connectorId === "string" &&
     (SUPPORTED_BROWSER_COLLECTOR_CONNECTORS as readonly string[]).includes(bareConnectorKey(connectorId))
+  );
+}
+
+/**
+ * True when this connector's first connection is created via the owner-session
+ * static-secret draft path. Accepts the canonical bare key and the registry-URL
+ * fallback form so a non-canonical id still routes to the static-secret group
+ * rather than falling back into the flatly-unsupported API/network bucket.
+ */
+export function isStaticSecretConnector(connectorId: string | null | undefined): connectorId is StaticSecretConnector {
+  return (
+    typeof connectorId === "string" &&
+    (STATIC_SECRET_CONNECTORS as readonly string[]).includes(bareConnectorKey(connectorId))
   );
 }
 
@@ -228,6 +285,53 @@ export function isBrowserBoundConnector(connectorId: string | null | undefined):
 /** The browser-bound runbook path, surfaced verbatim by console guidance. */
 export const BROWSER_BOUND_RUNBOOK_PATH = "docs/operator/browser-collector-proof-runbook.md";
 
+/**
+ * The static-secret connection runbook, surfaced verbatim by console guidance for
+ * the static-secret group. It documents the owner-session draft → capture → first
+ * ingest sequence and the live-proof packet (no-secret-leak checks, what result
+ * justifies flipping the `api_network`/catalog descriptor). Pinned to a committed
+ * doc by `connection-modality.test.ts`.
+ */
+export const STATIC_SECRET_RUNBOOK_PATH = "docs/operator/static-secret-connection-runbook.md";
+
+/**
+ * The static-secret connection group: a real owner-session creation path that is
+ * NOT yet one-click in the console and NOT yet live-proven. This is deliberately
+ * its own descriptor rather than an `UnsupportedAddModality` entry, because the
+ * static-secret path is supported by the backend today — it is honest setup
+ * guidance with a live-proof caveat, not a flat "unsupported" notice.
+ *
+ * `ownerFacingReason` states plainly what the owner does (create a draft, paste a
+ * provider secret from the owner session, run it) and what remains gated (the
+ * console has no in-browser secret form yet, and the live end-to-end proof that
+ * would flip the catalog descriptor has not landed). `runbookPath` points at the
+ * committed runbook that walks the exact draft → capture → first-ingest steps.
+ */
+export interface StaticSecretAddModality {
+  /** Representative connector names so the owner recognizes the class. */
+  examples: readonly string[];
+  /** Short owner-facing label for the class of connectors. */
+  label: string;
+  /** Plain-language dashboard copy: what the owner does and what is still gated. */
+  ownerFacingReason: string;
+  /** Repo doc path with the owner-run draft → capture → first-ingest procedure. */
+  runbookPath: string;
+  /** The exact secret kind each connector expects, for owner-facing precision. */
+  secretKindByConnector: Readonly<Record<StaticSecretConnector, string>>;
+}
+
+export const STATIC_SECRET_ADD_MODALITY: StaticSecretAddModality = {
+  label: "Static-secret sources",
+  examples: ["Gmail", "GitHub"],
+  ownerFacingReason:
+    "create a draft connection, then paste the provider secret (a Gmail app password or GitHub token) from the owner session; the connection stays hidden until its first successful sync. There is no in-browser secret form yet, and the one-click flow stays gated until a real provider secret has been proven end-to-end",
+  runbookPath: STATIC_SECRET_RUNBOOK_PATH,
+  secretKindByConnector: Object.freeze({
+    gmail: "app password",
+    github: "personal access token",
+  }),
+} as const;
+
 export const UNSUPPORTED_ADD_MODALITIES: readonly UnsupportedAddModality[] = [
   {
     modality: "browser_bound",
@@ -241,8 +345,12 @@ export const UNSUPPORTED_ADD_MODALITIES: readonly UnsupportedAddModality[] = [
   },
   {
     modality: "api_network",
+    // Gmail/GitHub are deliberately NOT examples here: they are static-secret
+    // connectors with an owner-session draft-create path (STATIC_SECRET_ADD_MODALITY),
+    // so this bucket is now scoped to the network-class connectors that still have
+    // no owner connect route at all.
     label: "API / network sources",
-    examples: ["GitHub", "Gmail"],
+    examples: ["Notion", "Spotify"],
     missingPrimitive:
       "a standalone owner API-connect route — today an API connection only materializes implicitly on first ingest",
     ownerFacingReason:
