@@ -259,6 +259,11 @@ export interface RunInteractionAck {
   readonly status: "cancelled" | "success";
 }
 
+export interface CancelRunResult {
+  readonly run_id: string;
+  readonly status: "already_terminal" | "cancel_requested" | "no_active_run";
+}
+
 export interface PendingInteractionProjection {
   readonly connector_id: string;
   readonly interaction_id: string;
@@ -386,6 +391,15 @@ export type StaticSecretRunEnvResolver = (args: {
 
 export interface Controller {
   cancelBrowserSurfaceRun(runId: string): Promise<BrowserSurfaceProjection | null>;
+  /**
+   * Owner-only single-run cancellation. Aborts only the targeted run's
+   * cooperative-cancel signal so the runtime terminates that connector child
+   * and resolves the run terminal as `run.cancelled`. Returns a typed result
+   * distinguishing a requested cancellation from a missing or already-terminal
+   * run. Never touches sibling active runs.
+   * See add-owner-run-cancellation-control.
+   */
+  cancelRun(runId: string): Promise<CancelRunResult>;
   cleanupIdleBrowserSurfaces(): Promise<BrowserSurfaceProjection[]>;
   clearNeedsHuman(connectorId: string, options?: ConnectorInstanceOptions): void;
   deleteSchedule(connectorId: string, options?: ConnectorInstanceOptions): Promise<boolean>;
@@ -1539,6 +1553,12 @@ export function createController(opts: ControllerOptions = {}): Controller {
   const runConnectorImpl = opts.runConnectorImpl || runConnector;
   const pendingBrowserSurfaceLaunches = new Map<string, RunNowOptions>();
   const activeRunTraceContexts = new Map<string, SpineTraceContext>();
+  // Per-run owner-cancel controllers, keyed by run_id. `runNow` creates one
+  // AbortController per run and threads its signal into `runConnector`;
+  // `cancelRun` aborts only the targeted run's controller; `finalizeRunCleanup`
+  // deletes the entry when the run settles. Scoped to a single run so a cancel
+  // never touches sibling runs. See add-owner-run-cancellation-control.
+  const activeRunCancellations = new Map<string, AbortController>();
 
   // `runtime` and `scheduler` are declared in ControllerOptions as hooks
   // for a later slice that will wire runtime state into the schedule
@@ -2902,6 +2922,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     activeRuns.delete(input.key);
     activeRunPromises.delete(input.runId);
     activeRunTraceContexts.delete(input.runId);
+    activeRunCancellations.delete(input.runId);
     clearPersistedActiveRun(input.connectorInstanceId, input.runId).catch((err) => {
       const message = err instanceof Error ? err.message : String(err);
       log.warn?.(`[controller] failed to clear active run ${input.runId} for ${input.connectorId}: ${message}`);
@@ -3089,6 +3110,12 @@ export function createController(opts: ControllerOptions = {}): Controller {
       traceContext,
     });
 
+    // Per-run owner-cancel controller. Aborting this signal requests
+    // cancellation of only this run; the runtime cooperatively terminates the
+    // connector child. Cleared in finalizeRunCleanup when the run settles.
+    const cancellation = new AbortController();
+    activeRunCancellations.set(runId, cancellation);
+
     const connectorDisplayName = readManifestDisplayName(manifest) ?? connectorId;
     const baseInteractionHandler = (interaction: unknown) =>
       brokerInteraction(runId, connectorId, interaction as RuntimeInteraction, {
@@ -3154,6 +3181,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           referenceBaseUrl: currentReferenceBaseUrl(),
           browserSurfaceEnv,
           staticSecretEnv,
+          cancelSignal: cancellation.signal,
         })
       )
       .catch((err: unknown) => {
@@ -3230,6 +3258,28 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return { accepted: true, status: input.status };
   }
 
+  async function cancelRun(runId: string): Promise<CancelRunResult> {
+    const cancellation = activeRunCancellations.get(runId);
+    if (!cancellation) {
+      // No in-memory active run for this id. Distinguish a run that already
+      // reached a terminal state (nothing to cancel) from one we never knew
+      // about, so the owner gets an honest typed result either way.
+      if (await runAlreadyTerminal(runId)) {
+        return { status: "already_terminal", run_id: runId };
+      }
+      return { status: "no_active_run", run_id: runId };
+    }
+    if (cancellation.signal.aborted) {
+      // Cancellation already requested for this run; the abort is idempotent.
+      return { status: "cancel_requested", run_id: runId };
+    }
+    // Abort only this run's signal. The runtime's abort listener emits
+    // run.cancel_requested and terminates the connector child; the terminal
+    // run.cancelled event lands when the child exits.
+    cancellation.abort();
+    return { status: "cancel_requested", run_id: runId };
+  }
+
   function getPendingInteraction(runId: string): PendingInteractionProjection | null {
     const entry = activeRunInteractions.get(runId);
     if (!entry?.pending) {
@@ -3273,6 +3323,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       needsHumanAttention.has(runtimeKey(connectorId, options.connectorInstanceId)),
     issueRuntimeOwnerToken,
     respondToInteraction,
+    cancelRun,
     runNow,
     markNeedsHuman,
     clearNeedsHuman,

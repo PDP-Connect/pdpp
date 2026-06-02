@@ -332,6 +332,7 @@ import {
   mountRefDevPlaygroundSession,
   mountRefRunInteraction,
 } from './routes/run-interaction.ts';
+import { mountRefRunCancel } from './routes/run-cancel.ts';
 import {
   mountRefApprovals,
   mountRefClients,
@@ -3144,6 +3145,18 @@ function buildAsApp(opts = {}) {
   // same contract metadata, same owner-session posture, same validation,
   // same response envelope, same error codes.
   mountRefRunInteraction(app, {
+    controller,
+    handleError,
+    pdppError,
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+  });
+
+  // Reference-only, owner-only control surface: cancel a single active
+  // controller-managed run by run id. Stops only the targeted run, preserves
+  // already-collected records, and does not touch sibling runs, schedules,
+  // grants, or connections. Mutation-only; not a public PDPP API.
+  // See openspec/changes/add-owner-run-cancellation-control.
+  mountRefRunCancel(app, {
     controller,
     handleError,
     pdppError,

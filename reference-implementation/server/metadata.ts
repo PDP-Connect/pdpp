@@ -553,6 +553,27 @@ const OWNER_AGENT_CONTROL_ACTION_CATALOG: readonly OwnerAgentControlActionDescri
     reason:
       "Start a run-now for a connection by connection_id. POST this URL; the run resolves asynchronously (202 with run_id + trace_id, or 409 run_already_active). Use a connection_id from list_connections. Connector-only addressing (`POST /v1/owner/connectors/{connector_id}/run`) auto-selects a single active connection or returns a typed ambiguous_connection.",
   },
+  // Owner-mediated in this build: a trusted owner agent can discover that
+  // single-run cancellation exists, but it is served only over the owner-session
+  // reference control plane (`POST /_ref/runs/{run_id}/cancel`), not yet over the
+  // owner-agent bearer surface — so the catalog names it without advertising a
+  // bearer method/URL it does not serve (honesty rule; the owner-agent bearer
+  // route is the deferred R.2 slice). `cancel_run` is run-scoped (keyed on the
+  // active `run_id`, not `connection_id`) and is non-destructive: it stops one
+  // in-flight run and preserves that connection's already-collected records,
+  // schedule, grants, and configuration. It is deliberately distinct from
+  // `run_connection` (start), `revoke_connection` (stop future collection), and
+  // `delete_connection` (erase the past). See
+  // openspec/changes/add-owner-run-cancellation-control.
+  {
+    family: "cancel_run",
+    scope: "instance",
+    status: "owner_mediated",
+    method: null,
+    urlTemplate: null,
+    reason:
+      "Cancel a single active run by its run_id. Non-destructive and run-scoped: it stops only that one in-flight run and preserves the connection's already-collected records, schedule, grants, and configuration — distinct from run_connection (start), revoke_connection (stop future collection), and delete_connection (erase the past). Served today only over the owner-session reference control plane (`POST /_ref/runs/{run_id}/cancel`, owner cookie); no owner-agent bearer route is offered yet, so no method/URL is advertised here. The run terminals as run.cancelled (owner_cancelled, or owner_cancel_forced if the connector child had to be force-terminated), never as a generic connector-exit failure.",
+  },
   // Supported in this build: a trusted owner agent pauses, resumes, or deletes a
   // connection's schedule by connection_id. The representative URL is the pause
   // route; the resume sibling lives at the same path with `/resume` instead of
