@@ -3587,6 +3587,11 @@ function buildRsApp(opts = {}) {
     deleteAllRecords,
     deleteRecord,
     ingestRecord: (target, record) => ingestRecord(target, record),
+    // First-ingest activation for static-secret drafts: flip draft → active
+    // once a record lands. No-op on a non-draft row. See
+    // add-static-secret-owner-session-connect-path design Decision 5.
+    activateDraftConnection: (connectorInstanceId) =>
+      createRequestConnectorInstanceStore().activateDraft(connectorInstanceId),
     getSyncState,
     putSyncState,
     resolveGrantScopedStateGrant,

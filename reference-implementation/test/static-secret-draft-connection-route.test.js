@@ -64,6 +64,32 @@ async function withServer(fn) {
   }
 }
 
+// Owner-auth-disabled harness for the first-ingest-activation tests, which need
+// an owner BEARER token (device flow) in addition to the owner-session draft
+// surface. With an empty owner password the default owner session is active
+// (so `/_ref/...` cookie routes need no login) and `/device/approve` issues a
+// bearer token without a CSRF-gated owner session — mirroring
+// owner-connection-delete.test.js. The auth-rejection cases above keep the
+// password-protected harness.
+async function withOpenServer(fn) {
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    ownerAuthPassword: '',
+    ownerAuthSubjectId: OWNER_SUBJECT_ID,
+    autoEnrollEligibleSchedules: false,
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  try {
+    await fn({ asUrl, rsUrl });
+  } finally {
+    await closeServer(server);
+  }
+}
+
 function getRawSetCookieList(resp) {
   if (typeof resp.headers.getSetCookie === 'function') {
     return resp.headers.getSetCookie();
@@ -134,6 +160,45 @@ async function registerConnector(asUrl, name) {
     body: JSON.stringify(loadManifest(name)),
   });
   assert.equal(resp.status, 201, `register ${name} failed: ${resp.status}`);
+}
+
+async function issueOwnerToken(asUrl, subjectId = OWNER_SUBJECT_ID) {
+  const clientId = 'cli_longview';
+  const { body: device } = await fetchJson(`${asUrl}/oauth/device_authorization`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ client_id: clientId }).toString(),
+  });
+  await fetch(`${asUrl}/device/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ user_code: device.user_code, subject_id: subjectId }).toString(),
+  });
+  const { body: tokenBody } = await fetchJson(`${asUrl}/oauth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+      device_code: device.device_code,
+      client_id: clientId,
+    }).toString(),
+  });
+  return tokenBody.access_token;
+}
+
+async function ingest(rsUrl, ownerToken, connectorId, connectionId, stream, records) {
+  const lines = records
+    .map((record) => JSON.stringify({ key: record.id, data: record, emitted_at: record.emitted_at }))
+    .join('\n');
+  const url =
+    `${rsUrl}/v1/ingest/${encodeURIComponent(stream)}` +
+    `?connector_id=${encodeURIComponent(connectorId)}` +
+    `&connector_instance_id=${encodeURIComponent(connectionId)}`;
+  return fetchJson(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${ownerToken}`, 'Content-Type': 'application/x-ndjson' },
+    body: lines,
+  });
 }
 
 async function createDraft(asUrl, cookie, connectorId) {
@@ -268,6 +333,58 @@ test('owner-agent bearer without an owner session cannot create a draft', async 
       });
       assert.equal(status, 401);
       assert.equal(body?.error?.code, 'owner_session_required');
+    });
+  });
+});
+
+test('first ingest with records flips the draft to active and makes it visible', async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withOpenServer(async ({ asUrl, rsUrl }) => {
+      await registerConnector(asUrl, 'gmail');
+      const cookie = '';
+      const created = await createDraft(asUrl, cookie, 'gmail');
+      assert.equal(created.status, 201, `draft create: ${created.text}`);
+      const connectionId = created.body.connection_id;
+
+      const ownerToken = await issueOwnerToken(asUrl);
+      const ingested = await ingest(rsUrl, ownerToken, 'gmail', connectionId, 'messages', [
+        { id: 'm1', subject: 'hello', emitted_at: '2026-06-02T12:00:00.000Z' },
+      ]);
+      assert.equal(ingested.status, 200, `ingest into draft should succeed: ${ingested.text}`);
+      assert.equal(ingested.body.records_accepted, 1);
+
+      // The draft is now active and visible.
+      const list = await listConnections(asUrl, cookie);
+      const visible = list.body.data.find(
+        (c) => c.connection_id === connectionId || c.connector_instance_id === connectionId,
+      );
+      assert.ok(visible, 'connection is visible after first ingest');
+      assert.equal(visible.status, 'active');
+    });
+  });
+});
+
+test('zero-record ingest leaves the draft invisible (no phantom active connection)', async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withOpenServer(async ({ asUrl, rsUrl }) => {
+      await registerConnector(asUrl, 'gmail');
+      const cookie = '';
+      const created = await createDraft(asUrl, cookie, 'gmail');
+      assert.equal(created.status, 201, `draft create: ${created.text}`);
+      const connectionId = created.body.connection_id;
+
+      const ownerToken = await issueOwnerToken(asUrl);
+      // Empty body → zero records accepted.
+      const ingested = await ingest(rsUrl, ownerToken, 'gmail', connectionId, 'messages', []);
+      assert.equal(ingested.status, 200);
+      assert.equal(ingested.body.records_accepted, 0);
+
+      // Still invisible; no active row.
+      const list = await listConnections(asUrl, cookie);
+      assert.ok(
+        !list.body.data.some((c) => c.connection_id === connectionId || c.connector_instance_id === connectionId),
+        'a zero-record ingest must not activate or reveal the draft',
+      );
     });
   });
 });
