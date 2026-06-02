@@ -152,6 +152,62 @@ test('findPolicy returns the registered policy for Slack channel_memberships wit
   assert.equal(short, url, 'short-name and URL lookups must resolve to the same policy entry');
 });
 
+// ─── Point-in-time real-field guardrail ─────────────────────────────────
+//
+// These streams version on a GENUINELY changing real field carried on the
+// same record as a stable identity — not on a run clock. The accepted
+// direction (design-notes/real-field-version-churn-point-in-time-streams-
+// 2026-06-02.md) is to split the volatile observation into its own
+// append-keyed point-in-time stream, NOT to register a compaction policy
+// or a fingerprint exclusion that would collapse real history. Registering
+// any policy for these (connector, stream) pairs would let
+// `compact-record-history.mjs --apply` silently delete real
+// point-in-time data. This test fails loudly the moment such a policy is
+// added so the closeout's "needs design, not exclusion" boundary cannot be
+// erased by accident.
+//
+// Both connector-id forms (short + registry URL) are checked because
+// findPolicy resolves either.
+const POINT_IN_TIME_REAL_FIELD_STREAMS = [
+  { connector: 'github', stream: 'user', realField: 'follower/repo/gist counts' },
+  { connector: 'slack', stream: 'channels', realField: 'num_members' },
+];
+
+for (const { connector, stream, realField } of POINT_IN_TIME_REAL_FIELD_STREAMS) {
+  test(`no compaction policy is registered for the point-in-time real-field stream ${connector}/${stream}`, () => {
+    const short = findPolicy(connector, stream);
+    const url = findPolicy(`https://registry.pdpp.org/connectors/${connector}`, stream);
+    assert.equal(
+      short,
+      null,
+      `${connector}/${stream} churns on a real field (${realField}); it must NOT have a compaction policy — split it into an append-keyed point-in-time stream instead (see design-notes/real-field-version-churn-point-in-time-streams-2026-06-02.md)`,
+    );
+    assert.equal(
+      url,
+      null,
+      `${connector}/${stream} (registry-URL form) must also have no compaction policy`,
+    );
+  });
+}
+
+// USAA `accounts` and `credit_card_billing` are the subtle case: they DO
+// carry real point-in-time fields (balances, APRs, rewards) AND a run-clock
+// `fetched_at`. They are intentionally policied — but the policy must
+// exclude ONLY `fetched_at`. Excluding any real field would suppress real
+// churn. This pins the cut line so a future edit can't widen excludeKeys
+// past the run clock.
+for (const stream of ['accounts', 'credit_card_billing']) {
+  test(`usaa/${stream} compaction policy excludes the run clock only, never a real field`, () => {
+    const policy = findPolicy('usaa', stream);
+    assert.ok(policy, `usaa/${stream} policy must be registered`);
+    assert.deepEqual(
+      policy.excludeKeys,
+      ['fetched_at'],
+      `usaa/${stream} must exclude ONLY fetched_at; any real-field exclusion would compact real point-in-time history`,
+    );
+  });
+}
+
 test('parseLimitKeys accepts positive integers, rejects everything else', () => {
   assert.equal(parseLimitKeys('1'), 1);
   assert.equal(parseLimitKeys('42'), 42);
