@@ -18,7 +18,7 @@
 
 import type { BrowserContext, Locator, Page } from "playwright";
 import { manualAction } from "../browser-handoff.ts";
-import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
+import type { InteractionRequest, InteractionResponse, SessionCheckpointFn } from "../connector-runtime.ts";
 import type { CaptureSession } from "../fixture-capture.ts";
 
 const SIGNIN_CHALLENGE_URL = /\/ap\/(signin|challenge|mfa)/;
@@ -26,8 +26,21 @@ const ORDER_URL = /\/your-orders|\/order-history/;
 const TFA_PROMPT_TEXT = /verification|two.?step|authenticator|passcode|code we sent|sent a text/i;
 const ORDERS_URL = "https://www.amazon.com/your-orders/orders";
 
+/**
+ * No-op checkpoint for callers (e.g. existing tests) that drive
+ * `ensureAmazonSession` without the runtime's watchdog hook. The runtime always
+ * supplies a real checkpoint in production.
+ */
+const noopCheckpoint: SessionCheckpointFn = () => Promise.resolve();
+
 interface EnsureAmazonSessionArgs {
   capture?: CaptureSession | null;
+  /**
+   * Session-establishment checkpoint hook from the runtime watchdog. Each call
+   * marks an auth phase: it resets the no-progress deadline and captures a
+   * phase diagnostic so a hang no longer leaves only an about:blank artifact.
+   */
+  checkpoint?: SessionCheckpointFn;
   context: BrowserContext;
   page: Page;
   sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
@@ -168,12 +181,16 @@ async function fillOrHandleChallenge({
 
 export async function ensureAmazonSession({
   capture,
+  checkpoint = noopCheckpoint,
   context: _context,
   page,
   sendInteraction,
 }: EnsureAmazonSessionArgs): Promise<boolean> {
+  // Phase: initial auth/session probe.
+  await checkpoint("amazon-auth-probe");
   // Deep probe
   if (await probeAmazonSession(page)) {
+    await checkpoint("amazon-session-already-live");
     return true;
   }
 
@@ -193,6 +210,8 @@ export async function ensureAmazonSession({
     }
   );
   await page.waitForTimeout(2000);
+  // Phase: sign-in page loaded.
+  await checkpoint("amazon-signin-loaded");
 
   // Email step. Observed ids (2026-04-20):
   //   - `#ap_email_login` on the new FullPageUnifiedClaim signin flow
@@ -227,6 +246,8 @@ export async function ensureAmazonSession({
     .click()
     .catch((): undefined => undefined);
   await page.waitForTimeout(3000);
+  // Phase: email submitted.
+  await checkpoint("amazon-email-submit");
 
   // Password step — `#ap_password` remains stable; `input[name="password"]`
   // also matches a hidden autofill hint, so we prefer the id + require vis.
@@ -247,6 +268,8 @@ export async function ensureAmazonSession({
     .click()
     .catch((): undefined => undefined);
   await page.waitForTimeout(5000);
+  // Phase: password submitted.
+  await checkpoint("amazon-password-submit");
 
   // 2FA?
   const bodyText = (
@@ -255,6 +278,8 @@ export async function ensureAmazonSession({
       .innerText()
       .catch((): string => "")
   ).slice(0, 500);
+  // Phase: 2FA / manual-action decision point.
+  await checkpoint("amazon-2fa-decision");
   if (TFA_PROMPT_TEXT.test(bodyText)) {
     const resp = await sendInteraction({
       kind: "otp",
@@ -282,6 +307,8 @@ export async function ensureAmazonSession({
     await page.waitForTimeout(6000);
   }
 
+  // Phase: final session verification before collection.
+  await checkpoint("amazon-final-verify");
   // Verify. If Amazon still parks us on a sign-in/challenge URL after the
   // automated flow (e.g. an approve-on-device prompt or an OTP variant whose
   // copy did not match TFA_PROMPT_TEXT), give the operator one manual/browser

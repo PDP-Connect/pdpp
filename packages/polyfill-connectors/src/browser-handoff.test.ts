@@ -34,11 +34,13 @@ import {
   BROWSER_SURFACE_REMOTE_CDP_URL_ENV,
   BROWSER_SURFACE_REQUIRED_ENV,
   BROWSER_SURFACE_STREAM_BASE_URL_ENV,
+  DEADLINE_TIMEOUT,
   manualAction,
   prepareBrowserInteractionTarget,
   prepareManualAction,
   resolveWsUrlForExactPage,
   type SendInteraction,
+  withDeadline,
 } from "./browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse } from "./connector-runtime.ts";
 import { LOCAL_DEVICE_TOKEN_ENV, STREAMING_REGISTRATION_TOKEN_ENV } from "./streaming-target-registration.ts";
@@ -710,4 +712,109 @@ test("manualAction omits schema/timeout when not provided", async () => {
   );
   assert.equal(received?.schema, undefined);
   assert.equal(received?.timeout_seconds, undefined);
+});
+
+// ─── withDeadline + bounded metadata read ──────────────────────────────────
+//
+// The session-establishment wedge: a wedged renderer can hang `page.title()`
+// (CDP-backed, no per-call timeout) forever. Without a bound, the manual-action
+// handoff never emits its INTERACTION and the owner never sees the prompt.
+
+test("withDeadline resolves with the work value when work wins the race", async () => {
+  const value = await withDeadline(Promise.resolve("done"), 1000);
+  assert.equal(value, "done");
+});
+
+test("withDeadline resolves with DEADLINE_TIMEOUT and runs onTimeout when the deadline wins", async () => {
+  let onTimeoutRan = false;
+  const never = new Promise<string>(() => {
+    /* never resolves */
+  });
+  const result = await withDeadline(never, 5, () => {
+    onTimeoutRan = true;
+  });
+  assert.equal(result, DEADLINE_TIMEOUT);
+  assert.equal(onTimeoutRan, true);
+});
+
+test("withDeadline with non-positive ms returns the work unbounded", async () => {
+  const value = await withDeadline(Promise.resolve("unbounded"), 0);
+  assert.equal(value, "unbounded");
+});
+
+test("manualAction still emits the interaction (with URL) when page.title() hangs forever", async () => {
+  // The named suspect: readManualActionPageMetadata awaiting page.title()
+  // against a wedged renderer. The interaction MUST still emit, carrying the
+  // synchronously-readable URL, even though the title read never resolves.
+  const page = makeMockPage({
+    url: "https://www.amazon.com/ap/signin",
+    // never resolves — simulates a wedged renderer / hung CDP title read
+    title: () => new Promise<string>(() => undefined),
+  });
+
+  const seen: InteractionRequest[] = [];
+  const sendInteraction: SendInteraction = (req) => {
+    seen.push(req);
+    return Promise.resolve({
+      type: "INTERACTION_RESPONSE",
+      request_id: req.request_id ?? "",
+      status: "success",
+    });
+  };
+
+  // No streaming env, so prepareManualAction short-circuits before metadata —
+  // to exercise the metadata read we go through the managed-neko path which
+  // reads metadata before registering. Use the neko env + a register stub.
+  const env = envWithManagedNekoSurface();
+  const response = await manualAction(
+    {
+      page,
+      message: "Solve the Amazon challenge.",
+      reason: "captcha",
+      env,
+      resolveStreamingRegistration: () =>
+        Promise.resolve({
+          runId: "run_test_123",
+          register: () => Promise.resolve(true),
+          unregister: () => Promise.resolve(true),
+        }),
+    },
+    sendInteraction
+  );
+
+  assert.equal(seen.length, 1, "interaction must still be emitted despite hung title");
+  assert.equal(seen[0]?.kind, "manual_action");
+  assert.equal(response.status, "success");
+});
+
+test("prepareManualAction registers the neko target without a page title when page.title() hangs", async () => {
+  const env = envWithManagedNekoSurface();
+  const page = makeMockPage({
+    url: "https://www.amazon.com/ap/signin",
+    title: () =>
+      new Promise<string>(() => {
+        /* hangs forever */
+      }),
+  });
+
+  let registeredArgs: { pageTitle?: string; pageUrl?: string } | undefined;
+  const result = await prepareManualAction({
+    page,
+    reason: "captcha",
+    env,
+    resolveStreamingRegistration: () =>
+      Promise.resolve({
+        runId: "run_test_123",
+        register: (args) => {
+          registeredArgs = args as { pageTitle?: string; pageUrl?: string };
+          return Promise.resolve(true);
+        },
+        unregister: () => Promise.resolve(true),
+      }),
+  });
+
+  assert.equal(result.registered, true);
+  // URL survives (synchronous); title is absent because the read timed out.
+  assert.equal(registeredArgs?.pageUrl, "https://www.amazon.com/ap/signin");
+  assert.equal(registeredArgs?.pageTitle, undefined);
 });

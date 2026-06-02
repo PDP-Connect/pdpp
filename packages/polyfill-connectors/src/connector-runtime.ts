@@ -43,7 +43,7 @@ import { createInterface } from "node:readline";
 import type { Browser, BrowserContext, CDPSession, Page } from "playwright";
 
 import { type AuthConfig, resolveAuth } from "./auth.ts";
-import { manualAction, prepareBrowserInteractionTarget } from "./browser-handoff.ts";
+import { manualAction, prepareBrowserInteractionTarget, withDeadline } from "./browser-handoff.ts";
 import { flushAndExitAfterRuntimeAck } from "./connector-exit.ts";
 import type {
   AssistanceCompletionStatus,
@@ -150,9 +150,25 @@ export type BrowserLaunchSource =
     }
   | { readonly kind: "isolated_local" };
 
+/**
+ * Mark a named session-establishment phase. Calling this updates the run's
+ * last-establishment-progress marker (which the watchdog reads) and, when
+ * capture is active, triggers a best-effort durable diagnostic capture for the
+ * phase. Best-effort and bounded: a checkpoint SHALL NOT be able to hang the
+ * watchdog and a failed capture never fails the run.
+ */
+export type SessionCheckpointFn = (label: string) => Promise<void>;
+
 export interface EnsureSessionArgs {
   assist: BaseCollectContext["assist"];
   capture: CaptureSession | null;
+  /**
+   * Mark a session-establishment phase (e.g. "sign-in-loaded", "email-submit",
+   * "2fa-decision", "final-verify"). Resets the watchdog's no-progress deadline
+   * and captures a phase diagnostic. Optional for connectors that do not adopt
+   * checkpoints; the runtime still frames the window with its own checkpoints.
+   */
+  checkpoint: SessionCheckpointFn;
   completeAssistance: BaseCollectContext["completeAssistance"];
   context: BrowserContext;
   page: Page;
@@ -638,18 +654,31 @@ async function runInBrowser(args: {
     });
     await captureBrowserPage(baseCtx.capture, page, "runtime-new-page");
     await closeBrowserContextPagesExcept(ctx, page);
-    await establishSession(
-      { ensureSession, probeSession },
-      {
-        assist,
-        capture: baseCtx.capture,
-        completeAssistance,
-        context: ctx,
-        page,
-        name,
-        progress,
-        sendInteraction: browserSendInteraction,
-      }
+    // Session establishment is the window the watchdog guards. A wedged
+    // renderer can hang a connector's ensureSession indefinitely with no
+    // INTERACTION ever emitted, so the controller's mid-wait detector cannot
+    // help. The watchdog keys on checkpoint progress (paused while an
+    // interaction is open) and fails closed if establishment stalls.
+    const watchdog = makeSessionEstablishWatchdog({
+      capture: baseCtx.capture,
+      name,
+      page,
+    });
+    await watchdog.run(() =>
+      establishSession(
+        { ensureSession, probeSession },
+        {
+          assist,
+          capture: baseCtx.capture,
+          checkpoint: watchdog.checkpoint,
+          completeAssistance,
+          context: ctx,
+          page: page as Page,
+          name,
+          progress,
+          sendInteraction: watchdog.wrapSendInteraction(browserSendInteraction),
+        }
+      )
     );
     await captureBrowserPage(baseCtx.capture, page, "runtime-session-established");
     await captureBrowserPage(baseCtx.capture, page, "runtime-collect-start");
@@ -675,7 +704,18 @@ async function runInBrowser(args: {
   }
 }
 
-export async function captureBrowserPage(capture: CaptureSession | null, page: Page, label: string): Promise<void> {
+// A wedged renderer can hang the CDP-backed reads inside captureDom
+// (`page.content()`, `page.title()`, `page.ariaSnapshot()`) with no per-call
+// timeout. Bound the whole capture so a diagnostic snapshot during teardown of
+// a wedged run cannot itself re-hang the teardown.
+const CAPTURE_DOM_DEADLINE_MS = 10_000;
+
+export async function captureBrowserPage(
+  capture: CaptureSession | null,
+  page: Page,
+  label: string,
+  deadlineMs = CAPTURE_DOM_DEADLINE_MS
+): Promise<void> {
   if (!capture) {
     return;
   }
@@ -688,7 +728,16 @@ export async function captureBrowserPage(capture: CaptureSession | null, page: P
     process.stderr.write(`[capture] page already closed at ${label}; skipping dom snapshot\n`);
     return;
   }
-  await capture.captureDom(page, label);
+  // captureDom is best-effort by construction (each internal step swallows its
+  // own errors to stderr), so it never rejects; on timeout the detached promise
+  // simply keeps running harmlessly while teardown proceeds.
+  const captureWork = capture.captureDom(page, label);
+  captureWork.catch((): undefined => undefined);
+  await withDeadline(captureWork, deadlineMs, () => {
+    process.stderr.write(
+      `[capture] dom snapshot for ${label} exceeded ${String(deadlineMs)}ms (wedged renderer?); abandoning this capture.\n`
+    );
+  });
 }
 
 export async function closeBrowserContextPagesExcept(
@@ -1153,9 +1202,164 @@ async function acquireBrowser(browser: BrowserConfig, name: string): Promise<Acq
   }
 }
 
+// ─── Session-establishment watchdog ─────────────────────────────────────
+//
+// Guards the window between the browser page being created and the connector
+// returning from session establishment. A wedged renderer can hang a
+// connector's ensureSession indefinitely with no INTERACTION ever emitted, so
+// the controller-side mid-wait surface-loss detector (which only arms once an
+// interaction is open) cannot help. The watchdog keys on *checkpoint progress*
+// rather than wall-clock so a legitimately slow-but-progressing auth flow is
+// never killed; a stall (no checkpoint for longer than the deadline, with no
+// interaction open) fails the run closed so it cannot sit active indefinitely.
+
+const DEFAULT_SESSION_ESTABLISH_WATCHDOG_MS = 120_000;
+const SESSION_ESTABLISH_WATCHDOG_ENV = "PDPP_SESSION_ESTABLISH_WATCHDOG_MS";
+
+export interface SessionEstablishWatchdog {
+  checkpoint: SessionCheckpointFn;
+  /** Run the establishment work under the watchdog; rejects with TerminalError on trip. */
+  run: (work: () => Promise<void>) => Promise<void>;
+  /** Wrap a sendInteraction so the watchdog is paused while an interaction is open. */
+  wrapSendInteraction: (send: BaseCollectContext["sendInteraction"]) => BaseCollectContext["sendInteraction"];
+}
+
+export function resolveSessionEstablishWatchdogMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[SESSION_ESTABLISH_WATCHDOG_ENV]?.trim();
+  if (!raw) {
+    return DEFAULT_SESSION_ESTABLISH_WATCHDOG_MS;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!(Number.isFinite(parsed) && parsed > 0)) {
+    return DEFAULT_SESSION_ESTABLISH_WATCHDOG_MS;
+  }
+  return parsed;
+}
+
+/**
+ * Build a session-establishment watchdog. Exposed (with injectable `deadlineMs`,
+ * `now`, `pollIntervalMs`, and `onTrip`) so tests can drive it deterministically
+ * without real-time sleeps.
+ */
+export function makeSessionEstablishWatchdog(args: {
+  capture: CaptureSession | null;
+  deadlineMs?: number;
+  name: string;
+  now?: () => number;
+  page: Page;
+  pollIntervalMs?: number;
+  /** Hook fired exactly once when the watchdog trips, before the run rejects. */
+  onTrip?: (info: { lastLabel: string | null; sinceMs: number }) => void;
+}): SessionEstablishWatchdog {
+  const now = args.now ?? Date.now;
+  const deadlineMs = args.deadlineMs ?? resolveSessionEstablishWatchdogMs();
+  // Poll often enough to trip near the deadline without busy-waiting; never
+  // longer than the deadline itself so a small test deadline still trips.
+  const pollIntervalMs = args.pollIntervalMs ?? Math.max(1, Math.min(1000, Math.floor(deadlineMs / 4)));
+
+  let lastProgressAt = now();
+  let lastLabel: string | null = null;
+  let openInteractions = 0;
+  let tripped = false;
+
+  const markProgress = (label: string | null): void => {
+    lastProgressAt = now();
+    if (label !== null) {
+      lastLabel = label;
+    }
+  };
+
+  const checkpoint: SessionCheckpointFn = async (label) => {
+    markProgress(label);
+    // Best-effort durable diagnostic so a hang no longer leaves only the
+    // initial blank-page artifact. captureBrowserPage already guards a closed
+    // page; the bounded-title fix keeps the underlying metadata read from
+    // hanging. A failed capture never fails the run.
+    try {
+      await captureBrowserPage(args.capture, args.page, `session-establish-${label}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[session-watchdog] checkpoint capture failed for ${label}: ${message}\n`);
+    }
+  };
+
+  const wrapSendInteraction: SessionEstablishWatchdog["wrapSendInteraction"] = (send) => async (req) => {
+    // An open interaction means the run is legitimately waiting on the owner;
+    // pause the watchdog so a long CAPTCHA/OTP wait is not killed. Reset the
+    // deadline on resolve so post-interaction work gets a fresh window.
+    openInteractions++;
+    markProgress(null);
+    try {
+      return await send(req);
+    } finally {
+      openInteractions--;
+      markProgress(null);
+    }
+  };
+
+  const run: SessionEstablishWatchdog["run"] = async (work) => {
+    let timer: ReturnType<typeof setInterval> | undefined;
+    let tripInfo: { lastLabel: string | null; sinceMs: number } | null = null;
+    // The trip path *resolves* (rather than rejects) a sentinel and the caller
+    // throws afterward. Rejecting from inside the interval callback opens a
+    // one-microtask window where the rejection has no attached handler yet,
+    // which Node surfaces as PromiseRejectionHandledWarning / an unhandled
+    // rejection. Resolving avoids that window entirely; the TerminalError is
+    // constructed and thrown synchronously in `run` once the race settles.
+    const TRIP = Symbol("session-establish-trip");
+    const tripPromise = new Promise<typeof TRIP>((resolve) => {
+      const onTick = (): void => {
+        if (tripped || openInteractions > 0) {
+          return;
+        }
+        const sinceMs = now() - lastProgressAt;
+        if (sinceMs <= deadlineMs) {
+          return;
+        }
+        tripped = true;
+        if (timer) {
+          clearInterval(timer);
+        }
+        tripInfo = { lastLabel, sinceMs };
+        args.onTrip?.(tripInfo);
+        resolve(TRIP);
+      };
+      timer = setInterval(onTick, pollIntervalMs);
+      timer.unref?.();
+    });
+
+    const workPromise = work();
+    // If the watchdog wins the race, `workPromise` may still settle later
+    // (e.g. the wedged call finally rejects). Attach a no-op catch so that
+    // late rejection cannot surface as an unhandled rejection after we have
+    // already failed the run closed.
+    workPromise.catch((): undefined => undefined);
+    try {
+      const outcome = await Promise.race([workPromise, tripPromise]);
+      if (outcome === TRIP) {
+        const info = tripInfo as { lastLabel: string | null; sinceMs: number } | null;
+        const sinceMs = info?.sinceMs ?? deadlineMs;
+        const lastCheckpoint = info?.lastLabel ?? "<none>";
+        throw new TerminalError(
+          `${args.name}_session_establish_timeout: no session-establishment progress for ${String(sinceMs)}ms ` +
+            `(last checkpoint: ${lastCheckpoint}); failing run closed`,
+          true
+        );
+      }
+    } finally {
+      if (timer) {
+        clearInterval(timer);
+      }
+    }
+  };
+
+  return { checkpoint, wrapSendInteraction, run };
+}
+
 interface SessionEstablishArgs {
   assist: BaseCollectContext["assist"];
   capture: CaptureSession | null;
+  checkpoint: SessionCheckpointFn;
   completeAssistance: BaseCollectContext["completeAssistance"];
   context: BrowserContext;
   name: string;
@@ -1170,6 +1374,10 @@ interface SessionEstablishArgs {
  *
  * Priority: ensureSession (automated re-auth) > probeSession (read-only
  * + manual_action fallback) > nothing (connector assumes session is live).
+ *
+ * The runtime frames the window with a `begin` checkpoint before delegating
+ * and a `probe` checkpoint around the read-only probe path so the watchdog
+ * has progress markers even for connectors that do not checkpoint themselves.
  */
 async function establishSession(
   hooks: {
@@ -1179,11 +1387,22 @@ async function establishSession(
   args: SessionEstablishArgs
 ): Promise<void> {
   const { ensureSession, probeSession } = hooks;
-  const { assist, capture, completeAssistance, context, page, name, sendInteraction, progress } = args;
+  const { assist, capture, checkpoint, completeAssistance, context, page, name, sendInteraction, progress } = args;
+
+  await checkpoint("session-establish:begin");
 
   if (typeof ensureSession === "function") {
     try {
-      await ensureSession({ assist, capture, completeAssistance, context, page, sendInteraction, progress });
+      await ensureSession({
+        assist,
+        capture,
+        checkpoint,
+        completeAssistance,
+        context,
+        page,
+        sendInteraction,
+        progress,
+      });
       return;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1194,6 +1413,7 @@ async function establishSession(
   if (typeof probeSession !== "function") {
     return;
   }
+  await checkpoint("session-establish:probe");
   if (await probeSession({ context, page })) {
     return;
   }
@@ -1207,6 +1427,7 @@ async function establishSession(
     },
     sendInteraction
   );
+  await checkpoint("session-establish:probe-after-manual");
   if (await probeSession({ context, page })) {
     return;
   }

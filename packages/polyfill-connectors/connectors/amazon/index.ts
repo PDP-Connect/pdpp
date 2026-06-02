@@ -414,13 +414,15 @@ if (isMainModule(import.meta.url)) {
     // re-auth). Warm sessions can go headless since cookies + TLS fingerprint
     // stay consistent across runs on the persistent profile.
     browser: { profileName: "amazon" },
-    async ensureSession({ capture, context, page, sendInteraction }): Promise<void> {
+    async ensureSession({ capture, checkpoint, context, page, sendInteraction }): Promise<void> {
       await ensureAmazonSession({
         ...(capture ? { capture } : {}),
+        checkpoint,
         context,
         page,
         sendInteraction,
       });
+      await checkpoint("amazon-deep-session-check");
       const deepOk = await deepSessionCheck(page);
       if (!deepOk) {
         throw new Error("amazon_session_required");

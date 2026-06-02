@@ -232,16 +232,72 @@ interface ManualActionPageMetadata {
   readonly pageUrl?: string;
 }
 
-async function readManualActionPageMetadata(page: Page): Promise<ManualActionPageMetadata> {
+/**
+ * Bound `work` by a local deadline. Resolves with `work`'s value when it wins,
+ * or with `DEADLINE_TIMEOUT` (and runs `onTimeout`) when the deadline wins.
+ * Never rejects on timeout. The timer is `unref`-ed so it cannot keep the
+ * process alive, and cleared the moment `work` settles.
+ *
+ * This exists for the session-establishment hang case: against a wedged
+ * renderer, CDP-backed reads such as `page.title()` can hang indefinitely
+ * with no per-call timeout. Racing them against a deadline keeps the
+ * manual-action handoff bounded so the INTERACTION still reaches the owner.
+ */
+export const DEADLINE_TIMEOUT = Symbol("pdpp.browser-handoff.deadline-timeout");
+
+const DEFAULT_METADATA_READ_DEADLINE_MS = 2000;
+
+export async function withDeadline<T>(
+  work: Promise<T>,
+  ms: number,
+  onTimeout?: () => void
+): Promise<T | typeof DEADLINE_TIMEOUT> {
+  if (!(Number.isFinite(ms) && ms > 0)) {
+    return work;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<typeof DEADLINE_TIMEOUT>((resolve) => {
+    timer = setTimeout(() => {
+      onTimeout?.();
+      resolve(DEADLINE_TIMEOUT);
+    }, ms);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([work, deadline]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+async function readManualActionPageMetadata(
+  page: Page,
+  deadlineMs = DEFAULT_METADATA_READ_DEADLINE_MS
+): Promise<ManualActionPageMetadata> {
   let pageUrl: string | undefined;
   let pageTitle: string | undefined;
+  // URL is synchronous (read from the last navigation), so it survives even a
+  // wedged renderer and is read first — the interaction always carries it.
   try {
     pageUrl = page.url();
   } catch {
     /* page may have been closed; metadata is optional */
   }
+  // `page.title()` is CDP-backed and has no per-call timeout: a wedged renderer
+  // can hang it forever, which would block the manual-action INTERACTION from
+  // ever being emitted (the owner never sees the prompt). Bound it so a hung
+  // title read degrades to "no title" instead of stalling the handoff.
   try {
-    pageTitle = await page.title();
+    const titleResult = await withDeadline(page.title(), deadlineMs, () => {
+      process.stderr.write(
+        `[browser-handoff] page.title() timed out after ${String(deadlineMs)}ms; emitting interaction without page title.\n`
+      );
+    });
+    if (titleResult !== DEADLINE_TIMEOUT) {
+      pageTitle = titleResult;
+    }
   } catch {
     /* page may have been closed; metadata is optional */
   }
