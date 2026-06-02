@@ -381,6 +381,7 @@ import {
   mountRefConnectorsList,
 } from './routes/ref-connectors.ts';
 import { mountRefStaticSecretCredentialCapture } from './routes/ref-static-secret-credentials.ts';
+import { mountRefStaticSecretDraftConnection } from './routes/ref-static-secret-draft-connection.ts';
 import { mountRsBlobRead, mountRsReadQueries } from './routes/rs-read.ts';
 import { mountOwnerConnectionRename, mountOwnerConnectionsList } from './routes/owner-connections.ts';
 import { mountOwnerConnectionSchedule } from './routes/owner-connection-schedule.ts';
@@ -3238,6 +3239,20 @@ function buildAsApp(opts = {}) {
     pdppError,
     createRequestConnectorInstanceCredentialStore,
     resolveOwnerConnectorNamespace,
+    getOwnerSubjectId,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    setReferenceTraceId,
+  });
+
+  mountRefStaticSecretDraftConnection(app, {
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    handleError,
+    pdppError,
+    canonicalConnectorKey,
+    createRequestConnectorInstanceStore,
+    resolveRegisteredConnectorManifest,
     getOwnerSubjectId,
     createTraceContext,
     emitSpineEvent,
