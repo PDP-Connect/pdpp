@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, useTransition } from "react";
 import { Button } from "@/components/ui/button.tsx";
+import { syncStartFailureLead } from "../../lib/connection-evidence.ts";
 import { type RunNowResult, runConnectorNowAction } from "../actions.ts";
 
 const RUNNING_POLL_MS = 3000;
@@ -62,8 +63,9 @@ export function SyncNowButton({ connectionId, connectorId, displayName, initialR
         router.refresh();
         return;
       }
+      // Stay on this connection and say whether the request reached the server.
       setToastTone("error");
-      setToast(res.message);
+      setToast(`${syncStartFailureLead(res.phase)} ${res.message}`.trim());
     });
   }, [connectionId, connectorId, router]);
 
