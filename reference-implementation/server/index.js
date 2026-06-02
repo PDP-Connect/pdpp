@@ -3185,7 +3185,7 @@ function buildAsApp(opts = {}) {
   mountRefDatasetSizeReconcile(app, refDatasetContext);
 
   // `/_ref/connectors`, `/_ref/connections`, and `/_ref/connector-instances`
-  // routes (catalog list/detail, schedule read, connection list/detail,
+  // routes (connector-summary list/detail, schedule read, connection list/detail,
   // display-name PATCH, and run/schedule action routes) extracted to
   // `server/routes/ref-connectors.ts` per
   // `split-reference-server-by-route-family` §2.4. The host wires

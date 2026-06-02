@@ -24,6 +24,7 @@ import { resolveDefaultConnectorPath } from '../runtime/controller.ts';
 import { createTraceContext, emitSpineEvent } from '../lib/spine.ts';
 import { validateRequest, listOperations } from '@pdpp/reference-contract';
 import { canonicalConnectorKey } from '../server/connector-key.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
@@ -35,6 +36,9 @@ const POLYFILL_MANIFESTS_DIR = join(REFERENCE_IMPL_DIR, '..', 'packages', 'polyf
 // against this canonical key; request inputs may still carry the URL shape
 // because the server canonicalizes connector ids at the boundary.
 const SPOTIFY_CONNECTOR_KEY = canonicalConnectorKey('spotify');
+const OWNER_SUBJECT_ID = 'owner_local';
+const SPOTIFY_INSTANCE_ID = 'cin_spotify_summary_test';
+const TEST_NOW = '2026-06-02T12:00:00.000Z';
 
 async function closeServer(server) {
   server.schedulerManager?.stop?.();
@@ -105,6 +109,22 @@ async function registerConnector(asUrl, manifest) {
     body: JSON.stringify(manifest),
   });
   assert.equal(registerResp.status, 201, 'register connector');
+}
+
+async function seedSpotifyConnection(connectorId = SPOTIFY_CONNECTOR_KEY) {
+  const store = createSqliteConnectorInstanceStore();
+  const canonicalId = canonicalConnectorKey(connectorId) ?? connectorId;
+  await store.upsert({
+    connectorInstanceId: SPOTIFY_INSTANCE_ID,
+    ownerSubjectId: OWNER_SUBJECT_ID,
+    connectorId: canonicalId,
+    displayName: 'Spotify',
+    sourceKind: 'account',
+    sourceBindingKey: 'acct_spotify_summary_test',
+    sourceBinding: { account_hint: 'summary-test' },
+    createdAt: TEST_NOW,
+    updatedAt: TEST_NOW,
+  });
 }
 
 async function emitSyntheticRun({
@@ -188,14 +208,15 @@ async function emitSyntheticRun({
   });
 }
 
-test('GET /_ref/connectors lists registered connectors with stream names and freshness', async () => {
+test('GET /_ref/connectors lists configured connections with stream names and freshness', async () => {
   await withHarness(async ({ asUrl, spotifyManifest }) => {
+    await seedSpotifyConnection(spotifyManifest.connector_id);
     const { status, body } = await fetchJson(`${asUrl}/_ref/connectors`);
     assert.equal(status, 200);
     assert.equal(body.object, 'list');
     assert.ok(Array.isArray(body.data));
     const entry = body.data.find((c) => c.connector_id === SPOTIFY_CONNECTOR_KEY);
-    assert.ok(entry, 'spotify connector should be listed');
+    assert.ok(entry, 'spotify connection should be listed');
     assert.equal(entry.display_name, 'Spotify');
     assert.ok(entry.streams.includes('top_artists'));
     assert.equal(entry.total_records, 0);
@@ -210,6 +231,7 @@ test('GET /_ref/connectors lists registered connectors with stream names and fre
 test('GET /_ref/connectors finds connector runs that are older than newer runs from other connectors', async () => {
   await withHarness(async ({ asUrl, spotifyManifest }) => {
     const connectorId = spotifyManifest.connector_id;
+    await seedSpotifyConnection(connectorId);
     await emitSyntheticRun({
       connectorId,
       runId: 'run_spotify_older_success',
@@ -228,7 +250,7 @@ test('GET /_ref/connectors finds connector runs that are older than newer runs f
     const { status, body } = await fetchJson(`${asUrl}/_ref/connectors`);
     assert.equal(status, 200);
     const entry = body.data.find((row) => row.connector_id === SPOTIFY_CONNECTOR_KEY);
-    assert.ok(entry, 'spotify connector should be listed');
+    assert.ok(entry, 'spotify connection should be listed');
     assert.equal(entry.last_run?.run_id, 'run_spotify_older_success');
     assert.equal(entry.last_run?.status, 'succeeded');
     assert.equal(entry.last_successful_run?.run_id, 'run_spotify_older_success');
@@ -238,6 +260,7 @@ test('GET /_ref/connectors finds connector runs that are older than newer runs f
 test('GET /_ref/connectors projects known gaps from the latest run summary', async () => {
   await withHarness(async ({ asUrl, spotifyManifest }) => {
     const connectorId = spotifyManifest.connector_id;
+    await seedSpotifyConnection(connectorId);
     const knownGaps = [
       {
         kind: 'skip_result',
@@ -257,7 +280,7 @@ test('GET /_ref/connectors projects known gaps from the latest run summary', asy
     const { status, body } = await fetchJson(`${asUrl}/_ref/connectors`);
     assert.equal(status, 200);
     const entry = body.data.find((row) => row.connector_id === SPOTIFY_CONNECTOR_KEY);
-    assert.ok(entry, 'spotify connector should be listed');
+    assert.ok(entry, 'spotify connection should be listed');
     assert.equal(entry.last_run?.run_id, 'run_spotify_known_gap');
     assert.deepEqual(entry.last_run?.known_gaps, knownGaps);
   });
@@ -570,6 +593,7 @@ test('controller startup reconciles abandoned controller-managed runs after rest
     closeDb();
 
     await initDb(dbPath);
+    await seedSpotifyConnection(connectorId);
     const db = getDb();
     const trace = createTraceContext({ scenarioId: 'scn_controller_restart_orphan' });
     const startedAt = '2026-04-24T09:00:00.000Z';
@@ -654,7 +678,7 @@ test('controller startup reconciles abandoned controller-managed runs after rest
 
     const { body: connectors } = await fetchJson(`${asUrl}/_ref/connectors`);
     const entry = connectors.data.find((row) => row.connector_id === SPOTIFY_CONNECTOR_KEY);
-    assert.ok(entry, 'connector should still be listed after restart');
+    assert.ok(entry, 'configured spotify connection should still be listed after restart');
     assert.equal(entry.last_run?.run_id, runId);
     assert.equal(entry.last_run?.status, 'failed');
     assert.equal(entry.last_run?.failure_reason, 'controller_restarted');

@@ -352,9 +352,9 @@ function isFixtureToPolyfillTransition(
 /**
  * A shipped first-party manifest is "publicly listed" when it explicitly
  * declares `capabilities.public_listing.listed === true`. That is the same
- * boolean the operator catalog filter (`isPublicReferenceConnector` in
- * `ref-control.ts`) requires for a manifest to surface on
- * `GET /_ref/connectors`.
+ * boolean the reference catalog filter (`isPublicReferenceConnector` in
+ * `ref-control.ts`) requires for a manifest to surface in the registered
+ * connector catalog / add-connection surface.
  *
  * Catalog honesty: listed=true manifests must be visible in the catalog
  * even on a fresh database, before any schedule or run row exists. Hidden

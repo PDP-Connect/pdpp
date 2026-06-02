@@ -5,7 +5,7 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | Method | Path | Operation | Summary |
 |--------|------|-----------|---------|
 | **GET** | `/_ref/search` | `refSearch` | Search exact trace/grant/run ids and record content across retained records. |
-| **GET** | `/_ref/connectors` | `refListConnectors` | List registered connectors with manifest summary, latest run summary, schedule summary, and freshness. |
+| **GET** | `/_ref/connectors` | `refListConnectors` | List configured connection summaries with manifest, latest run, schedule, and freshness. |
 | **GET** | `/_ref/connectors/{connectorId}` | `refGetConnector` | Get a single connector with manifest excerpt, schedule, recent runs, and stream summaries. |
 | **GET** | `/_ref/connections` | `refListConnections` | List owner-facing configured connector connections with labels, lifecycle status, binding metadata, and schedules. |
 | **GET** | `/_ref/connector-instances` | `refListConnectorInstances` | Compatibility alias for listing configured connector instances behind owner-facing connections. |
@@ -95,7 +95,7 @@ Search exact trace/grant/run ids and record content across retained records.
 
 `GET /_ref/connectors`
 
-List registered connectors with manifest summary, latest run summary, schedule summary, and freshness.
+List configured connection summaries with manifest, latest run, schedule, and freshness.
 
 ### Responses
 
@@ -1202,4 +1202,3 @@ Operator safety valve: forcibly disable a subscription. Accepts an optional `rea
 - `200` — Subscription after disabling.
 - `400` — Invalid request
 - `404` — Subscription not found
-

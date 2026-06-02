@@ -1,6 +1,6 @@
 // HTTP adapter for the reference-only `/_ref/connectors`,
 // `/_ref/connections`, and `/_ref/connector-instances` route family —
-// catalog list/detail, schedule read, connection list/detail, connection
+// connector-summary list/detail, schedule read, connection list/detail, connection
 // display-name PATCH, and the run-now / schedule put / pause / resume /
 // delete action routes.
 //
@@ -225,12 +225,13 @@ async function sendRefConnectionDetail(
   res.json(projectRefConnection(source, schedulesByInstanceId, (id) => ctx.canonicalConnectorKey(id)));
 }
 
-// ─── Catalog list / detail ──────────────────────────────────────────────
+// ─── Connector summary list / detail ────────────────────────────────────
 
-// Reference-only connector catalog list. Envelope assembly lives in the
+// Reference-only connector-summary list. Envelope assembly lives in the
 // canonical `ref.connectors.list` operation; this route owns owner auth,
 // response writing, and dependency wiring (the substrate read still lives
-// in `server/ref-control.ts`).
+// in `server/ref-control.ts`). Despite the historical route name, list items
+// are configured connection summaries, not addable catalog connectors.
 export function mountRefConnectorsList(app: AppLike, ctx: MountRefConnectorsContext): void {
   app.get(
     "/_ref/connectors",

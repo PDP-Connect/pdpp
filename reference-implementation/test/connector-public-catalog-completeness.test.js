@@ -23,9 +23,9 @@
  *   1. Initialize a fresh DB.
  *   2. Run `reconcilePolyfillManifests` against the real shipped manifests.
  *   3. Catalog completeness: every listed=true first-party manifest resolves
- *      via the catalog detail projection (`getConnectorDetail`) — which reads
- *      the registered manifest, independent of any connection row — and is
- *      recognized as a public catalog connector.
+ *      via `listPublicCatalogConnectorIds()` — which reads registered
+ *      manifests, independent of any connection row — and is recognized as a
+ *      public catalog connector.
  *   4. Lifecycle boundary: `listConnectorSummaries()` (the owner connection
  *      projection) returns ZERO connections on a fresh DB, and the read
  *      persists ZERO `connector_instances` rows (no phantom default-account

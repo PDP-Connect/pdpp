@@ -1426,7 +1426,7 @@ export const referenceManifests = [
     path: "/_ref/connectors",
     surface: "reference",
     tags: ["reference", "connectors"],
-    summary: "List registered connectors with manifest summary, latest run summary, schedule summary, and freshness.",
+    summary: "List configured connection summaries with manifest, latest run, schedule, and freshness.",
     responses: { 200: { schema: ConnectorListResponseSchema }, ...CommonErrors },
   },
   {

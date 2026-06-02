@@ -16,3 +16,72 @@ Reference connector catalog completeness SHALL be satisfied by the registered `c
 - **WHEN** an owner-facing read enumerates the connector catalog
 - **THEN** the read SHALL NOT create or upsert any `connector_instances` row
 - **AND** the count of the owner's configured connections SHALL be unchanged by the read.
+
+## MODIFIED Requirements
+
+### Requirement: Reference connector catalog SHALL hide unproven manifests by default
+
+The reference implementation's operator-only addable connector catalog SHALL exclude any connector whose manifest is not explicitly opted in as a public listing. This requirement governs reference/operator catalog behavior and is not part of the PDPP protocol contract. The legacy `GET /_ref/connectors` route is a configured-connection summary projection and SHALL NOT be used as the catalog-completeness mechanism.
+
+#### Scenario: Manifest is explicitly hidden
+
+- **WHEN** a connector manifest declares
+  `capabilities.public_listing.listed: false`
+- **THEN** the reference addable connector catalog SHALL NOT include that connector.
+
+#### Scenario: Manifest declares unproven status
+
+- **WHEN** a connector manifest declares
+  `capabilities.public_listing.status: "unproven"` without
+  `listed: true`
+- **THEN** the reference addable connector catalog SHALL NOT include that connector.
+
+#### Scenario: Manifest requires a local-device binding without an explicit opt-in
+
+- **WHEN** a connector manifest declares
+  `runtime_requirements.bindings.local_device.required: true` and does
+  not declare `capabilities.public_listing.listed: true`
+- **THEN** the reference addable connector catalog SHALL NOT include that connector, because the provider Docker deployment cannot satisfy the local-device binding.
+
+#### Scenario: Connector ID matches a known reference stub
+
+- **WHEN** a connector ID contains a known reference test stub
+  identifier (such as `manual_action_stub`, `manual-action-stub`, or
+  `stream-test-stub`)
+- **THEN** the reference addable connector catalog SHALL NOT include that connector,
+  regardless of manifest contents.
+
+#### Scenario: Manifest is explicitly listed
+
+- **WHEN** a connector manifest declares
+  `capabilities.public_listing.listed: true`
+- **THEN** the reference addable connector catalog SHALL include that connector, provided the connector ID does not match a known reference stub identifier.
+
+### Requirement: Reference connector catalog SHALL be complete for listed first-party manifests
+
+After the reference implementation's startup `reconcilePolyfillManifests` pass, every first-party manifest under `packages/polyfill-connectors/manifests/` that declares `capabilities.public_listing.listed: true` SHALL be present in the connectors table and SHALL be visible through the reference addable connector catalog, regardless of whether the operator has ever scheduled, run, or connected the connector. Registration through this path is the catalog visibility act; it is NOT schedule enablement and NOT connection creation. Hidden / unproven first-party manifests, manifests outside the shipped first-party set (custom user-authored connectors), and known stub connector IDs SHALL NOT be auto-registered by this path.
+
+#### Scenario: Listed first-party manifest with no prior schedule, run, or connection
+
+- **WHEN** a first-party manifest under
+  `packages/polyfill-connectors/manifests/` declares
+  `capabilities.public_listing.listed: true`
+- **AND** the connectors table contains no row for that manifest's
+  `connector_id` (no schedule, no prior run, no connection)
+- **THEN** the reference implementation's startup
+  `reconcilePolyfillManifests` pass SHALL register the manifest so the
+  addable connector catalog includes it
+- **AND** that registration SHALL NOT create a `connector_instances` row.
+
+#### Scenario: Hidden first-party manifest with no prior schedule, run, or connection
+
+- **WHEN** a first-party manifest under
+  `packages/polyfill-connectors/manifests/` declares
+  `capabilities.public_listing.listed: false` (or omits a
+  `listed: true` declaration)
+- **AND** the connectors table contains no row for that manifest's
+  `connector_id`
+- **THEN** the reference implementation's startup
+  `reconcilePolyfillManifests` pass SHALL NOT register the manifest,
+  preserving the hidden-from-catalog state for unproven and
+  deprecated-upstream manifests.

@@ -12320,7 +12320,7 @@
           "reference",
           "connectors"
         ],
-        "summary": "List registered connectors with manifest summary, latest run summary, schedule summary, and freshness.",
+        "summary": "List configured connection summaries with manifest, latest run, schedule, and freshness.",
         "parameters": [],
         "responses": {
           "200": {

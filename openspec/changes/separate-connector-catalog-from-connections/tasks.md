@@ -2,7 +2,7 @@
 
 - [x] 1.1 Prove the root cause: dashboard read materializes + persists default-account rows for the whole public catalog when owner has zero connections. (Repro in `tmp/workstreams/ri-zero-record-connection-lifecycle-v1-report.md`; `ref-control.ts` `listConnectorInstanceRowsForDashboard` → `ensureDefaultAccountConnection` upsert.)
 - [x] 1.2 Audit blast radius: which surfaces read the phantom rows and the grant fan-in resolution risk. (Audit summarized in the design note.)
-- [x] 1.3 Confirm catalog completeness is owned by the `connectors` table + `GET /_ref/connectors`, not `connector_instances`. (Architecture spec "Reference connector catalog SHALL be complete"; completeness test asserts `connector_id` only.)
+- [x] 1.3 Confirm catalog completeness is owned by the registered `connectors` table / add-connection surface, not `connector_instances`. (Architecture spec "Reference connector catalog SHALL be complete"; completeness test asserts `connector_id` only through the catalog primitive, while `GET /_ref/connectors` remains the legacy connector-summary route whose items require `connection_id`.)
 
 ## 2. Core fix — a read never persists a connection (B1 shape)
 

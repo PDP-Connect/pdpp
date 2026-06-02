@@ -5,7 +5,7 @@ See `design-notes/connector-catalog-vs-connection-lifecycle-2026-06-02.md` for t
 - `listConnectorInstanceRowsForDashboard` (`ref-control.ts` ~750) calls `ensureDefaultAccountConnection` for every registered public connector when the owner has zero active instances. `ensureDefaultAccountConnection` (`connector-instance-store.js` ~348) is an `upsert` — it persists `status:'active'` rows.
 - This is the only production path that proactively materializes default-account rows across the whole catalog. Ingest/resolution (`resolveNamespace` with `allowDefaultAccount: true`) materializes on demand, per-connector, when data actually resolves — that path is correct and stays.
 - Phantom rows are read by `owner-connections.ts`, `owner-connector-templates.ts`, `ref-connectors.ts`, `ref-device-exporters.ts`, and the grant fan-in resolver `connection-identity.js` `listActiveByConnector` (SQL `WHERE status='active'`).
-- The catalog-completeness contract (`reference-implementation-architecture` → "Reference connector catalog SHALL be complete for listed first-party manifests") is satisfied by the `connectors` table + `GET /_ref/connectors`; it says nothing about `connector_instances`.
+- The catalog-completeness contract (`reference-implementation-architecture` → "Reference connector catalog SHALL be complete for listed first-party manifests") is satisfied by the registered `connectors` table and the add-connection/catalog primitive; it says nothing about `connector_instances`. The historical `GET /_ref/connectors` route is a connector-summary / connection projection because its item schema requires `connection_id`.
 
 ## Decision
 
