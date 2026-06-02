@@ -411,6 +411,122 @@ test('runtime loads pending detail gaps only for the requested connector instanc
   }
 }));
 
+test('connector-emitted DETAIL_GAP survives real-store persistence and reappears in the next run START.detail_gaps', withTempDb(async (dir) => {
+  // Host-side linchpin for the ChatGPT 429 resume contract.
+  //
+  // The package-level connector tests prove the connector EMITS DETAIL_GAP on
+  // retry exhaustion and CONSUMES START.detail_gaps on the next run. The two
+  // single-direction runtime tests above (`runtime records DETAIL_GAP …` and
+  // `runtime includes pending detail gaps in START …`) each prove one half of
+  // the host seam against a MOCK store, and the instance-isolation test seeds
+  // the real store BY HAND. None of them proves the full chain through the
+  // REAL store: a connector-emitted gap, written by the runtime's DETAIL_GAP
+  // handler, read back verbatim by the next run's START construction.
+  //
+  // This test closes that seam. Both runs omit connectorInstanceId so they
+  // resolve to the same default-account instance — the production single-owner
+  // path. The gap minted by run 1's emit is the gap returned to run 2's START;
+  // if anything between upsertPendingGap and listPendingGaps drops or mangles
+  // it (identity hash, status filter, instance scoping, JSON round-trip,
+  // reference-only shaping), this fails.
+  const store = createSqliteConnectorDetailGapStore();
+
+  // Run 1: connector emits a realistic ChatGPT 429-deferral DETAIL_GAP, then
+  // completes successfully (honest partial coverage). The runtime persists the
+  // gap through the real store.
+  const emittedGap = {
+    type: 'DETAIL_GAP',
+    stream: 'messages',
+    parent_stream: 'conversation_list',
+    record_key: 'conv_deferred',
+    detail_locator: {
+      kind: 'chatgpt.conversation',
+      conversation_id: 'conv_deferred',
+      list_item: { id: 'conv_deferred', title: 'Deferred under pressure' },
+    },
+    list_cursor: { after: 'cursor_30' },
+    reason: 'upstream_pressure',
+    retryable: true,
+    last_error: {
+      message: 'rate limited after retry budget',
+      network_pressure: {
+        endpoint_route: 'GET /conversation/{conversation_id}',
+        error_class: 'http_429',
+        status: 429,
+        attempt: 12,
+        max_attempts: 12,
+      },
+    },
+  };
+  const emitter = createConnector([
+    emittedGap,
+    { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+  ]);
+
+  let persistedGapId = null;
+  try {
+    const run1 = await runConnector({
+      connectorPath: emitter.connectorPath,
+      connectorId: 'chatgpt',
+      grantId: 'grant_1',
+      ownerToken: 'owner',
+      manifest: { streams: [{ name: 'messages' }] },
+      persistState: false,
+      detailGapStore: store,
+      onProgress: () => {},
+    });
+    assert.equal(run1.status, 'succeeded');
+    assert.equal(run1.detail_gaps.length, 1, 'run 1 reports the durable gap it persisted');
+    persistedGapId = run1.detail_gaps[0].gap_id;
+    assert.ok(persistedGapId, 'persisted gap has a stable id');
+  } finally {
+    emitter.cleanup();
+  }
+
+  // Independent proof the row actually landed in the real store (not just that
+  // the runtime echoed it back in-memory).
+  const persisted = await store.listPendingGaps({
+    connectorId: 'chatgpt',
+    grantId: 'grant_1',
+    streams: ['messages'],
+  });
+  assert.deepEqual(persisted.map((gap) => gap.gap_id), [persistedGapId]);
+
+  // Run 2: a fresh run with the SAME store. The START construction must load
+  // the persisted gap and hand it to the connector as a reference-only row.
+  const startPath = join(dir, 'roundtrip-start.json');
+  const capturer = createStartCaptureConnector(startPath);
+  try {
+    const run2 = await runConnector({
+      connectorPath: capturer.connectorPath,
+      connectorId: 'chatgpt',
+      grantId: 'grant_1',
+      ownerToken: 'owner',
+      manifest: { streams: [{ name: 'messages' }] },
+      persistState: false,
+      detailGapStore: store,
+      onProgress: () => {},
+    });
+    assert.equal(run2.status, 'succeeded');
+  } finally {
+    capturer.cleanup();
+  }
+
+  const start = JSON.parse(readFileSync(startPath, 'utf8'));
+  assert.equal(start.detail_gaps.length, 1, 'next run START carries exactly the one deferred gap');
+  const startGap = start.detail_gaps[0];
+  assert.equal(startGap.gap_id, persistedGapId, 'same gap identity survives the round-trip');
+  assert.equal(startGap.stream, 'messages');
+  assert.equal(startGap.record_key, 'conv_deferred', 'the deferred conversation is the one returned for retry');
+  assert.equal(startGap.status, 'pending');
+  assert.equal(startGap.reference_only, true, 'gap is handed back as a reference-only recovery row');
+  assert.deepEqual(
+    startGap.detail_locator,
+    emittedGap.detail_locator,
+    'the locator the connector needs to re-fetch survives persistence verbatim',
+  );
+}));
+
 test('runtime fails closed when pending detail gap loading fails before START', withTempDb(async () => {
   const detailGapStore = {
     async listPendingGaps() {
