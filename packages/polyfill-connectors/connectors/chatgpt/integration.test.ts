@@ -52,9 +52,12 @@ import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import { RetryExhaustedError, retryHttp } from "../../src/http-retry.ts";
 import { type EmittedRecord, makeRecordingEmit, type SkippedRecord } from "../../src/test-harness.ts";
 import {
+  applyChatGptColdStatePreflight,
   CHATGPT_RETRYABLE_ERROR_PATTERN,
+  type ChatGptDetailLaneTuning,
   ChatGptRecoverableRetryExhaustedError,
   chatGptBackendFetchInBrowser,
+  classifyChatGptSourcePressure,
   processConversationDetail,
   resolveChatGptBackendFetchTimeoutMs,
   resolveChatGptDetailLaneTuning,
@@ -237,6 +240,35 @@ test("chatGptBackendFetchInBrowser aborts a never-resolving backend fetch prompt
 
   assert.equal(observedSignal?.aborted, true);
   assert.ok(Date.now() - startedAt < 1000, "timeout should reject promptly");
+});
+
+test("chatGptBackendFetchInBrowser status-only mode does not parse response JSON", async () => {
+  const originalFetch = globalThis.fetch;
+  let parsedJson = false;
+  globalThis.fetch = (): Promise<Response> => {
+    const response = new Response(null, { status: 200, headers: { "retry-after": "7" } });
+    Object.defineProperty(response, "json", {
+      value: (): Promise<never> => {
+        parsedJson = true;
+        return Promise.reject(new Error("json should not be parsed in status-only mode"));
+      },
+    });
+    return Promise.resolve(response);
+  };
+
+  try {
+    const result = await chatGptBackendFetchInBrowser({
+      auth: { accessToken: "redacted-test-token", deviceId: "test-device" },
+      method: "GET",
+      parseJson: false,
+      path: "/conversation/test-conversation",
+      timeoutMs: 1000,
+    });
+    assert.deepEqual(result, { status: 200, json: null, headers: { "retry-after": "7" } });
+    assert.equal(parsedJson, false, "status-only preflight must not parse the body");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("summarizeChatGptSideEffectProbe reports stable list/detail metadata without content", () => {
@@ -1493,4 +1525,212 @@ test("runSharedConversationsStream: 404 → SKIP_RESULT('not_available'), no rec
   assert.equal(skip.stream, "shared_conversations");
   assert.equal(skip.reason, "not_available");
   assert.equal(messages.filter((m) => m.type === "STATE").length, 0);
+});
+
+// ─── Cold-state preflight source-pressure classifier ─────────────────────
+// The preflight is an owner-only A/B safety rail: it only fires when the owner
+// has raised detail concurrency above the frozen serial default (a probe env
+// var), and it can only ever make a run MORE conservative. These tests pin:
+//   - production (serial tuning) fires NO probe and is byte-for-byte unchanged,
+//   - a cold account lets the requested faster posture through,
+//   - a pressured account forces the run back to serial concurrency=1,
+//   - the classifier stops at the first 429 (no extra load on a hot bucket),
+//   - the preflight emits no records and no sensitive strings.
+
+const FAST_TUNING: ChatGptDetailLaneTuning = {
+  initialConcurrency: 3,
+  maxConcurrency: 3,
+  pauseMinMs: 200,
+  pauseMaxMs: 200,
+};
+const SERIAL_TUNING: ChatGptDetailLaneTuning = {
+  initialConcurrency: 1,
+  maxConcurrency: 1,
+  pauseMinMs: 1500,
+  pauseMaxMs: 3000,
+};
+
+function makeStatusApi(statuses: readonly number[]): { api: ChatGptApi; paths: string[] } {
+  const paths: string[] = [];
+  let cursor = 0;
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: (): Promise<never> => Promise.reject(new Error("api.fetch() should not run for status-only preflight")),
+    fetchStatus: (path: string): Promise<Pick<ChatGptFetchResult, "headers" | "status">> => {
+      paths.push(path);
+      const status = statuses[cursor] ?? 200;
+      cursor += 1;
+      return Promise.resolve({ status });
+    },
+  };
+  return { api, paths };
+}
+
+test("classifyChatGptSourcePressure: all-200 sweep classifies cold", async () => {
+  const { api, paths } = makeStatusApi([200, 200, 200]);
+  const result = await classifyChatGptSourcePressure({ api }, ["a", "b", "c"], 3);
+  assert.deepEqual(result, { attempted: 3, classification: "cold", rateLimited: 0 });
+  assert.deepEqual(paths, ["/conversation/a", "/conversation/b", "/conversation/c"]);
+});
+
+test("classifyChatGptSourcePressure: first 429 classifies pressured and stops probing", async () => {
+  const { api, paths } = makeStatusApi([200, 429, 200]);
+  const result = await classifyChatGptSourcePressure({ api }, ["a", "b", "c"], 3);
+  assert.deepEqual(result, { attempted: 2, classification: "pressured", rateLimited: 1 });
+  // Stopped at the 429 — never probed "c", so no extra load on a hot bucket.
+  assert.deepEqual(paths, ["/conversation/a", "/conversation/b"]);
+});
+
+test("classifyChatGptSourcePressure: a retry-exhausted bare-429 circuit is pressured", async () => {
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("unused")),
+    fetch: (): Promise<never> => Promise.reject(new Error("api.fetch() should not run for status-only preflight")),
+    fetchStatus: (): Promise<Pick<ChatGptFetchResult, "headers" | "status">> =>
+      Promise.reject(
+        new ChatGptRecoverableRetryExhaustedError("apiFetch got 429 after retry budget exhausted", {
+          class: "rate_limited",
+          httpStatus: 429,
+        })
+      ),
+  };
+  const result = await classifyChatGptSourcePressure({ api }, ["a", "b", "c"], 3);
+  assert.equal(result.classification, "pressured");
+  assert.equal(result.rateLimited, 1);
+  assert.equal(result.attempted, 1);
+});
+
+test("applyChatGptColdStatePreflight: serial production tuning fires NO probe (byte-for-byte unchanged)", async () => {
+  const { api, paths } = makeStatusApi([429, 429, 429]);
+  const harness = makeRecordingEmit(validateRecord);
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["messages"].map((name) => [name, { name }])),
+  };
+  const effective = await applyChatGptColdStatePreflight(deps, [makeConvo({ id: "convo-1" })], SERIAL_TUNING);
+  assert.deepEqual(effective, SERIAL_TUNING, "serial tuning returned unchanged");
+  assert.deepEqual(paths, [], "no preflight probe was fired in production posture");
+  assert.deepEqual(
+    harness.protocolMessages.filter((m) => m.type === "PROGRESS"),
+    [],
+    "no preflight progress emitted in production posture"
+  );
+});
+
+test("applyChatGptColdStatePreflight: cold account lets the requested faster posture through", async () => {
+  const { api, paths } = makeStatusApi([200, 200, 200]);
+  const harness = makeRecordingEmit(validateRecord);
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["messages"].map((name) => [name, { name }])),
+  };
+  const convos = [
+    makeConvo({ id: "c-1" }),
+    makeConvo({ id: "c-2" }),
+    makeConvo({ id: "c-3" }),
+    makeConvo({ id: "c-4" }),
+  ];
+  const effective = await applyChatGptColdStatePreflight(deps, convos, FAST_TUNING);
+  assert.deepEqual(effective, FAST_TUNING, "cold preflight keeps the requested faster tuning");
+  assert.deepEqual(paths, ["/conversation/c-1", "/conversation/c-2", "/conversation/c-3"], "probed first 3 serially");
+});
+
+test("applyChatGptColdStatePreflight: pressured account forces the run back to serial concurrency=1", async () => {
+  const { api } = makeStatusApi([429]);
+  const harness = makeRecordingEmit(validateRecord);
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["messages"].map((name) => [name, { name }])),
+  };
+  const effective = await applyChatGptColdStatePreflight(deps, [makeConvo({ id: "c-1" })], FAST_TUNING);
+  assert.equal(effective.maxConcurrency, 1, "pressured preflight forces serial maxConcurrency");
+  assert.equal(effective.initialConcurrency, 1);
+  const progress = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> => m.type === "PROGRESS"
+  );
+  assert.ok(
+    progress.some((m) => m.message.includes("source is pressured") && m.message.includes("serial concurrency=1")),
+    "emitted a pressured/serial preflight note"
+  );
+});
+
+test("runMessagesAndConversationsWithDetail: hot account at probe-concurrency falls back to serial (no overlap)", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  let activeFetches = 0;
+  let maxActiveFetches = 0;
+  // First call (the preflight probe) 429s → pressured. Subsequent real-lane
+  // fetches succeed. The lane must run serially (maxActive===1) despite the
+  // requested maxConcurrency=3, because the preflight forced it back to serial.
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetchStatus: (): Promise<Pick<ChatGptFetchResult, "headers" | "status">> => Promise.resolve({ status: 429 }),
+    fetch: async (): Promise<ChatGptFetchResult> => {
+      activeFetches += 1;
+      maxActiveFetches = Math.max(maxActiveFetches, activeFetches);
+      await Promise.resolve();
+      activeFetches -= 1;
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "c-1" }), makeConvo({ id: "c-2" }), makeConvo({ id: "c-3" })],
+    makeEmitConversation(deps),
+    {
+      random: () => 0,
+      sleep: () => undefined,
+      tuning: { initialConcurrency: 3, maxConcurrency: 3, pauseMinMs: 200, pauseMaxMs: 200 },
+    }
+  );
+
+  assert.equal(maxActiveFetches, 1, "pressured preflight forced the detail lane to run serially");
+});
+
+test("runMessagesAndConversationsWithDetail: serial tuning fires no preflight and behaves exactly as before", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const fetches: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      fetches.push(path);
+      return Promise.resolve(makeDetailOk());
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "convo-1" }), makeConvo({ id: "convo-2" })],
+    makeEmitConversation(deps),
+    { random: () => 0, sleep: () => undefined, tuning: SERIAL_TUNING }
+  );
+
+  // Exactly two fetches — one per conversation, no preflight probe in front.
+  assert.deepEqual(fetches, ["/conversation/convo-1", "/conversation/convo-2"]);
+  const preflightNotes = harness.protocolMessages.filter(
+    (m) => m.type === "PROGRESS" && (m as { message?: string }).message?.includes("cold-state preflight")
+  );
+  assert.deepEqual(preflightNotes, [], "no preflight progress in serial posture");
 });

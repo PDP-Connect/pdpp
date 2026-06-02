@@ -203,6 +203,7 @@ interface ChatGptBackendFetchArgs {
   auth: ChatGptAuth;
   body?: unknown;
   method: string;
+  parseJson?: boolean;
   path: string;
   timeoutMs: number;
 }
@@ -223,6 +224,7 @@ export async function chatGptBackendFetchInBrowser({
   auth,
   body,
   method,
+  parseJson = true,
   path,
   timeoutMs,
 }: ChatGptBackendFetchArgs): Promise<ChatGptFetchResult> {
@@ -255,10 +257,12 @@ export async function chatGptBackendFetchInBrowser({
     const status = res.status;
     const retryAfter = res.headers.get("retry-after") ?? undefined;
     let json: unknown = null;
-    try {
-      json = await res.json();
-    } catch {
-      json = null;
+    if (parseJson) {
+      try {
+        json = await res.json();
+      } catch {
+        json = null;
+      }
     }
     return {
       status,
@@ -396,15 +400,110 @@ function createChatGptApi({
 
   async function fetchOnce(
     path: string,
-    { method, body }: { method: string; body?: unknown }
+    { method, body, parseJson = true }: { method: string; body?: unknown; parseJson?: boolean }
   ): Promise<ChatGptFetchResult> {
     const a = await auth();
     const timeoutMs = resolveChatGptBackendFetchTimeoutMs();
     return await withTimeout(
-      page.evaluate(chatGptBackendFetchInBrowser, { path, method, body, auth: a, timeoutMs }),
+      page.evaluate(chatGptBackendFetchInBrowser, { path, method, body, parseJson, auth: a, timeoutMs }),
       timeoutMs + CHATGPT_BACKEND_EVALUATE_TIMEOUT_BUFFER_MS,
       `chatgpt_backend_fetch_evaluate_timeout after ${timeoutMs + CHATGPT_BACKEND_EVALUATE_TIMEOUT_BUFFER_MS}ms`
     );
+  }
+
+  function fetchWithRetry(
+    path: string,
+    {
+      body,
+      captureResult,
+      method,
+      parseJson,
+    }: { body?: unknown; captureResult: boolean; method: string; parseJson: boolean }
+  ): Promise<ChatGptFetchResult> {
+    return retryHttp({
+      baseDelayMs: CHATGPT_RATE_LIMIT_BASE_DELAY_MS,
+      maxAttempts: CHATGPT_RATE_LIMIT_MAX_ATTEMPTS,
+      maxDelayMs: CHATGPT_RATE_LIMIT_MAX_DELAY_MS,
+      maxRetryAfterMs: CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS,
+      // Fast-open the source-pressure circuit on a bare 429 (no Retry-After):
+      // a few short attempts, then exhaust so the lane defers the rest as
+      // resumable DETAIL_GAP instead of burning the full 12-attempt budget
+      // (~23–70 min of backoff) against an already-throttled account.
+      shouldKeepRetrying: shouldKeepRetryingChatGptDetail,
+      onRetry: async ({ attempt, delayMs, maxAttempts, response, retryAfterMs }) => {
+        // retryHttp sleeps `delayMs` itself immediately after this callback,
+        // inside the same (serialized) detail attempt. Report the pressure so
+        // the lane reduces concurrency and surfaces a cooldown event, but mark
+        // it absorbed so the lane does not *also* delay the next launch by the
+        // same amount — that double-paid the backoff the request already slept.
+        await currentAdaptiveLaneRunContext()?.reportPressure({
+          absorbedByRequestWait: true,
+          delayMs,
+          kind: response?.status === 429 ? "rate_limited" : "transient_error",
+          ...(retryAfterMs == null ? {} : { retryAfterMs }),
+        });
+        if (delayMs < CHATGPT_LONG_SLEEP_PROGRESS_THRESHOLD_MS) {
+          return;
+        }
+        const status = response?.status ? `HTTP ${response.status}` : "network error";
+        const policy =
+          retryAfterMs == null
+            ? `jittered exponential backoff, capped at ${formatSleepDuration(CHATGPT_RATE_LIMIT_MAX_DELAY_MS)}`
+            : `server Retry-After, capped at ${formatSleepDuration(CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS)}`;
+        await emit?.({
+          type: "PROGRESS",
+          message: `ChatGPT rate limit/backoff on ${method} ${chatGptEndpointRoute(path)}: ${status}; waiting ${formatSleepDuration(delayMs)} before ${attempt + 1 === maxAttempts ? "final " : ""}retry ${attempt + 1}/${maxAttempts} (${policy})`,
+        });
+      },
+      request: async () => {
+        try {
+          const result = await fetchOnce(path, { method, body, parseJson });
+          if (
+            captureResult &&
+            capture &&
+            !(result.status === 429 || result.status === 502 || result.status === 503 || result.status === 504)
+          ) {
+            capture.captureHttp(`${method}-${path}`, result.json, {
+              status: result.status,
+              path,
+              method,
+            });
+          }
+          return result;
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          throw new Error(`apiFetch network error on ${method} ${path}: ${m}`);
+        }
+      },
+      shouldAbort: (result) => result.status === 401 || result.status === 403,
+    }).catch((err: unknown) => {
+      if (err instanceof TerminalHttpStatusError) {
+        throw new Error(`apiFetch got ${err.status} on ${method} ${path} (auth - not retryable)`);
+      }
+      if (err instanceof RetryExhaustedError) {
+        const cause = err.originalCause;
+        const status =
+          cause && typeof cause === "object" && "status" in cause && typeof cause.status === "number"
+            ? cause.status
+            : null;
+        throw new ChatGptRecoverableRetryExhaustedError(
+          status
+            ? `apiFetch got ${status} on ${method} ${path} after retry budget exhausted`
+            : `apiFetch retry budget exhausted on ${method} ${path}: ${err.message}`,
+          {
+            class: classifyRetryExhaustedStatus(status),
+            httpStatus: status,
+            networkPressure: makeChatGptNetworkPressureDiagnostic({
+              attempts: err.attempts,
+              cause,
+              method,
+              path,
+            }),
+          }
+        );
+      }
+      throw err;
+    });
   }
 
   return {
@@ -413,89 +512,14 @@ function createChatGptApi({
       path: string,
       { method = "GET", body }: { method?: string; body?: unknown } = {}
     ): Promise<ChatGptFetchResult> {
-      return retryHttp({
-        baseDelayMs: CHATGPT_RATE_LIMIT_BASE_DELAY_MS,
-        maxAttempts: CHATGPT_RATE_LIMIT_MAX_ATTEMPTS,
-        maxDelayMs: CHATGPT_RATE_LIMIT_MAX_DELAY_MS,
-        maxRetryAfterMs: CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS,
-        // Fast-open the source-pressure circuit on a bare 429 (no Retry-After):
-        // a few short attempts, then exhaust so the lane defers the rest as
-        // resumable DETAIL_GAP instead of burning the full 12-attempt budget
-        // (~23–70 min of backoff) against an already-throttled account.
-        shouldKeepRetrying: shouldKeepRetryingChatGptDetail,
-        onRetry: async ({ attempt, delayMs, maxAttempts, response, retryAfterMs }) => {
-          // retryHttp sleeps `delayMs` itself immediately after this callback,
-          // inside the same (serialized) detail attempt. Report the pressure so
-          // the lane reduces concurrency and surfaces a cooldown event, but mark
-          // it absorbed so the lane does not *also* delay the next launch by the
-          // same amount — that double-paid the backoff the request already slept.
-          await currentAdaptiveLaneRunContext()?.reportPressure({
-            absorbedByRequestWait: true,
-            delayMs,
-            kind: response?.status === 429 ? "rate_limited" : "transient_error",
-            ...(retryAfterMs == null ? {} : { retryAfterMs }),
-          });
-          if (delayMs < CHATGPT_LONG_SLEEP_PROGRESS_THRESHOLD_MS) {
-            return;
-          }
-          const status = response?.status ? `HTTP ${response.status}` : "network error";
-          const policy =
-            retryAfterMs == null
-              ? `jittered exponential backoff, capped at ${formatSleepDuration(CHATGPT_RATE_LIMIT_MAX_DELAY_MS)}`
-              : `server Retry-After, capped at ${formatSleepDuration(CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS)}`;
-          await emit?.({
-            type: "PROGRESS",
-            message: `ChatGPT rate limit/backoff on ${method} ${chatGptEndpointRoute(path)}: ${status}; waiting ${formatSleepDuration(delayMs)} before ${attempt + 1 === maxAttempts ? "final " : ""}retry ${attempt + 1}/${maxAttempts} (${policy})`,
-          });
-        },
-        request: async () => {
-          try {
-            const result = await fetchOnce(path, { method, body });
-            if (
-              capture &&
-              !(result.status === 429 || result.status === 502 || result.status === 503 || result.status === 504)
-            ) {
-              capture.captureHttp(`${method}-${path}`, result.json, {
-                status: result.status,
-                path,
-                method,
-              });
-            }
-            return result;
-          } catch (err) {
-            const m = err instanceof Error ? err.message : String(err);
-            throw new Error(`apiFetch network error on ${method} ${path}: ${m}`);
-          }
-        },
-        shouldAbort: (result) => result.status === 401 || result.status === 403,
-      }).catch((err: unknown) => {
-        if (err instanceof TerminalHttpStatusError) {
-          throw new Error(`apiFetch got ${err.status} on ${method} ${path} (auth - not retryable)`);
-        }
-        if (err instanceof RetryExhaustedError) {
-          const cause = err.originalCause;
-          const status =
-            cause && typeof cause === "object" && "status" in cause && typeof cause.status === "number"
-              ? cause.status
-              : null;
-          throw new ChatGptRecoverableRetryExhaustedError(
-            status
-              ? `apiFetch got ${status} on ${method} ${path} after retry budget exhausted`
-              : `apiFetch retry budget exhausted on ${method} ${path}: ${err.message}`,
-            {
-              class: classifyRetryExhaustedStatus(status),
-              httpStatus: status,
-              networkPressure: makeChatGptNetworkPressureDiagnostic({
-                attempts: err.attempts,
-                cause,
-                method,
-                path,
-              }),
-            }
-          );
-        }
-        throw err;
-      });
+      return fetchWithRetry(path, { method, body, parseJson: true, captureResult: true });
+    },
+    async fetchStatus(
+      path: string,
+      { method = "GET", body }: { method?: string; body?: unknown } = {}
+    ): Promise<Pick<ChatGptFetchResult, "headers" | "status">> {
+      const result = await fetchWithRetry(path, { method, body, parseJson: false, captureResult: false });
+      return { status: result.status, ...(result.headers ? { headers: result.headers } : {}) };
     },
   };
 }
@@ -1148,6 +1172,133 @@ export function resolveChatGptDetailLaneTuning(env: NodeJS.ProcessEnv = process.
   return { initialConcurrency, maxConcurrency, pauseMinMs, pauseMaxMs };
 }
 
+// ─── Cold-state preflight source-pressure classifier ────────────────────
+//
+// The cold-state A/B (PDPP_CHATGPT_DETAIL_MAX_CONCURRENCY_PROBE > 1) is the
+// owner-only test that decides whether ChatGPT detail concurrency may ever rise
+// above the frozen serial default. The 2026-06-02 evidence showed the throttle
+// is per-ACCOUNT and time-varying: the same serial lane saw ~38% bare-429 while
+// hot, then 0% hours later once cold. Raising concurrency is only safe from a
+// genuinely cold start; firing a faster posture into a hot account is exactly
+// the escalation the prior probe declined.
+//
+// This preflight closes that gap WITHOUT touching production. When the owner
+// opts into the A/B by raising probe concurrency, the connector first fires a
+// few SERIAL, content-free GET detail probes to classify the account. The
+// request necessarily targets a conversation id, but the probe never parses or
+// captures bodies and never emits bodies, titles, ids, or tokens. If any probe
+// 429s, the run is forced back to the frozen serial posture (1/1) for safety
+// and the faster posture is abandoned for this run. Only a clean preflight lets
+// the requested faster tuning through.
+//
+// Invariants:
+//   - Skipped entirely when maxConcurrency === 1 (production). No extra requests
+//     on a normal run; the OpenSpec serial constraint holds byte-for-byte.
+//   - Fails SAFE: any probe error or 429 → serial. It can only ever make a run
+//     MORE conservative, never less.
+//   - Reads only HTTP status. Emits no records and no sensitive strings.
+const CHATGPT_PREFLIGHT_PROBE_COUNT = 3;
+
+export interface ChatGptSourcePressureClassification {
+  attempted: number;
+  classification: "cold" | "pressured";
+  rateLimited: number;
+}
+
+/**
+ * Fire up to `probeCount` SERIAL, content-free detail probes and classify the
+ * account. Any 429 (or required-detail HTTP failure) marks the account
+ * `pressured`; an all-200 sweep marks it `cold`. Stops at the first 429 — one
+ * rate-limit signal is enough to force the conservative posture, and continuing
+ * would add load to an already-pressured bucket.
+ *
+ * Probes reuse the connector's own `api.fetchStatus` (so they ride the same
+ * browser transport, auth, and `retryHttp`/fast-open path the real lane uses).
+ * The browser fetch does not parse response JSON; only `status` is inspected.
+ */
+export async function classifyChatGptSourcePressure(
+  deps: Pick<StreamDeps, "api">,
+  probeIds: readonly string[],
+  probeCount = CHATGPT_PREFLIGHT_PROBE_COUNT
+): Promise<ChatGptSourcePressureClassification> {
+  if (!deps.api.fetchStatus) {
+    return { attempted: 0, classification: "pressured", rateLimited: 0 };
+  }
+  const ids = probeIds.slice(0, Math.max(0, probeCount));
+  let attempted = 0;
+  let rateLimited = 0;
+  for (const id of ids) {
+    attempted += 1;
+    let status: number;
+    try {
+      const res = await deps.api.fetchStatus(`/conversation/${encodeURIComponent(id)}`);
+      status = res.status;
+    } catch (err) {
+      // A retry-exhausted bare-429 (source-pressure circuit) or any other
+      // failure during preflight is a pressure signal — fail safe to serial.
+      if (err instanceof ChatGptRecoverableRetryExhaustedError) {
+        rateLimited += 1;
+      }
+      return { attempted, classification: "pressured", rateLimited };
+    }
+    if (status === 429 || status === 502 || status === 503 || status === 504) {
+      rateLimited += 1;
+      return { attempted, classification: "pressured", rateLimited };
+    }
+  }
+  return { attempted, classification: "cold", rateLimited };
+}
+
+/** The frozen serial posture a pressured preflight forces a run back to. */
+const CHATGPT_SERIAL_TUNING: ChatGptDetailLaneTuning = {
+  initialConcurrency: CONVO_DETAIL_INITIAL_CONCURRENCY,
+  maxConcurrency: CONVO_DETAIL_MAX_CONCURRENCY,
+  pauseMinMs: CONVO_DETAIL_PAUSE_MIN_MS,
+  pauseMaxMs: CONVO_DETAIL_PAUSE_MAX_MS,
+};
+
+/**
+ * Decide the effective detail-lane tuning for this run. When the requested
+ * tuning is the serial production default (maxConcurrency === 1) this is a
+ * no-op: it returns the requested tuning without firing any probe, so a normal
+ * run is byte-for-byte unchanged. When the owner has opted into a faster A/B
+ * posture (maxConcurrency > 1), it runs a content-free serial preflight and
+ * forces the run back to serial if the account is pressured.
+ */
+export async function applyChatGptColdStatePreflight(
+  deps: StreamDeps,
+  convosToSync: readonly ConversationListItem[],
+  requestedTuning: ChatGptDetailLaneTuning
+): Promise<ChatGptDetailLaneTuning> {
+  if (requestedTuning.maxConcurrency <= 1) {
+    return requestedTuning;
+  }
+  const probeIds = convosToSync.slice(0, CHATGPT_PREFLIGHT_PROBE_COUNT).map((c) => c.id);
+  if (!probeIds.length) {
+    return requestedTuning;
+  }
+  deps.emit({
+    type: "PROGRESS",
+    stream: "messages",
+    message: `ChatGPT cold-state preflight: probing source pressure with ${probeIds.length} serial detail request(s) before raising detail concurrency to ${requestedTuning.maxConcurrency}`,
+  });
+  const result = await classifyChatGptSourcePressure(deps, probeIds, CHATGPT_PREFLIGHT_PROBE_COUNT);
+  if (result.classification === "pressured") {
+    deps.emit({
+      type: "PROGRESS",
+      stream: "messages",
+      message: `ChatGPT cold-state preflight: source is pressured (rate_limited=${result.rateLimited}/${result.attempted}); holding detail lane at serial concurrency=1 for this run`,
+    });
+    return CHATGPT_SERIAL_TUNING;
+  }
+  deps.emit({
+    type: "PROGRESS",
+    stream: "messages",
+    message: `ChatGPT cold-state preflight: source is cold (${result.attempted}/${result.attempted} ok); allowing requested detail concurrency=${requestedTuning.maxConcurrency}`,
+  });
+  return requestedTuning;
+}
+
 interface ConversationDetailPacingOptions {
   random?: () => number;
   sleep?: (ms: number) => Promise<void> | void;
@@ -1329,7 +1480,13 @@ export async function runMessagesAndConversationsWithDetail(
   // Defaults are the frozen production values (1 / 1 / 1500ms / 3000ms). A
   // cold-state A/B probe may override them via PDPP_CHATGPT_DETAIL_*_PROBE env
   // vars; see resolveChatGptDetailLaneTuning. Tests may also inject `tuning`.
-  const tuning = pacing.tuning ?? resolveChatGptDetailLaneTuning();
+  const requestedTuning = pacing.tuning ?? resolveChatGptDetailLaneTuning();
+  // Cold-state preflight: only when the owner has opted into the faster A/B
+  // posture (maxConcurrency > 1). Production (maxConcurrency === 1) skips this
+  // entirely — no extra requests, frozen serial behavior preserved byte-for-byte.
+  // A pressured account forces the run back to serial so the faster posture is
+  // never fired into a hot bucket.
+  const tuning = await applyChatGptColdStatePreflight(deps, convosToSync, requestedTuning);
   const coverage: ConversationDetailCoverage = { gapKeys: [], hydratedKeys: [] };
   let emittedConversationDetailLaneStart = false;
   const lane = createAdaptiveLane<ChatGptFetchResult>({

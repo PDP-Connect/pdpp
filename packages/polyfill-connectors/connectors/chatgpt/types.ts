@@ -120,6 +120,10 @@ export interface ChatGptFetchResult {
 export interface ChatGptApi {
   auth: () => Promise<ChatGptAuth>;
   fetch: (path: string, opts?: { method?: string; body?: unknown }) => Promise<ChatGptFetchResult>;
+  fetchStatus?: (
+    path: string,
+    opts?: { method?: string; body?: unknown }
+  ) => Promise<Pick<ChatGptFetchResult, "headers" | "status">>;
 }
 
 // ─── Raw list-endpoint shapes (for memories / gizmos / shares) ──────────
