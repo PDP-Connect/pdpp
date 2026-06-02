@@ -701,11 +701,6 @@ CREATE TABLE IF NOT EXISTS grant_packages (
 CREATE INDEX IF NOT EXISTS idx_grant_packages_client_status
   ON grant_packages(client_id, status, created_at);
 
--- Lineage lookups: walk the linked add-source packages for one client by parent.
--- parent_package_id is cumulative-view/audit metadata, not grant authority.
-CREATE INDEX IF NOT EXISTS idx_grant_packages_parent
-  ON grant_packages(parent_package_id);
-
 CREATE TABLE IF NOT EXISTS grant_package_members (
   package_id    TEXT NOT NULL,
   grant_id      TEXT NOT NULL,
