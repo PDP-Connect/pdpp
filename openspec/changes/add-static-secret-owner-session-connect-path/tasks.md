@@ -82,6 +82,40 @@
   source changes.
 - [x] 7.4 `git diff --check`.
 
+## 8. Console add-connection surface (owner discoverability)
+
+Closes the design's first Open Question ("should the dashboard surface the
+static-secret path?") for the **creation entry point**. Lane:
+`ri-static-secret-owner-connect-live-closeout-v1`. No backend change — the
+console reads shipped manifests and routes Gmail/GitHub to an honest disposition.
+
+- [x] 8.1 Add a `static_secret_connect` catalog disposition
+  (`apps/console/src/app/dashboard/lib/connection-catalog.ts`): a network-class
+  connector in `STATIC_SECRET_CONNECTORS` routes here instead of
+  `api_network_unsupported`. No enrollment deep-link (Gmail/GitHub are not
+  device-collectors), so the picker's exactly-two-deep-links invariant holds.
+- [x] 8.2 Add `STATIC_SECRET_CONNECTORS` + `isStaticSecretConnector` +
+  `STATIC_SECRET_ADD_MODALITY` + `STATIC_SECRET_RUNBOOK_PATH`
+  (`apps/console/src/app/dashboard/lib/connection-modality.ts`). The connector
+  set is test-pinned to the keys of `STATIC_SECRET_CREDENTIAL_KIND_BY_CONNECTOR`
+  in `ref-static-secret-credentials.ts` (single source of truth, no drift).
+- [x] 8.3 Render the static-secret group in the add-connection picker
+  (`records-list-view.tsx`), inside the "Other connectors" disclosure:
+  runbook-pointed, live-proof-caveated, NOT one-click, NOT deep-linked. Scope the
+  `api_network` unsupported examples to the connectors that still have no owner
+  connect route (Gmail/GitHub removed from that bucket).
+- [x] 8.4 Add `docs/operator/static-secret-connection-runbook.md`: the owner
+  draft → capture → first-ingest sequence and the live-proof packet (no-secret
+  checks + what justifies the D.1/D.2 flip). Pinned to a committed doc by the
+  console test.
+- [x] 8.5 Tests: catalog disposition split, connector-set/backend pin, runbook
+  resolution, picker group render, deep-link invariant, api_network examples
+  exclude the static-secret connectors. `types:check` + `ultracite check` green.
+- [ ] 8.6 (Deferred to a later console lane) A "setup in progress" surface that
+  lists the owner's existing `draft` connections mid-flow (the design's Open
+  Question for *drafts*, distinct from this creation entry point). Out of scope:
+  drafts are invisible by construction and harmless; this is a separate slice.
+
 ## Notes / residual
 
 - Tasks 1.4 and 2.1 cover BOTH the SQLite and Postgres store arms. Postgres was
@@ -89,6 +123,10 @@
   database: the legacy narrow-CHECK bootstrap widens to admit `draft`, and the
   conformance test proves draft invisibility, explicit admission, activation,
   and no-op activation.
+- The console static-secret surface (§8) is owner *discoverability* only — it
+  does NOT flip the `api_network` intent branch or the catalog descriptor to
+  supported (still D.2, gated on D.1 live proof). It surfaces the real
+  owner-session path with an explicit live-proof caveat and a runbook pointer.
 
 ## Deferred (owner/live-gated — NOT in this lane)
 

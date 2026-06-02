@@ -21,6 +21,7 @@
 import {
   canonicalConnectorKey,
   enrollmentKeyForCanonicalKey,
+  isStaticSecretConnector,
   isSupportedBrowserCollectorConnector,
   isSupportedLocalCollectorConnector,
 } from "./connection-modality.ts";
@@ -52,6 +53,10 @@ export type CatalogModality = "local_collector" | "browser_bound" | "api_network
  *   proof path (deep-links to mint a code; the owner finishes the run locally).
  * - `browser_bound_runbook` — a browser-bound connector with no generated console
  *   path yet; visible and pointed at the runbook, but NOT deep-linked.
+ * - `static_secret_connect` — a network-class connector (Gmail, GitHub) whose
+ *   first connection is created via the owner-session static-secret draft path.
+ *   A real owner connect route exists, but it is not one-click in the console and
+ *   not live-proven, so it is surfaced with its runbook, NOT deep-linked.
  * - `api_network_unsupported` — no owner connect route; visible with its reason,
  *   not creatable here.
  * - `unknown_unsupported` — a manifest with no recognized binding; surfaced
@@ -62,6 +67,7 @@ export type CatalogDisposition =
   | "local_collector_unproven"
   | "browser_collector_manual"
   | "browser_bound_runbook"
+  | "static_secret_connect"
   | "api_network_unsupported"
   | "unknown_unsupported";
 
@@ -120,7 +126,12 @@ function dispositionFor(connectorKey: string, modality: CatalogModality): Catalo
     return isSupportedBrowserCollectorConnector(connectorKey) ? "browser_collector_manual" : "browser_bound_runbook";
   }
   if (modality === "api_network") {
-    return "api_network_unsupported";
+    // A network-class connector with a static-secret draft-create path (Gmail,
+    // GitHub) is no longer flatly unsupported: the owner can create it from the
+    // owner session. It is NOT deep-linked (no one-click console form yet, no
+    // live proof), so it gets its own disposition with a runbook pointer rather
+    // than the "appears only after first ingest" copy that is now false for it.
+    return isStaticSecretConnector(connectorKey) ? "static_secret_connect" : "api_network_unsupported";
   }
   return "unknown_unsupported";
 }
@@ -188,6 +199,15 @@ export function browserCollectorEntries(catalog: readonly ConnectorCatalogEntry[
 /** Browser-bound entries that have no generated console path yet (runbook only). */
 export function browserBoundRunbookEntries(catalog: readonly ConnectorCatalogEntry[]): ConnectorCatalogEntry[] {
   return catalog.filter((e) => e.disposition === "browser_bound_runbook");
+}
+
+/**
+ * Static-secret entries (Gmail, GitHub): a real owner-session draft-create path,
+ * surfaced with its runbook and live-proof caveat. Not deep-linked (no one-click
+ * console form yet), so — like the runbook groups — these carry no enrollmentKey.
+ */
+export function staticSecretConnectEntries(catalog: readonly ConnectorCatalogEntry[]): ConnectorCatalogEntry[] {
+  return catalog.filter((e) => e.disposition === "static_secret_connect");
 }
 
 /** API/network entries with no owner connect route, plus any unknown-binding entries. */
