@@ -21,7 +21,12 @@ import { Button } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { DashboardShell, ServerUnreachable } from "../../../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../../../lib/owner-token.ts";
-import { type GrantPackageChild, getGrantPackage } from "../../../lib/ref-client.ts";
+import {
+  type CumulativeClientAccess,
+  type GrantPackageChild,
+  getCumulativeClientAccess,
+  getGrantPackage,
+} from "../../../lib/ref-client.ts";
 import { revokePackageAction } from "./revoke-action.ts";
 
 export const dynamic = "force-dynamic";
@@ -65,6 +70,19 @@ export default async function GrantPackageDetailPage({
     notFound();
   }
 
+  // Reference-experimental cumulative per-client view across the lineage this
+  // package belongs to (linked by parent_package_id). Best-effort: a failure
+  // here must not break the package detail page.
+  let cumulative: CumulativeClientAccess | null = null;
+  try {
+    cumulative = await getCumulativeClientAccess(packageId);
+  } catch {
+    cumulative = null;
+  }
+  // Only render the lineage section when the package actually participates in a
+  // multi-package lineage; a lone package needs no cumulative pivot.
+  const hasLineage = cumulative !== null && (cumulative.package_count > 1 || pkg.parent_package_id !== null);
+
   const isActive = pkg.status === "active";
   const childCount = pkg.children.length;
   const subscriptionsHref = "/dashboard/event-subscriptions";
@@ -101,6 +119,19 @@ export default async function GrantPackageDetailPage({
           </dd>
           <dt>Client</dt>
           <dd className="break-all font-mono text-foreground">{pkg.client_id}</dd>
+          {pkg.parent_package_id ? (
+            <>
+              <dt>Extends</dt>
+              <dd className="break-all font-mono text-foreground">
+                <Link
+                  className="underline-offset-2 hover:underline"
+                  href={`/dashboard/grants/packages/${encodeURIComponent(pkg.parent_package_id)}`}
+                >
+                  {pkg.parent_package_id}
+                </Link>
+              </dd>
+            </>
+          ) : null}
           <dt>Subject</dt>
           <dd className="break-all font-mono text-foreground">{pkg.subject_id}</dd>
           <dt>Created</dt>
@@ -142,6 +173,43 @@ export default async function GrantPackageDetailPage({
           </DataList>
         )}
       </Section>
+
+      {hasLineage && cumulative ? (
+        <Section
+          description={`Reference-experimental. This client holds ${cumulative.active_child_count} active child grant(s) across ${cumulative.package_count} linked package(s) (incremental add-source lineage). Each child grant remains independently revocable; the link carries no source authority.`}
+          title="Cumulative client access"
+        >
+          <DataList>
+            {cumulative.packages.map((member) => (
+              <li key={member.package_id}>
+                <Link
+                  className="block px-3 py-2.5 transition-colors hover:bg-muted/40"
+                  href={`/dashboard/grants/packages/${encodeURIComponent(member.package_id)}`}
+                >
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <code className="pdpp-caption break-all font-medium font-mono text-foreground">
+                      {member.package_id}
+                      {member.package_id === pkg.package_id ? " (this package)" : ""}
+                      {member.package_id === cumulative.root_package_id ? " · root" : ""}
+                    </code>
+                    <div className="flex items-center gap-2">
+                      <StatusBadge status={member.status} />
+                      <span className="pdpp-caption text-muted-foreground">
+                        {member.member_count === 1 ? "1 child" : `${member.member_count} children`}
+                      </span>
+                    </div>
+                  </div>
+                  {member.parent_package_id ? (
+                    <div className="pdpp-caption mt-1 break-all text-muted-foreground">
+                      extends {member.parent_package_id}
+                    </div>
+                  ) : null}
+                </Link>
+              </li>
+            ))}
+          </DataList>
+        </Section>
+      ) : null}
 
       <Section title="Related">
         <p className="pdpp-caption text-muted-foreground">

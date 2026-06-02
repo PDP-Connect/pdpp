@@ -48,6 +48,14 @@ const PARTIAL_FAILURE_PARSE_RE =
   /parsed\.object\s*!==\s*"grant_package_revoke_result"[\s\S]*parsed\.status\s*!==\s*"partial_failure"/;
 const PARTIAL_FAILURE_THROW_RE = /throw new GrantPackageRevokePartialFailureError\(result\)/;
 const PARTIAL_FAILURE_COPY_RE = /Package remains active/;
+const CUMULATIVE_FETCH_RE = /getCumulativeClientAccess\(packageId\)/;
+const CUMULATIVE_SECTION_RE = /title="Cumulative client access"/;
+const CUMULATIVE_EXPERIMENTAL_RE = /Reference-experimental/;
+const CUMULATIVE_LINEAGE_LINK_RE = /\/dashboard\/grants\/packages\/\$\{encodeURIComponent\(member\.package_id\)\}/;
+const PARENT_LINK_RE = /\/dashboard\/grants\/packages\/\$\{encodeURIComponent\(pkg\.parent_package_id\)\}/;
+const CUMULATIVE_IFACE_RE = /export interface CumulativeClientAccess/;
+const CUMULATIVE_FN_RE = /export async function getCumulativeClientAccess/;
+const PARENT_FIELD_RE = /parent_package_id: string \| null/;
 
 test("package detail page wires its revoke form to the server action with a confirm_revoke field", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
@@ -86,6 +94,22 @@ test("revoke server action enforces confirm_revoke=yes before calling revokeGran
   const revokeIdx = src.search(REVOKE_CALL_RE);
   assert.ok(confirmIdx >= 0 && revokeIdx >= 0);
   assert.ok(confirmIdx < revokeIdx, "confirm_revoke guard must precede the revokeGrantPackage call in source order");
+});
+
+test("package detail page renders the reference-experimental cumulative per-client lineage view", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.match(src, CUMULATIVE_FETCH_RE, "page must fetch the cumulative client access view");
+  assert.match(src, CUMULATIVE_SECTION_RE, "page must render a cumulative client access section");
+  assert.match(src, CUMULATIVE_EXPERIMENTAL_RE, "cumulative view must carry the reference-experimental label");
+  assert.match(src, CUMULATIVE_LINEAGE_LINK_RE, "lineage members must link to their own package detail pages");
+  assert.match(src, PARENT_LINK_RE, "a linked package must surface a pivot to its parent package");
+});
+
+test("ref-client exposes a typed cumulative client access surface", async () => {
+  const refClientSrc = await readFile(REF_CLIENT_FILE, "utf8");
+  assert.match(refClientSrc, CUMULATIVE_IFACE_RE);
+  assert.match(refClientSrc, CUMULATIVE_FN_RE);
+  assert.match(refClientSrc, PARENT_FIELD_RE);
 });
 
 test("revoke flow preserves package partial-failure details for the operator", async () => {

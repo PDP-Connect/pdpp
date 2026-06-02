@@ -333,14 +333,22 @@ export async function bootstrapPostgresSchema() {
         client_id TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'active',
         package_json JSONB NOT NULL,
+        parent_package_id TEXT REFERENCES grant_packages(package_id) ON DELETE SET NULL,
         trace_id TEXT,
         scenario_id TEXT,
         created_at TEXT NOT NULL,
         approved_at TEXT NOT NULL,
         revoked_at TEXT
       );
+      -- Incremental add-source linkage; cumulative-view/audit metadata only,
+      -- carries no source/stream authority. Added via ALTER for DBs created
+      -- before the column existed.
+      ALTER TABLE grant_packages
+        ADD COLUMN IF NOT EXISTS parent_package_id TEXT;
       CREATE INDEX IF NOT EXISTS idx_pg_grant_packages_client_status
         ON grant_packages(client_id, status, created_at);
+      CREATE INDEX IF NOT EXISTS idx_pg_grant_packages_parent
+        ON grant_packages(parent_package_id);
 
       CREATE TABLE IF NOT EXISTS grant_package_members (
         package_id TEXT NOT NULL REFERENCES grant_packages(package_id) ON DELETE CASCADE,

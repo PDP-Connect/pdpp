@@ -1095,6 +1095,7 @@ export interface GrantPackageSummary {
   member_count: number;
   object: "grant_package_summary";
   package_id: string;
+  parent_package_id: string | null;
   revoked_at: string | null;
   status: string;
   subject_id: string;
@@ -1118,11 +1119,52 @@ export interface GrantPackageDetail {
   member_count: number;
   object: "grant_package";
   package_id: string;
+  parent_package_id: string | null;
   revoked_at: string | null;
   scenario_id: string | null;
   status: string;
   subject_id: string;
   trace_id: string | null;
+}
+
+/**
+ * Cumulative per-client view across one client's lineage of incremental
+ * add-source packages linked by `parent_package_id`. Reference-experimental.
+ * Lineage is grouping/audit metadata only — every child grant remains
+ * independently revocable.
+ */
+export interface CumulativeClientPackage {
+  approved_at: string | null;
+  created_at: string;
+  member_count: number;
+  object: "grant_package_lineage_member";
+  package_id: string;
+  parent_package_id: string | null;
+  revoked_at: string | null;
+  status: string;
+}
+
+export interface CumulativeClientChild {
+  added_at: string;
+  grant_id: string;
+  grant_status: string;
+  member_status: string;
+  object: "grant_package_child";
+  package_id: string;
+  revoked_at: string | null;
+  source: { kind?: string; id?: string; connector_id?: string; connection_id?: string | null } | null;
+}
+
+export interface CumulativeClientAccess {
+  active_child_count: number;
+  children: CumulativeClientChild[];
+  client_id: string;
+  experimental: string;
+  object: "grant_package_cumulative_view";
+  package_count: number;
+  packages: CumulativeClientPackage[];
+  root_package_id: string;
+  subject_id: string;
 }
 
 export interface GrantPackageRevokeResult {
@@ -1202,6 +1244,23 @@ export async function lookupGrantPackageIdForGrant(grantId: string): Promise<str
 export async function getGrantPackage(packageId: string): Promise<GrantPackageDetail | null> {
   try {
     return (await refFetch(`/_ref/grant-packages/${encodeURIComponent(packageId)}`)) as GrantPackageDetail;
+  } catch (err) {
+    if (err instanceof RefNotFoundError) {
+      return null;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Cumulative per-client view across the lineage a package belongs to.
+ * Returns null when the package id is unknown. Reference-experimental.
+ */
+export async function getCumulativeClientAccess(packageId: string): Promise<CumulativeClientAccess | null> {
+  try {
+    return (await refFetch(
+      `/_ref/grant-packages/${encodeURIComponent(packageId)}/cumulative`
+    )) as CumulativeClientAccess;
   } catch (err) {
     if (err instanceof RefNotFoundError) {
       return null;
