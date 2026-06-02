@@ -266,6 +266,62 @@ if (canonicalRecordFingerprint) {
     assert.equal(h1, h2, 'fetched_at delta must not change the accounts fingerprint');
   });
 
+  test('parity: usaa accounts excludes fetched_at but a REAL balance move is a boundary', () => {
+    const policy = findPolicy('usaa', 'accounts');
+    // Unlike chase/accounts (all balances null), USAA's account body carries
+    // a REAL point-in-time balance_cents. Excluding ONLY fetched_at is
+    // lossless: a no-op refresh collapses, a balance move does not.
+    const base = {
+      id: 'ACCT-CHK-0001',
+      type: 'checking',
+      name: 'USAA CLASSIC CHECKING',
+      last_four: '9241',
+      balance_cents: 123456,
+      available_balance_cents: null,
+      status: 'open',
+    };
+    expectParity({ ...base, fetched_at: '2026-06-01T10:00:00.000Z' }, policy.excludeKeys, 'usaa/accounts t1');
+    expectParity({ ...base, fetched_at: '2026-06-02T10:00:00.000Z' }, policy.excludeKeys, 'usaa/accounts t2');
+    const noop1 = scriptRecordFingerprint({ ...base, fetched_at: '2026-06-01T10:00:00.000Z' }, policy.excludeKeys);
+    const noop2 = scriptRecordFingerprint({ ...base, fetched_at: '2026-06-02T10:00:00.000Z' }, policy.excludeKeys);
+    assert.equal(noop1, noop2, 'fetched_at delta must not change the accounts fingerprint (no-op refresh collapses)');
+    const moved = scriptRecordFingerprint(
+      { ...base, balance_cents: 100000, fetched_at: '2026-06-02T10:00:00.000Z' },
+      policy.excludeKeys,
+    );
+    assert.notEqual(noop1, moved, 'a balance move MUST change the fingerprint — real financial state is never hidden');
+  });
+
+  test('parity: usaa credit_card_billing excludes fetched_at but REAL balance/rewards moves are boundaries', () => {
+    const policy = findPolicy('usaa', 'credit_card_billing');
+    const base = {
+      id: 'CC-0001',
+      account_id: 'CC-0001',
+      account_nickname: 'Everyday Card',
+      current_balance_cents: 120000,
+      available_credit_cents: 380000,
+      credit_limit_cents: 500000,
+      annual_percent_rate: '24.99%',
+      cash_advance_apr: '29.99%',
+      cash_rewards_cents: 1500,
+      billing_status: 'Minimum payment met',
+      minimum_payment_met: true,
+      card_holders: 'Member',
+    };
+    expectParity({ ...base, fetched_at: '2026-06-01T10:00:00.000Z' }, policy.excludeKeys, 'usaa/credit_card_billing t1');
+    expectParity({ ...base, fetched_at: '2026-06-02T10:00:00.000Z' }, policy.excludeKeys, 'usaa/credit_card_billing t2');
+    const noop1 = scriptRecordFingerprint({ ...base, fetched_at: '2026-06-01T10:00:00.000Z' }, policy.excludeKeys);
+    const noop2 = scriptRecordFingerprint({ ...base, fetched_at: '2026-06-02T10:00:00.000Z' }, policy.excludeKeys);
+    assert.equal(noop1, noop2, 'fetched_at delta must not change the billing fingerprint (no-op refresh collapses)');
+    // Any of the real financial fields moving is a fingerprint boundary.
+    const balMoved = scriptRecordFingerprint({ ...base, current_balance_cents: 150000 }, policy.excludeKeys);
+    const rewardsMoved = scriptRecordFingerprint({ ...base, cash_rewards_cents: 2250 }, policy.excludeKeys);
+    const aprMoved = scriptRecordFingerprint({ ...base, annual_percent_rate: '26.99%' }, policy.excludeKeys);
+    assert.notEqual(noop1, balMoved, 'a current_balance move MUST change the fingerprint');
+    assert.notEqual(noop1, rewardsMoved, 'a cash_rewards move MUST change the fingerprint');
+    assert.notEqual(noop1, aprMoved, 'an APR move MUST change the fingerprint');
+  });
+
   test('parity: nested objects with mixed key order', () => {
     const a = {
       id: 'x',
@@ -531,6 +587,8 @@ if (canonicalRecordFingerprint) {
       'gmail/labels',
       'usaa/statements',
       'chase/accounts',
+      'usaa/accounts',
+      'usaa/credit_card_billing',
       // exact stable-JSON identity family (codex)
       'codex/messages',
       'codex/function_calls',

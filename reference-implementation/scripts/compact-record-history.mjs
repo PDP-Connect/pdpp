@@ -25,6 +25,10 @@
  *        - ynab  / budgets     (excludes `last_month`,`last_modified_on`)
  *        - usaa  / statements  (excludes `fetched_at`)
  *        - chase / accounts    (excludes `fetched_at`)
+ *        - usaa  / accounts    (excludes `fetched_at`; real balance_cents
+ *                               is preserved as a fingerprint boundary)
+ *        - usaa  / credit_card_billing (excludes `fetched_at`; real
+ *                               balances/rewards/APRs preserved as boundaries)
  *
  *   2. "Exact stable-JSON identity" — local-device connectors
  *      (codex, claude_code) whose record bodies are derived from
@@ -183,6 +187,41 @@ export const COMPACTION_POLICIES = [
     excludeKeys: ['fetched_at'],
     connectorSource:
       'packages/polyfill-connectors/connectors/chase/index.ts:emitAccountsStream → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
+  },
+  {
+    // `accounts` (USAA) carried a run-clock `fetched_at` alongside a REAL
+    // point-in-time `balance_cents` scraped from the dashboard. Unlike
+    // chase/accounts (all balances null), USAA's balance is real and
+    // volatile — but it is NOT excluded. Excluding ONLY `fetched_at` is
+    // lossless: a balance move (or name/status change) is a fingerprint
+    // boundary that is always retained, so every distinct balance value
+    // survives as a version boundary; only a run whose body modulo
+    // `fetched_at` is byte-identical to the prior version (a true no-op
+    // refresh) collapses. The connector now gates emit through a
+    // per-account fingerprint cursor with excludeFromFingerprint
+    // ["fetched_at"]; this policy mirrors that exclusion one-for-one.
+    connectorIds: ['usaa', 'https://registry.pdpp.org/connectors/usaa'],
+    stream: 'accounts',
+    excludeKeys: ['fetched_at'],
+    connectorSource:
+      'packages/polyfill-connectors/connectors/usaa/index.ts:emitAccountsStream → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
+  },
+  {
+    // `credit_card_billing` carried a run-clock `fetched_at` alongside REAL
+    // point-in-time financial state (current_balance_cents,
+    // available_credit_cents, credit_limit_cents, cash_rewards_cents, APRs,
+    // billing_status). None of those real fields are excluded. Excluding
+    // ONLY `fetched_at` is lossless: any real-field move is a fingerprint
+    // boundary that is always retained; only a true no-op refresh (body
+    // byte-identical modulo `fetched_at`) collapses. The connector now
+    // gates emit through a per-card fingerprint cursor with
+    // excludeFromFingerprint ["fetched_at"]; this policy mirrors that
+    // exclusion one-for-one.
+    connectorIds: ['usaa', 'https://registry.pdpp.org/connectors/usaa'],
+    stream: 'credit_card_billing',
+    excludeKeys: ['fetched_at'],
+    connectorSource:
+      'packages/polyfill-connectors/connectors/usaa/index.ts:runCreditCardBillingStream → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
   },
   {
     // `/budgets` is a full-collection refetch with no server_knowledge

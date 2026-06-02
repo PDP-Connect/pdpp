@@ -198,20 +198,72 @@ export function buildIndexRows(docs: readonly DocRow[], accounts: readonly Dashb
  *  STATE checkpoint. Record `fetched_at` threads the run-level
  *  emittedAt so every record in a run shares one timestamp; STATE
  *  cursor uses `nowIso()` at emit time since it's a heartbeat, not a
- *  record field. */
+ *  record field.
+ *
+ *  Gate on a per-account fingerprint that excludes the run-clock
+ *  `fetched_at`. The account body carries a real point-in-time
+ *  `balance_cents` (and `available_balance_cents`, currently null),
+ *  so a balance move IS a fingerprint boundary and re-emits — only a
+ *  run where the entire body modulo `fetched_at` is byte-identical to
+ *  the prior version (a true no-op refresh: same balance, same name,
+ *  same status) is suppressed. Without this gate every run appended a
+ *  fresh version of every account differing only in `fetched_at`. When
+ *  no cursor is supplied (legacy callers/tests) the record always
+ *  emits and no STATE is written. */
 export async function emitAccountsStream(
   deps: EmitDeps,
   accounts: readonly DashboardAccount[],
-  emittedAt: string
+  emittedAt: string,
+  fingerprintCursor?: FingerprintCursor
 ): Promise<void> {
   for (const a of accounts) {
-    await deps.emitRecord("accounts", buildAccountRecord(a, emittedAt));
+    const rec = buildAccountRecord(a, emittedAt);
+    if (!fingerprintCursor || fingerprintCursor.shouldEmit(rec)) {
+      await deps.emitRecord("accounts", rec);
+    }
+  }
+  if (!fingerprintCursor) {
+    await deps.emit({
+      type: "STATE",
+      stream: "accounts",
+      cursor: { fetched_at: nowIso() },
+    });
+    return;
+  }
+  // Accounts enumeration is a full dashboard scan: prune fingerprints for
+  // accounts no longer present so a re-added account re-emits.
+  fingerprintCursor.pruneStale();
+  const cursor: Record<string, unknown> = { fetched_at: nowIso() };
+  if (fingerprintCursor.size() > 0) {
+    cursor.fingerprints = fingerprintCursor.toState();
   }
   await deps.emit({
     type: "STATE",
     stream: "accounts",
-    cursor: { fetched_at: nowIso() },
+    cursor,
   });
+}
+
+/**
+ * Parse the prior `accounts` STATE cursor's `fingerprints` map. Keyed by
+ * account `id` (the dashboard account id, or a hash of the raw text when
+ * USAA does not expose one). Legacy cursors (only `{ fetched_at }`) decode
+ * to an empty map, so the first post-deploy run rebuilds the map and
+ * re-emits every account exactly once.
+ */
+export function readPriorAccountFingerprints(state: Record<string, unknown>): Map<string, string> {
+  const streamState = (state.accounts ?? {}) as Record<string, unknown>;
+  const raw = streamState.fingerprints;
+  const out = new Map<string, string>();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return out;
+  }
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > 0) {
+      out.set(id, value);
+    }
+  }
+  return out;
 }
 
 /** Emit a SKIP_RESULT for every requested-but-deferred stream. Keeps
@@ -1563,10 +1615,33 @@ function scrapeCreditCardBilling(page: Page): Promise<BillingKv> {
   });
 }
 
+/**
+ * Parse the prior `credit_card_billing` STATE cursor's `fingerprints`
+ * map. Keyed by the billing record `id` (the account id, last-four, or a
+ * hash of the raw text). Legacy cursors (only `{ fetched_at }`) decode to
+ * an empty map, so the first post-deploy run rebuilds the map and re-emits
+ * every card exactly once.
+ */
+export function readPriorCreditCardBillingFingerprints(state: Record<string, unknown>): Map<string, string> {
+  const streamState = (state.credit_card_billing ?? {}) as Record<string, unknown>;
+  const raw = streamState.fingerprints;
+  const out = new Map<string, string>();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return out;
+  }
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > 0) {
+      out.set(id, value);
+    }
+  }
+  return out;
+}
+
 async function runCreditCardBillingStream(
   deps: EmitDeps,
   page: Page,
-  accounts: readonly DashboardAccount[]
+  accounts: readonly DashboardAccount[],
+  fingerprintCursor?: FingerprintCursor
 ): Promise<void> {
   try {
     await deps.emit({
@@ -1584,12 +1659,39 @@ async function runCreditCardBillingStream(
         .catch((): undefined => undefined);
       await politeDelay(CC_SETTLE_DELAY_MS);
       const billing = await scrapeCreditCardBilling(page);
-      await deps.emitRecord("credit_card_billing", buildCreditCardBillingRecord(a, billing, nowIso()));
+      // Gate on a per-card fingerprint that excludes the run-clock
+      // `fetched_at`. The body carries real point-in-time financial state
+      // (current_balance_cents, available_credit_cents, cash_rewards_cents,
+      // APRs, billing_status), so any of those moving IS a fingerprint
+      // boundary and re-emits — only a run whose entire body modulo
+      // `fetched_at` is byte-identical to the prior version is suppressed.
+      // Without this gate every run appended a fresh version of every card
+      // differing only in `fetched_at`. When no cursor is supplied
+      // (legacy callers/tests) the record always emits.
+      const rec = buildCreditCardBillingRecord(a, billing, nowIso());
+      if (!fingerprintCursor || fingerprintCursor.shouldEmit(rec)) {
+        await deps.emitRecord("credit_card_billing", rec);
+      }
+    }
+    if (!fingerprintCursor) {
+      await deps.emit({
+        type: "STATE",
+        stream: "credit_card_billing",
+        cursor: { fetched_at: nowIso() },
+      });
+      return;
+    }
+    // Credit-card billing is a full scan of the credit-card accounts: prune
+    // fingerprints for cards no longer present so a re-added card re-emits.
+    fingerprintCursor.pruneStale();
+    const cursor: Record<string, unknown> = { fetched_at: nowIso() };
+    if (fingerprintCursor.size() > 0) {
+      cursor.fingerprints = fingerprintCursor.toState();
     }
     await deps.emit({
       type: "STATE",
       stream: "credit_card_billing",
-      cursor: { fetched_at: nowIso() },
+      cursor,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -1647,7 +1749,15 @@ if (isMainModule(import.meta.url)) {
       await progress(`Found ${accounts.length} account(s)`);
 
       if (requested.has("accounts")) {
-        await emitAccountsStream(deps, accounts, emittedAt);
+        // Per-account fingerprint cursor (excludes the run-clock
+        // `fetched_at`) so an unchanged account stops appending a new
+        // version every run. A real balance/name/status move is a
+        // fingerprint boundary and still re-emits.
+        const accountsFingerprintCursor = openFingerprintCursor(state.accounts, {
+          excludeFromFingerprint: ["fetched_at"],
+          priorFingerprints: readPriorAccountFingerprints(state),
+        });
+        await emitAccountsStream(deps, accounts, emittedAt, accountsFingerprintCursor);
       }
 
       // Signal raised by the transactions loop when a page redirects to
@@ -1680,8 +1790,16 @@ if (isMainModule(import.meta.url)) {
       }
 
       // CREDIT_CARD_BILLING — one record per credit-card account.
+      // Per-card fingerprint cursor (excludes the run-clock `fetched_at`)
+      // so an unchanged card stops appending a new version every run. A
+      // real balance/rewards/APR/status move is a fingerprint boundary and
+      // still re-emits.
       if (requested.has("credit_card_billing") && !streamState.sessionDeadMidRun) {
-        await runCreditCardBillingStream(deps, page, accounts);
+        const billingFingerprintCursor = openFingerprintCursor(state.credit_card_billing, {
+          excludeFromFingerprint: ["fetched_at"],
+          priorFingerprints: readPriorCreditCardBillingFingerprints(state),
+        });
+        await runCreditCardBillingStream(deps, page, accounts, billingFingerprintCursor);
       }
 
       await emitDeferredStreams(emit, requested);

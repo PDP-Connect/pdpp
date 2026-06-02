@@ -73,6 +73,10 @@ test('COMPACTION_POLICIES exposes the registered policies (short-name canonical 
     ['gmail', 'labels'],
     ['usaa', 'statements'],
     ['chase', 'accounts'],
+    // usaa/accounts + usaa/credit_card_billing carry REAL balances; only
+    // the run-clock `fetched_at` is excluded (incidental fix added 2026-06-02)
+    ['usaa', 'accounts'],
+    ['usaa', 'credit_card_billing'],
     ['ynab', 'budgets'],
     // exact stable-JSON identity family (codex)
     ['codex', 'messages'],
