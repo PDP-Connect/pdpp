@@ -3,7 +3,7 @@
 Status: captured
 Owner: reference implementation owner
 Created: 2026-05-19
-Updated: 2026-06-01
+Updated: 2026-06-02
 Related: spec-core.md, spec-collection-profile.md, spec-architecture.md, spec-dti-alignment.md, docs/personas/pdpp-reviewer-onboarding.md, openspec/changes/define-connector-instances, openspec/changes/design-local-device-exporter-collection, openspec/changes/publish-pdpp-local-collector, openspec/changes/complete-local-agent-collectors, design-notes/local-collector-durable-work-substrate-2026-05-19.md
 
 ## Question
@@ -193,3 +193,4 @@ Promote this note into OpenSpec before implementing any tranche that changes:
 - 2026-06-01: Human retest requests for public-reference fixes should be gated on live deployment evidence, not repository state. Before sending Simon/Claude/owner testers back through a flow, check the served `PDPP-Reference-Revision` or equivalent runtime signal and run one focused live probe against the fixed surface. A pushed commit or passing CI image build is not enough when the public instance may still be serving an older image.
 - 2026-06-01: Local-collector identity migrations need an operator recovery primitive as part of the construction, not post-hoc SQLite surgery. The May 28 `claude_code`/`claude-code` canonical-key transition left in-flight batches dead-lettered under the old raw equality guard; future key/storage migrations should ship with dry-run requeue tooling, structured safe `last_error` detail, and host-local recovery guidance for remote devices.
 - 2026-06-01: Durable outbox leases must be sized and renewed for the whole drain shape, not just the average request. Batch claiming plus slow ingest responses can expire later rows before acknowledgment; the correct construction is a lease budget that exceeds worst-case per-row RTT, renewal before send, non-fatal stale-lease handling, and a throughput setting that stays efficient under recovery load.
+- 2026-06-02: Long RI-owner runs should enter low-burn polling mode after dispatching durable Claude worker lanes. The owner should launch bounded workstreams with report paths, update `tmp/workstreams/ri-owner-current-state.md`, then sleep/poll wrapper status, protected live runs, and `pnpm workstreams:status` instead of continuously reasoning in the foreground. Resume active review only when a worker reports, a live run changes state, or a repository-integrity risk appears.
