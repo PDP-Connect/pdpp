@@ -207,21 +207,31 @@ export function configuredBrowserChannel(env: Record<string, string | undefined>
  *
  * Root cause (verified against patchright-core 1.59.4 internals):
  * Patchright's `CRPage` constructor eagerly calls
- * `networkManager.setRequestInterception(true)` so its stealth Fetch-domain
- * hooks are always active (`server/chromium/crPage.js`). Stock Playwright
- * does NOT — it defers to a conditional `updateRequestInterception()`.
- * Patchright's `setRequestInterception` ends with a patchright-only
+ * `this._networkManager.setRequestInterception(true)` so its stealth
+ * Fetch-domain hooks are always active (`server/chromium/crPage.js` line 80).
+ * Stock Playwright does NOT — it defers to a conditional
+ * `updateRequestInterception()`. Critically, that constructor call is FLOATED:
+ * no `await`, no `.catch`. Patchright's `setRequestInterception` ends with a
+ * patchright-only
  * `_forEachSession(info => info.session.send("Network.setCacheDisabled", …))`
  * (`server/chromium/crNetworkManager.js`). When `connectOverCDP` auto-attaches
- * (`Target.setAutoAttach`) to every existing target, this fires
- * `Network.setCacheDisabled` across all of them — including the short-lived
- * `about:blank` target n.eko opens via `/json/new?about:blank` and immediately
- * tears down via `/json/close`. If that target's session disposes while the
- * send is in flight, the in-flight callback is rejected with
- * `Internal server error, session closed.` (`crConnection.js` `dispose()`).
- * For the MAIN-frame session `_forEachSession` has no `.catch` guard
- * (non-main sessions swallow `isSessionClosedError`), so the rejection escapes
- * page initialization and rejects the whole `connectOverCDP` call.
+ * (`Target.setAutoAttach`) to every existing target, `_onAttachedToTarget`
+ * builds a `CRPage` per target — including the short-lived `about:blank` target
+ * n.eko opens via `/json/new?about:blank` and immediately tears down via
+ * `/json/close`. If that target's session disposes while the send is in flight,
+ * the in-flight callback is rejected with `Internal server error, session
+ * closed.` (`crConnection.js` `dispose()`). The MAIN-frame branch of
+ * `_forEachSession` has no `.catch` guard (only non-main sessions swallow
+ * `isSessionClosedError`).
+ *
+ * Because the offending `setRequestInterception(true)` is floated and
+ * `connectOverCDP` only awaits `_waitForAllPagesToBeInitialized()` (NOT the
+ * interception promise), `connectOverCDP` RESOLVES successfully and the
+ * rejection escapes the entire connect promise chain as a Node UNHANDLED
+ * REJECTION (`node:internal/process/promises`), terminating the process a tick
+ * or two after attach. This is why a `try/catch` around `connectOverCDP` (v1)
+ * never observed it. The catch boundary now lives in
+ * `runCdpAttemptWithRaceGuard`, which intercepts the unhandled rejection.
  *
  * The condition is inherently transient: the offending target is on its way
  * out. A bounded retry a moment later — once n.eko's transient target has
@@ -253,37 +263,168 @@ export function isCdpAttachSessionRaceError(err: unknown): boolean {
 
 const REMOTE_CDP_ATTACH_MAX_ATTEMPTS = 4;
 const REMOTE_CDP_ATTACH_RETRY_DELAY_MS = 500;
+// After `connectOverCDP` resolves, the floated `setRequestInterception(true)`
+// rejection (see `runCdpAttemptWithRaceGuard`) lands on a LATER macrotask tick.
+// We hold the scoped unhandled-rejection guard open for this settle window so a
+// just-after race rejection still converts the attempt into a retry instead of
+// crashing the process. 250ms comfortably covers the observed ~tens-of-ms gap
+// without meaningfully slowing a clean attach.
+const REMOTE_CDP_ATTACH_SETTLE_MS = 250;
+
+/**
+ * Minimal port of the `process` unhandled-rejection surface the attempt guard
+ * needs. Injected so the guard can be unit-tested without touching the real
+ * process listeners (the test drives a fake emitter directly).
+ */
+export interface UnhandledRejectionHost {
+  off(event: "unhandledRejection", listener: (reason: unknown) => void): void;
+  on(event: "unhandledRejection", listener: (reason: unknown) => void): void;
+}
+
+/**
+ * Run ONE remote-CDP attach attempt with a scoped `unhandledRejection` guard.
+ *
+ * Why this exists (root cause v2): the production failure is NOT the
+ * `connectOverCDP` promise rejecting. `connectOverCDP` RESOLVES — it returns a
+ * live `Browser`. Patchright's `CRPage` constructor then fires
+ * `this._networkManager.setRequestInterception(true)` with NO `await` and NO
+ * `.catch` (`server/chromium/crPage.js`). That floated promise runs
+ * `_forEachSession(… "Network.setCacheDisabled" …)`, whose MAIN-frame branch has
+ * no session-closed guard. When n.eko's transient `about:blank` target disposes
+ * mid-send, the floated promise rejects, and because nobody is awaiting it the
+ * rejection escapes the entire `connectOverCDP` promise chain as a Node
+ * UNHANDLED REJECTION (`node:internal/process/promises`), terminating the
+ * process. A `try/catch` around `connectOverCDP` (v1) can never see it.
+ *
+ * The fix installs a temporary `process.on("unhandledRejection")` listener for
+ * the duration of the attempt PLUS a short settle window after `connect`
+ * resolves (the rejection lands on a later tick). If the unhandled rejection
+ * matches the transient race signature, we convert it into a retryable
+ * rejection of this attempt; the caller's bounded retry then re-attaches once
+ * n.eko's transient target is gone.
+ *
+ * Safety rails:
+ *   - The listener is ALWAYS removed when the attempt settles (success,
+ *     retryable race, or fail-fast), via the `finally` block. We never leave a
+ *     global listener installed across attempts.
+ *   - Only the narrow race signature is consumed. Any OTHER unhandled rejection
+ *     is re-thrown synchronously from the listener after removing ourselves, so
+ *     Node's default crash-on-unhandled-rejection behavior is preserved for
+ *     unrelated bugs. We do not become a process-wide rejection sink.
+ *   - If the race rejection arrives AFTER `connect` already returned a live
+ *     browser, that browser is orphaned; the injected `disconnect` is invoked
+ *     best-effort before the retry so we don't leak a CDP client.
+ *
+ * `host`, `setTimeoutFn`, and `clearTimeoutFn` are injected for tests.
+ */
+export async function runCdpAttemptWithRaceGuard<TBrowser>({
+  connect,
+  disconnect,
+  settleMs = REMOTE_CDP_ATTACH_SETTLE_MS,
+  host = process,
+  setTimeoutFn = setTimeout,
+  clearTimeoutFn = clearTimeout,
+}: {
+  connect: () => Promise<TBrowser>;
+  disconnect?: (browser: TBrowser) => Promise<void> | void;
+  settleMs?: number;
+  host?: UnhandledRejectionHost;
+  setTimeoutFn?: typeof setTimeout;
+  clearTimeoutFn?: typeof clearTimeout;
+}): Promise<TBrowser> {
+  let raceReason: unknown;
+  let settleTimer: ReturnType<typeof setTimeout> | undefined;
+  // Resolves as soon as a race rejection is observed, so we can abandon the
+  // settle window early and retry without waiting out the full delay.
+  let signalRace: (() => void) | undefined;
+  const raceObserved = new Promise<void>((resolve) => {
+    signalRace = resolve;
+  });
+
+  const onUnhandledRejection = (reason: unknown): void => {
+    if (isCdpAttachSessionRaceError(reason)) {
+      raceReason = reason;
+      signalRace?.();
+      return;
+    }
+    // Not our race. Stop intercepting and re-throw so Node's default
+    // unhandled-rejection handling (process crash) still applies to unrelated
+    // failures. We must never silently swallow another subsystem's rejection.
+    host.off("unhandledRejection", onUnhandledRejection);
+    throw reason;
+  };
+
+  host.on("unhandledRejection", onUnhandledRejection);
+  try {
+    const browser = await connect();
+    // `connect` resolved, but the floated `setRequestInterception` rejection
+    // (if any) lands on a LATER tick. Hold the guard open for a brief settle
+    // window; bail early the moment a race rejection is observed.
+    await Promise.race([
+      raceObserved,
+      new Promise<void>((resolve) => {
+        settleTimer = setTimeoutFn(resolve, settleMs);
+      }),
+    ]);
+    if (raceReason !== undefined) {
+      // The just-connected browser is orphaned by the race; disconnect it
+      // best-effort so we don't leak a CDP client before the caller retries.
+      if (disconnect) {
+        try {
+          await disconnect(browser);
+        } catch {
+          /* best-effort; the remote browser owns its own lifecycle */
+        }
+      }
+      throw raceReason;
+    }
+    return browser;
+  } finally {
+    if (settleTimer !== undefined) {
+      clearTimeoutFn(settleTimer);
+    }
+    host.off("unhandledRejection", onUnhandledRejection);
+  }
+}
 
 /**
  * Attach to a remote Chromium with a bounded retry around the transient
  * `connectOverCDP` session-closed race (see `isCdpAttachSessionRaceError`).
  *
- * Only the race error is retried; every other failure (auth, unreachable
- * endpoint, real browser crash) is rethrown immediately so we never mask a
- * genuine attach failure behind a retry budget.
+ * Each attempt runs inside `runCdpAttemptWithRaceGuard` so the failure can be
+ * caught whether it surfaces as a rejected `connect` promise OR as a Node
+ * unhandled rejection from patchright's floated `setRequestInterception(true)`
+ * (the v2 root cause — v1 only handled the former). Only the race error is
+ * retried; every other failure (auth, unreachable endpoint, real browser crash)
+ * is rethrown immediately so we never mask a genuine attach failure behind a
+ * retry budget.
  *
- * `connect` and `sleep` are injected so the retry policy can be unit-tested
- * without a live browser.
+ * `connect`, `disconnect`, `sleep`, and `runAttempt` are injected so the retry
+ * policy can be unit-tested without a live browser.
  */
 export async function connectOverCdpWithRetry<TBrowser>({
   connect,
+  disconnect,
   profileName,
   redactedUrl,
   maxAttempts = REMOTE_CDP_ATTACH_MAX_ATTEMPTS,
   retryDelayMs = REMOTE_CDP_ATTACH_RETRY_DELAY_MS,
   sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+  runAttempt = runCdpAttemptWithRaceGuard,
 }: {
   connect: () => Promise<TBrowser>;
+  disconnect?: (browser: TBrowser) => Promise<void> | void;
   profileName: string;
   redactedUrl: string;
   maxAttempts?: number;
   retryDelayMs?: number;
   sleep?: (ms: number) => Promise<void>;
+  runAttempt?: typeof runCdpAttemptWithRaceGuard;
 }): Promise<TBrowser> {
   let lastErr: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      return await connect();
+      return await runAttempt<TBrowser>({ connect, ...(disconnect ? { disconnect } : {}) });
     } catch (err) {
       lastErr = err;
       if (!isCdpAttachSessionRaceError(err) || attempt === maxAttempts) {
@@ -320,7 +461,11 @@ export async function connectOverCdpWithRetry<TBrowser>({
  *
  * The attach itself is wrapped in `connectOverCdpWithRetry` to ride out the
  * transient session-closed race n.eko's transient targets trigger during
- * Patchright's auto-attach. See `isCdpAttachSessionRaceError`.
+ * Patchright's auto-attach. That race does NOT reject `connectOverCDP`; it
+ * escapes as a Node unhandled rejection from patchright's floated
+ * `setRequestInterception(true)`, so each attempt runs under a scoped
+ * `unhandledRejection` guard. See `runCdpAttemptWithRaceGuard` and
+ * `isCdpAttachSessionRaceError`.
  */
 async function acquireRemoteCdpBrowser(cdpUrl: string, profileName: string): Promise<IsolatedBrowser> {
   // @ts-expect-error — patchright.chromium is runtime-identical to playwright.chromium
@@ -330,6 +475,11 @@ async function acquireRemoteCdpBrowser(cdpUrl: string, profileName: string): Pro
   process.stderr.write(`[browser-launch] remote CDP attach start profile=${profileName} url=${redactedUrl}\n`);
   const browser = await connectOverCdpWithRetry<Browser>({
     connect: () => localChromium.connectOverCDP(cdpUrl),
+    // If the floated `setRequestInterception` race rejects AFTER this attempt's
+    // `connectOverCDP` already returned a live Browser, that Browser is orphaned
+    // by the retry; disconnect it so we don't leak a CDP client. `.close()` on a
+    // CDP-attached client disconnects without killing the n.eko-owned browser.
+    disconnect: (b) => b.close().catch(() => undefined),
     profileName,
     redactedUrl,
   });

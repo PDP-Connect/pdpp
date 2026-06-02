@@ -13,6 +13,8 @@ import {
   HeadedBrowserUnavailableError,
   isCdpAttachSessionRaceError,
   resolvePageTargetWsUrl,
+  runCdpAttemptWithRaceGuard,
+  type UnhandledRejectionHost,
 } from "./browser-launch.ts";
 
 const ENV_VARS = ["PDPP_FORCE_CONTAINER", "PDPP_ALLOW_HEADED_CONTAINER_BROWSER"] as const;
@@ -385,6 +387,12 @@ test("isCdpAttachSessionRaceError does NOT match unrelated protocol errors (fail
   assert.equal(isCdpAttachSessionRaceError({}), false);
 });
 
+// The retry-LOOP tests inject a trivial `runAttempt` that just calls `connect`
+// directly. They exercise the loop's backoff/budget/fail-fast policy, NOT the
+// per-attempt unhandled-rejection guard (which has its own block below). This
+// keeps them fast (no 250ms settle window) and isolated to one concern.
+const directAttempt: typeof runCdpAttemptWithRaceGuard = ({ connect }) => connect();
+
 test("connectOverCdpWithRetry returns immediately on first-attempt success (no retry)", async () => {
   let attempts = 0;
   let slept = 0;
@@ -395,6 +403,7 @@ test("connectOverCdpWithRetry returns immediately on first-attempt success (no r
     },
     profileName: "amazon",
     redactedUrl: "http://neko/",
+    runAttempt: directAttempt,
     sleep: () => {
       slept += 1;
       return Promise.resolve();
@@ -419,6 +428,7 @@ test("connectOverCdpWithRetry rides out a transient session-closed race then suc
     profileName: "amazon",
     redactedUrl: "http://neko/",
     retryDelayMs: 7,
+    runAttempt: directAttempt,
     sleep: (ms) => {
       delays.push(ms);
       return Promise.resolve();
@@ -442,6 +452,7 @@ test("connectOverCdpWithRetry rethrows the race error after exhausting the attem
         profileName: "amazon",
         redactedUrl: "http://neko/",
         maxAttempts: 3,
+        runAttempt: directAttempt,
         sleep: () => {
           slept += 1;
           return Promise.resolve();
@@ -469,6 +480,7 @@ test("connectOverCdpWithRetry fails fast on a non-race error (no retry, no sleep
         },
         profileName: "amazon",
         redactedUrl: "http://neko/",
+        runAttempt: directAttempt,
         sleep: () => {
           slept += 1;
           return Promise.resolve();
@@ -478,4 +490,180 @@ test("connectOverCdpWithRetry fails fast on a non-race error (no retry, no sleep
   );
   assert.equal(attempts, 1, "non-race error is not retried");
   assert.equal(slept, 0, "no sleep on a fail-fast error");
+});
+
+// ─── v2: scoped unhandled-rejection guard around each attach attempt ────
+//
+// The v1 fix wrapped `connectOverCDP` in a try/catch. That was the WRONG catch
+// boundary: in production `connectOverCDP` RESOLVES, then patchright's floated
+// `setRequestInterception(true)` (CRPage constructor, no await/no catch) rejects
+// on a LATER tick as a Node UNHANDLED REJECTION — escaping the connect promise
+// entirely and crashing the process (`node:internal/process/promises`). These
+// tests drive a fake `unhandledRejection` host so we can model that escape
+// deterministically without a live browser or touching the real process.
+
+interface FakeRejectionHost {
+  /** Emit an unhandled rejection to all currently-registered listeners. */
+  emit: (reason: unknown) => void;
+  host: UnhandledRejectionHost;
+  /** How many listeners are currently registered (must return to 0). */
+  listenerCount: () => number;
+}
+
+function makeFakeRejectionHost(): FakeRejectionHost {
+  const listeners = new Set<(reason: unknown) => void>();
+  return {
+    host: {
+      on: (_event, listener) => {
+        listeners.add(listener);
+      },
+      off: (_event, listener) => {
+        listeners.delete(listener);
+      },
+    },
+    emit: (reason) => {
+      // Copy so a listener removing itself mid-iteration is safe.
+      for (const listener of [...listeners]) {
+        listener(reason);
+      }
+    },
+    listenerCount: () => listeners.size,
+  };
+}
+
+test("runCdpAttemptWithRaceGuard resolves and removes its listener on a clean attach", async () => {
+  const fake = makeFakeRejectionHost();
+  const browser = await runCdpAttemptWithRaceGuard<string>({
+    connect: () => Promise.resolve("BROWSER"),
+    settleMs: 0,
+    host: fake.host,
+  });
+  assert.equal(browser, "BROWSER");
+  assert.equal(fake.listenerCount(), 0, "guard listener is removed after a clean attach");
+});
+
+test("runCdpAttemptWithRaceGuard converts an UNHANDLED setCacheDisabled rejection (after connect resolved) into a retryable throw", async () => {
+  const fake = makeFakeRejectionHost();
+  let disconnected: string | null = null;
+  // Model production exactly: connect resolves with a live browser, THEN the
+  // floated setRequestInterception rejection escapes as an unhandled rejection
+  // a tick later — while the guard's settle window is still open.
+  await assert.rejects(
+    () =>
+      runCdpAttemptWithRaceGuard<string>({
+        connect: () => {
+          // Schedule the escape for just after connect resolves, like the real
+          // floated promise. The guard's settle window must still be open.
+          setTimeout(() => fake.emit(new Error(PRODUCTION_RACE_MESSAGE)), 5);
+          return Promise.resolve("LIVE_BROWSER");
+        },
+        disconnect: (b) => {
+          disconnected = b;
+        },
+        settleMs: 200,
+        host: fake.host,
+      }),
+    (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.match((err as Error).message, /Network\.setCacheDisabled/);
+      assert.match((err as Error).message, /session closed/i);
+      return true;
+    }
+  );
+  assert.equal(disconnected, "LIVE_BROWSER", "the orphaned just-connected browser is disconnected before retry");
+  assert.equal(fake.listenerCount(), 0, "guard listener is removed even when it converts a race to a throw");
+});
+
+test("runCdpAttemptWithRaceGuard does NOT swallow an unrelated unhandled rejection (re-throws to preserve crash semantics)", async () => {
+  const fake = makeFakeRejectionHost();
+  // A non-race unhandled rejection must NOT be consumed — the guard re-throws
+  // it from the listener so Node's default crash-on-unhandled-rejection applies.
+  // We assert that synchronous re-throw here (the real process would terminate).
+  await runCdpAttemptWithRaceGuard<string>({
+    connect: () => Promise.resolve("BROWSER"),
+    settleMs: 0,
+    host: fake.host,
+  });
+  // Listener was removed on the clean resolve above; re-arm one to assert the
+  // non-race re-throw behavior directly against the guard's listener contract.
+  const fake2 = makeFakeRejectionHost();
+  let caught: unknown;
+  const guarded = runCdpAttemptWithRaceGuard<string>({
+    connect: () =>
+      new Promise<string>((resolve) => {
+        // Emit an unrelated unhandled rejection while the connect is pending.
+        // The guard's listener must re-throw it synchronously.
+        try {
+          fake2.emit(new Error("some unrelated subsystem failure"));
+        } catch (err) {
+          caught = err;
+        }
+        resolve("BROWSER");
+      }),
+    settleMs: 0,
+    host: fake2.host,
+  });
+  await guarded;
+  assert.ok(caught instanceof Error, "the non-race rejection was re-thrown, not swallowed");
+  assert.match((caught as Error).message, /unrelated subsystem failure/);
+  assert.equal(fake2.listenerCount(), 0, "guard removed its listener before re-throwing the non-race rejection");
+});
+
+test("runCdpAttemptWithRaceGuard with no escape during the settle window resolves the connected browser", async () => {
+  const fake = makeFakeRejectionHost();
+  // No unhandled rejection emitted: a clean attach where the transient target
+  // never raced. Short settle window so the test is fast.
+  const browser = await runCdpAttemptWithRaceGuard<string>({
+    connect: () => Promise.resolve("CLEAN_BROWSER"),
+    settleMs: 10,
+    host: fake.host,
+  });
+  assert.equal(browser, "CLEAN_BROWSER");
+  assert.equal(fake.listenerCount(), 0);
+});
+
+test("connectOverCdpWithRetry rides out an UNHANDLED-rejection race end-to-end then succeeds", async () => {
+  // Full integration of the loop + guard: attempt 1's connect resolves but the
+  // floated rejection escapes as an unhandled rejection (converted to a retry);
+  // attempt 2 attaches cleanly. Uses a per-call fake host so each attempt's
+  // guard is independent, mirroring the real `process` host across attempts.
+  let attempts = 0;
+  let slept = 0;
+  const disconnects: string[] = [];
+  const browser = await connectOverCdpWithRetry<string>({
+    connect: () => {
+      attempts += 1;
+      return Promise.resolve(`BROWSER_ATTEMPT_${attempts}`);
+    },
+    disconnect: (b) => {
+      disconnects.push(b);
+    },
+    profileName: "amazon",
+    redactedUrl: "http://neko/",
+    retryDelayMs: 1,
+    sleep: () => {
+      slept += 1;
+      return Promise.resolve();
+    },
+    runAttempt: ({ connect, disconnect }) => {
+      const fake = makeFakeRejectionHost();
+      return runCdpAttemptWithRaceGuard({
+        connect: () => {
+          const p = connect();
+          // Only attempt 1 races: schedule the escape just after connect resolves.
+          if (attempts === 1) {
+            setTimeout(() => fake.emit(new Error(PRODUCTION_RACE_MESSAGE)), 2);
+          }
+          return p;
+        },
+        settleMs: attempts === 1 ? 200 : 5,
+        host: fake.host,
+        ...(disconnect ? { disconnect } : {}),
+      });
+    },
+  });
+  assert.equal(browser, "BROWSER_ATTEMPT_2", "second attempt attached cleanly");
+  assert.equal(attempts, 2, "one raced attempt, then a clean one");
+  assert.equal(slept, 1, "slept once between the converted race and the retry");
+  assert.deepEqual(disconnects, ["BROWSER_ATTEMPT_1"], "the orphaned first browser was disconnected before retry");
 });
