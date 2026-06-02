@@ -57,6 +57,10 @@ async function fillWhenVisible(
   throw new Error("no visible match for locator within timeout");
 }
 
+function isMissingVisibleFieldError(error: unknown): boolean {
+  return error instanceof Error && error.message === "no visible match for locator within timeout";
+}
+
 /**
  * Probe whether the persistent profile already has a live Amazon session by
  * navigating to the orders page and confirming Amazon did not redirect to a
@@ -147,7 +151,10 @@ async function fillOrHandleChallenge({
   try {
     await fillWhenVisible(page, locator, value);
     return "filled";
-  } catch {
+  } catch (error) {
+    if (!isMissingVisibleFieldError(error)) {
+      throw error;
+    }
     // The expected input never became visible — Amazon is most likely serving a
     // Cloudflare/CAPTCHA/puzzle or approve-on-device challenge instead of the
     // sign-in form. Hand off to the operator and re-probe the session before

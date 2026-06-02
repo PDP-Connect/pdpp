@@ -106,6 +106,53 @@ function makeChallengePage({ becomeLoggedInAfterGoto }: { becomeLoggedInAfterGot
   return { gotoCalls, page: page as Page };
 }
 
+function makeVisibleFieldFillFailurePage(): {
+  page: Page;
+} {
+  const visibleLoginForm: Pick<Locator, "count" | "first" | "isVisible" | "inputValue" | "nth" | "fill"> = {
+    count: (): Promise<number> => Promise.resolve(1),
+    first(): Locator {
+      return visibleLoginForm as Locator;
+    },
+    isVisible: (): Promise<boolean> => Promise.resolve(true),
+    inputValue: (): Promise<string> => Promise.resolve(""),
+    nth(): Locator {
+      return visibleLoginForm as Locator;
+    },
+    fill: (): Promise<void> => Promise.reject(new Error("amazon_input_fill_failed")),
+  };
+  const emptyLocator: Pick<Locator, "count" | "first" | "isVisible" | "inputValue" | "nth" | "fill"> = {
+    count: (): Promise<number> => Promise.resolve(0),
+    first(): Locator {
+      return emptyLocator as Locator;
+    },
+    isVisible: (): Promise<boolean> => Promise.resolve(false),
+    inputValue: (): Promise<string> => Promise.resolve(""),
+    nth(): Locator {
+      return emptyLocator as Locator;
+    },
+    fill: (): Promise<void> => Promise.resolve(),
+  };
+  const page: Pick<Page, "goto" | "locator" | "url" | "waitForTimeout"> = {
+    goto(): ReturnType<Page["goto"]> {
+      return Promise.resolve(null);
+    },
+    locator(selector: string): Locator {
+      if (selector.includes("signIn") || selector.includes("ap_email")) {
+        return visibleLoginForm as Locator;
+      }
+      return emptyLocator as Locator;
+    },
+    url(): string {
+      return SIGNIN_URL;
+    },
+    waitForTimeout(): Promise<void> {
+      return Promise.resolve();
+    },
+  };
+  return { page: page as Page };
+}
+
 async function withAmazonCredentials(run: () => Promise<void>): Promise<void> {
   const priorUsername = process.env.AMAZON_USERNAME;
   const priorPassword = process.env.AMAZON_PASSWORD;
@@ -184,6 +231,23 @@ test("ensureAmazonSession throws amazon_login_unexpected_ui when the manual acti
     // hammer the operator with repeated prompts for the same challenge.
     assert.equal(interactions.requests.length, 1);
     assert.equal(interactions.requests[0]?.kind, "manual_action");
+  });
+});
+
+test("ensureAmazonSession does not mask visible field-fill failures as manual challenges", async () => {
+  await withAmazonCredentials(async () => {
+    const { page } = makeVisibleFieldFillFailurePage();
+    const interactions = makeInteractionHarness();
+
+    await assert.rejects(
+      ensureAmazonSession({
+        context: makeContext(),
+        page,
+        sendInteraction: interactions.sendInteraction,
+      }),
+      /amazon_input_fill_failed/u
+    );
+    assert.equal(interactions.requests.length, 0);
   });
 });
 
