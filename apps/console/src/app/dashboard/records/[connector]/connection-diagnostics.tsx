@@ -483,6 +483,16 @@ function sourceOutboxToneClass(tone: ReturnType<typeof formatSourceOutboxState>[
  *   1. diagnose (`doctor`)
  *   2. preview the requeue (`retry-dead-letters`, dry-run by default)
  *   3. apply it (`retry-dead-letters --apply`, which backs up the DB first)
+ *
+ * One subtlety the earlier copy left implicit and an operator could trip on:
+ * `retry-dead-letters --apply` only moves dead-lettered rows back to `pending`.
+ * It does not itself ingest them — the next `@pdpp/local-collector run` pass on
+ * the host drains the requeued work. The same re-run is the recovery for the
+ * *other* cause of a stalled axis: a `blocked` heartbeat means the runner could
+ * not read prior state (`state_get_failed`) and refused to advance, so there may
+ * be no dead-letter rows to requeue at all — re-running the collector re-reads
+ * state and clears the block. We therefore close with an explicit "run the
+ * collector again" note so neither cause leaves the owner at a dead end.
  */
 function OutboxStallRemediationPanel({
   connectionId,
@@ -500,9 +510,11 @@ function OutboxStallRemediationPanel({
   remediation: NonNullable<ReturnType<typeof summarizeOutboxStallRemediation>>;
 }) {
   const scope = connectionId ? { connectionId } : undefined;
-  // The three documented recovery steps, in the order the operator runs them.
-  // Sourced from the safe CLI builders so none can leak a base URL, token, or
-  // device-local filesystem path.
+  // The three documented dead-letter requeue steps, in the order the operator
+  // runs them, followed by a "run the collector again" note (rendered after the
+  // list) that drains the requeued rows and also covers the no-dead-letter
+  // blocked-state-read cause. Commands are sourced from the safe CLI builders so
+  // none can leak a base URL, token, or device-local filesystem path.
   const steps: { caption: string; command: string; label: string }[] = [
     {
       label: "1. Diagnose",
@@ -516,7 +528,8 @@ function OutboxStallRemediationPanel({
     },
     {
       label: "3. Requeue",
-      caption: "Requeues the dead-letter rows after backing up the database first.",
+      caption:
+        "Moves the dead-letter rows back to pending after backing up the database first. The next collector run drains them — it does not ingest on its own.",
       command: pdppLocalCollectorRetryDeadLettersCommand({ ...scope, apply: true }),
     },
   ];
@@ -568,6 +581,12 @@ function OutboxStallRemediationPanel({
           </li>
         ))}
       </ol>
+      <p className="pdpp-caption text-muted-foreground" data-testid="diagnostics-outbox-remediation-run-note">
+        Then run the collector again on {hostPhrase} (the same{" "}
+        <code className="font-mono">@pdpp/local-collector run</code> command used to enroll it) so the requeued work
+        actually drains. If <code className="font-mono">doctor</code> reports zero dead-letter rows, the stall is a
+        blocked state read, not a backlog — re-running the collector re-reads state and clears it on its own.
+      </p>
     </div>
   );
 }
