@@ -1056,6 +1056,39 @@ test("runConversationsAndMessagesStreams: 30/278 pressure exhaustion records a d
   );
   const coverageIdx = harness.events.findIndex((e) => e.kind === "message" && e.message.type === "DETAIL_COVERAGE");
   assert.ok(stateIdx > coverageIdx, "cursor STATE must only emit after coverage accounts for the pressure gap");
+
+  // RESUMABILITY INVARIANT (ri-chatgpt-429-resume-audit-v1): the messages
+  // cursor advances to the max update_time across the WHOLE listed batch —
+  // including the 249 gapped/deferred conversations — not just the 29 that
+  // hydrated before the circuit opened. This is load-bearing: forward listing
+  // on the next run stops at update_time <= cursor, so it will NOT re-list the
+  // gapped tail. Those conversations are recoverable ONLY through the durable
+  // DETAIL_GAP records replayed as `detail_gaps` on the next START. If a
+  // refactor narrowed this cursor to the hydrated prefix, gaps would either be
+  // wastefully re-listed every run or — combined with a gap-emission regression
+  // — silently stranded. Pin the cursor to the gapped tail's update_time so
+  // that regression fails here.
+  const messagesState = harness.protocolMessages.find(
+    (m): m is Extract<EmittedMessage, { type: "STATE" }> => m.type === "STATE" && m.stream === "messages"
+  );
+  assert.ok(messagesState, "messages STATE cursor must commit even when most details are deferred as gaps");
+  const messagesCursor = messagesState.cursor as { last_update_time: string | null };
+  const lastListedUpdateTime = listItems[277]?.update_time;
+  assert.ok(typeof lastListedUpdateTime === "number");
+  assert.equal(
+    messagesCursor.last_update_time,
+    new Date(lastListedUpdateTime * 1000).toISOString(),
+    "messages cursor must cover the GAPPED tail's update_time, not just the hydrated prefix — else deferred conversations fall behind the cursor and are never re-listed"
+  );
+  // The hydrated prefix ends at item 28 (index 28; item 29 is the pressure
+  // item). A cursor pinned to the hydrated max would be strictly smaller; prove
+  // the committed cursor is past it so the discriminator is real, not vacuous.
+  const lastHydratedUpdateTime = listItems[28]?.update_time;
+  assert.ok(typeof lastHydratedUpdateTime === "number");
+  assert.ok(
+    (messagesCursor.last_update_time ?? "") > new Date(lastHydratedUpdateTime * 1000).toISOString(),
+    "committed messages cursor must be strictly beyond the last hydrated conversation"
+  );
 });
 
 test("runConversationsAndMessagesStreams: recovers pending conversation detail gaps before forward list collection", async () => {
