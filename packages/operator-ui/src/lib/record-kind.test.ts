@@ -166,8 +166,8 @@ test("declared types: money beats a temporal declaration in the same stream", ()
 });
 
 test("declared types: an unrecognized declared type falls through to the heuristic", () => {
-  // 'geo' is not in the vocabulary; 'transactions' stream-name heuristic decides.
-  assert.equal(classifyRecordKind("transactions", { lat: 1 }, { lat: "geo" }).kind, "money");
+  // 'blob' is not in the kind vocabulary; 'transactions' stream-name heuristic decides.
+  assert.equal(classifyRecordKind("transactions", { attachment: 1 }, { attachment: "blob" }).kind, "money");
 });
 
 test("declared types: a declared type for a no-body search hit still yields a kind tag", () => {
@@ -194,4 +194,81 @@ test("declared types: declared types take precedence over a conflicting body fie
     ).kind,
     "event"
   );
+});
+
+// Activity / reader / location — the designer's additional card kinds. All
+// presentation-only, same seam as the message/money/event cards.
+
+test("classifies activity-shaped streams by name ahead of the broad event match", () => {
+  assert.equal(classifyRecordKind("workouts", null).kind, "activity");
+  assert.equal(classifyRecordKind("activities", null).kind, "activity");
+  assert.equal(classifyRecordKind("sleep_sessions", null).kind, "activity");
+});
+
+test("a calendar event stream stays event, not activity", () => {
+  // 'appointments' / 'clinical_visits' lead with a time, not a measured stat.
+  assert.equal(classifyRecordKind("appointments", null).kind, "event");
+  assert.equal(classifyRecordKind("clinical_visits", null).kind, "event");
+});
+
+test("an activity stat field promotes an event-named stream to activity", () => {
+  // A 'sessions' stream (event by name) carrying distance/duration is a workout.
+  assert.equal(classifyRecordKind("sessions", { distance: 5200, duration: 1800 }).kind, "activity");
+});
+
+test("classifies location streams by name", () => {
+  assert.equal(classifyRecordKind("check_ins", null).kind, "location");
+  assert.equal(classifyRecordKind("saved_places", null).kind, "location");
+});
+
+test("a lat/lng coordinate pair is a strong location signal over an opaque stream", () => {
+  assert.equal(classifyRecordKind("pings", { lat: 37.77, lng: -122.41 }).kind, "location");
+  assert.equal(classifyRecordKind("records", { latitude: 1, longitude: 2, title: "Spot" }).kind, "location");
+});
+
+test("a lone latitude without longitude does not force location", () => {
+  // One half of a coordinate pair is too weak; falls through to generic.
+  assert.equal(classifyRecordKind("opaque", { lat: 37.77 }).kind, "generic");
+});
+
+test("a long body field promotes a titled stream to reader", () => {
+  const longBody = "x".repeat(400);
+  assert.equal(classifyRecordKind("notes", { title: "Essay", body: longBody }).kind, "reader");
+});
+
+test("a short body does not promote a titled stream to reader", () => {
+  assert.equal(classifyRecordKind("notes", { title: "Quick note", body: "short" }).kind, "titled");
+});
+
+test("reader does not override a confident message stream", () => {
+  // A long body on a messages stream is still a message (author + content).
+  const longBody = "y".repeat(400);
+  assert.equal(classifyRecordKind("messages", { author: "ada", content: longBody }).kind, "message");
+});
+
+test("declared types: a geo type dispatches location", () => {
+  assert.equal(classifyRecordKind("opaque", { spot: 1 }, { spot: "geo" }).kind, "location");
+  assert.equal(classifyRecordKind("opaque", { c: 1 }, { c: "coordinate" }).kind, "location");
+});
+
+test("declared types: a distance/duration type dispatches activity", () => {
+  assert.equal(classifyRecordKind("opaque", { d: 5000 }, { d: "distance" }).kind, "activity");
+  assert.equal(classifyRecordKind("opaque", { t: 1800 }, { t: "duration" }).kind, "activity");
+});
+
+test("declared types: money still beats activity and location in the same stream", () => {
+  assert.equal(
+    classifyRecordKind("opaque", { amt: 100, dist: 5000 }, { amt: "currency", dist: "distance" }).kind,
+    "money"
+  );
+});
+
+test("manifest fields: an activity stat promotes an opaque no-body stream to activity", () => {
+  assert.equal(classifyRecordKind("sessions", null, null, ["id", "distance", "duration"]).kind, "activity");
+});
+
+test("labels for the new kinds are short eyebrow strings", () => {
+  assert.equal(classifyRecordKind("workouts", null).label, "activity");
+  assert.equal(classifyRecordKind("check_ins", null).label, "place");
+  assert.equal(classifyRecordKind("notes", { title: "t", body: "z".repeat(400) }).label, "read");
 });

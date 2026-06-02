@@ -80,9 +80,9 @@ const MS_PER_DAY = 86_400_000;
 
 interface ExplorerFilterItem {
   label: string;
-  value: string;
   /** Link to the same view with just this one filter dropped. */
   removeHref: string;
+  value: string;
 }
 
 export function RecordsExplorerView({ data, routes }: { data: RecordsExplorerData; routes: Routes }) {
@@ -814,6 +814,11 @@ const KIND_RULE_TONE: Record<RecordKind, string> = {
   message: "before:bg-[color:var(--human)]",
   money: "before:bg-primary",
   event: "before:bg-primary",
+  // Activity and location are surfaces of the person's lived life, so they take
+  // the warm copper rule alongside message; reader is content and stays neutral.
+  activity: "before:bg-[color:var(--human)]",
+  location: "before:bg-[color:var(--human)]",
+  reader: "before:bg-border",
   titled: "before:bg-border",
   generic: "before:bg-border",
 };
@@ -933,11 +938,68 @@ function TitledBody({ preview }: { preview: RecordPreview }) {
   );
 }
 
+function ActivityBody({ preview }: { preview: RecordPreview }) {
+  if (!(preview.title || preview.stats?.length)) {
+    return null;
+  }
+  return (
+    <div className="min-w-0">
+      {preview.title ? <p className="truncate font-medium text-foreground text-sm">{preview.title}</p> : null}
+      {preview.stats?.length ? (
+        <div className="mt-1.5 flex flex-wrap gap-x-5 gap-y-1">
+          {preview.stats.map((stat) => (
+            <div className="min-w-0" key={stat.label}>
+              <span className="font-mono font-semibold text-[color:var(--human)] text-sm tabular-nums">
+                {stat.value}
+              </span>
+              <span className="pdpp-eyebrow ml-1.5 text-muted-foreground">{stat.label}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ReaderBody({ preview }: { preview: RecordPreview }) {
+  if (!(preview.title || preview.body)) {
+    return null;
+  }
+  return (
+    <div className="min-w-0">
+      {preview.title ? (
+        <p className="truncate font-medium text-[0.95rem] text-foreground leading-snug">{preview.title}</p>
+      ) : null}
+      {preview.body ? (
+        <p className="mt-1 line-clamp-3 text-muted-foreground text-sm leading-relaxed">{preview.body}</p>
+      ) : null}
+      {preview.author ? <p className="pdpp-caption mt-1 text-muted-foreground">by {preview.author}</p> : null}
+    </div>
+  );
+}
+
+function LocationBody({ preview }: { preview: RecordPreview }) {
+  if (!(preview.title || preview.coordinates)) {
+    return null;
+  }
+  return (
+    <div className="min-w-0">
+      {preview.title ? <p className="truncate font-medium text-foreground text-sm">{preview.title}</p> : null}
+      {preview.coordinates ? (
+        <p className="pdpp-caption mt-0.5 font-mono text-muted-foreground tabular-nums">{preview.coordinates}</p>
+      ) : null}
+    </div>
+  );
+}
+
 const PREVIEW_BODY_BY_KIND: Record<RecordKind, (preview: RecordPreview) => ReactNode> = {
+  activity: (preview) => <ActivityBody preview={preview} />,
   event: (preview) => <EventBody preview={preview} />,
   generic: () => null,
+  location: (preview) => <LocationBody preview={preview} />,
   message: (preview) => <MessageBody preview={preview} />,
   money: (preview) => <MoneyBody preview={preview} />,
+  reader: (preview) => <ReaderBody preview={preview} />,
   titled: (preview) => <TitledBody preview={preview} />,
 };
 

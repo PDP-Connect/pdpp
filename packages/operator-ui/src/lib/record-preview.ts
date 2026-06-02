@@ -11,6 +11,9 @@
  * fields out of the same body so the Explorer feed can render type-aware cards
  * (a money row leads with its amount, a message row leads with author + body,
  * an event row leads with its time) instead of a single undifferentiated line.
+ * The same seam serves the activity (stat strip), reader (long body excerpt),
+ * and location (coordinate pair) kinds — each pulls only fields already in the
+ * body.
  *
  * Like `kind` and `summary`, every field here is:
  *
@@ -42,9 +45,16 @@ export interface RecordPreview {
   author?: string;
   /** Secondary body text: message content, memo, location, description. */
   body?: string;
+  /** Formatted coordinate pair for location rows, e.g. "37.7749, -122.4194". */
+  coordinates?: string;
   /** Pre-formatted time-of-day or range for event rows, e.g. "2:00 PM". */
   eventTime?: string;
   kind: RecordKind;
+  /**
+   * Labelled stat chips for activity rows, e.g. `[{value:"5.2 km",label:"distance"}]`.
+   * Already formatted for display; the renderer lays them out as a stat strip.
+   */
+  stats?: readonly { label: string; value: string }[];
   /** Primary line: subject, title, payee, event name, …. */
   title?: string;
 }
@@ -230,6 +240,114 @@ function buildTitledPreview(data: RecordData): RecordPreview | null {
   return { body: body && body !== title ? body : undefined, kind: "titled", title };
 }
 
+// Reader rows lead with a title and a longer clamped body excerpt than the
+// other kinds, since the body IS the content (an article, issue, or note).
+const READER_BODY_FIELDS = ["body", "content", "article", "text", "markdown", "summary", "snippet"] as const;
+const READER_TITLE_FIELDS = ["title", "subject", "name", "headline"] as const;
+
+function buildReaderPreview(data: RecordData): RecordPreview | null {
+  const title = firstString(data, READER_TITLE_FIELDS, 90);
+  const author = firstString(data, AUTHOR_FIELDS, 32);
+  const body = firstString(data, READER_BODY_FIELDS, 280);
+  if (!(title || body)) {
+    return null;
+  }
+  return { author, body: body && body !== title ? body : undefined, kind: "reader", title };
+}
+
+// Location rows lead with a place name and a precise coordinate pair, mirroring
+// the designer's LocationCard (title + monospaced lat,lng).
+const LAT_FIELDS = ["lat", "latitude"] as const;
+const LNG_FIELDS = ["lng", "lon", "long", "longitude"] as const;
+
+function num(v: unknown): number | undefined {
+  if (typeof v === "number" && Number.isFinite(v)) {
+    return v;
+  }
+  if (typeof v === "string") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return;
+}
+
+function firstNum(data: RecordData, fields: readonly string[]): number | undefined {
+  for (const f of fields) {
+    const n = num(data[f]);
+    if (n !== undefined) {
+      return n;
+    }
+  }
+  return;
+}
+
+function buildLocationPreview(data: RecordData): RecordPreview | null {
+  const title = firstString(data, ["title", "caption", "name", "place", "venue", "address"], 80);
+  const lat = firstNum(data, LAT_FIELDS);
+  const lng = firstNum(data, LNG_FIELDS);
+  const coordinates = lat !== undefined && lng !== undefined ? `${lat.toFixed(4)}, ${lng.toFixed(4)}` : undefined;
+  if (!(title || coordinates)) {
+    return null;
+  }
+  return { coordinates, kind: "location", title: title ?? "Location" };
+}
+
+// Activity stats. `distance` is assumed to be meters (the common connector
+// unit, e.g. Strava); `duration`/`elapsed` seconds. Values already carrying a
+// `*_m`/`_seconds` suffix are treated the same. Formatting is locale-neutral so
+// SSR and client agree and tests can pin it.
+function fmtDistanceMeters(m: number): string {
+  if (m >= 1000) {
+    return `${(m / 1000).toFixed(m >= 10_000 ? 0 : 1)} km`;
+  }
+  return `${Math.round(m)} m`;
+}
+
+function fmtDurationSeconds(s: number): string {
+  const total = Math.round(s);
+  const h = Math.floor(total / 3600);
+  const min = Math.floor((total % 3600) / 60);
+  if (h > 0) {
+    return `${h}h ${min}m`;
+  }
+  const sec = total % 60;
+  return min > 0 ? `${min}m ${sec}s` : `${sec}s`;
+}
+
+const ACTIVITY_TITLE_FIELDS = ["title", "name", "type", "activity_type", "sport"] as const;
+
+function buildActivityPreview(data: RecordData): RecordPreview | null {
+  const title = firstString(data, ACTIVITY_TITLE_FIELDS, 70);
+  const stats: Array<{ label: string; value: string }> = [];
+  const distance = firstNum(data, ["distance", "distance_m"]);
+  if (distance !== undefined) {
+    stats.push({ label: "distance", value: fmtDistanceMeters(distance) });
+  }
+  const duration = firstNum(data, ["duration", "duration_seconds", "elapsed", "elapsed_time"]);
+  if (duration !== undefined) {
+    stats.push({ label: "duration", value: fmtDurationSeconds(duration) });
+  }
+  const elevation = firstNum(data, ["elevation", "elev_gain", "elevation_gain"]);
+  if (elevation !== undefined) {
+    stats.push({ label: "elevation", value: `${Math.round(elevation)} m` });
+  }
+  const steps = firstNum(data, ["steps"]);
+  if (steps !== undefined && stats.length < 3) {
+    stats.push({ label: "steps", value: steps.toLocaleString("en-US") });
+  }
+  // Sleep/score-style activities: surface a lone score when no motion stat fit.
+  if (stats.length === 0) {
+    const score = firstNum(data, ["score", "value", "rating"]);
+    if (score !== undefined) {
+      stats.push({ label: "score", value: String(score) });
+    }
+  }
+  if (!(title || stats.length)) {
+    return null;
+  }
+  return { kind: "activity", stats: stats.length ? stats : undefined, title: title ?? "Activity" };
+}
+
 /**
  * Build the kind-specific preview for a feed row.
  *
@@ -261,6 +379,12 @@ export function buildRecordPreview(
       return buildMessagePreview(data);
     case "event":
       return buildEventPreview(data);
+    case "activity":
+      return buildActivityPreview(data);
+    case "reader":
+      return buildReaderPreview(data);
+    case "location":
+      return buildLocationPreview(data);
     case "titled":
       return buildTitledPreview(data);
     default:

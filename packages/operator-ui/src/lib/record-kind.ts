@@ -2,7 +2,8 @@
  * Record-kind classification for the Explorer feed.
  *
  * The designer's Explorer dispatched type-aware cards (message / money /
- * event / titled / generic) from per-field schema metadata. The reference's
+ * event / activity / reader / location / titled / generic) from per-field
+ * schema metadata. The reference's
  * public read contract now carries an optional declared presentation `type`
  * on each `field_capabilities` entry (sourced from the manifest's
  * `x_pdpp_type` schema extension or its sandbox-shaped `fields[]` /
@@ -25,7 +26,7 @@
  * filter, grant, or retrieval semantics.
  */
 
-export type RecordKind = "message" | "money" | "event" | "titled" | "generic";
+export type RecordKind = "message" | "money" | "event" | "activity" | "reader" | "location" | "titled" | "generic";
 
 export interface RecordKindDescriptor {
   kind: RecordKind;
@@ -37,6 +38,9 @@ const KIND_LABELS: Record<RecordKind, string> = {
   message: "message",
   money: "money",
   event: "event",
+  activity: "activity",
+  reader: "read",
+  location: "place",
   titled: "item",
   generic: "record",
 };
@@ -48,7 +52,16 @@ const KIND_LABELS: Record<RecordKind, string> = {
 const MESSAGE_STREAM_RE = /(message|chat|conversation|thread|dm|email|mail|comment|post)/i;
 const MONEY_STREAM_RE =
   /(transaction|payment|pay_statement|paystub|payroll|invoice|charge|expense|budget|ledger|order)/i;
-const EVENT_STREAM_RE = /(visit|appointment|event|booking|reservation|session|trip|ride|workout|activity)/i;
+// Physical/measured activity: a workout, ride, or sleep session that leads with
+// numeric stats (distance / duration / score), distinct from a calendar `event`
+// (which leads with a start/end time). Checked ahead of EVENT so a `workout`
+// stream becomes an activity card rather than a bare event.
+const ACTIVITY_STREAM_RE = /(workout|exercise|activit(y|ies)|ride|run|swim|sleep|fitness|step)/i;
+const EVENT_STREAM_RE = /(visit|appointment|event|booking|reservation|session|trip)/i;
+// Geo / place streams: a check-in, saved place, or location ping that leads
+// with coordinates. Field-level lat/lng is the strong signal (below); the name
+// is a weak hint.
+const LOCATION_STREAM_RE = /(location|place|check[-_ ]?in|geo|visit_place|where|trip_point)/i;
 const TITLED_STREAM_RE =
   /(document|file|issue|pull_request|repository|repo|gist|note|memory|channel|album|track|playlist|page|record|statement)/i;
 
@@ -58,6 +71,19 @@ const MONEY_FIELD_RE = /(amount|_cents$|^cents$|price|balance|total|gross_pay|ne
 const MESSAGE_FIELD_RE = /^(content|text|message|body|snippet)$/i;
 const MESSAGE_AUTHOR_RE = /^(author|author_role|role|from|sender|user|username)$/i;
 const TITLE_FIELD_RE = /^(title|name|subject|merchant|provider_name|employer|document_kind|full_name)$/i;
+// Geo coordinate pair — the unambiguous location signal. A record carrying both
+// a latitude- and longitude-shaped field is a place regardless of stream name.
+const LAT_FIELD_RE = /^(lat|latitude)$/i;
+const LNG_FIELD_RE = /^(lng|lon|long|longitude)$/i;
+// Measured-activity stats — distance / duration / elevation / a score. A pair
+// (or a distance/duration alone) marks a workout-style record. `steps` and
+// `calories` are common fitness aggregates.
+const ACTIVITY_STAT_RE = /^(distance|distance_m|duration|elapsed|elapsed_time|elevation|elev_gain|steps|calories)$/i;
+// A long-text body field — the reader signal. Same names as the message body,
+// but reader is gated on the body actually being long (see hasLongBody).
+const LONG_BODY_RE = /^(body|content|article|text|markdown|html)$/i;
+// Minimum characters for a body field to count as "long-form" reading material.
+const READER_MIN_BODY_CHARS = 280;
 
 function hasField(data: Record<string, unknown>, re: RegExp): boolean {
   for (const key of Object.keys(data)) {
@@ -86,6 +112,10 @@ const MONEY_TYPE_RE = /^(currency|currency_minor_units|money|monetary|amount|pri
 const TEMPORAL_TYPE_RE = /^(timestamp|datetime|date[-_]?time|date|time)$/;
 const PERSON_TYPE_RE = /^(person|actor|contact|author|sender|user)$/;
 const TEXT_TYPE_RE = /^(text|message|body|content|richtext|rich_text|markdown|prose)$/;
+// A declared geo/coordinate type is the strongest location signal.
+const GEO_TYPE_RE = /^(geo|geopoint|geo_point|coordinate|coordinates|location|lat_lng|latlng)$/;
+// Declared measured-activity quantities (a distance or duration with a unit).
+const ACTIVITY_TYPE_RE = /^(distance|duration|elevation|pace|speed|heart_rate|steps)$/;
 
 function normalizeType(value: unknown): string | null {
   if (typeof value !== "string") {
@@ -116,36 +146,60 @@ function declaredTypesPresent(fieldTypes: DeclaredFieldTypes | null | undefined)
  * Returns null when the declared types carry no recognized kind signal, so the
  * caller falls through to the stream-name / field-name heuristic.
  */
-function classifyByDeclaredTypes(fieldTypes: DeclaredFieldTypes): RecordKind | null {
-  let hasMoney = false;
-  let hasPerson = false;
-  let hasText = false;
-  let hasTemporal = false;
+// Declared-type signal tags, collected per stream and resolved by precedence.
+type DeclaredSignal = "money" | "geo" | "activity" | "person" | "text" | "temporal";
+
+// Ordered so the FIRST match wins for a given declared type; money/geo/activity
+// are the strong, kind-distinct signals and are tested ahead of the weaker
+// person/text/temporal ones (the same precedence the old if/else chain used).
+const DECLARED_SIGNAL_RES: readonly [DeclaredSignal, RegExp][] = [
+  ["money", MONEY_TYPE_RE],
+  ["geo", GEO_TYPE_RE],
+  ["activity", ACTIVITY_TYPE_RE],
+  ["person", PERSON_TYPE_RE],
+  ["text", TEXT_TYPE_RE],
+  ["temporal", TEMPORAL_TYPE_RE],
+];
+
+function collectDeclaredSignals(fieldTypes: DeclaredFieldTypes): Set<DeclaredSignal> {
+  const signals = new Set<DeclaredSignal>();
   for (const raw of Object.values(fieldTypes)) {
     const t = normalizeType(raw);
     if (!t) {
       continue;
     }
-    if (MONEY_TYPE_RE.test(t)) {
-      hasMoney = true;
-    } else if (PERSON_TYPE_RE.test(t)) {
-      hasPerson = true;
-    } else if (TEXT_TYPE_RE.test(t)) {
-      hasText = true;
-    } else if (TEMPORAL_TYPE_RE.test(t)) {
-      hasTemporal = true;
+    for (const [signal, re] of DECLARED_SIGNAL_RES) {
+      if (re.test(t)) {
+        signals.add(signal);
+        break;
+      }
     }
   }
-  if (hasMoney) {
+  return signals;
+}
+
+function classifyByDeclaredTypes(fieldTypes: DeclaredFieldTypes): RecordKind | null {
+  const signals = collectDeclaredSignals(fieldTypes);
+  if (signals.has("money")) {
     return "money";
   }
-  if (hasPerson && hasText) {
+  // A declared coordinate is the clearest place signal; it outranks the weaker
+  // temporal/text signals (a check-in with a caption is still a place).
+  if (signals.has("geo")) {
+    return "location";
+  }
+  // A measured activity declares quantities like distance/duration; such a stat
+  // marks an activity ahead of a plain temporal event.
+  if (signals.has("activity")) {
+    return "activity";
+  }
+  if (signals.has("person") && signals.has("text")) {
     return "message";
   }
-  if (hasText) {
+  if (signals.has("text")) {
     return "titled";
   }
-  if (hasTemporal) {
+  if (signals.has("temporal")) {
     return "event";
   }
   return null;
@@ -157,6 +211,15 @@ function classifyByStreamName(stream: string): RecordKind | null {
   }
   if (MONEY_STREAM_RE.test(stream)) {
     return "money";
+  }
+  // Activity and location are checked ahead of the broad EVENT match so a
+  // `workouts` or `check_ins` stream gets its specific card instead of a bare
+  // event. Both are narrowly named, so this does not steal calendar events.
+  if (ACTIVITY_STREAM_RE.test(stream)) {
+    return "activity";
+  }
+  if (LOCATION_STREAM_RE.test(stream)) {
+    return "location";
   }
   if (EVENT_STREAM_RE.test(stream)) {
     return "event";
@@ -170,13 +233,34 @@ function classifyByStreamName(stream: string): RecordKind | null {
 /**
  * Strong field signal - overrides the stream-name guess. A genuine
  * amount-shaped field means money regardless of how the stream is named (an
- * `orders` or opaque `records` stream that carries `amount_cents` is money).
+ * `orders` or opaque `records` stream that carries `amount_cents` is money);
+ * a genuine lat/lng pair means a location for the same reason.
  */
 function classifyByStrongField(data: Record<string, unknown>): RecordKind | null {
   if (hasField(data, MONEY_FIELD_RE)) {
     return "money";
   }
+  // A genuine coordinate pair is as unambiguous as an amount field: a record
+  // carrying both lat and lng is a place no matter how the stream is named.
+  if (hasField(data, LAT_FIELD_RE) && hasField(data, LNG_FIELD_RE)) {
+    return "location";
+  }
   return null;
+}
+
+/** True when the body has a long-form text field (the reader signal). */
+function hasLongBody(data: Record<string, unknown>): boolean {
+  for (const [k, v] of Object.entries(data)) {
+    if (typeof v === "string" && v.trim().length >= READER_MIN_BODY_CHARS && LONG_BODY_RE.test(k)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** True when the body carries a measured-activity stat field. */
+function hasActivityStat(data: Record<string, unknown>): boolean {
+  return hasField(data, ACTIVITY_STAT_RE);
 }
 
 /**
@@ -240,23 +324,48 @@ export function classifyRecordKind(
   }
 
   const byStream = classifyByStreamName(stream);
-  // A strong (money) field signal overrides the stream-name guess; a weak
-  // (title/message) field signal only fills in when the stream name itself
-  // could not classify the row.
+  // A strong (money / coordinate) field signal overrides the stream-name guess;
+  // a weak (title/message) field signal only fills in when the stream name
+  // itself could not classify the row. Two body-only refinements sit between
+  // them: a measured-activity stat promotes an event/unclassified row to
+  // `activity`, and a long-form text body promotes a titled/unclassified row to
+  // `reader`. Neither overrides a confident message/money/location match.
   if (data) {
     const strong = classifyByStrongField(data);
     const weak = classifyByWeakField(data);
-    const kind = strong ?? byStream ?? weak ?? "generic";
+    const base = strong ?? byStream ?? weak ?? "generic";
+    const kind = refineByBody(base, data);
     return { kind, label: KIND_LABELS[kind] };
   }
   // No body — try manifest fields as a fallback heuristic before giving up.
+  // `reader` is intentionally not derivable here: it requires an actual long
+  // body, which field names alone cannot establish.
   if (manifestFieldNames && manifestFieldNames.length > 0) {
     const fakeFields = Object.fromEntries(manifestFieldNames.map((k) => [k, true]));
     const strong = classifyByStrongField(fakeFields);
     const weak = classifyByWeakField(fakeFields);
-    const kind = strong ?? byStream ?? weak ?? "generic";
+    let kind = strong ?? byStream ?? weak ?? "generic";
+    if ((kind === "generic" || kind === "event") && hasActivityStat(fakeFields)) {
+      kind = "activity";
+    }
     return { kind, label: KIND_LABELS[kind] };
   }
   const kind = byStream ?? "generic";
   return { kind, label: KIND_LABELS[kind] };
+}
+
+/**
+ * Body-only refinements applied after the strong/stream/weak base is chosen.
+ * An activity stat promotes an `event` or unclassified row to `activity`; a
+ * long-form body promotes a `titled` or unclassified row to `reader`. A
+ * confident `message`/`money`/`location` base is never overridden.
+ */
+function refineByBody(base: RecordKind, data: Record<string, unknown>): RecordKind {
+  if ((base === "event" || base === "generic" || base === "titled") && hasActivityStat(data)) {
+    return "activity";
+  }
+  if ((base === "titled" || base === "generic") && hasLongBody(data)) {
+    return "reader";
+  }
+  return base;
 }

@@ -75,3 +75,58 @@ test("builds an event preview with a stable UTC time label", () => {
 test("does not produce a preview for generic records", () => {
   assert.equal(buildRecordPreview("generic", { content: "opaque" }), null);
 });
+
+test("builds an activity preview with a formatted stat strip", () => {
+  const preview = buildRecordPreview("activity", {
+    name: "Morning Run",
+    distance: 5200,
+    duration: 1830,
+    elevation: 42,
+  });
+  assert.equal(preview?.kind, "activity");
+  assert.equal(preview?.title, "Morning Run");
+  assert.deepEqual(preview?.stats, [
+    { label: "distance", value: "5.2 km" },
+    { label: "duration", value: "30m 30s" },
+    { label: "elevation", value: "42 m" },
+  ]);
+});
+
+test("activity preview falls back to a lone score for sleep-style records", () => {
+  const preview = buildRecordPreview("activity", { type: "Sleep", score: 88 });
+  assert.equal(preview?.title, "Sleep");
+  assert.deepEqual(preview?.stats, [{ label: "score", value: "88" }]);
+});
+
+test("activity preview formats sub-kilometer distance in meters", () => {
+  const preview = buildRecordPreview("activity", { name: "Walk", distance: 800 });
+  assert.deepEqual(preview?.stats, [{ label: "distance", value: "800 m" }]);
+});
+
+test("builds a reader preview with a long body excerpt and optional author", () => {
+  const body = `${"Long-form content. ".repeat(20)}`;
+  const preview = buildRecordPreview("reader", { title: "On Protocols", body, author: "Ada Lovelace" });
+  assert.equal(preview?.kind, "reader");
+  assert.equal(preview?.title, "On Protocols");
+  assert.equal(preview?.author, "Ada Lovelace");
+  assert.ok((preview?.body?.length ?? 0) > 0);
+});
+
+test("builds a location preview with a 4-decimal coordinate pair", () => {
+  assert.deepEqual(buildRecordPreview("location", { name: "Dolores Park", lat: 37.7596, lng: -122.4269 }), {
+    kind: "location",
+    title: "Dolores Park",
+    coordinates: "37.7596, -122.4269",
+  });
+});
+
+test("location preview defaults the title to 'Location' when none is present", () => {
+  const preview = buildRecordPreview("location", { latitude: 1.234_56, longitude: 6.543_21 });
+  assert.equal(preview?.title, "Location");
+  assert.equal(preview?.coordinates, "1.2346, 6.5432");
+});
+
+test("location preview coerces string coordinates", () => {
+  const preview = buildRecordPreview("location", { caption: "Trailhead", lat: "44.5", lon: "-110.5" });
+  assert.equal(preview?.coordinates, "44.5000, -110.5000");
+});
