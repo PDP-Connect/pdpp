@@ -2,7 +2,7 @@ import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { resolveAuth } from "./auth.js";
-import { manualAction, prepareBrowserInteractionTarget } from "./browser-handoff.js";
+import { DEADLINE_TIMEOUT, manualAction, prepareBrowserInteractionTarget, withDeadline } from "./browser-handoff.js";
 import { flushAndExitAfterRuntimeAck } from "./connector-exit.js";
 import { createCaptureSession } from "./fixture-capture.js";
 import { emitToStdout } from "./safe-emit.js";
@@ -303,16 +303,22 @@ async function runInBrowser(args) {
         });
         await captureBrowserPage(baseCtx.capture, page, "runtime-new-page");
         await closeBrowserContextPagesExcept(ctx, page);
-        await establishSession({ ensureSession, probeSession }, {
+        const watchdog = makeSessionEstablishWatchdog({
+            capture: baseCtx.capture,
+            name,
+            page,
+        });
+        await watchdog.run(() => establishSession({ ensureSession, probeSession }, {
             assist,
             capture: baseCtx.capture,
+            checkpoint: watchdog.checkpoint,
             completeAssistance,
             context: ctx,
-            page,
+            page: page,
             name,
             progress,
-            sendInteraction: browserSendInteraction,
-        });
+            sendInteraction: watchdog.wrapSendInteraction(browserSendInteraction),
+        }));
         await captureBrowserPage(baseCtx.capture, page, "runtime-session-established");
         await captureBrowserPage(baseCtx.capture, page, "runtime-collect-start");
         await collect({ ...baseCtx, context: ctx, page, sendInteraction: browserSendInteraction });
@@ -334,7 +340,9 @@ async function runInBrowser(args) {
         baseCtx.capture?.finalize?.();
     }
 }
-export async function captureBrowserPage(capture, page, label) {
+const CAPTURE_DOM_DEADLINE_MS = 10_000;
+const PAGE_CLOSE_DEADLINE_MS = 10_000;
+export async function captureBrowserPage(capture, page, label, deadlineMs = CAPTURE_DOM_DEADLINE_MS) {
     if (!capture) {
         return;
     }
@@ -342,9 +350,13 @@ export async function captureBrowserPage(capture, page, label) {
         process.stderr.write(`[capture] page already closed at ${label}; skipping dom snapshot\n`);
         return;
     }
-    await capture.captureDom(page, label);
+    const captureWork = capture.captureDom(page, label);
+    captureWork.catch(() => undefined);
+    await withDeadline(captureWork, deadlineMs, () => {
+        process.stderr.write(`[capture] dom snapshot for ${label} exceeded ${String(deadlineMs)}ms (wedged renderer?); abandoning this capture.\n`);
+    });
 }
-export async function closeBrowserContextPagesExcept(context, keepPage) {
+export async function closeBrowserContextPagesExcept(context, keepPage, deadlineMs = PAGE_CLOSE_DEADLINE_MS) {
     let pages;
     try {
         pages = context.pages();
@@ -357,22 +369,23 @@ export async function closeBrowserContextPagesExcept(context, keepPage) {
         if (page === keepPage || page.isClosed()) {
             continue;
         }
-        try {
-            await page.close();
+        if (await closeBrowserPage(page, deadlineMs)) {
             closed++;
-        }
-        catch {
         }
     }
     return closed;
 }
-export async function closeBrowserPage(page) {
+export async function closeBrowserPage(page, deadlineMs = PAGE_CLOSE_DEADLINE_MS) {
     if (!page || page.isClosed()) {
         return false;
     }
     try {
-        await page.close();
-        return true;
+        const closeWork = page.close();
+        closeWork.catch(() => undefined);
+        const result = await withDeadline(closeWork, deadlineMs, () => {
+            process.stderr.write(`[browser-runtime] page.close() exceeded ${String(deadlineMs)}ms (wedged renderer?); abandoning close.\n`);
+        });
+        return result !== DEADLINE_TIMEOUT;
     }
     catch {
         return false;
@@ -676,12 +689,114 @@ async function acquireBrowser(browser, name) {
         throw new TerminalError(`could not open browser profile: ${message}`, false);
     }
 }
+const DEFAULT_SESSION_ESTABLISH_WATCHDOG_MS = 120_000;
+const SESSION_ESTABLISH_WATCHDOG_ENV = "PDPP_SESSION_ESTABLISH_WATCHDOG_MS";
+export function resolveSessionEstablishWatchdogMs(env = process.env) {
+    const raw = env[SESSION_ESTABLISH_WATCHDOG_ENV]?.trim();
+    if (!raw) {
+        return DEFAULT_SESSION_ESTABLISH_WATCHDOG_MS;
+    }
+    const parsed = Number.parseInt(raw, 10);
+    if (!(Number.isFinite(parsed) && parsed > 0)) {
+        return DEFAULT_SESSION_ESTABLISH_WATCHDOG_MS;
+    }
+    return parsed;
+}
+export function makeSessionEstablishWatchdog(args) {
+    const now = args.now ?? Date.now;
+    const deadlineMs = args.deadlineMs ?? resolveSessionEstablishWatchdogMs();
+    const pollIntervalMs = args.pollIntervalMs ?? Math.max(1, Math.min(1000, Math.floor(deadlineMs / 4)));
+    let lastProgressAt = now();
+    let lastLabel = null;
+    let openInteractions = 0;
+    let tripped = false;
+    const markProgress = (label) => {
+        lastProgressAt = now();
+        if (label !== null) {
+            lastLabel = label;
+        }
+    };
+    const checkpoint = async (label) => {
+        markProgress(label);
+        try {
+            await captureBrowserPage(args.capture, args.page, `session-establish-${label}`);
+        }
+        catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            process.stderr.write(`[session-watchdog] checkpoint capture failed for ${label}: ${message}\n`);
+        }
+    };
+    const wrapSendInteraction = (send) => async (req) => {
+        openInteractions++;
+        markProgress(null);
+        try {
+            return await send(req);
+        }
+        finally {
+            openInteractions--;
+            markProgress(null);
+        }
+    };
+    const run = async (work) => {
+        let timer;
+        let tripInfo = null;
+        const TRIP = Symbol("session-establish-trip");
+        const tripPromise = new Promise((resolve) => {
+            const onTick = () => {
+                if (tripped || openInteractions > 0) {
+                    return;
+                }
+                const sinceMs = now() - lastProgressAt;
+                if (sinceMs <= deadlineMs) {
+                    return;
+                }
+                tripped = true;
+                if (timer) {
+                    clearInterval(timer);
+                }
+                tripInfo = { lastLabel, sinceMs };
+                args.onTrip?.(tripInfo);
+                resolve(TRIP);
+            };
+            timer = setInterval(onTick, pollIntervalMs);
+            timer.unref?.();
+        });
+        const workPromise = work();
+        workPromise.catch(() => undefined);
+        try {
+            const outcome = await Promise.race([workPromise, tripPromise]);
+            if (outcome === TRIP) {
+                const info = tripInfo;
+                const sinceMs = info?.sinceMs ?? deadlineMs;
+                const lastCheckpoint = info?.lastLabel ?? "<none>";
+                throw new TerminalError(`${args.name}_session_establish_timeout: no session-establishment progress for ${String(sinceMs)}ms ` +
+                    `(last checkpoint: ${lastCheckpoint}); failing run closed`, true);
+            }
+        }
+        finally {
+            if (timer) {
+                clearInterval(timer);
+            }
+        }
+    };
+    return { checkpoint, wrapSendInteraction, run };
+}
 async function establishSession(hooks, args) {
     const { ensureSession, probeSession } = hooks;
-    const { assist, capture, completeAssistance, context, page, name, sendInteraction, progress } = args;
+    const { assist, capture, checkpoint, completeAssistance, context, page, name, sendInteraction, progress } = args;
+    await checkpoint("session-establish:begin");
     if (typeof ensureSession === "function") {
         try {
-            await ensureSession({ assist, capture, completeAssistance, context, page, sendInteraction, progress });
+            await ensureSession({
+                assist,
+                capture,
+                checkpoint,
+                completeAssistance,
+                context,
+                page,
+                sendInteraction,
+                progress,
+            });
             return;
         }
         catch (err) {
@@ -692,6 +807,7 @@ async function establishSession(hooks, args) {
     if (typeof probeSession !== "function") {
         return;
     }
+    await checkpoint("session-establish:probe");
     if (await probeSession({ context, page })) {
         return;
     }
@@ -701,6 +817,7 @@ async function establishSession(hooks, args) {
         message: `${name} session expired. Open the browser and re-authenticate, then continue.`,
         timeoutSeconds: 1800,
     }, sendInteraction);
+    await checkpoint("session-establish:probe-after-manual");
     if (await probeSession({ context, page })) {
         return;
     }

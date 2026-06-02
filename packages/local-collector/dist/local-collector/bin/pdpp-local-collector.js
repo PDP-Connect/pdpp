@@ -86,7 +86,12 @@ async function main() {
     }
     if (options.command === "status" || options.command === "doctor") {
         const status = inspectLocalOutboxStatus(options);
-        process.stdout.write(`${JSON.stringify(options.command === "doctor" ? buildLocalOutboxDoctor(status) : status, null, 2)}\n`);
+        if (options.command === "doctor") {
+            const errorSummary = readLocalOutboxDeadLetterErrorSummary(options);
+            process.stdout.write(`${JSON.stringify(buildLocalOutboxDoctor(status, errorSummary), null, 2)}\n`);
+            return;
+        }
+        process.stdout.write(`${JSON.stringify(status, null, 2)}\n`);
         return;
     }
     if (options.command === "retry-dead-letters") {
@@ -197,21 +202,62 @@ export function inspectLocalOutboxStatus(options) {
         },
     };
 }
-export function buildLocalOutboxDoctor(status) {
+export function buildLocalOutboxDoctor(status, errorSummary) {
     const checks = {
         expired_leases: status.outbox.expired_leases > 0 ? "warn" : "ok",
         outbox_db: status.db.exists ? "ok" : "missing",
         outbox_failures: status.outbox.counts.dead_letter > 0 ? "fail" : "ok",
     };
+    const remediation = [];
+    if (checks.outbox_failures === "fail") {
+        const topClass = errorSummary?.top_classes?.[0];
+        const causeHint = topClass
+            ? ` Most common cause: ${topClass.error_class} (${topClass.count} row(s)).`
+            : "";
+        remediation.push(`${status.outbox.counts.dead_letter} dead-letter row(s) need recovery.${causeHint} ` +
+            "Preview with `pdpp-local-collector retry-dead-letters`, then requeue with " +
+            "`pdpp-local-collector retry-dead-letters --apply` (backs up the DB first), " +
+            "then re-run the collector to drain the requeued rows.");
+    }
+    const includeSummary = Boolean(errorSummary) && status.outbox.counts.dead_letter > 0;
     return {
         ...status,
         checks,
+        ...(includeSummary && errorSummary ? { dead_letter_error_summary: errorSummary } : {}),
+        ...(remediation.length > 0 ? { remediation } : {}),
         status: checks.outbox_failures === "fail"
             ? "critical"
             : checks.expired_leases === "warn" || checks.outbox_db === "missing"
                 ? "warning"
                 : "ok",
     };
+}
+export function readLocalOutboxDeadLetterErrorSummary(options) {
+    const dbPath = resolveOutboxPath(options);
+    if (!existsSync(dbPath)) {
+        return null;
+    }
+    const outbox = new LocalDeviceOutbox({ path: dbPath });
+    try {
+        const summary = outbox.deadLetterErrorSummary(options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {});
+        return summary.dead_letter_count > 0 ? summary : null;
+    }
+    finally {
+        outbox.close();
+    }
+}
+const RETRY_DEAD_LETTERS_NO_MATCH_NOTE = "No dead-letter rows matched. If the dashboard shows this connection as " +
+    "blocked/stalled, that is a state-read block, not a dead-letter backlog — " +
+    "there is nothing to requeue. Recovery is to re-run the collector " +
+    "(`pdpp-local-collector run …`), which re-reads prior state and clears the block.";
+function retryDeadLettersMatchNote(matched, dryRun) {
+    if (matched === 0) {
+        return RETRY_DEAD_LETTERS_NO_MATCH_NOTE;
+    }
+    const requeued = dryRun
+        ? `${matched} dead-letter row(s) would be requeued (dry run). Re-run with --apply to requeue (backs up the DB first), `
+        : `${matched} dead-letter row(s) matched and were requeued to pending. `;
+    return `${requeued}then re-run the collector (\`pdpp-local-collector run …\`) to drain them — requeue moves rows to pending, it does not ingest.`;
 }
 export function retryLocalOutboxDeadLetters(options) {
     const dbPath = resolveOutboxPath(options);
@@ -227,6 +273,7 @@ export function retryLocalOutboxDeadLetters(options) {
                 source_instance_id: options.sourceInstanceId ?? null,
             },
             matched: 0,
+            note: retryDeadLettersMatchNote(0, !options.apply),
             requeued: 0,
             status_after: null,
             status_before: null,
@@ -235,6 +282,7 @@ export function retryLocalOutboxDeadLetters(options) {
     const outbox = new LocalDeviceOutbox({ path: dbPath });
     try {
         const statusBefore = summaryCounts(outbox.summary(options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {}));
+        const errorSummary = outbox.deadLetterErrorSummary(options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {});
         const dryRun = !options.apply;
         const backupPath = dryRun ? null : backupSqliteDb(outbox, dbPath);
         const result = outbox.requeueDeadLetters({
@@ -247,6 +295,7 @@ export function retryLocalOutboxDeadLetters(options) {
         return {
             backup_path: backupPath,
             db: { exists: true, path: dbPath },
+            ...(errorSummary.dead_letter_count > 0 ? { dead_letter_error_summary: errorSummary } : {}),
             dry_run: dryRun,
             filter: {
                 kind: options.deadLetterKind ?? null,
@@ -254,6 +303,7 @@ export function retryLocalOutboxDeadLetters(options) {
                 source_instance_id: options.sourceInstanceId ?? null,
             },
             matched: result.matched,
+            note: retryDeadLettersMatchNote(result.matched, dryRun),
             requeued: result.requeued,
             status_after: statusAfter,
             status_before: statusBefore,

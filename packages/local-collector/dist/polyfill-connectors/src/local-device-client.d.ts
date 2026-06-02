@@ -35,8 +35,16 @@ export interface HeartbeatOutboxDiagnostics {
     succeeded: number;
     total: number;
 }
+export interface HeartbeatLastError {
+    kind: "state_read_failed" | "dead_letter_backlog";
+    top_dead_letter_classes?: {
+        count: number;
+        error_class: string;
+    }[];
+}
 export interface HeartbeatRequest {
     connector_id: string;
+    last_error?: HeartbeatLastError | null;
     outbox?: HeartbeatOutboxDiagnostics;
     records_pending?: number;
     source_instance_id: string;

@@ -60,7 +60,30 @@ function resolveManagedNekoDescriptorFromEnv(env) {
 function generateInteractionId() {
     return `int_${String(Date.now())}_${randomBytes(4).toString("hex")}`;
 }
-async function readManualActionPageMetadata(page) {
+export const DEADLINE_TIMEOUT = Symbol("pdpp.browser-handoff.deadline-timeout");
+const DEFAULT_METADATA_READ_DEADLINE_MS = 2000;
+export async function withDeadline(work, ms, onTimeout) {
+    if (!(Number.isFinite(ms) && ms > 0)) {
+        return work;
+    }
+    let timer;
+    const deadline = new Promise((resolve) => {
+        timer = setTimeout(() => {
+            onTimeout?.();
+            resolve(DEADLINE_TIMEOUT);
+        }, ms);
+        timer.unref?.();
+    });
+    try {
+        return await Promise.race([work, deadline]);
+    }
+    finally {
+        if (timer) {
+            clearTimeout(timer);
+        }
+    }
+}
+async function readManualActionPageMetadata(page, deadlineMs = DEFAULT_METADATA_READ_DEADLINE_MS) {
     let pageUrl;
     let pageTitle;
     try {
@@ -69,7 +92,12 @@ async function readManualActionPageMetadata(page) {
     catch {
     }
     try {
-        pageTitle = await page.title();
+        const titleResult = await withDeadline(page.title(), deadlineMs, () => {
+            process.stderr.write(`[browser-handoff] page.title() timed out after ${String(deadlineMs)}ms; emitting interaction without page title.\n`);
+        });
+        if (titleResult !== DEADLINE_TIMEOUT) {
+            pageTitle = titleResult;
+        }
     }
     catch {
     }

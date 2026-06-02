@@ -380,6 +380,48 @@ export class LocalDeviceOutbox {
         }
         return summary;
     }
+    deadLetterErrorSummary(input = {}) {
+        const limit = input.limit && input.limit > 0 ? input.limit : 5;
+        const rows = input.sourceInstanceId
+            ? this.#db
+                .prepare(`SELECT last_error AS last_error, COUNT(*) AS total
+               FROM local_device_outbox
+              WHERE status = 'dead_letter' AND source_instance_id = ?
+              GROUP BY last_error`)
+                .all(input.sourceInstanceId)
+            : this.#db
+                .prepare(`SELECT last_error AS last_error, COUNT(*) AS total
+               FROM local_device_outbox
+              WHERE status = 'dead_letter'
+              GROUP BY last_error`)
+                .all();
+        const classCounts = new Map();
+        let deadLetterCount = 0;
+        let nullErrorCount = 0;
+        for (const rowLike of rows) {
+            if (!isRecord(rowLike)) {
+                continue;
+            }
+            const total = numberFrom(rowLike.total);
+            deadLetterCount += total;
+            const raw = rowLike.last_error;
+            if (typeof raw !== "string" || raw.trim() === "") {
+                nullErrorCount += total;
+                continue;
+            }
+            const errorClass = classifyDeadLetterError(raw);
+            classCounts.set(errorClass, (classCounts.get(errorClass) ?? 0) + total);
+        }
+        const top_classes = [...classCounts.entries()]
+            .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+            .slice(0, limit)
+            .map(([error_class, count]) => ({ count, error_class }));
+        return {
+            dead_letter_count: deadLetterCount,
+            null_error_count: nullErrorCount,
+            top_classes,
+        };
+    }
     #countWhere(clauses, params, limit) {
         if (limit == null) {
             const row = this.#db
@@ -536,6 +578,29 @@ function normalizeLimit(value) {
 }
 function sqlStringLiteral(value) {
     return `'${value.replaceAll("'", "''")}'`;
+}
+const DEAD_LETTER_SECRET_RE = /\b(authorization|bearer|token|password|passwd|cookie|secret|otp|api[_-]?key)\b\s*[:=]\s*\S+/gi;
+const DEAD_LETTER_OTP_RE = /\b\d{6}\b/g;
+const DEAD_LETTER_LONG_OPAQUE_RE = /\b[A-Za-z0-9_-]{24,}\b/g;
+const DEAD_LETTER_PATH_RE = /(?:\/home|\/Users|\/root)\/[^\s"',)]+|[A-Za-z]:\\Users\\[^\s"',)]+/g;
+const DEAD_LETTER_URL_RE = /https?:\/\/[^\s"',)]+/gi;
+const DEAD_LETTER_HEX_ID_RE = /\b[0-9a-f]{8,}\b/gi;
+const DEAD_LETTER_NUMBER_RE = /\b\d{4,}\b/g;
+const DEAD_LETTER_MAX_LENGTH = 160;
+export function classifyDeadLetterError(raw) {
+    let s = raw.split("\n", 1)[0] ?? "";
+    s = s.replace(DEAD_LETTER_PATH_RE, "[PATH]");
+    s = s.replace(DEAD_LETTER_URL_RE, "[URL]");
+    s = s.replace(DEAD_LETTER_SECRET_RE, (_match, marker) => `${marker}=[REDACTED]`);
+    s = s.replace(DEAD_LETTER_OTP_RE, "[REDACTED_OTP]");
+    s = s.replace(DEAD_LETTER_LONG_OPAQUE_RE, "[REDACTED]");
+    s = s.replace(DEAD_LETTER_HEX_ID_RE, "[ID]");
+    s = s.replace(DEAD_LETTER_NUMBER_RE, "[N]");
+    s = s.replace(/\s+/g, " ").trim();
+    if (s === "") {
+        return "(unclassified)";
+    }
+    return s.length > DEAD_LETTER_MAX_LENGTH ? `${s.slice(0, DEAD_LETTER_MAX_LENGTH - 1)}…` : s;
 }
 function asOutboxRow(row) {
     if (!isRecord(row)) {

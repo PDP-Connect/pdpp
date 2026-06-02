@@ -76,6 +76,19 @@ export interface LocalDeviceOutboxRequeueDeadLettersResult {
     matched: number;
     requeued: number;
 }
+export interface LocalDeviceOutboxDeadLetterErrorClass {
+    count: number;
+    error_class: string;
+}
+export interface LocalDeviceOutboxDeadLetterErrorSummary {
+    dead_letter_count: number;
+    null_error_count: number;
+    top_classes: LocalDeviceOutboxDeadLetterErrorClass[];
+}
+export interface LocalDeviceOutboxDeadLetterErrorSummaryInput {
+    limit?: number;
+    sourceInstanceId?: string;
+}
 export declare class LocalDeviceOutbox {
     #private;
     constructor(options: LocalDeviceOutboxOptions);
@@ -123,5 +136,7 @@ export declare class LocalDeviceOutbox {
     summary(input?: {
         sourceInstanceId?: string;
     }): LocalDeviceOutboxSummary;
+    deadLetterErrorSummary(input?: LocalDeviceOutboxDeadLetterErrorSummaryInput): LocalDeviceOutboxDeadLetterErrorSummary;
 }
 export declare function buildLocalDeviceOutboxId(input: BuildLocalDeviceOutboxIdInput): string;
+export declare function classifyDeadLetterError(raw: string): string;

@@ -142,8 +142,10 @@ export async function runCollectorConnector(config) {
         const finalSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
         const recordsPending = pendingOutboxWorkCount(finalSummary);
         if (!checkpointResult.statePutFailed) {
+            const finalDeadLetterError = buildHeartbeatDeadLetterError(outbox, config.sourceInstanceId);
             await client.heartbeat({
                 connector_id: config.connector.connector_id,
+                ...(finalDeadLetterError ? { last_error: finalDeadLetterError } : {}),
                 outbox: buildHeartbeatOutboxDiagnostics(finalSummary, {
                     backlogOpen: countOpenBacklogGaps(outbox, config.sourceInstanceId),
                 }),
@@ -229,6 +231,7 @@ async function readPriorStateOrBlock(input) {
     catch (error) {
         await safeHeartbeat(input.client, {
             connector_id: input.config.connector.connector_id,
+            last_error: { kind: "state_read_failed" },
             records_pending: input.recordsPending,
             source_instance_id: input.config.sourceInstanceId,
             status: "blocked",
@@ -797,7 +800,7 @@ async function drainClaimedOutboxItem(input, item, result, sentByKind) {
     }
 }
 function failOutboxItem(input, item, error, result) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeCollectorGapDetails(error instanceof Error ? error.message : String(error));
     try {
         if (error instanceof OutboxPayloadShapeError || item.attempt_count + 1 >= input.policy.maxAttempts) {
             input.outbox.deadLetter({
@@ -1045,6 +1048,16 @@ export function buildHeartbeatOutboxDiagnostics(summary, options = {}) {
         stale_leases: summary.staleLeases,
         succeeded: summary.succeeded,
         total: summary.total,
+    };
+}
+function buildHeartbeatDeadLetterError(outbox, sourceInstanceId) {
+    const summary = outbox.deadLetterErrorSummary({ sourceInstanceId });
+    if (summary.dead_letter_count === 0) {
+        return null;
+    }
+    return {
+        kind: "dead_letter_backlog",
+        top_dead_letter_classes: summary.top_classes,
     };
 }
 function countOpenBacklogGaps(outbox, sourceInstanceId) {
