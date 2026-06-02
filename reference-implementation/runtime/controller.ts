@@ -47,7 +47,11 @@ import {
 } from "../server/stores/scheduler-store.ts";
 import { browserSurfaceLeaseEnv } from "./browser-surface-leases.ts";
 import { readBrowserSurfaceProfileKey } from "./browser-surface-profile-key.ts";
-import type { BrowserSurfaceReadinessProbe, BrowserSurfaceReadinessProbeResult } from "./browser-surface-readiness.ts";
+import {
+  type BrowserSurfaceReadinessProbe,
+  type BrowserSurfaceReadinessProbeResult,
+  createMidWaitSurfaceLossDetector,
+} from "./browser-surface-readiness.ts";
 import { runConnector } from "./index.js";
 import {
   automaticIneligibilityReason,
@@ -298,6 +302,12 @@ export interface ControllerOptions {
   browserSurfaceAllocator?: BrowserSurfaceAllocator;
   browserSurfaceLeaseManager?: BrowserSurfaceLeaseManager;
   browserSurfaceLeaseStore?: BrowserSurfaceLeaseStore;
+  /**
+   * Poll interval for the mid-wait surface-loss detector (ms). Defaults to
+   * `DEFAULT_MID_WAIT_SURFACE_LOSS_POLL_INTERVAL_MS` (10 s). Tests set this
+   * low to make detection synchronous without real timers.
+   */
+  browserSurfaceMidWaitPollIntervalMs?: number;
   /**
    * Optional preflight readiness probe. Production wiring installs a default
    * HTTP-based probe once the lease manager and allocator both report a
@@ -1525,6 +1535,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
   // a fake n.eko url in every controller test.
   const browserSurfaceReadinessProbe: BrowserSurfaceReadinessProbe | null =
     opts.browserSurfaceReadinessProbe === undefined ? null : opts.browserSurfaceReadinessProbe;
+  const browserSurfaceMidWaitPollIntervalMs = opts.browserSurfaceMidWaitPollIntervalMs;
   const runConnectorImpl = opts.runConnectorImpl || runConnector;
   const pendingBrowserSurfaceLaunches = new Map<string, RunNowOptions>();
   const activeRunTraceContexts = new Map<string, SpineTraceContext>();
@@ -1962,6 +1973,43 @@ export function createController(opts: ControllerOptions = {}): Controller {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log.warn?.(`[controller] failed to emit run.browser_surface_probe_failed for ${runId}: ${message}`);
+    }
+  }
+
+  async function emitBrowserSurfaceLostEvent(input: {
+    readonly connectorId: string;
+    readonly interactionId: string;
+    readonly interactionKind: string;
+    readonly probeCode: string;
+    readonly probeDetail: string;
+    readonly runId: string;
+    readonly traceContext: SpineTraceContext;
+  }): Promise<void> {
+    try {
+      await emitSpineEvent({
+        event_type: "run.browser_surface_lost",
+        trace_id: input.traceContext.trace_id,
+        scenario_id: input.traceContext.scenario_id,
+        actor_type: "runtime",
+        actor_id: input.connectorId,
+        object_type: "run",
+        object_id: input.runId,
+        status: "surface_failed",
+        run_id: input.runId,
+        data: {
+          source: buildRunSource(input.connectorId),
+          interaction_id: input.interactionId,
+          kind: input.interactionKind,
+          browser_surface_probe: {
+            ok: false,
+            code: input.probeCode,
+            detail: input.probeDetail,
+          },
+        },
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn?.(`[controller] failed to emit run.browser_surface_lost for ${input.runId}: ${message}`);
     }
   }
 
@@ -2870,6 +2918,86 @@ export function createController(opts: ControllerOptions = {}): Controller {
     resolveCancelledInteraction(input.runId);
   }
 
+  /**
+   * Wraps an interaction handler to race each manual_action interaction
+   * against a mid-wait surface-loss detector. If the detector fires first,
+   * the pending interaction entry is cleared (stale-response guard active),
+   * run.browser_surface_lost is emitted, and the interaction resolves
+   * cancelled — the owner is not re-prompted against the dead surface.
+   *
+   * Returns the original handler unchanged when the readiness probe or lease
+   * manager are not wired, or when no leased surface is found for the run.
+   */
+  function wrapInteractionHandlerWithSurfaceLossDetection(
+    runId: string,
+    connectorId: string,
+    traceContext: SpineTraceContext,
+    handler: (interaction: unknown) => Promise<unknown>
+  ): (interaction: unknown) => Promise<unknown> {
+    if (!(browserSurfaceReadinessProbe && browserSurfaceLeaseManager)) {
+      return handler;
+    }
+    return (rawInteraction: unknown) => {
+      const interaction = rawInteraction as RuntimeInteraction;
+
+      // Only monitor browser-surface interactions.
+      if (interaction.kind !== "manual_action") {
+        return handler(rawInteraction);
+      }
+
+      const lease = browserSurfaceLeaseManager
+        .listLeases()
+        .find((candidate: BrowserSurfaceLease) => candidate.run_id === runId && candidate.status === "leased");
+      const surface = lease?.surface_id ? browserSurfaceLeaseManager.getSurface(lease.surface_id) : null;
+
+      if (!(lease && surface)) {
+        // No surface found — fall through to the unguarded handler.
+        return handler(rawInteraction);
+      }
+
+      const detector = createMidWaitSurfaceLossDetector(
+        surface,
+        browserSurfaceReadinessProbe,
+        browserSurfaceMidWaitPollIntervalMs === undefined ? {} : { pollIntervalMs: browserSurfaceMidWaitPollIntervalMs }
+      );
+
+      // The response promise resolves when the owner (or timeout) responds.
+      // Wrap the original handler so we can cancel the detector on completion.
+      const responsePromise = Promise.resolve(handler(rawInteraction)).finally(() => {
+        detector.cancel();
+      });
+
+      const lostResponse: Promise<unknown> = detector.lossPromise.then((failure) => {
+        // Clear the pending interaction entry BEFORE resolving so any
+        // in-flight respondToInteraction call gets no_pending_interaction.
+        const currentEntry = activeRunInteractions.get(runId);
+        if (currentEntry?.pending?.interaction_id === interaction.request_id) {
+          currentEntry.pending = null;
+        }
+
+        detachControllerTask(
+          emitBrowserSurfaceLostEvent({
+            connectorId,
+            interactionId: interaction.request_id,
+            interactionKind: interaction.kind,
+            probeCode: failure.code,
+            probeDetail: failure.detail,
+            runId,
+            traceContext,
+          })
+        );
+
+        return {
+          type: "INTERACTION_RESPONSE",
+          request_id: interaction.request_id,
+          status: "cancelled",
+        };
+      });
+
+      return Promise.race([responsePromise, lostResponse]);
+    };
+  }
+
   async function validateRunNowPreconditions(
     connectorId: string,
     options: RunNowOptions,
@@ -2956,12 +3084,18 @@ export function createController(opts: ControllerOptions = {}): Controller {
     });
 
     const connectorDisplayName = readManifestDisplayName(manifest) ?? connectorId;
-    const interactionHandler = (interaction: unknown) =>
+    const baseInteractionHandler = (interaction: unknown) =>
       brokerInteraction(runId, connectorId, interaction as RuntimeInteraction, {
         connectorDisplayName,
         log,
         ownerSubjectId,
       });
+    const interactionHandler = wrapInteractionHandlerWithSurfaceLossDetection(
+      runId,
+      connectorId,
+      traceContext,
+      baseInteractionHandler
+    );
     const handleAssistanceProgress = (msg: unknown) => {
       // Progress is persisted via the event spine, not this callback. The
       // one exception is nonblocking ASSISTANCE: the owner has to act

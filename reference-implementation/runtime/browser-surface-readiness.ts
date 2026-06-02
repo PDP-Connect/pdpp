@@ -100,10 +100,96 @@ interface UsableDevtoolsPageTarget {
 }
 
 export const DEFAULT_BROWSER_SURFACE_READINESS_PROBE_TIMEOUT_MS = 5000;
+export const DEFAULT_MID_WAIT_SURFACE_LOSS_POLL_INTERVAL_MS = 10_000;
 
 export interface CreateDefaultBrowserSurfaceReadinessProbeOptions {
   readonly fetchImpl?: typeof fetch;
   readonly timeoutMs?: number;
+}
+
+export interface MidWaitSurfaceLossDetectorOptions {
+  readonly pollIntervalMs?: number;
+}
+
+export interface MidWaitSurfaceLossDetector {
+  /** Stop polling. Safe to call multiple times. */
+  cancel(): void;
+  /**
+   * Resolves with the first failing probe result, or never resolves if the
+   * surface stays live until `cancel()` is called.
+   */
+  readonly lossPromise: Promise<BrowserSurfaceReadinessProbeFailure>;
+}
+
+/**
+ * Create a detector that polls a browser surface during an open interaction
+ * wait and resolves `lossPromise` with the first failing probe result.
+ *
+ * Callers race `lossPromise` against the owner-response promise and cancel
+ * the detector when the race settles (either the owner responded or the
+ * surface died).
+ */
+export function createMidWaitSurfaceLossDetector(
+  surface: BrowserSurface,
+  probe: BrowserSurfaceReadinessProbe,
+  options: MidWaitSurfaceLossDetectorOptions = {}
+): MidWaitSurfaceLossDetector {
+  const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_MID_WAIT_SURFACE_LOSS_POLL_INTERVAL_MS;
+
+  let cancelled = false;
+  let timerId: ReturnType<typeof setTimeout> | null = null;
+  let resolveFailure!: (failure: BrowserSurfaceReadinessProbeFailure) => void;
+
+  const lossPromise = new Promise<BrowserSurfaceReadinessProbeFailure>((resolve) => {
+    resolveFailure = resolve;
+  });
+
+  function scheduleNextPoll(): void {
+    if (cancelled) {
+      return;
+    }
+    timerId = setTimeout(() => {
+      if (cancelled) {
+        return;
+      }
+      probe
+        .probe(surface)
+        .then((result) => {
+          if (cancelled) {
+            return;
+          }
+          if (result.ok) {
+            scheduleNextPoll();
+          } else {
+            resolveFailure(result);
+          }
+        })
+        .catch((err: unknown) => {
+          if (cancelled) {
+            return;
+          }
+          const message = err instanceof Error ? err.message : String(err);
+          resolveFailure({
+            ok: false,
+            code: "browser_surface_cdp_unreachable",
+            detail: `mid-wait surface poll threw: ${message}`,
+          });
+        });
+    }, pollIntervalMs);
+  }
+
+  scheduleNextPoll();
+
+  return {
+    lossPromise,
+    cancel() {
+      cancelled = true;
+      if (timerId !== null) {
+        clearTimeout(timerId);
+        timerId = null;
+      }
+    },
+  };
 }
 
 /**
