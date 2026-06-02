@@ -1297,6 +1297,10 @@ async function resolveOwnerConnectorNamespace(req, connectorId, options = {}) {
     connectorInstanceId: explicitConnectorInstanceId,
     connectorInstanceStore: createRequestConnectorInstanceStore(),
     allowDefaultAccount: options.allowDefaultAccount ?? true,
+    // Only the owner-session capture path and the owner-authenticated
+    // first-ingest path pass `['active','draft']` to reach a static-secret
+    // draft. Every other caller inherits the active-only default.
+    ...(options.allowStatuses ? { allowStatuses: options.allowStatuses } : {}),
     displayName: options.displayName ?? connectorId,
     now: options.now,
   });

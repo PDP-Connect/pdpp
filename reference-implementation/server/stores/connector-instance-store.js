@@ -6,7 +6,17 @@ import { postgresQuery, withPostgresTransaction } from '../postgres-storage.js';
 const ACTIVE_RESOLUTION_LIMIT = 2;
 const ACTIVE_FANIN_LIMIT = 64;
 const LIST_LIMIT = 500;
-const VALID_STATUSES = new Set(['active', 'paused', 'revoked']);
+// `draft` is reserved for static-secret owner-session connection setup: a real
+// connector_instances row that is excluded from every connection read surface
+// until its first successful ingest flips it to `active`. Only the owner-session
+// static-secret draft-create surface produces a `draft`; no other
+// materialization path does. See add-static-secret-owner-session-connect-path
+// design Decision 1.
+const VALID_STATUSES = new Set(['active', 'paused', 'revoked', 'draft']);
+// Statuses hidden from `listByOwner` (the single choke point for every
+// connection read surface). A draft must never appear in a list, count, or
+// dashboard view. See Decision 2.
+const READ_SURFACE_HIDDEN_STATUSES = new Set(['draft']);
 // `browser_collector` is a peer of `local_device` on the connector-instance
 // source-binding axis: a binding collected by a local collector driving a
 // browser session for a browser-bound connector. See
@@ -206,6 +216,14 @@ export async function resolveOwnerConnectorInstanceNamespace({
   connectorInstanceId = null,
   connectorInstanceStore,
   allowDefaultAccount = false,
+  // Statuses admissible when an instance is addressed explicitly by
+  // connector_instance_id. Defaults to active-only. ONLY the owner-session
+  // capture path and the owner-authenticated first-ingest path pass
+  // `['active', 'draft']` to reach a static-secret draft. No grant-scoped,
+  // client, MCP, or owner-agent READ path passes a non-default value, so a
+  // draft is never resolvable as a read target. See
+  // add-static-secret-owner-session-connect-path design Decision 3.
+  allowStatuses = ['active'],
   displayName = null,
   now = new Date().toISOString(),
 }) {
@@ -253,7 +271,7 @@ export async function resolveOwnerConnectorInstanceNamespace({
           { ownerSubjectId, connectorId, actualConnectorId: instance.connectorId, connectorInstanceId },
         );
       }
-      if (instance.status !== 'active') {
+      if (!allowStatuses.includes(instance.status)) {
         throw new ConnectorInstanceResolutionError(
           'connector_instance_inactive',
           `Connector instance '${connectorInstanceId}' is '${instance.status}', not active.`,
@@ -393,7 +411,16 @@ export function createSqliteConnectorInstanceStore() {
     },
 
     listByOwner(ownerSubjectId, { limit = LIST_LIMIT } = {}) {
-      return getMany(referenceQueries.connectorInstancesListByOwner, [ownerSubjectId], { limit }).rows.map(mapInstance);
+      // Draft instances are invisible to every connection read surface; the
+      // `connectorInstancesListByOwner` query excludes `status = 'draft'` in
+      // SQL (so the LIMIT window counts only visible rows). The JS post-filter
+      // below is defense-in-depth in case the query is ever swapped. This is
+      // the single choke point that hides drafts from the dashboard,
+      // /_ref/connections, /_ref/connector-instances, owner-agent reads,
+      // templates, and device-exporter listings. See Decision 2.
+      return getMany(referenceQueries.connectorInstancesListByOwner, [ownerSubjectId], { limit })
+        .rows.map(mapInstance)
+        .filter((instance) => !READ_SURFACE_HIDDEN_STATUSES.has(instance.status));
     },
 
     resolveActiveByConnector(ownerSubjectId, connectorId) {
@@ -419,6 +446,23 @@ export function createSqliteConnectorInstanceStore() {
       }
       exec(referenceQueries.connectorInstancesUpdateStatus, [status, updatedAt, revokedAt, connectorInstanceId]);
       return this.get(connectorInstanceId);
+    },
+
+    // Flip a static-secret draft to active on its first successful ingest.
+    // No-op when the row is missing or not `draft` (idempotent and safe under a
+    // concurrent first run — a second activation finds the row already active).
+    // Never moves a paused/revoked row to active. See
+    // add-static-secret-owner-session-connect-path design Decision 5.
+    activateDraft(connectorInstanceId, { now } = {}) {
+      const instance = this.get(connectorInstanceId);
+      if (!instance || instance.status !== 'draft') {
+        return instance;
+      }
+      return this.updateStatus(connectorInstanceId, {
+        status: 'active',
+        updatedAt: now ?? new Date().toISOString(),
+        revokedAt: null,
+      });
     },
 
     setDisplayName(connectorInstanceId, { ownerSubjectId, displayName, updatedAt }) {
@@ -625,10 +669,13 @@ export function createPostgresConnectorInstanceStore() {
     },
 
     async listByOwner(ownerSubjectId, { limit = LIST_LIMIT } = {}) {
+      // Draft instances are invisible to every connection read surface (the
+      // single choke point — see SQLite arm / Decision 2). Filtered in SQL here
+      // so the LIMIT applies to visible rows.
       const result = await postgresQuery(
         `SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
          FROM connector_instances
-         WHERE owner_subject_id = $1
+         WHERE owner_subject_id = $1 AND status <> 'draft'
          ORDER BY connector_id ASC, created_at ASC, connector_instance_id ASC
          LIMIT $2`,
         [ownerSubjectId, limit],
@@ -667,6 +714,20 @@ export function createPostgresConnectorInstanceStore() {
       await postgresQuery(
         `UPDATE connector_instances SET status = $1, updated_at = $2, revoked_at = $3 WHERE connector_instance_id = $4`,
         [status, updatedAt, revokedAt, connectorInstanceId],
+      );
+      return await this.get(connectorInstanceId);
+    },
+
+    // Flip a static-secret draft to active on its first successful ingest. A
+    // single conditional UPDATE keyed on `status = 'draft'` is the no-op /
+    // concurrency guard: a row that is missing or not draft is untouched. See
+    // add-static-secret-owner-session-connect-path design Decision 5.
+    async activateDraft(connectorInstanceId, { now } = {}) {
+      await postgresQuery(
+        `UPDATE connector_instances
+         SET status = 'active', updated_at = $1, revoked_at = NULL
+         WHERE connector_instance_id = $2 AND status = 'draft'`,
+        [now ?? new Date().toISOString(), connectorInstanceId],
       );
       return await this.get(connectorInstanceId);
     },
