@@ -41,6 +41,7 @@ import {
   createConsentExchangeCode, consumeConsentExchangeCode,
   configureNativeManifest,
   createHostedMcpGrantPackage, getGrantPackageAccess, getGrantPackageForOwner,
+  getCumulativeClientAccessForPackage,
   listGrantPackagesForOwner, getGrantPackageIdForGrant,
   deleteRegisteredClient, exchangeOAuthAuthorizationCode, exchangeOAuthRefreshToken, getRegisteredClient,
   issueOAuthAuthorizationCodeForDeviceCode, issueOAuthAuthorizationCodeForPackageDeviceCode,
@@ -344,6 +345,7 @@ import {
   mountRefEventSubscriptionsDisable,
   mountRefEventSubscriptionsGet,
   mountRefEventSubscriptionsList,
+  mountRefGrantPackagesCumulative,
   mountRefGrantPackagesGet,
   mountRefGrantPackagesList,
   mountRefGrantPackagesRevoke,
@@ -2859,6 +2861,7 @@ function buildAsApp(opts = {}) {
     requireOwnerSession: ownerAuth.requireOwnerSession,
     listGrantPackagesForOwner,
     getGrantPackageForOwner,
+    getCumulativeClientAccessForPackage,
     revokeGrantPackage,
     listAllSubscriptions,
     getSubscriptionSummary,
@@ -2868,6 +2871,7 @@ function buildAsApp(opts = {}) {
   };
   mountRefGrantPackagesList(app, refGrantsContext);
   mountRefGrantPackagesGet(app, refGrantsContext);
+  mountRefGrantPackagesCumulative(app, refGrantsContext);
   mountRefGrantPackagesRevoke(app, refGrantsContext);
   mountRefEventSubscriptionsList(app, refGrantsContext);
   mountRefEventSubscriptionsGet(app, refGrantsContext);

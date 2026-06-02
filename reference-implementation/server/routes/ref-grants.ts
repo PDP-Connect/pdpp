@@ -70,11 +70,42 @@ export interface GrantPackageSummaryRow {
   readonly created_at: string;
   readonly member_count: number;
   readonly package_id: string;
+  readonly parent_package_id: string | null;
   readonly revoked_at: string | null;
   readonly scenario_id: string | null;
   readonly status: string;
   readonly subject_id: string;
   readonly trace_id: string | null;
+}
+
+export interface CumulativeClientPackage {
+  readonly approved_at: string | null;
+  readonly created_at: string;
+  readonly member_count: number;
+  readonly package_id: string;
+  readonly parent_package_id: string | null;
+  readonly revoked_at: string | null;
+  readonly status: string;
+}
+
+export interface CumulativeClientChild {
+  readonly added_at: string;
+  readonly grant_id: string;
+  readonly grant_status: string;
+  readonly member_status: string;
+  readonly package_id: string;
+  readonly revoked_at: string | null;
+  readonly source: string | null;
+}
+
+export interface CumulativeClientAccess {
+  readonly active_child_count: number;
+  readonly children: readonly CumulativeClientChild[];
+  readonly client_id: string;
+  readonly package_count: number;
+  readonly packages: readonly CumulativeClientPackage[];
+  readonly root_package_id: string;
+  readonly subject_id: string;
 }
 
 export interface GrantPackageListPage {
@@ -102,6 +133,7 @@ export interface GrantPackageRevokeResult {
 
 export interface MountRefGrantsContext {
   readonly getClientEventSubscriptionStore: () => ClientEventSubscriptionStore;
+  readonly getCumulativeClientAccessForPackage: (id: string) => Promise<CumulativeClientAccess | null>;
   readonly getGrantPackageForOwner: (id: string) => Promise<GrantPackageSummaryRow | null>;
   readonly getSubscriptionSummary: (subscriptionId: string) => Promise<SubscriptionSummaryRow | null>;
   readonly handleError: (res: unknown, err: unknown) => void;
@@ -163,6 +195,7 @@ export function mountRefGrantPackagesList(app: AppLike, ctx: MountRefGrantsConte
         data: page.data.map((pkg) => ({
           object: "grant_package_summary",
           package_id: pkg.package_id,
+          parent_package_id: pkg.parent_package_id,
           subject_id: pkg.subject_id,
           client_id: pkg.client_id,
           status: pkg.status,
@@ -194,6 +227,7 @@ export function mountRefGrantPackagesGet(app: AppLike, ctx: MountRefGrantsContex
       res.json({
         object: "grant_package",
         package_id: pkg.package_id,
+        parent_package_id: pkg.parent_package_id,
         subject_id: pkg.subject_id,
         client_id: pkg.client_id,
         status: pkg.status,
@@ -217,6 +251,62 @@ export function mountRefGrantPackagesGet(app: AppLike, ctx: MountRefGrantsContex
       ctx.handleError(res, err);
     }
   });
+}
+
+// GET /_ref/grant-packages/:id/cumulative
+//
+// Cumulative per-client view across the lineage of incremental add-source
+// packages linked by `parent_package_id`. Resolves the lineage root, walks
+// the tree, and returns the union of child grants the client currently holds.
+// Reference-experimental, owner-session-gated. Lineage is grouping/audit
+// metadata only — every child grant remains independently revocable and
+// `parent_package_id` carries no source authority.
+export function mountRefGrantPackagesCumulative(app: AppLike, ctx: MountRefGrantsContext): void {
+  app.get(
+    "/_ref/grant-packages/:id/cumulative",
+    ctx.requireOwnerSession,
+    async (req: RouteRequest, res: RouteResponse) => {
+      try {
+        const id = req.params.id ?? "";
+        const view = await ctx.getCumulativeClientAccessForPackage(id);
+        if (!view) {
+          ctx.pdppError(res, 404, "not_found", `grant package not found: ${id}`);
+          return;
+        }
+        res.json({
+          object: "grant_package_cumulative_view",
+          experimental: "reference.batch_consent.v1",
+          root_package_id: view.root_package_id,
+          client_id: view.client_id,
+          subject_id: view.subject_id,
+          package_count: view.package_count,
+          active_child_count: view.active_child_count,
+          packages: view.packages.map((pkg) => ({
+            object: "grant_package_lineage_member",
+            package_id: pkg.package_id,
+            parent_package_id: pkg.parent_package_id,
+            status: pkg.status,
+            member_count: pkg.member_count,
+            created_at: pkg.created_at,
+            approved_at: pkg.approved_at,
+            revoked_at: pkg.revoked_at,
+          })),
+          children: view.children.map((child) => ({
+            object: "grant_package_child",
+            package_id: child.package_id,
+            grant_id: child.grant_id,
+            grant_status: child.grant_status,
+            member_status: child.member_status,
+            added_at: child.added_at,
+            revoked_at: child.revoked_at,
+            source: child.source,
+          })),
+        });
+      } catch (err) {
+        ctx.handleError(res, err);
+      }
+    }
+  );
 }
 
 // POST /_ref/grant-packages/:id/revoke

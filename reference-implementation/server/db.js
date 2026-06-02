@@ -684,20 +684,27 @@ CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_client_status
   ON oauth_refresh_tokens(client_id, status, expires_at);
 
 CREATE TABLE IF NOT EXISTS grant_packages (
-  package_id    TEXT PRIMARY KEY,
-  subject_id    TEXT NOT NULL,
-  client_id     TEXT NOT NULL,
-  status        TEXT NOT NULL DEFAULT 'active',
-  package_json  TEXT NOT NULL,
-  trace_id      TEXT,
-  scenario_id   TEXT,
-  created_at    TEXT NOT NULL,
-  approved_at   TEXT NOT NULL,
-  revoked_at    TEXT
+  package_id        TEXT PRIMARY KEY,
+  subject_id        TEXT NOT NULL,
+  client_id         TEXT NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'active',
+  package_json      TEXT NOT NULL,
+  parent_package_id TEXT,
+  trace_id          TEXT,
+  scenario_id       TEXT,
+  created_at        TEXT NOT NULL,
+  approved_at       TEXT NOT NULL,
+  revoked_at        TEXT,
+  FOREIGN KEY(parent_package_id) REFERENCES grant_packages(package_id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_grant_packages_client_status
   ON grant_packages(client_id, status, created_at);
+
+-- Lineage lookups: walk the linked add-source packages for one client by parent.
+-- parent_package_id is cumulative-view/audit metadata, not grant authority.
+CREATE INDEX IF NOT EXISTS idx_grant_packages_parent
+  ON grant_packages(parent_package_id);
 
 CREATE TABLE IF NOT EXISTS grant_package_members (
   package_id    TEXT NOT NULL,
@@ -3043,6 +3050,19 @@ export function initDb(path = ':memory:', opts = {}) {
   );
   runWithSqliteBusyRetrySync(() => migrateBrowserSurfaceLeaseEnumChecks(raw));
   runWithSqliteBusyRetrySync(() => ensureBrowserSurfaceLeaseIndexes(raw));
+  // Incremental add-source linkage: a later same-client ceremony records the
+  // prior package it extends via `parent_package_id`. Pre-existing reference
+  // DBs predate the column; add it non-destructively (NULL = a root package
+  // with no prior linkage). It is cumulative-view/audit metadata only and
+  // carries no source or stream authority — record access is still governed
+  // solely by active child grants.
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'grant_packages', 'parent_package_id', 'TEXT'));
+  runWithSqliteBusyRetrySync(() => {
+    raw.exec(
+      `CREATE INDEX IF NOT EXISTS idx_grant_packages_parent
+         ON grant_packages(parent_package_id)`,
+    );
+  });
   // Disclosure-spine `event_seq` migration. Pre-existing reference DBs were
   // created before `event_seq` existed; add the column non-destructively and
   // seed it for any rows that lack a value. The seed orders by `rowid` —

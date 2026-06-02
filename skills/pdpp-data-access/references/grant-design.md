@@ -4,10 +4,13 @@ The PDPP grant request is the contract you offer the owner. Get it right and you
 
 ## Structure of `authorization_details[]`
 
-Each entry binds the grant to one source. The current reference accepts exactly
-one `authorization_details[]` entry per PAR request, so cross-source tasks need
-multiple requests and multiple grants. Batch consent with multiple staged
-entries is still a design track, not the current agent workflow. One entry has:
+Each entry binds the grant to one source. The single-source path accepts exactly
+one `authorization_details[]` entry per PAR request, and remains the default
+agent workflow: one source, one request, one grant. The reference also ships a
+**reference-experimental** batch path that stages several source-bounded entries
+in one ceremony, plus parent-linked add-source ceremonies that may stage exactly
+one added source — see "Reference-experimental batch consent" below. Parentless
+single-entry requests still use the default path. One entry has:
 
 | Field | Meaning | Common values |
 | --- | --- | --- |
@@ -110,7 +113,62 @@ Grant A: source={kind: connector, id: https://registry.pdpp.org/connectors/gmail
 Grant B: source={kind: connector, id: https://registry.pdpp.org/connectors/ical}, streams=[events], time_range=next 24h
 ```
 
-Don't try to bundle these into one `authorization_details[]` array entry — the reference treats one entry as one source binding.
+Don't try to bundle these into one `authorization_details[]` array entry — the reference treats one entry as one source binding. (If you genuinely need several sources set up in one owner sitting, see the reference-experimental batch path below; it still issues one independent grant per source.)
+
+### Reference-experimental batch consent
+
+> **Reference-experimental.** This path is labeled reference-experimental in the
+> rendered consent screen and in generated OpenAPI metadata. It is a reference
+> implementation behavior, not a PDPP protocol promise, and may change. The
+> default agent workflow is still one source per request. Use the batch path
+> only when the owner is explicitly setting up several sources at once.
+
+For a fresh batch, the reference accepts a PAR request whose
+`authorization_details[]` carries more than one source-bounded entry (up to a
+reference policy soft cap of 8, with a breadth warning at 6). For incremental
+add-source, a request with top-level `parent_package_id` also uses the staged
+batch path and may carry exactly one added source. Each entry still binds to
+exactly one source; the reference never merges entries into a cross-source
+request and never widens an entry beyond what you staged.
+
+```json
+{
+  "client_id": "your_client",
+  "authorization_details": [
+    { "type": "https://pdpp.org/data-access", "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/github" }, "purpose_code": "assist.summarize", "access_mode": "single_use", "streams": [{ "name": "issues" }] },
+    { "type": "https://pdpp.org/data-access", "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/gmail" }, "purpose_code": "assist.summarize", "access_mode": "single_use", "streams": [{ "name": "messages" }] }
+  ]
+}
+```
+
+What the owner ceremony does, and what you get back:
+
+- **One ceremony, per-source review.** The owner sees one review card per source plus a cumulative-risk header (sensitive-source, continuous-access, no-time-bound, no-field-projection, and total-stream counts across the batch).
+- **Per-source decisions.** The owner can approve, deny, defer, or narrow each source independently. Approving a subset issues grants for only the approved sources. The owner can narrow a source (drop streams, reduce fields, tighten a time range); you cannot widen beyond what you staged.
+- **One access mode per batch.** Every entry in one batch request must declare the same `access_mode`. If you need different modes for different sources, run separate ceremonies.
+- **Independent grants.** Approval issues one independent, source-bounded, individually revocable grant per approved source — the same grant object the single-source path produces. There is no cross-source grant.
+- **Package grouping.** The issued grants are grouped under a `package_id` for audit and timeline. `package_id` is grouping/audit metadata only; record access is still authorized solely by the active child grants. Per-grant revocation stays primary; a revoke-package convenience dispatches one revoke per child and reports partial failure honestly.
+
+#### Incremental add-source (`parent_package_id`)
+
+When the same client returns later to add one or more sources, stage a new batch
+and set a top-level `parent_package_id` to the prior package:
+
+```json
+{
+  "client_id": "your_client",
+  "parent_package_id": "gpkg_...",
+  "authorization_details": [
+    { "type": "https://pdpp.org/data-access", "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/ical" }, "purpose_code": "assist.summarize", "access_mode": "single_use", "streams": [{ "name": "events" }] }
+  ]
+}
+```
+
+- The new ceremony creates a new package linked to the prior one and issues independent grants **only for the added sources**. It never re-issues or mutates the prior package's grants.
+- `parent_package_id` is lineage/cumulative-view metadata, not a new authorization primitive — it grants nothing on its own.
+- Linkage must be to one of *your own* still-active packages for the same owner. A missing, cross-client, cross-owner, inactive, or malformed `parent_package_id` is rejected before any grant is issued.
+- The owner-facing dashboard can render the cumulative per-client view across linked packages (reference surface: `GET /_ref/grant-packages/:id/cumulative`).
+- `parent_package_id` is the signal for the staged add-source path, even when you are adding exactly one source. Without `parent_package_id`, a single-entry request remains the default one-grant path.
 
 ### Upgrade flow
 

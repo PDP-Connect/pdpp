@@ -103,6 +103,7 @@ const SUPPORTED_PENDING_REQUEST_FIELDS = new Set([
   'authorization_details',
   'client_display',
   'client_id',
+  'parent_package_id',
   'scenario_id',
 ]);
 const SUPPORTED_AUTHORIZATION_DETAIL_FIELDS = new Set([
@@ -607,6 +608,11 @@ function normalizePendingGrantRequest(input, opts = {}) {
   if (input.authorization_details.length !== 1) {
     invalidGrantInitiationRequest('Exactly one authorization_details entry is supported in this flow; use the staged batch path for multi-entry requests');
   }
+  // Defensive guard: `initiateGrant` routes parent-linked add-source requests
+  // to the staged lineage path, even when they add exactly one source.
+  if (input.parent_package_id !== undefined && input.parent_package_id !== null) {
+    invalidGrantInitiationRequest('parent_package_id is only supported on the staged batch path');
+  }
   const entry = normalizeAuthorizationDetail(input.authorization_details[0], 0, opts);
   return {
     request_kind: 'pdpp_selection_request',
@@ -649,7 +655,23 @@ function normalizeStagedGrantRequestBatch(input, opts = {}) {
     soft_cap_warning: entryCount >= BATCH_CONSENT_STAGED_ENTRY_WARNING_THRESHOLD,
     over_soft_cap: overSoftCap,
     over_cap_sources: overCapSources,
+    // Incremental add-source lineage. `parent_package_id` links this staged
+    // batch to a prior same-client package so the dashboard can render a
+    // cumulative per-client view. It is grouping/audit metadata, not a new
+    // authorization primitive: it never re-issues, widens, or mutates the
+    // prior package's child grants. Validity (existence, same client, same
+    // owner, active) is enforced at initiation and re-checked at approval,
+    // before any new package row or child grant is written.
+    parent_package_id: normalizeParentPackageIdInput(input.parent_package_id),
   };
+}
+
+function normalizeParentPackageIdInput(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string' || !value.trim()) {
+    invalidGrantInitiationRequest('parent_package_id must be a non-empty string when provided');
+  }
+  return value.trim();
 }
 
 function isStagedBatchRequest(request) {
@@ -2717,7 +2739,8 @@ export async function getManifestForStorageBinding(storageBinding, opts = {}) {
  * Returns the staged request URI plus the consent URL for the primary request/approval flow.
  */
 export async function initiateGrant(input, opts = {}) {
-  if (Array.isArray(input?.authorization_details) && input.authorization_details.length > 1) {
+  const hasParentPackageId = input?.parent_package_id !== undefined && input?.parent_package_id !== null;
+  if (Array.isArray(input?.authorization_details) && (input.authorization_details.length > 1 || hasParentPackageId)) {
     return initiateStagedGrantBatch(input, opts);
   }
   const normalized = normalizePendingGrantRequest(input, opts);
@@ -2832,6 +2855,14 @@ async function initiateStagedGrantBatch(input, opts = {}) {
     }
     batch.client.client_display = buildClientDisplayFromRegistration(registeredClient.metadata);
 
+    // Incremental add-source linkage: validate the parent now (same client,
+    // exists, active) so a malformed/cross-client link fails closed before a
+    // pending consent is created. The owner-scoped re-check happens at
+    // approval, when the approving subject is known.
+    await requireValidParentPackageLinkage(batch.parent_package_id, {
+      clientId: registeredClient.client_id,
+    });
+
     for (const entry of batch.entries) {
       const slice = asSingleEntryRequestSlice(batch, entry);
       requireStructuredPendingRequestShape(slice);
@@ -2867,6 +2898,7 @@ async function initiateStagedGrantBatch(input, opts = {}) {
         soft_cap_warning: batch.soft_cap_warning,
         over_soft_cap: batch.over_soft_cap,
         over_cap_sources: batch.over_cap_sources,
+        ...(batch.parent_package_id ? { parent_package_id: batch.parent_package_id } : {}),
         sources: batch.entries.map((entry) => describeSourceBinding(entry.source_binding)),
       },
     });
@@ -3286,9 +3318,19 @@ async function approveStagedGrantBatch(deviceCode, pending, request, subjectId, 
   }
 
   let registeredClient;
+  let parentPackage = null;
   const resolvedEntries = [];
   try {
     registeredClient = await requirePendingRequestClientRegistration(request);
+    // Re-validate incremental add-source linkage now that the approving owner
+    // (subjectId) is known. Fail closed before any new package row or child
+    // grant is written if the parent is missing, cross-client, cross-owner,
+    // or no longer active. The prior package and its child grants are never
+    // re-issued or mutated by this link.
+    parentPackage = await requireValidParentPackageLinkage(request.parent_package_id, {
+      clientId: registeredClient.client_id,
+      subjectId,
+    });
     for (let position = 0; position < approvedEntries.length; position += 1) {
       const entry = approvedEntries[position];
       const stagedIndex = approvedIndexes[position];
@@ -3335,19 +3377,22 @@ async function approveStagedGrantBatch(deviceCode, pending, request, subjectId, 
     approved_source_count: resolvedEntries.length,
     approved_source_indexes: approvedIndexes,
     source_bounded_child_grants: true,
+    ...(parentPackage ? { parent_package_id: parentPackage.package_id } : {}),
   };
 
+  const parentPackageId = parentPackage ? parentPackage.package_id : null;
   if (isPostgresStorageBackend()) {
     await pgExec(
       `INSERT INTO grant_packages(
          package_id, subject_id, client_id, status, package_json,
-         trace_id, scenario_id, created_at, approved_at, revoked_at
-       ) VALUES($1, $2, $3, 'active', $4::jsonb, $5, $6, $7, $8, NULL)`,
+         parent_package_id, trace_id, scenario_id, created_at, approved_at, revoked_at
+       ) VALUES($1, $2, $3, 'active', $4::jsonb, $5, $6, $7, $8, $9, NULL)`,
       [
         packageId,
         subjectId,
         registeredClient.client_id,
         JSON.stringify(packageEnvelope),
+        parentPackageId,
         traceContext.trace_id,
         traceContext.scenario_id,
         createdAt,
@@ -3360,6 +3405,7 @@ async function approveStagedGrantBatch(deviceCode, pending, request, subjectId, 
       subjectId,
       registeredClient.client_id,
       JSON.stringify(packageEnvelope),
+      parentPackageId,
       traceContext.trace_id,
       traceContext.scenario_id,
       createdAt,
@@ -3829,12 +3875,68 @@ function normalizePackageRow(row) {
     client_id: row.client_id,
     status: row.status,
     package: parsePackageJson(row.package_json),
+    parent_package_id: row.parent_package_id || null,
     trace_id: row.trace_id || null,
     scenario_id: row.scenario_id || null,
     created_at: row.created_at,
     approved_at: row.approved_at,
     revoked_at: row.revoked_at || null,
   };
+}
+
+/**
+ * Fetch a raw grant_packages row (status-agnostic) for lineage validation.
+ * Mirrors the column set used by `getGrantPackageForOwner` and includes
+ * `parent_package_id` so the linkage chain can be walked.
+ */
+async function getGrantPackageRow(packageId) {
+  if (!isNonEmptyString(packageId)) return null;
+  const row = isPostgresStorageBackend()
+    ? await pgOne(
+        `SELECT package_id, subject_id, client_id, status, package_json::text AS package_json,
+                parent_package_id, trace_id, scenario_id, created_at, approved_at, revoked_at
+           FROM grant_packages
+           WHERE package_id = $1`,
+        [packageId],
+      )
+    : getOne(referenceQueries.authGrantPackagesGetById, [packageId]);
+  return normalizePackageRow(row);
+}
+
+/**
+ * Validate an incremental add-source `parent_package_id` against the staged
+ * batch's client and owner. Fails closed (typed `invalid_request`) when the
+ * parent is missing, belongs to a different client, belongs to a different
+ * owner, or is not active. Returns the normalized parent package row when
+ * valid. `parent_package_id` is lineage/cumulative-view metadata only; this
+ * check governs whether a *new* package may record the link, never whether
+ * the prior package's grants change (they never do).
+ */
+async function requireValidParentPackageLinkage(parentPackageId, { clientId, subjectId } = {}) {
+  if (parentPackageId === undefined || parentPackageId === null) return null;
+  const linkageError = (message) => {
+    const err = new Error(message);
+    err.code = 'invalid_request';
+    err.param = 'parent_package_id';
+    return err;
+  };
+  if (!isNonEmptyString(parentPackageId)) {
+    throw linkageError('parent_package_id must be a non-empty string');
+  }
+  const parent = await getGrantPackageRow(parentPackageId);
+  if (!parent) {
+    throw linkageError(`parent_package_id ${parentPackageId} does not exist`);
+  }
+  if (isNonEmptyString(clientId) && parent.client_id !== clientId) {
+    throw linkageError('parent_package_id belongs to a different client; cross-client lineage is not allowed');
+  }
+  if (isNonEmptyString(subjectId) && parent.subject_id !== subjectId) {
+    throw linkageError('parent_package_id belongs to a different owner; cross-owner lineage is not allowed');
+  }
+  if (parent.status !== 'active') {
+    throw linkageError(`parent_package_id ${parentPackageId} is ${parent.status}; cannot link to an inactive package`);
+  }
+  return parent;
 }
 
 function describePackageMemberSource(grant, connectionId = null, metadata = null) {
@@ -4052,13 +4154,14 @@ export async function createHostedMcpGrantPackage({
     await pgExec(
       `INSERT INTO grant_packages(
          package_id, subject_id, client_id, status, package_json,
-         trace_id, scenario_id, created_at, approved_at, revoked_at
-       ) VALUES($1, $2, $3, 'active', $4::jsonb, $5, $6, $7, $8, NULL)`,
+         parent_package_id, trace_id, scenario_id, created_at, approved_at, revoked_at
+       ) VALUES($1, $2, $3, 'active', $4::jsonb, $5, $6, $7, $8, $9, NULL)`,
       [
         packageId,
         subjectId,
         clientId,
         JSON.stringify(packageEnvelope),
+        null,
         traceContext.trace_id,
         traceContext.scenario_id,
         createdAt,
@@ -4071,6 +4174,7 @@ export async function createHostedMcpGrantPackage({
       subjectId,
       clientId,
       JSON.stringify(packageEnvelope),
+      null,
       traceContext.trace_id,
       traceContext.scenario_id,
       createdAt,
@@ -4183,7 +4287,7 @@ export async function getGrantPackageAccess(packageId) {
   const packageRow = isPostgresStorageBackend()
     ? await pgOne(
         `SELECT package_id, subject_id, client_id, status, package_json::text AS package_json,
-                trace_id, scenario_id, created_at, approved_at, revoked_at
+                parent_package_id, trace_id, scenario_id, created_at, approved_at, revoked_at
          FROM grant_packages
          WHERE package_id = $1`,
         [packageId],
@@ -4295,7 +4399,7 @@ export async function listGrantPackagesForOwner(opts = {}) {
     const limitPlaceholder = `$${params.length}`;
     rows = (await postgresQuery(
       `SELECT gp.package_id, gp.subject_id, gp.client_id, gp.status,
-              gp.trace_id, gp.scenario_id, gp.created_at, gp.approved_at, gp.revoked_at,
+              gp.parent_package_id, gp.trace_id, gp.scenario_id, gp.created_at, gp.approved_at, gp.revoked_at,
               (SELECT COUNT(*) FROM grant_package_members gpm
                  WHERE gpm.package_id = gp.package_id) AS member_count
          FROM grant_packages gp
@@ -4356,7 +4460,7 @@ export async function getGrantPackageForOwner(packageId) {
   const packageRow = isPostgresStorageBackend()
     ? await pgOne(
         `SELECT package_id, subject_id, client_id, status, package_json::text AS package_json,
-                trace_id, scenario_id, created_at, approved_at, revoked_at
+                parent_package_id, trace_id, scenario_id, created_at, approved_at, revoked_at
            FROM grant_packages
            WHERE package_id = $1`,
         [packageId],
@@ -4397,6 +4501,125 @@ export async function getGrantPackageForOwner(packageId) {
     ...grantPackage,
     member_count: children.length,
     children,
+  };
+}
+
+/**
+ * Direct children of a package in the add-source lineage: every package
+ * whose `parent_package_id` equals `packageId`. Used to walk the lineage
+ * tree downward when assembling the cumulative per-client view. Returns
+ * normalized package rows (no members).
+ */
+async function listGrantPackagesByParent(packageId) {
+  if (!isNonEmptyString(packageId)) return [];
+  if (isPostgresStorageBackend()) {
+    const rows = (await postgresQuery(
+      `SELECT package_id, subject_id, client_id, status, package_json::text AS package_json,
+              parent_package_id, trace_id, scenario_id, created_at, approved_at, revoked_at
+         FROM grant_packages
+         WHERE parent_package_id = $1
+         ORDER BY created_at, package_id`,
+      [packageId],
+    )).rows;
+    return rows.map(normalizePackageRow).filter(Boolean);
+  }
+  // SQLite: the package count per deployment is bounded (small enumeration
+  // table); filter the all-packages listing by parent in JS rather than add
+  // another registered query.
+  const rows = allowUnboundedReadAcknowledged(referenceQueries.authGrantPackagesListAll, []);
+  return rows
+    .map(normalizePackageRow)
+    .filter((pkg) => pkg && pkg.parent_package_id === packageId);
+}
+
+/**
+ * Cumulative per-client view across one client's linked add-source packages.
+ *
+ * Given any package in a lineage, resolves the lineage ROOT by following
+ * `parent_package_id` to the top, then walks the tree downward to gather every
+ * linked package for the SAME client and owner. Returns the root, the ordered
+ * lineage, and the union of child grants across the lineage so the dashboard
+ * can render the cumulative picture a client currently holds.
+ *
+ * Lineage is grouping/audit metadata only: each child grant in the returned
+ * `children` array remains independently revocable, and `package_id` /
+ * `parent_package_id` carry no source or stream authority. Cross-client and
+ * cross-owner packages are never mixed into the cumulative view — the walk is
+ * scoped to the root package's client_id and subject_id and skips any linked
+ * row that does not match (a fail-closed guard against a tampered link).
+ *
+ * Returns `null` when the starting package id does not exist.
+ */
+export async function getCumulativeClientAccessForPackage(packageId) {
+  if (!isNonEmptyString(packageId)) return null;
+  const start = await getGrantPackageRow(packageId);
+  if (!start) return null;
+
+  // Walk up to the lineage root. Bound the walk by a visited set so a
+  // corrupt cycle cannot loop forever.
+  const visitedUp = new Set();
+  let root = start;
+  while (root.parent_package_id && !visitedUp.has(root.package_id)) {
+    visitedUp.add(root.package_id);
+    const parent = await getGrantPackageRow(root.parent_package_id);
+    if (!parent) break;
+    // Scope guard: a parent that does not match the starting client/owner is
+    // not part of this client's cumulative view; stop ascending there.
+    if (parent.client_id !== start.client_id || parent.subject_id !== start.subject_id) break;
+    root = parent;
+  }
+
+  const clientId = root.client_id;
+  const subjectId = root.subject_id;
+
+  // Walk the tree downward from the root, gathering same-client/owner packages.
+  const lineageIds = [];
+  const seen = new Set();
+  const queue = [root.package_id];
+  while (queue.length) {
+    const current = queue.shift();
+    if (seen.has(current)) continue;
+    seen.add(current);
+    lineageIds.push(current);
+    const childPackages = await listGrantPackagesByParent(current);
+    for (const child of childPackages) {
+      if (child.client_id !== clientId || child.subject_id !== subjectId) continue;
+      if (!seen.has(child.package_id)) queue.push(child.package_id);
+    }
+  }
+
+  // Assemble per-package detail (with members) in lineage order.
+  const packages = [];
+  const cumulativeChildren = [];
+  for (const id of lineageIds) {
+    const detail = await getGrantPackageForOwner(id);
+    if (!detail) continue;
+    packages.push({
+      package_id: detail.package_id,
+      parent_package_id: detail.parent_package_id,
+      status: detail.status,
+      created_at: detail.created_at,
+      approved_at: detail.approved_at,
+      revoked_at: detail.revoked_at,
+      member_count: detail.member_count,
+    });
+    for (const child of detail.children) {
+      cumulativeChildren.push({ ...child, package_id: detail.package_id });
+    }
+  }
+
+  const activeChildren = cumulativeChildren.filter(
+    (child) => child.grant_status === 'active' && child.member_status === 'active',
+  );
+
+  return {
+    client_id: clientId,
+    subject_id: subjectId,
+    root_package_id: root.package_id,
+    package_count: packages.length,
+    packages,
+    children: cumulativeChildren,
+    active_child_count: activeChildren.length,
   };
 }
 
