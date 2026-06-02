@@ -10,6 +10,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
@@ -207,4 +208,21 @@ test('the wrapper source contains no DELETE/INSERT/UPDATE and no --apply wiring'
   assert.doesNotMatch(src, /applyCompaction/, 'wrapper never references applyCompaction');
   // --apply is explicitly refused, not honored.
   assert.match(src, /does not support --apply/, 'wrapper explicitly refuses --apply');
+});
+
+test('compaction utilities are safe to import from node -e contexts', () => {
+  const repoRoot = path.resolve(__dirname, '..', '..');
+  for (const rel of [
+    'reference-implementation/scripts/compact-record-history.mjs',
+    'reference-implementation/scripts/compact-record-history-dry-run-all.mjs',
+  ]) {
+    const child = spawnSync(
+      process.execPath,
+      ['-e', `import('./${rel}').then(() => console.log('ok'))`],
+      { cwd: repoRoot, encoding: 'utf8' },
+    );
+    assert.equal(child.status, 0, `${rel} import failed: ${child.stderr || child.stdout}`);
+    assert.match(child.stdout, /ok/);
+    assert.doesNotMatch(child.stderr, /usage:|PDPP_DATABASE_URL|compact-record-history failed/i);
+  }
 });

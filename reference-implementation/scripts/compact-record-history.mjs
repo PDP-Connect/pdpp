@@ -77,6 +77,7 @@
 
 import { createHash } from 'node:crypto';
 import process from 'node:process';
+import { pathToFileURL } from 'node:url';
 
 import pg from 'pg';
 
@@ -688,9 +689,9 @@ function quoteIdent(name) {
 
 // ─── CLI entry point ────────────────────────────────────────────────────
 
-const invokedAsScript =
-  import.meta.url === `file://${process.argv[1]}` ||
-  import.meta.url.endsWith(process.argv[1] || '');
+const invokedAsScript = process.argv[1]
+  ? import.meta.url === pathToFileURL(process.argv[1]).href
+  : false;
 
 if (invokedAsScript) {
   await runCli();
