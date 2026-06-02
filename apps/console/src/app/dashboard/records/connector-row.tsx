@@ -457,11 +457,16 @@ function ConnectorRowToast({ toast }: { toast: ToastState }) {
   // Error: keep the owner on this connection's row and say whether the
   // run-start request reached the reference server, so they know whether to
   // check their deployment (before) or read the server's reason (after).
+  const isBeforeServer = toast.phase === "before_server";
   const lead = syncStartFailureLead(toast.phase);
   return (
     <div
       aria-live="polite"
-      className="pdpp-caption mx-3 mb-2 border-l-2 border-l-destructive bg-destructive/5 px-3 py-2 text-destructive"
+      className={
+        isBeforeServer
+          ? "pdpp-caption mx-3 mb-2 border-l-2 border-l-[color:var(--warning)] bg-[color:var(--warning)]/5 px-3 py-2 text-[color:var(--warning)]"
+          : "pdpp-caption mx-3 mb-2 border-l-2 border-l-destructive bg-destructive/5 px-3 py-2 text-destructive"
+      }
       data-sync-error-phase={toast.phase}
       data-testid="sync-now-error"
       role="status"

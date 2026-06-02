@@ -438,8 +438,10 @@ test("the non-sync primary-action surface is inert text, never a button or run h
 const TOAST_CARRIES_PHASE = /setToast\(\{ kind: "error", message: res\.message, phase: res\.phase \}\)/;
 const TOAST_USES_SHARED_LEAD = /syncStartFailureLead\(toast\.phase\)/;
 const TOAST_RENDERS_PHASE_ATTR = /data-sync-error-phase=\{toast\.phase\}/;
-const ACTION_PHASE_FIELD_RE = /phase: RunStartFailurePhase/;
-const ACTION_PHASE_CLASSIFY_RE = /ReferenceServerUnreachableError \? "before_server" : "after_server"/;
+const TOAST_BEFORE_SERVER_WARNING_TONE = /toast\.phase === "before_server"[\s\S]{0,260}var\(--warning\)/;
+const ACTION_PHASE_FIELD_RE = /phase: RunStartFailurePhase; reached_server: boolean/;
+const ACTION_BEFORE_SERVER_RETURN_RE = /phase: "before_server"[\s\S]{0,160}reached_server: false/;
+const ACTION_AFTER_SERVER_RETURN_RE = /phase: "after_server"[\s\S]{0,160}reached_server: true/;
 
 test("connector-row threads the run-start failure phase into a row-local error toast", async () => {
   const src = await readFile(ROW_FILE, "utf8");
@@ -450,6 +452,11 @@ test("connector-row error toast uses the shared before/after-server lead copy", 
   const src = await readFile(ROW_FILE, "utf8");
   assert.match(src, TOAST_USES_SHARED_LEAD);
   assert.match(src, TOAST_RENDERS_PHASE_ATTR);
+});
+
+test("connector-row renders before-server failures as warnings, not destructive connector errors", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.match(src, TOAST_BEFORE_SERVER_WARNING_TONE);
 });
 
 test("the sync handler never rethrows — every action result resolves to a toast/refresh", async () => {
@@ -471,7 +478,8 @@ test("the run-start action classifies failures by before/after-server phase", as
   const actionsSrc = await readFile(`${HERE}actions.ts`, "utf8");
   // The phase discriminator is on the error union.
   assert.match(actionsSrc, ACTION_PHASE_FIELD_RE);
-  // before_server is keyed on the unreachable-server error, everything else is
-  // server-origin.
-  assert.match(actionsSrc, ACTION_PHASE_CLASSIFY_RE);
+  // before_server is keyed on the unreachable-server error; normal server
+  // rejections are still marked as after_server.
+  assert.match(actionsSrc, ACTION_BEFORE_SERVER_RETURN_RE);
+  assert.match(actionsSrc, ACTION_AFTER_SERVER_RETURN_RE);
 });

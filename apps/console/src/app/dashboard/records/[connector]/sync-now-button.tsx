@@ -8,6 +8,16 @@ import { type RunNowResult, runConnectorNowAction } from "../actions.ts";
 
 const RUNNING_POLL_MS = 3000;
 
+function syncToastToneClass(tone: "info" | "error" | "warning"): string {
+  if (tone === "error") {
+    return "text-destructive";
+  }
+  if (tone === "warning") {
+    return "text-[color:var(--warning)]";
+  }
+  return "text-muted-foreground";
+}
+
 interface Props {
   connectionId: string | null;
   connectorId: string;
@@ -20,7 +30,7 @@ export function SyncNowButton({ connectionId, connectorId, displayName, initialR
   const [isPending, startTransition] = useTransition();
   const [optimisticRunning, setOptimisticRunning] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
-  const [toastTone, setToastTone] = useState<"info" | "error">("info");
+  const [toastTone, setToastTone] = useState<"info" | "error" | "warning">("info");
   const running = initialRunning || optimisticRunning;
 
   // Poll while running so the detail page auto-updates when the run
@@ -64,7 +74,7 @@ export function SyncNowButton({ connectionId, connectorId, displayName, initialR
         return;
       }
       // Stay on this connection and say whether the request reached the server.
-      setToastTone("error");
+      setToastTone(res.phase === "before_server" ? "warning" : "error");
       setToast(`${syncStartFailureLead(res.phase)} ${res.message}`.trim());
     });
   }, [connectionId, connectorId, router]);
@@ -82,7 +92,8 @@ export function SyncNowButton({ connectionId, connectorId, displayName, initialR
       {toast ? (
         <span
           aria-live="polite"
-          className={toastTone === "error" ? "pdpp-caption text-destructive" : "pdpp-caption text-muted-foreground"}
+          className={`pdpp-caption max-w-[18rem] text-right ${syncToastToneClass(toastTone)}`}
+          data-toast-tone={toastTone}
           role="status"
         >
           {toast}

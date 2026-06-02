@@ -339,3 +339,20 @@ test("no-data section copy no longer treats local-collector push as the universa
   assert.doesNotMatch(src, NO_DATA_SECTION_LOCAL_ONLY);
   assert.match(src, NO_DATA_SECTION_MIXED_POPULATION);
 });
+
+// Connection-lifecycle objective #1: version churn should not feel like
+// mystery data loss. Beyond framing it as retained history, the notice must
+// tell the owner that the per-row command is the SAFE place to start — it is
+// read-only, prints a plan, and changes nothing until re-run with --apply.
+// Both claims are verified against compact-record-history.mjs (dry-run is the
+// default; --apply backs up affected rows first).
+const CHURN_DRY_RUN_SAFETY_TESTID = /data-testid="version-churn-dry-run-safety"/;
+const CHURN_DRY_RUN_READ_ONLY = /read-only/;
+const CHURN_DRY_RUN_NAMES_APPLY = /--apply/;
+
+test("version-churn notice tells the owner the dry-run command is read-only and safe to start", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.match(src, CHURN_DRY_RUN_SAFETY_TESTID);
+  assert.match(src, CHURN_DRY_RUN_READ_ONLY);
+  assert.match(src, CHURN_DRY_RUN_NAMES_APPLY);
+});
