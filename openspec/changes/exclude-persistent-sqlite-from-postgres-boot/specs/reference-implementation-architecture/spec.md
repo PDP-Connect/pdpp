@@ -44,16 +44,18 @@ dispatch to the backend that owns runtime persistence.
 The reference implementation SHALL exercise `startServer()` startup for both the
 SQLite and Postgres backends through focused, repeatable tests, so a change that
 breaks one backend's boot does not pass under the other backend's coverage. The
-Postgres startup smoke MAY be gated on a configured Postgres test database; when
-that database is unavailable the test SHALL register as skipped rather than
-failing, and SHALL NOT be silently absent.
+Postgres startup smoke MAY be gated on a configured Postgres test endpoint; when
+that endpoint is unavailable the test SHALL register as skipped rather than
+failing, and SHALL NOT be silently absent. When the Postgres startup smoke runs,
+it SHALL use isolated test storage rather than seeding or mutating an operator's
+live proof database.
 
 #### Scenario: SQLite-only startup smoke runs by default
-- **WHEN** the reference test suite runs without a configured Postgres test database
+- **WHEN** the reference test suite runs without a configured Postgres test endpoint
 - **THEN** a SQLite-mode startup smoke test SHALL boot `startServer()`, confirm readiness, and run by default
 - **AND** the Postgres-mode startup smoke test SHALL register as skipped rather than be absent
 
-#### Scenario: Postgres-only startup smoke runs against a real Postgres
-- **WHEN** the reference test suite runs with a configured Postgres test database
-- **THEN** a Postgres-mode startup smoke test SHALL boot `startServer()` against that Postgres backend
+#### Scenario: Postgres-only startup smoke runs against isolated Postgres storage
+- **WHEN** the reference test suite runs with a configured Postgres test endpoint
+- **THEN** a Postgres-mode startup smoke test SHALL boot `startServer()` against isolated Postgres storage
 - **AND** it SHALL confirm startup reaches readiness without opening the configured persistent SQLite file

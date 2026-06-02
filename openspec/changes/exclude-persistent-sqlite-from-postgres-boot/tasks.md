@@ -34,18 +34,20 @@
   → `test/storage-mode-startup-boundary.test.js` (SQLite half).
 - [x] 3.2 Add a Postgres-mode startup smoke test (env-gated on
   `PDPP_TEST_POSTGRES_URL`, skip fallback): boot `startServer()` in Postgres mode
-  with `dbPath` pointed at a path the boot must not create, assert the path
-  is never created, assert readiness, assert the pre-registered client is
-  readable from Postgres.
+  against a temporary Postgres database with `dbPath` pointed at a path the boot
+  must not create, assert the path is never created, assert readiness, assert
+  the pre-registered client is readable from Postgres, and drop the temporary
+  database after the test.
   → `test/storage-mode-startup-boundary.test.js` (Postgres half, skips when the
-    test database is unset).
+    test endpoint is unset).
 
 ## 4. Validation
 
 - [x] 4.1 `openspec validate exclude-persistent-sqlite-from-postgres-boot --strict` — valid.
 - [x] 4.2 `openspec validate --all --strict` — 40/40 passed.
-- [x] 4.3 Focused startup smoke tests — SQLite half passes; Postgres half skips
-  (PDPP_TEST_POSTGRES_URL unset in the worker environment).
+- [x] 4.3 Focused startup smoke tests — SQLite half passes by default; Postgres
+  half registers as skipped when `PDPP_TEST_POSTGRES_URL` is unset and runs
+  against a temporary database when it is set.
 - [x] 4.4 `pnpm --dir reference-implementation run typecheck` — clean.
 - [x] 4.5 `git diff --check` — clean.
 
@@ -60,16 +62,16 @@ SQLite startup smoke (runs anywhere):
 node --test --test-force-exit reference-implementation/test/storage-mode-startup-boundary.test.js
 ```
 
-Postgres startup smoke + Postgres-gated boundary conformance (owner, requires
-the Compose Postgres proof service):
+Postgres startup smoke + Postgres-gated boundary conformance:
 
 ```sh
 docker compose --profile postgres --env-file .env.docker up -d postgres
-export PDPP_TEST_POSTGRES_URL='postgres://user:password@localhost:5432/pdpp'
+export PDPP_TEST_POSTGRES_URL='postgres://user:password@localhost:5432/postgres'
 node --test --test-force-exit reference-implementation/test/storage-mode-startup-boundary.test.js
 node --test --test-force-exit reference-implementation/test/dataset-summary-postgres-boundary.test.js
 ```
 
 If `PDPP_TEST_POSTGRES_URL` is unavailable in the worker environment, the
-Postgres half registers as skipped; the owner runs the commands above against a
-real Postgres to close the live half.
+Postgres half registers as skipped. When it is available, the startup smoke
+creates and drops its own temporary database, so it does not seed or mutate the
+operator's live proof database.

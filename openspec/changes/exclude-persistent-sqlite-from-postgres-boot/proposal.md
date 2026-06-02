@@ -53,7 +53,8 @@ seeded into SQLite instead of Postgres.
 
 ## Residual Risks
 
-- Live Postgres startup smoke depends on `PDPP_TEST_POSTGRES_URL` (the Compose
-  proof service). Where that is unavailable, the Postgres half registers a
-  skipped test and the owner runs it against a real Postgres. Documented in
-  `tasks.md` acceptance checks.
+- Postgres startup smoke depends on `PDPP_TEST_POSTGRES_URL` identifying an
+  admin-capable Postgres endpoint. Where that is unavailable, the Postgres half
+  registers a skipped test. Where it is available, the smoke creates and drops
+  its own temporary database, so it does not seed or mutate an operator's live
+  proof database.

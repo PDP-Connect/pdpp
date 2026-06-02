@@ -110,12 +110,15 @@ SQLite while testing Postgres (and vice versa). Findings:
 - **What this change adds:** an explicit *startup* smoke for both modes — the one
   contract that was only ever exercised in SQLite mode by the default test run.
   The Postgres half follows the established env-gated/skip-fallback shape so the
-  default suite stays green without Postgres, and the owner runs the real half
-  against Compose.
-- **The smallest practical Postgres harness** is the existing Compose proof
-  service (`add-compose-postgres-proof-service`, archived). The owner sets
-  `PDPP_TEST_POSTGRES_URL` to that service and runs the Postgres-gated tests; the
-  exact commands are in `tasks.md`.
+  default suite stays green without Postgres. When `PDPP_TEST_POSTGRES_URL` is
+  set, the test creates and drops an isolated temporary database before starting
+  the server, so it does not seed or mutate the operator's live proof database.
+- **The smallest practical Postgres harness** is an admin-capable local Postgres
+  endpoint, such as the existing Compose proof service
+  (`add-compose-postgres-proof-service`, archived). The owner sets
+  `PDPP_TEST_POSTGRES_URL` to an administrative database on that service
+  (typically `/postgres`) and runs the Postgres-gated tests; the exact commands
+  are in `tasks.md`.
 - **Backend-interface conformance over broad abstraction.** Consistent with the
   deferred broad-abstraction note, breakage resistance comes from durable-seam
   conformance tests, not a new storage interface layer.

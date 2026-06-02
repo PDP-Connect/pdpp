@@ -13,9 +13,10 @@
  *     path is deliberately pointed at a file that does not exist and must never
  *     be created — a Postgres boot that touched it would create it.
  *
- * The Postgres half is gated on `PDPP_TEST_POSTGRES_URL` (the Compose proof
- * service). When unset it registers a single skipped test so the contract is
- * acknowledged but the suite stays green without Postgres.
+ * The Postgres half is gated on `PDPP_TEST_POSTGRES_URL`. When set, the test
+ * creates and drops its own temporary database; when unset it registers a
+ * single skipped test so the contract is acknowledged but the suite stays green
+ * without Postgres.
  *
  * Spec: openspec/changes/exclude-persistent-sqlite-from-postgres-boot/specs/
  *       reference-implementation-architecture/spec.md
@@ -26,6 +27,8 @@ import test from 'node:test';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+import pg from 'pg';
 
 import { getRegisteredClient } from '../server/auth.js';
 import { closeDb } from '../server/db.js';
@@ -41,6 +44,52 @@ const SEED_CLIENT = {
   client_name: 'Storage Boundary Smoke',
   token_endpoint_auth_method: 'none',
 };
+
+const { Pool } = pg;
+let tempPostgresCounter = 0;
+
+function tempPostgresDbName() {
+  tempPostgresCounter += 1;
+  return `pdpp_storage_boundary_${process.pid}_${tempPostgresCounter}`;
+}
+
+function adminUrl(url) {
+  const u = new URL(url);
+  u.pathname = '/postgres';
+  return u.toString();
+}
+
+function dbUrl(url, dbName) {
+  const u = new URL(url);
+  u.pathname = `/${dbName}`;
+  return u.toString();
+}
+
+async function withTempPostgresDb(fn) {
+  const admin = new Pool({ connectionString: adminUrl(POSTGRES_URL) });
+  const name = tempPostgresDbName();
+  try {
+    await admin.query(`DROP DATABASE IF EXISTS "${name}"`);
+    await admin.query(`CREATE DATABASE "${name}"`);
+    await fn(dbUrl(POSTGRES_URL, name));
+  } finally {
+    try {
+      await closePostgresStorage();
+    } catch {}
+    try {
+      await admin.query(
+        `SELECT pg_terminate_backend(pid)
+           FROM pg_stat_activity
+          WHERE datname = $1 AND pid <> pg_backend_pid()`,
+        [name],
+      );
+    } catch {}
+    try {
+      await admin.query(`DROP DATABASE IF EXISTS "${name}"`);
+    } catch {}
+    await admin.end();
+  }
+}
 
 async function closeStartedServer(server) {
   if (!server) return;
@@ -108,41 +157,42 @@ if (!POSTGRES_URL) {
   test('Postgres-mode startup boundary (skipped: PDPP_TEST_POSTGRES_URL unset)', { skip: true }, () => {});
 } else {
   test('Postgres-mode startup reaches readiness without opening the persistent SQLite file', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'pdpp-storage-boundary-postgres-'));
-    // A persistent path the boot MUST NOT touch. If startServer opened/migrated
-    // SQLite in Postgres mode, better-sqlite3 would create this file.
-    const forbiddenSqlitePath = join(dir, 'must-not-be-created.sqlite');
-    let server = null;
-    try {
-      assert.equal(
-        existsSync(forbiddenSqlitePath),
-        false,
-        'precondition: forbidden SQLite file absent before boot',
-      );
-      server = await startServer({
-        quiet: true,
-        asPort: 0,
-        rsPort: 0,
-        dbPath: forbiddenSqlitePath,
-        storageBackend: 'postgres',
-        databaseUrl: POSTGRES_URL,
-        reconcilePolyfillManifests: false,
-        preRegisteredPublicClients: [SEED_CLIENT],
-      });
-      assert.equal(getStorageBackendKind(), 'postgres', 'Postgres mode is active');
-      assert.equal(
-        existsSync(forbiddenSqlitePath),
-        false,
-        'Postgres-mode startup SHALL NOT open/create the configured persistent SQLite file',
-      );
-      const seeded = await getRegisteredClient(SEED_CLIENT.client_id);
-      assert.ok(seeded, 'pre-registered client SHALL be readable from the Postgres backend after boot');
-      assert.equal(seeded.client_id, SEED_CLIENT.client_id);
-    } finally {
-      await closeStartedServer(server);
-      await closePostgresStorage();
-      closeDb();
-      rmSync(dir, { recursive: true, force: true });
-    }
+    await withTempPostgresDb(async (databaseUrl) => {
+      const dir = mkdtempSync(join(tmpdir(), 'pdpp-storage-boundary-postgres-'));
+      // A persistent path the boot MUST NOT touch. If startServer opened/migrated
+      // SQLite in Postgres mode, better-sqlite3 would create this file.
+      const forbiddenSqlitePath = join(dir, 'must-not-be-created.sqlite');
+      let server = null;
+      try {
+        assert.equal(
+          existsSync(forbiddenSqlitePath),
+          false,
+          'precondition: forbidden SQLite file absent before boot',
+        );
+        server = await startServer({
+          quiet: true,
+          asPort: 0,
+          rsPort: 0,
+          dbPath: forbiddenSqlitePath,
+          storageBackend: 'postgres',
+          databaseUrl,
+          reconcilePolyfillManifests: false,
+          preRegisteredPublicClients: [SEED_CLIENT],
+        });
+        assert.equal(getStorageBackendKind(), 'postgres', 'Postgres mode is active');
+        assert.equal(
+          existsSync(forbiddenSqlitePath),
+          false,
+          'Postgres-mode startup SHALL NOT open/create the configured persistent SQLite file',
+        );
+        const seeded = await getRegisteredClient(SEED_CLIENT.client_id);
+        assert.ok(seeded, 'pre-registered client SHALL be readable from the Postgres backend after boot');
+        assert.equal(seeded.client_id, SEED_CLIENT.client_id);
+      } finally {
+        await closeStartedServer(server);
+        closeDb();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 }
