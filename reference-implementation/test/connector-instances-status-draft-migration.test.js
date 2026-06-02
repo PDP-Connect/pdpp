@@ -16,8 +16,22 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import Database from 'better-sqlite3';
+import pg from 'pg';
 
 import { initDb, closeDb } from '../server/db.js';
+import { closePostgresStorage, initPostgresStorage, postgresQuery } from '../server/postgres-storage.js';
+
+const { Pool } = pg;
+const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
+
+function isClearlyTestPostgresUrl(value) {
+  try {
+    const parsed = new URL(value);
+    return /(?:^|[_-])test(?:[_-]|$)/i.test(parsed.pathname.replace(/^\//, ''));
+  } catch {
+    return false;
+  }
+}
 
 function tempDbPath() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdpp-status-draft-'));
@@ -161,5 +175,79 @@ test('status-draft migration is idempotent', () => {
     assert.ok(statusCheckSql(v).includes("'draft'"));
   } finally {
     v.close();
+  }
+});
+
+test('Postgres bootstrap widens a legacy connector_instances status CHECK to draft', {
+  skip: !POSTGRES_URL || !isClearlyTestPostgresUrl(POSTGRES_URL),
+}, async () => {
+  const setup = new Pool({ connectionString: POSTGRES_URL });
+  try {
+    await setup.query(`
+      DROP TABLE IF EXISTS connector_instances CASCADE;
+      DROP TABLE IF EXISTS connectors CASCADE;
+      CREATE TABLE connectors (
+        connector_id TEXT PRIMARY KEY,
+        manifest JSONB NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE connector_instances (
+        connector_instance_id TEXT PRIMARY KEY,
+        owner_subject_id TEXT NOT NULL,
+        connector_id TEXT NOT NULL REFERENCES connectors(connector_id) ON DELETE RESTRICT,
+        display_name TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'revoked')),
+        source_kind TEXT NOT NULL CHECK (source_kind IN ('account', 'local_device', 'browser_collector', 'manual')),
+        source_binding_key TEXT NOT NULL,
+        source_binding_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        revoked_at TEXT,
+        UNIQUE(owner_subject_id, connector_id, source_kind, source_binding_key)
+      );
+      INSERT INTO connectors(connector_id, manifest, created_at) VALUES ('gmail', '{}'::jsonb, '2026-06-02');
+      INSERT INTO connector_instances(
+        connector_instance_id, owner_subject_id, connector_id, display_name,
+        status, source_kind, source_binding_key, source_binding_json,
+        created_at, updated_at, revoked_at
+      )
+      VALUES ('cin_active_legacy', 'owner_1', 'gmail', 'Gmail', 'active', 'account', 'legacy', '{}'::jsonb, '2026-06-02', '2026-06-02', NULL);
+    `);
+  } finally {
+    await setup.end();
+  }
+
+  await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+  try {
+    const constraints = await postgresQuery(
+      `SELECT pg_get_constraintdef(oid) AS def
+         FROM pg_constraint
+        WHERE conrelid = 'connector_instances'::regclass
+          AND contype = 'c'
+        ORDER BY conname`
+    );
+    assert.ok(
+      constraints.rows.some((row) => String(row.def).includes('draft')),
+      'Postgres status CHECK names draft after bootstrap',
+    );
+    assert.equal(
+      (await postgresQuery(`SELECT status FROM connector_instances WHERE connector_instance_id = 'cin_active_legacy'`)).rows[0].status,
+      'active',
+      'legacy row preserved',
+    );
+    await postgresQuery(
+      `INSERT INTO connector_instances(
+         connector_instance_id, owner_subject_id, connector_id, display_name,
+         status, source_kind, source_binding_key, source_binding_json,
+         created_at, updated_at, revoked_at
+       )
+       VALUES ('cin_draft_postgres', 'owner_1', 'gmail', 'Gmail Draft', 'draft', 'account', 'draft', '{}'::jsonb, '2026-06-02', '2026-06-02', NULL)`
+    );
+    assert.equal(
+      (await postgresQuery(`SELECT status FROM connector_instances WHERE connector_instance_id = 'cin_draft_postgres'`)).rows[0].status,
+      'draft',
+    );
+  } finally {
+    await closePostgresStorage();
   }
 });

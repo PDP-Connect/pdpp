@@ -20,9 +20,9 @@ that makes the requirement real.
   `normalizeRecord` and `updateStatus` to reject unknown statuses.
 - `server/db.js:173` and the `migrate*` rebuild blocks: the SQLite
   `connector_instances.status` column carries
-  `CHECK (status IN ('active', 'paused', 'revoked'))`. The Postgres arm
-  (`server/postgres-storage.js`) has no status CHECK but inserts via the same
-  normalized record.
+  `CHECK (status IN ('active', 'paused', 'revoked'))`. The Postgres bootstrap
+  (`server/postgres-storage.js`) carries the same narrow status CHECK, so live
+  Postgres deployments also need a forward CHECK-widening step.
 - `resolveOwnerConnectorInstanceNamespace` (`store.js:203`) throws
   `connector_instance_inactive` when an explicitly addressed instance is not
   `active` (`store.js:256`). This is the single status gate for the
@@ -72,12 +72,13 @@ Non-Goals:
 
 ### 1. `draft` is a fourth instance status, reserved for static-secret setup
 
-Add `'draft'` to `VALID_STATUSES`, the SQLite CHECK, and a forward CHECK-widening
-migration (mirroring `migrateConnectorInstancesSourceKindBrowserCollector`,
-`db.js:2575`; registered alongside it at `db.js:3106`). The migration is a no-op
-once the constraint already names `'draft'`. The Postgres arm needs no DDL
-migration (no status CHECK), but `normalizeRecord`/`updateStatus` admit `'draft'`
-on both arms.
+Add `'draft'` to `VALID_STATUSES`, the SQLite CHECK, the Postgres CHECK, and
+forward CHECK-widening steps for both storage backends. The SQLite migration
+mirrors `migrateConnectorInstancesSourceKindBrowserCollector` (`db.js:2575`) and
+is registered alongside it at `db.js:3106`; the Postgres bootstrap drops a legacy
+narrow status CHECK and re-adds one that admits `'draft'`. Both are no-ops once
+the constraint already names `'draft'`. `normalizeRecord`/`updateStatus` admit
+`'draft'` on both arms.
 
 `draft` is **only** produced by the new owner-session draft-create route.
 `ensureDefaultAccountConnection`, device enrollment, and every other

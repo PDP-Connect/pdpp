@@ -15,7 +15,10 @@
 - [x] 1.4 Add a store primitive `activateDraft(connectorInstanceId, { now })`
   on both SQLite and Postgres arms: flip `draft → active`; no-op if the row is
   not `draft` (idempotent, concurrency-safe).
-- [x] 1.5 Test: status admission, migration idempotency, `activateDraft` flip +
+- [x] 1.5 Widen the Postgres `connector_instances.status` CHECK in fresh
+  bootstrap and legacy bootstrap so live Postgres deployments admit `draft`.
+- [x] 1.6 Test: status admission, migration idempotency, Postgres legacy
+  CHECK widening, `activateDraft` flip +
   no-op guard.
 
 ## 2. Read-surface exclusion for drafts
@@ -81,12 +84,11 @@
 
 ## Notes / residual
 
-- Tasks 1.4 and 2.1 cover BOTH the SQLite and Postgres store arms. The Postgres
-  `activateDraft` and `listByOwner` `status <> 'draft'` filter are implemented to
-  mirror the SQLite arm but are NOT proven by an automated test (no live Postgres
-  in this lane). They run only when `PDPP_TEST_POSTGRES_URL` is set; the
-  Postgres conformance test in `connector-instance-store.test.js` is skipped
-  otherwise. SQLite (the reference default) is fully proven.
+- Tasks 1.4 and 2.1 cover BOTH the SQLite and Postgres store arms. Postgres was
+  proven with `PDPP_TEST_POSTGRES_URL` against a temporary local Postgres
+  database: the legacy narrow-CHECK bootstrap widens to admit `draft`, and the
+  conformance test proves draft invisibility, explicit admission, activation,
+  and no-op activation.
 
 ## Deferred (owner/live-gated — NOT in this lane)
 

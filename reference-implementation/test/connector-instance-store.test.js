@@ -189,6 +189,51 @@ async function runConformance({ makeStore, seedConnector }) {
     (err) => err instanceof ConnectorInstanceResolutionError && err.code === 'connector_instance_connector_mismatch',
   );
 
+  const draft = await driver.call('upsert', {
+    connectorInstanceId: 'cin_gmail_draft',
+    ownerSubjectId: 'owner_4',
+    connectorId: 'gmail',
+    displayName: 'Gmail Draft',
+    status: 'draft',
+    sourceKind: 'account',
+    sourceBindingKey: 'draft_binding',
+    sourceBinding: { kind: 'static_secret_draft' },
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+  assert.equal(draft.status, 'draft');
+  assert.deepEqual(
+    (await driver.call('listByOwner', 'owner_4')).map((row) => row.connectorInstanceId),
+    [],
+    'draft is hidden from listByOwner',
+  );
+  await assert.rejects(
+    () => resolveOwnerConnectorInstanceNamespace({
+      ownerSubjectId: 'owner_4',
+      connectorInstanceId: 'cin_gmail_draft',
+      connectorInstanceStore: store,
+    }),
+    (err) => err instanceof ConnectorInstanceResolutionError && err.code === 'connector_instance_inactive',
+  );
+  const draftNamespace = await resolveOwnerConnectorInstanceNamespace({
+    ownerSubjectId: 'owner_4',
+    connectorInstanceId: 'cin_gmail_draft',
+    connectorInstanceStore: store,
+    allowStatuses: ['active', 'draft'],
+  });
+  assert.equal(draftNamespace.status, 'draft');
+  const activatedDraft = await driver.call('activateDraft', 'cin_gmail_draft', { now: LATER });
+  assert.equal(activatedDraft.status, 'active');
+  assert.equal(activatedDraft.updatedAt, LATER);
+  assert.deepEqual(
+    (await driver.call('listByOwner', 'owner_4')).map((row) => row.connectorInstanceId),
+    ['cin_gmail_draft'],
+    'activated draft becomes visible',
+  );
+  const activatedAgain = await driver.call('activateDraft', 'cin_gmail_draft', { now: '2026-05-15T12:02:00.000Z' });
+  assert.equal(activatedAgain.status, 'active');
+  assert.equal(activatedAgain.updatedAt, LATER, 'non-draft activation is a no-op');
+
   await driver.call('updateStatus', 'cin_gmail_personal', {
     status: 'paused',
     updatedAt: LATER,
