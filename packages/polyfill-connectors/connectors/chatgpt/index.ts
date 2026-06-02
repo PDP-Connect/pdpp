@@ -895,13 +895,43 @@ export async function processConversationDetail(
   const mapping = detail.json.mapping;
   const currentNode = detail.json.current_node || c.current_node;
   const currentBranchIds = new Set(flattenTreeCurrentBranch(mapping, currentNode).map((x) => x.nodeId));
+  let emittedMessageCount = 0;
   for (const [nodeId, node] of Object.entries(mapping)) {
     const msg = extractMessage(nodeId, node, c.id, currentBranchIds.has(nodeId));
     if (!msg?.role) {
       // synthetic root — skip
       continue;
     }
+    emittedMessageCount += 1;
     await deps.emitRecord("messages", msg);
+  }
+  if (emittedMessageCount === 0) {
+    // Completeness guard. A 200-with-mapping detail whose graph contains NO
+    // message-bearing node leaves a bare conversation row with zero messages
+    // and, without this, no signal at all — indistinguishable downstream from
+    // data loss. This is the silent-empty class the dataconnect completeness
+    // audit (2026-06-02) flagged as recommendation #5: "a 200-response whose
+    // mapping yields zero kept nodes for a conversation with a non-empty title
+    // should be flagged, not emitted as an empty conversation."
+    //
+    // It is NOT a fetch failure (the conversation record still emitted and the
+    // conversation still counts as hydrated/covered — we successfully reached
+    // it), so this is a SKIP_RESULT diagnostic, not a DETAIL_GAP. It exists so
+    // an empty conversation is observable rather than silent, which matters
+    // more as detail concurrency rises and partial/interleaved states become
+    // more likely. The `node_count` lets a reviewer distinguish a genuinely
+    // empty graph (0) from one whose every node was synthetic/role-less (>0).
+    deps.emit({
+      type: "SKIP_RESULT",
+      stream: "messages",
+      reason: "empty_detail",
+      message: `conversation ${c.id} returned http 200 with a mapping but no message-bearing nodes`,
+      diagnostics: {
+        http_status: 200,
+        conversation_id: c.id,
+        node_count: Object.keys(mapping).length,
+      },
+    });
   }
 }
 

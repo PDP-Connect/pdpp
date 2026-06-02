@@ -558,6 +558,66 @@ test("processConversationDetail: detail=200 with missing mapping — list-only f
   assert.deepEqual(skip.diagnostics, { http_status: 200, conversation_id: "convo-abc" });
 });
 
+test("processConversationDetail: detail=200 with mapping but zero message-bearing nodes — emits empty_detail SKIP", async () => {
+  // Completeness guard for the silent-empty class (dataconnect audit rec #5):
+  // a 200-with-mapping whose graph has only synthetic/role-less nodes lands a
+  // bare conversation row with no messages. Without the guard there is no
+  // signal at all and it is indistinguishable from data loss downstream.
+  const { deps, emitted, messages } = makeHarness();
+  const emptyGraph: ChatGptFetchResult = {
+    status: 200,
+    json: {
+      title: "Voice-only conversation",
+      create_time: 1_700_000_000,
+      update_time: 1_700_000_100,
+      current_node: "root",
+      // Only a synthetic root (no `message`) and a child that is also
+      // message-less — extractMessage returns null for both, so the loop
+      // emits zero message records.
+      mapping: {
+        root: { parent: null, children: ["n1"] },
+        n1: { parent: "root", children: [] },
+      },
+    },
+  };
+  await processConversationDetail(deps, makeConvo(), emptyGraph, makeEmitConversation(deps));
+
+  // The conversation record STILL emits (we reached it; it is covered/hydrated).
+  assert.equal(
+    emitted.filter((r) => r.stream === "conversations").length,
+    1,
+    "empty-but-200 conversation still lands as a row"
+  );
+  // No message records — the graph had nothing message-bearing.
+  assert.equal(emitted.filter((r) => r.stream === "messages").length, 0);
+  // ...but the emptiness is now OBSERVABLE via a diagnostic.
+  const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+  assert.ok(skip, "200-with-mapping but zero messages must emit an empty_detail SKIP");
+  assert.equal(skip.stream, "messages", "the empty-detail signal is charged to the messages stream");
+  assert.equal(skip.reason, "empty_detail");
+  assert.match(skip.message, /convo-abc/, "message carries the conversation id");
+  assert.match(skip.message, /no message-bearing nodes/, "message names the empty-graph cause");
+  assert.deepEqual(
+    skip.diagnostics,
+    { http_status: 200, conversation_id: "convo-abc", node_count: 2 },
+    "node_count distinguishes a genuinely empty graph from one with only role-less nodes"
+  );
+});
+
+test("processConversationDetail: detail=200 with at least one message — no empty_detail SKIP fires", async () => {
+  // The guard must NOT fire on a normal conversation. Pins that the common
+  // path stays diagnostic-free so empty_detail SKIPs are a real signal, not
+  // noise on every conversation.
+  const { deps, emitted, messages } = makeHarness();
+  await processConversationDetail(deps, makeConvo(), makeDetailOk(), makeEmitConversation(deps));
+  assert.ok(emitted.filter((r) => r.stream === "messages").length > 0, "messages emit on the normal path");
+  const emptySkip = messages.find(
+    (m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> =>
+      m.type === "SKIP_RESULT" && m.reason === "empty_detail"
+  );
+  assert.equal(emptySkip, undefined, "a conversation with messages must not emit an empty_detail SKIP");
+});
+
 test("runConversationsAndMessagesStreams: unsafe message text is shape-skipped without mid-run cursor advance", async () => {
   const unsafeNodeId = "unsafe-message";
   const safeNodeId = "safe-message";

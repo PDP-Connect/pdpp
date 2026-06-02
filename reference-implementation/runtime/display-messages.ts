@@ -66,6 +66,7 @@ export const DISPLAY_MESSAGES: Record<string, string> = {
   claude_dir_not_found: "We couldn't find your Claude Code data folder",
   credit_card_export_unverified: "We couldn't confirm the credit card export",
   doordash_graphql_wiring_pending: "DoorDash support isn't wired up yet",
+  empty_detail: "We opened this conversation but found no messages to import",
   export_error: "The export couldn't be downloaded",
   export_no_download: "The export didn't produce a downloadable file",
   export_not_found: "We couldn't find an export to import",
