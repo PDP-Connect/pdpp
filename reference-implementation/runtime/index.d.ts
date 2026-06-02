@@ -42,6 +42,17 @@ export interface RuntimeBrowserSurfaceEnv {
 export interface RuntimeRunConnectorOptions {
   automationMode?: RuntimeRunAutomationMode | null;
   /**
+   * Owner-cancel signal for this run. The controller passes one `AbortSignal`
+   * per run; aborting it requests cooperative cancellation of THIS run only.
+   * The runtime records a non-terminal `run.cancel_requested` event, terminates
+   * the connector child via the graceful-then-`SIGKILL` escalation, and (when
+   * the child exits without `DONE`) resolves the run terminal as
+   * `run.cancelled` with `owner_cancelled` / `owner_cancel_forced`. Abort after
+   * a terminal event is recorded is a no-op.
+   * See add-owner-run-cancellation-control.
+   */
+  cancelSignal?: AbortSignal | null;
+  /**
    * Explicit browser-surface child env override for tests and integration
    * seams. Values here win over `browserSurfaceLease` fields.
    */
@@ -137,7 +148,7 @@ export interface RuntimeRunConnectorResult {
   reported_records_emitted?: number | null;
   run_id?: string | null;
   state?: unknown;
-  status: "failed" | "skipped" | "succeeded";
+  status: "cancelled" | "failed" | "skipped" | "succeeded";
   terminal_reason?: string | null;
   trace_id?: string | null;
   trigger_kind?: RuntimeRunTriggerKind | null;

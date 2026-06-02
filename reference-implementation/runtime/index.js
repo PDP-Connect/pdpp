@@ -1306,6 +1306,13 @@ export async function runConnector(opts) {
     staticSecretEnv = null,
     triggerKind = null,
     automationMode = null,
+    // Optional owner-cancel signal. The controller passes one AbortSignal per
+    // run; aborting it requests cooperative cancellation of THIS run only. The
+    // runtime records a non-terminal `run.cancel_requested` event and
+    // terminates the connector child via the existing graceful-then-SIGKILL
+    // escalation. A run that already recorded a terminal event ignores abort.
+    // See openspec/changes/add-owner-run-cancellation-control.
+    cancelSignal = null,
   } = opts;
   const connectorId = canonicalConnectorKey(rawConnectorId) ?? rawConnectorId;
 
@@ -1712,6 +1719,13 @@ export async function runConnector(opts) {
   let pendingInteraction = null;
   let terminalEventRecorded = false;
   let doneMessage = null;
+  // Owner-cancel intent for this run. Set when `cancelSignal` aborts before a
+  // terminal event is recorded. `ownerCancelForced` flips to true if the
+  // connector child ignored graceful termination and had to be SIGKILL'd, so
+  // the terminal `run.cancelled` event can distinguish a clean owner cancel
+  // from a forced one. See add-owner-run-cancellation-control design.
+  let ownerCancelRequested = false;
+  let ownerCancelForced = false;
   const knownGaps = [];
   const durableDetailGaps = [];
   const detailCoverageByStateStream = new Map();
@@ -2033,6 +2047,12 @@ export async function runConnector(opts) {
       terminateTimer = setTimeout(() => {
         terminateTimer = null;
         if (proc.exitCode != null || proc.signalCode != null) return;
+        // The child ignored graceful termination within the window. Record the
+        // escalation so an owner-cancelled run terminals as `owner_cancel_forced`
+        // rather than `owner_cancelled`.
+        if (ownerCancelRequested) {
+          ownerCancelForced = true;
+        }
         try {
           proc.kill('SIGKILL');
         } catch {}
@@ -2040,10 +2060,49 @@ export async function runConnector(opts) {
       terminateTimer.unref?.();
     }
 
+    // Owner-cancel signal wiring. Aborting `cancelSignal` requests cancellation
+    // of THIS run only: record intent, emit a non-terminal `run.cancel_requested`
+    // event, and trigger the graceful-then-SIGKILL escalation above. Abort after
+    // a terminal event is recorded is a no-op (the run already ended). The
+    // listener is removed in cleanupChildHandles so a settled run does not leak
+    // it on the controller's shared AbortController.
+    function handleOwnerCancel() {
+      if (terminalEventRecorded || ownerCancelRequested) return;
+      ownerCancelRequested = true;
+      // Emit the audit marker without blocking the terminate path; the terminal
+      // `run.cancelled` event is emitted later by the close handler.
+      emitSpineEvent({
+        event_type: 'run.cancel_requested',
+        trace_id: traceContext.trace_id,
+        scenario_id: traceContext.scenario_id,
+        actor_type: 'owner',
+        actor_id: connectorId,
+        object_type: 'run',
+        object_id: runId,
+        status: 'cancel_requested',
+        run_id: runId,
+        data: { source: runSource, ...(triggerKind ? { trigger_kind: triggerKind } : {}) },
+      }).catch((err) => {
+        onProgress({ type: 'spine_error', error: err?.message || String(err) });
+      });
+      onProgress({ type: 'cancel_requested', run_id: runId });
+      terminateChild();
+    }
+    if (cancelSignal) {
+      if (cancelSignal.aborted) {
+        handleOwnerCancel();
+      } else {
+        cancelSignal.addEventListener('abort', handleOwnerCancel, { once: true });
+      }
+    }
+
     function cleanupChildHandles() {
       if (cleanedUp) return;
       cleanedUp = true;
       clearTerminateTimer();
+      if (cancelSignal) {
+        cancelSignal.removeEventListener('abort', handleOwnerCancel);
+      }
       rl.close();
       proc.stdin.destroy();
       proc.stdout.destroy();
@@ -2821,6 +2880,41 @@ export async function runConnector(opts) {
               }),
             });
             onProgress({ type: 'done', status: doneMessage.status, records_emitted: doneMessage.records_emitted });
+          } else if (ownerCancelRequested) {
+            // The owner cancelled this run and the connector child exited
+            // without DONE. Terminal as `run.cancelled` (intentional owner
+            // stop), NOT `run.failed`/`connector_exit_without_done`. The
+            // reason distinguishes a child that stopped within the graceful
+            // window from one that had to be force-terminated. Staged cursor
+            // state is NOT committed on this path (no DONE succeeded), and
+            // already-flushed records are preserved.
+            finalStatus = 'cancelled';
+            const cancelReason = ownerCancelForced ? 'owner_cancel_forced' : 'owner_cancelled';
+            await closeOpenStructuredAssistance('cancelled', { reason: cancelReason });
+            await emitSpineEvent({
+              event_type: 'run.cancelled',
+              trace_id: traceContext.trace_id,
+              scenario_id: traceContext.scenario_id,
+              actor_type: 'owner',
+              actor_id: connectorId,
+              object_type: 'run',
+              object_id: runId,
+              status: 'cancelled',
+              run_id: runId,
+              data: buildRunTerminalData({
+                recordsEmitted: totalEmitted,
+                exitCode: code,
+                reason: cancelReason,
+                connectorError: null,
+              }),
+            });
+            onProgress({
+              type: 'done',
+              status: 'cancelled',
+              records_emitted: totalEmitted,
+              exit_code: code,
+              reason: cancelReason,
+            });
           } else {
             // No DONE was received. If the runtime observed a
             // closed-stdin write, surface that as the typed terminal
@@ -2877,12 +2971,21 @@ export async function runConnector(opts) {
           terminalEventRecorded = true;
         }
         cleanupChildHandles();
-        const { reason: closeTerminalReason, phase: closeTerminalPhase } = deriveTerminalReason({
+        const derivedTerminal = deriveTerminalReason({
           doneMessage,
           finalStatus,
           childStdinClosedReason,
           childStdinClosedAtPhase,
         });
+        // An owner-cancelled run resolves with the owner-cancel reason on the
+        // result so callers (and run-history persistence) see the intentional
+        // stop rather than a null/failure reason. The spine terminal event
+        // already carries the same reason.
+        const closeTerminalReason =
+          finalStatus === 'cancelled' && ownerCancelRequested && !doneMessage
+            ? (ownerCancelForced ? 'owner_cancel_forced' : 'owner_cancelled')
+            : derivedTerminal.reason;
+        const closeTerminalPhase = derivedTerminal.phase;
         // Surface the additive diagnostic fields on the resolved result
         // for failed connector exits before DONE so callers don't have
         // to parse the spine event back out.
