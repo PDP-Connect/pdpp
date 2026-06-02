@@ -71,21 +71,25 @@ export default async function RecordsIndexPage() {
   // when the device-exporter endpoint fails so the rest of the page
   // still renders.
   let pendingOnDevices = 0;
+  // The connector summaries and the device-exporter diagnostics are
+  // independent reads. Fire the (advisory) device-exporter request
+  // concurrently with the (load-bearing) connector-summaries request so the
+  // page latency is the slower of the two, not their sum. We pre-attach a
+  // `.catch` here so a device-exporter rejection never becomes an unhandled
+  // rejection while we await the connector summaries first — it is resolved to
+  // a 0 backlog because those diagnostics are advisory.
+  const pendingOnDevicesPromise = listDeviceExporterSourceInstances()
+    .then((sources) =>
+      sources.data.reduce((sum, s) => sum + (typeof s.records_pending === "number" ? s.records_pending : 0), 0)
+    )
+    .catch(() => 0);
   try {
     const response = await liveDashboardDataSource.listConnectorSummaries();
     overviews = response.data.map(toConnectorOverview);
-    try {
-      const sources = await listDeviceExporterSourceInstances();
-      pendingOnDevices = sources.data.reduce(
-        (sum, s) => sum + (typeof s.records_pending === "number" ? s.records_pending : 0),
-        0
-      );
-    } catch {
-      // Device-exporter diagnostics are advisory; if they fail we still
-      // render the connector list. Per-connection diagnostics surface
-      // the underlying error.
-      pendingOnDevices = 0;
-    }
+    // Device-exporter diagnostics are advisory; if they fail we still render
+    // the connector list. Per-connection diagnostics surface the underlying
+    // error. The request already raced the connector summaries above.
+    pendingOnDevices = await pendingOnDevicesPromise;
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
