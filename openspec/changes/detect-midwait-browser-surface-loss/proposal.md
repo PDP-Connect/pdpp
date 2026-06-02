@@ -5,7 +5,7 @@ The preflight browser-surface readiness probe (added earlier) gates connector la
 ## What Changes
 
 - Add a periodic mid-wait surface-loss detector to `browser-surface-readiness.ts` that polls the CDP HTTP base during a `manual_action` or `otp` interaction wait.
-- Wire it into the controller's `brokerInteraction` path via a racing Promise: if the detector fires before the owner responds, the interaction is auto-cancelled with a typed `browser_surface_lost` resolution, a `run.browser_surface_lost` spine event is emitted, and the interaction broker does not deliver the dead interaction to the connector.
+- Wire it into the controller's interaction path via a racing Promise: if the detector fires before the owner responds, the interaction is auto-cancelled, a `run.browser_surface_lost` spine event is emitted, and the interaction broker does not deliver a successful owner response to the connector.
 - The detector uses the same HTTP probe logic as the preflight gate (no new network dependencies) with a configurable poll interval.
 - When a mid-wait loss is detected the runtime fails the run fail-closed rather than re-prompting the owner for another OTP against the same dead surface.
 

@@ -14,7 +14,7 @@ A new `createMidWaitSurfaceLossDetector(surface, probe, options)` factory in `br
 
 1. Polls `probe.probe(surface)` at `pollIntervalMs` (default 10 s).
 2. On the first failing result, resolves the promise with the typed failure.
-3. Is cancelled (via `AbortController`) when the caller disposes it.
+3. Is cancelled when the caller disposes it.
 
 The detector is intentionally simple: no exponential back-off, no grace retries. A single probe failure mid-wait is sufficient evidence that the surface is not usable, and a false positive is far less damaging than burning an OTP against a dead surface.
 
@@ -35,13 +35,13 @@ When the detector wins the race:
 - The promise resolves with `{ type: "INTERACTION_RESPONSE", request_id: ..., status: "cancelled" }`.
 - The runtime receives `cancelled`, records `run.interaction_completed { status: "cancelled" }`, writes `INTERACTION_RESPONSE` to the connector, and the connector is expected to terminate or fail.
 
-The detector is only created for interactions where `browserSurfaceAvailable` is true (i.e., `manual_action` interactions and `otp` interactions on a surface-backed run). Non-browser interactions skip it entirely.
+The detector is only created for interactions where the controller can find an active browser-surface lease for the run and the interaction kind is `manual_action` or `otp`. Non-browser interactions skip it entirely.
 
 ### Event name: `run.browser_surface_lost`
 
 - Not `run.browser_surface_probe_failed` (that event covers the preflight).
 - Not something implying provider-side failure. This is a surface availability failure: the reference's own browser-surface infrastructure went dark after the interaction opened.
-- The event carries: `probe_code`, `probe_detail`, `interaction_id`, `kind`.
+- The event carries: `interaction_id`, `kind`, and a `browser_surface_probe` envelope with the typed failure `code` and `detail`, matching the preflight probe event shape.
 
 ### Fail-closed guarantee
 

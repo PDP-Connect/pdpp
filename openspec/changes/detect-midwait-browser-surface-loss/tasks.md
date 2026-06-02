@@ -19,8 +19,9 @@
 ## 3. Test
 
 - [x] Add `reference-implementation/test/controller-midwait-browser-surface-loss.test.js`
-  - [x] Surface passes preflight, dies during interaction wait → `run.browser_surface_lost` emitted
+  - [x] Surface passes preflight, dies during interaction wait -> `run.browser_surface_lost` emitted
   - [x] Interaction resolves `cancelled`, no re-prompt possible
+  - [x] Surface-backed `otp` interaction is monitored and cancelled on surface loss
   - [x] Non-browser interactions are unaffected
   - [x] Surface that stays alive: no spurious loss event, owner response still works
 
@@ -35,7 +36,7 @@
 
 ## Acceptance checks
 
-1. New test suite green: surface-dies-during-wait → `run.browser_surface_lost` emitted, interaction cancelled, no re-prompt.
+1. New test suite green: surface-dies-during-wait -> `run.browser_surface_lost` emitted, interaction cancelled, no re-prompt.
 2. Existing `controller-browser-surface-readiness.test.js` and `browser-surface-readiness.test.js` remain green.
 3. TypeScript compiles clean.
 4. Linter passes.

@@ -2919,11 +2919,12 @@ export function createController(opts: ControllerOptions = {}): Controller {
   }
 
   /**
-   * Wraps an interaction handler to race each manual_action interaction
-   * against a mid-wait surface-loss detector. If the detector fires first,
-   * the pending interaction entry is cleared (stale-response guard active),
-   * run.browser_surface_lost is emitted, and the interaction resolves
-   * cancelled — the owner is not re-prompted against the dead surface.
+   * Wraps an interaction handler to race each browser-surface-backed
+   * manual_action or otp interaction against a mid-wait surface-loss detector.
+   * If the detector fires first, the pending interaction entry is cleared
+   * (stale-response guard active), run.browser_surface_lost is emitted, and the
+   * interaction resolves cancelled. The owner is not re-prompted against the
+   * dead surface.
    *
    * Returns the original handler unchanged when the readiness probe or lease
    * manager are not wired, or when no leased surface is found for the run.
@@ -2940,8 +2941,10 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return (rawInteraction: unknown) => {
       const interaction = rawInteraction as RuntimeInteraction;
 
-      // Only monitor browser-surface interactions.
-      if (interaction.kind !== "manual_action") {
+      // Only monitor interactions where the browser surface is part of the
+      // response path. Non-browser otp/credentials interactions fall through
+      // below because they have no leased surface for this run.
+      if (!(interaction.kind === "manual_action" || interaction.kind === "otp")) {
         return handler(rawInteraction);
       }
 
@@ -2951,7 +2954,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       const surface = lease?.surface_id ? browserSurfaceLeaseManager.getSurface(lease.surface_id) : null;
 
       if (!(lease && surface)) {
-        // No surface found — fall through to the unguarded handler.
+        // No surface found; fall through to the unguarded handler.
         return handler(rawInteraction);
       }
 
@@ -2971,8 +2974,15 @@ export function createController(opts: ControllerOptions = {}): Controller {
         // Clear the pending interaction entry BEFORE resolving so any
         // in-flight respondToInteraction call gets no_pending_interaction.
         const currentEntry = activeRunInteractions.get(runId);
+        const cancelledResponse = {
+          type: "INTERACTION_RESPONSE",
+          request_id: interaction.request_id,
+          status: "cancelled",
+        } as const;
         if (currentEntry?.pending?.interaction_id === interaction.request_id) {
+          const pending = currentEntry.pending;
           currentEntry.pending = null;
+          pending.resolve(cancelledResponse);
         }
 
         detachControllerTask(
@@ -2987,11 +2997,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           })
         );
 
-        return {
-          type: "INTERACTION_RESPONSE",
-          request_id: interaction.request_id,
-          status: "cancelled",
-        };
+        return cancelledResponse;
       });
 
       return Promise.race([responsePromise, lostResponse]);

@@ -11,8 +11,9 @@
  *     throws no_pending_interaction (stale-response guard active),
  *   - the connector child receives INTERACTION_RESPONSE status=cancelled.
  *
- * Also proves that non-browser interactions (otp, credentials) are unaffected,
- * and that a surface that stays live allows the owner response to settle normally.
+ * Also proves that surface-backed otp interactions are monitored, non-browser
+ * otp/credentials interactions are unaffected, and that a surface that stays
+ * live allows the owner response to settle normally.
  *
  * Uses the same fake lease manager + DB setup as controller-browser-surface-readiness.test.js.
  * All timers are controlled via the low pollIntervalMs override so the test runs
@@ -164,7 +165,7 @@ function setup(t, { probe, leaseManager, pollIntervalMs = 5 } = {}) {
 }
 
 test("surface dies during manual_action wait: run.browser_surface_lost emitted, interaction cancelled", async (t) => {
-  // The preflight probe passes once. The very next poll (mid-wait) fails —
+  // The preflight probe passes once. The very next poll (mid-wait) fails,
   // simulating the CDP socket dropping after the connector starts but
   // before the owner submits their OTP.
   const probe = buildProbeWithFailAfter(1, "browser_surface_cdp_disconnected", "GET /json/version returned HTTP 503");
@@ -258,6 +259,72 @@ test("surface dies during manual_action wait: run.browser_surface_lost emitted, 
   assert.match(lostEvent.data.browser_surface_probe.detail, /503/);
 });
 
+test("surface-backed otp wait is monitored and cancelled when the surface dies", async (t) => {
+  const probe = buildProbeWithFailAfter(1, "browser_surface_cdp_disconnected", "GET /json/version returned HTTP 503");
+
+  closeDb();
+  initDb(
+    (() => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pdpp-midwait-otp-surface-"));
+      return path.join(dir, "pdpp.sqlite");
+    })()
+  );
+  __resetControllerInteractionStateForTests();
+  t.after(() => {
+    __resetControllerInteractionStateForTests();
+    closeDb();
+  });
+
+  let resolveConnectorDone;
+  const connectorDone = new Promise((res) => {
+    resolveConnectorDone = res;
+  });
+  let interactionResponseStatus = null;
+
+  const c = createController({
+    browserSurfaceLeaseManager: createManagerWithReadySurface(),
+    browserSurfaceReadinessProbe: probe,
+    browserSurfaceMidWaitPollIntervalMs: 5,
+    connectorPathResolver: () => "/tmp/connector.js",
+    logger: { error: () => {}, warn: () => {} },
+    schedulerStore: createSchedulerStore(),
+    streamingTargetNonceHooks: {
+      registerNonce: () => {},
+      clearNonce: () => {},
+    },
+    runConnectorImpl: async (opts) => {
+      const response = await opts.onInteraction({
+        kind: "otp",
+        request_id: "req_surface_otp_1",
+        message: "Enter the OTP shown by the browser-backed login.",
+        stream: null,
+      });
+      interactionResponseStatus = response?.status;
+      resolveConnectorDone(response);
+      return { status: "completed", records_emitted: 0, state: null, checkpoint_summary: null };
+    },
+  });
+
+  await c.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_surface_otp_loss",
+  });
+
+  const connectorResponse = await connectorDone;
+  assert.equal(connectorResponse.status, "cancelled");
+  assert.equal(interactionResponseStatus, "cancelled");
+
+  await c.drainActiveRuns(2000);
+
+  const events = listRunEvents("run_surface_otp_loss");
+  const lostEvent = events.find((e) => e.event_type === "run.browser_surface_lost");
+  assert.ok(lostEvent, "expected run.browser_surface_lost for surface-backed otp");
+  assert.equal(lostEvent.data.interaction_id, "req_surface_otp_1");
+  assert.equal(lostEvent.data.kind, "otp");
+  assert.equal(lostEvent.data.browser_surface_probe.code, "browser_surface_cdp_disconnected");
+});
+
 test("surface lost: respondToInteraction with same interaction_id throws no_pending_interaction", async (t) => {
   // Preflight passes once, then mid-wait poll fails immediately.
   const probe = buildProbeWithFailAfter(1, "browser_surface_cdp_unreachable", "fetch failed: ECONNREFUSED");
@@ -312,7 +379,7 @@ test("surface lost: respondToInteraction with same interaction_id throws no_pend
   // Wait for the detector to fire and clear the pending entry.
   await connectorDone;
 
-  // Now try to respond — must throw no_pending_interaction.
+  // Now try to respond. This must throw no_pending_interaction.
   assert.throws(
     () =>
       c.respondToInteraction("run_stale_resp", {
@@ -327,7 +394,7 @@ test("surface lost: respondToInteraction with same interaction_id throws no_pend
 });
 
 test("surface stays live: owner response settles normally, no browser_surface_lost event", async (t) => {
-  // Probe always returns ok — surface never dies.
+  // Probe always returns ok, so the surface never dies.
   const alwaysOkProbe = {
     probe: async () => ({ ok: true, pageTargetCount: 1 }),
   };
@@ -407,7 +474,7 @@ test("surface stays live: owner response settles normally, no browser_surface_lo
   assert.equal(lostEvent, undefined, "must NOT emit run.browser_surface_lost when surface stays live");
 });
 
-test("otp interaction without browser surface is not monitored — no spurious browser_surface_lost", async (t) => {
+test("otp interaction without browser surface is not monitored, no spurious browser_surface_lost", async (t) => {
   // A non-managed connector (no browser surface) emitting otp should work
   // normally without a detector.
   const NON_BROWSER_MANIFEST = {
@@ -438,7 +505,7 @@ test("otp interaction without browser surface is not monitored — no spurious b
   let interactionResponseStatus = null;
 
   const c = createController({
-    // No lease manager → not a managed connector → no surface detector.
+    // No lease manager: not a managed connector, so no surface detector.
     browserSurfaceReadinessProbe: {
       probe: async () => {
         throw new Error("probe should never be called for non-browser interactions");
@@ -474,7 +541,7 @@ test("otp interaction without browser surface is not monitored — no spurious b
   // Let detector poll window pass to confirm no probe is called.
   await new Promise((r) => setTimeout(r, 30));
 
-  // Respond with success — should work normally.
+  // Respond with success. This should work normally.
   c.respondToInteraction("run_otp_plain", {
     interaction_id: "req_otp_1",
     status: "success",

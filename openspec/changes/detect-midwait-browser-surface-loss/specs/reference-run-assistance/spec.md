@@ -14,6 +14,13 @@ The reference runtime SHALL monitor the browser surface during any open interact
 - **AND** it SHALL resolve the interaction as `cancelled` without waiting for owner input
 - **AND** it SHALL NOT deliver a response to the connector that implies the owner completed the action
 
+#### Scenario: Surface becomes unavailable during browser-backed OTP wait
+- **WHEN** a connector emits an `otp` INTERACTION with an active browser surface
+- **AND** the surface becomes unreachable before the owner submits a response
+- **THEN** the reference runtime SHALL detect the surface loss via periodic polling
+- **AND** it SHALL emit a `run.browser_surface_lost` event with the typed probe failure code and detail
+- **AND** it SHALL resolve the interaction as `cancelled` without delivering the OTP to the connector
+
 #### Scenario: Surface loss prevents re-prompt
 - **WHEN** a `run.browser_surface_lost` event has been emitted for an interaction
 - **AND** an owner attempts to submit a response for that same interaction id
