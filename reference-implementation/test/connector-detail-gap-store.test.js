@@ -192,6 +192,44 @@ test('connector detail gaps are isolated by connector instance', withTempDb(asyn
   );
 }));
 
+test('connector detail gap store is idempotent by gap identity when connector-supplied gap ids change', withTempDb(async () => {
+  const store = createSqliteConnectorDetailGapStore();
+  const first = await store.upsertPendingGap({
+    gapId: 'gap_transient_a',
+    connectorId: 'chatgpt',
+    connectorInstanceId: 'cin_chatgpt_personal',
+    grantId: 'grant_1',
+    stream: 'conversations',
+    recordKey: 'conv_1',
+    detailLocator: { conversation_id: 'conv_1' },
+    reason: 'rate_limited',
+    discoveredRunId: 'run_a',
+    lastRunId: 'run_a',
+  });
+  const second = await store.upsertPendingGap({
+    gapId: 'gap_transient_b',
+    connectorId: 'chatgpt',
+    connectorInstanceId: 'cin_chatgpt_personal',
+    grantId: 'grant_1',
+    stream: 'conversations',
+    recordKey: 'conv_1',
+    detailLocator: { conversation_id: 'conv_1' },
+    reason: 'source_pressure',
+    discoveredRunId: 'run_b',
+    lastRunId: 'run_b',
+  });
+
+  assert.equal(second.gap_id, first.gap_id);
+  assert.equal(second.reason, 'source_pressure');
+  assert.equal(second.discovered_run_id, 'run_a');
+  assert.equal(second.last_run_id, 'run_b');
+  assert.deepEqual(
+    (await store.listPendingGaps({ connectorId: 'chatgpt', connectorInstanceId: 'cin_chatgpt_personal', grantId: 'grant_1' }))
+      .map((gap) => gap.gap_id),
+    [first.gap_id],
+  );
+}));
+
 test('listPendingGapsForConnector returns gaps across every connector instance for diagnostics', withTempDb(async () => {
   const store = createSqliteConnectorDetailGapStore();
   const work = await store.upsertPendingGap({
