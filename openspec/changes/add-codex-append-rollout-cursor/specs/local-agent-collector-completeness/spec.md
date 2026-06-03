@@ -43,6 +43,13 @@ quiet window so a partial in-flight line is not committed, and the committed byt
 offset SHALL always end on a line terminator so a trailing partial line is re-read
 on a later run rather than committed mid-write.
 
+The per-file cursor's recorded size SHALL equal its committed byte offset, never
+the raw on-disk size, because the rollout file may grow while it is being parsed
+(the source is actively appended). Recording the larger raw size would let a later
+run observe a matching size for a file that still has an uncommitted tail and skip
+it, losing the tail. The cursor's modification time SHALL be observed after the
+parse completes so it reflects any append that landed during the parse.
+
 #### Scenario: First run full-parses a rollout file and writes a rich per-file cursor
 
 - **WHEN** a rollout file has no prior per-file cursor and is collected this run
@@ -91,3 +98,12 @@ on a later run rather than committed mid-write.
 - **THEN** the connector MAY reparse the file in full once
 - **AND** the run SHALL write a per-file cursor for that path so a later append tails
   from the committed offset instead of reparsing the whole file
+
+#### Scenario: Cursor size never exceeds the committed boundary on a partial tail
+
+- **WHEN** a rollout file's last line is unterminated (a partial in-flight append),
+  so the file's raw byte size is greater than the committed offset
+- **THEN** the per-file cursor's recorded size SHALL equal the committed offset, not
+  the raw byte size
+- **AND** the next run SHALL observe the file as grown (uncommitted tail present) and
+  re-read from the committed offset rather than skipping it

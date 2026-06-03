@@ -139,6 +139,46 @@ real committed offset for a file that already had one) but never writes a fresh
 next quiet run. This is pinned by a regression test that fails against the naive
 "carry forward on defer" implementation and passes against the fix.
 
+## Active-append safety (size_bytes == committed offset)
+
+The rollout file can grow while we parse it (Codex appends to the same long-lived
+file continuously). `buildFileCursorAfterParse` therefore must NOT record the raw
+on-disk size — it records `size_bytes = offset_bytes = committedOffset`, the byte
+boundary the parse actually reached. If it recorded the (larger) raw size, a later
+run could see `sizeBytes === cursor.size_bytes` for a file that still has an
+uncommitted tail and **skip** it, losing the tail. With `size_bytes == committedOffset`,
+any real growth makes the next run observe `sizeBytes > cursor.size_bytes` and tail
+the uncommitted+new suffix. `mtime_ms` is re-stat'd after the parse (a stale
+pre-parse mtime would only cost a spurious guard recomputation, never loss). The
+committed prefix hashed by the guard is immutable on an append-only file, so the
+guard is stable across mid-parse growth. Pinned by a partial-trailing-line test
+(raw size > committed offset) that fails against the naive raw-size version.
+
+## Legacy migration is idempotent, not lossy (recovery story)
+
+Legacy `file_mtimes` carries no byte offset, so a changed long-lived file (the live
+Peregrine 1.3 GB rollout) must be reparsed once to establish its first rich cursor —
+there is no recoverable boundary to prime from. This is acceptable because the
+reference ingest **no-ops byte/semantically-identical re-emits**:
+
+- SQLite: `reference-implementation/server/records.js:311`
+  (`current.record_json === recordJson → noop`).
+- Postgres (live backend): `reference-implementation/server/postgres-records.js:765,776`
+  (`$4::jsonb IS NOT DISTINCT FROM record_json`).
+
+Codex records are keyed `${sessionId}:${lineCount}` over immutable source lines, so
+the replay re-emits byte-identical records for the already-durable prefix (noop, zero
+new versions) and ingests only the genuinely-new tail (real records). The reparse is
+therefore both lossless (recovers the tail) and idempotent (no churn). The cost is
+purely throughput/backlog, handled by the operator packet
+(`docs/operator/codex-append-cursor-recovery-packet.md`) and the existing backlog
+guard (`maybeSkipScanForBacklog`: pre-scan drain runs before the connector scan, so a
+fresh re-scan never piles on an undrained backlog).
+
+A "prime cursor at EOF without emitting" mode was considered and **rejected**: for a
+changed file it would skip the unemitted tail and silently lose data, a strictly worse
+safety posture than the idempotent replay.
+
 ## CLI summary redaction
 
 The local-collector CLI summarizes STATE cursors for `pdpp-local-collector` runs.

@@ -641,12 +641,19 @@ function carryFileCursorForward(args, path, mtime) {
     }
     args.newMtimes[path] = mtime;
 }
-async function buildFileCursorAfterParse(path, st, result) {
+async function buildFileCursorAfterParse(path, result) {
     const guardBytes = Math.min(result.committedOffset, GUARD_PREFIX_BYTES);
     const head = (await hashFilePrefix(path, guardBytes)) ?? "";
+    let mtimeMs = 0;
+    try {
+        mtimeMs = statSync(path).mtimeMs;
+    }
+    catch {
+        mtimeMs = 0;
+    }
     return {
-        mtime_ms: st.mtimeMs,
-        size_bytes: Number(st.size),
+        mtime_ms: mtimeMs,
+        size_bytes: result.committedOffset,
         offset_bytes: result.committedOffset,
         line_count: result.lineCount,
         head_sha256: head,
@@ -712,7 +719,7 @@ async function processRolloutEntry(entry, args, rolloutOrdinal) {
         startOffset: isAppend ? action.startOffset : 0,
         seed: isAppend ? action.seed : undefined,
     });
-    args.newFileCursors[entry.path] = await buildFileCursorAfterParse(entry.path, st, result);
+    args.newFileCursors[entry.path] = await buildFileCursorAfterParse(entry.path, result);
     args.newMtimes[entry.path] = mtime;
     return "parsed";
 }

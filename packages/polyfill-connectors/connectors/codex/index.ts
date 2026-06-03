@@ -1115,20 +1115,43 @@ function carryFileCursorForward(args: ScanRolloutsArgs, path: string, mtime: num
   args.newMtimes[path] = mtime;
 }
 
-/** Build (or rebuild) a rich cursor after a parse, hashing the committed
- *  prefix. The guard covers `min(committedOffset, GUARD_PREFIX_BYTES)` bytes;
- *  for an append the prefix is unchanged so the prior guard would still match,
- *  but recomputing keeps the cursor self-consistent and cheap. */
-async function buildFileCursorAfterParse(
-  path: string,
-  st: Stats,
-  result: ParseRolloutFileResult
-): Promise<RolloutFileCursor> {
+/**
+ * Build (or rebuild) a rich cursor after a parse, hashing the committed prefix.
+ *
+ * Active-append safety: the file may grow while we parse it (Codex is actively
+ * appending to the same long-lived rollout). The cursor MUST record a
+ * `size_bytes` consistent with the bytes it actually vouches for, so we set
+ * `size_bytes = offset_bytes = committedOffset` — the byte boundary the parse
+ * actually reached — NOT the (possibly larger) on-disk size. Recording the live
+ * size would let the next run see `size === cursor.size_bytes` for a file that
+ * still has an uncommitted tail and SKIP it, losing the tail. With
+ * `size_bytes == committedOffset`, any real growth makes the next run observe
+ * `sizeBytes > cursor.size_bytes` and tail exactly the uncommitted+new suffix.
+ *
+ * `mtime_ms` is taken from a POST-parse re-stat (the pre-parse mtime is stale if
+ * the file was appended to during the parse). A stale mtime would only cost a
+ * spurious guard recomputation next run (which resolves to skip), never data
+ * loss — but re-stat keeps the cursor honest. The guard hashes the committed
+ * prefix, which is immutable on an append-only file, so it is stable across the
+ * mid-parse growth.
+ */
+async function buildFileCursorAfterParse(path: string, result: ParseRolloutFileResult): Promise<RolloutFileCursor> {
   const guardBytes = Math.min(result.committedOffset, GUARD_PREFIX_BYTES);
   const head = (await hashFilePrefix(path, guardBytes)) ?? "";
+  // Re-stat AFTER the parse so mtime reflects any mid-parse append. Fall back to
+  // the committed offset for size if the re-stat fails (file vanished): never
+  // record a size that disagrees with what we committed.
+  let mtimeMs = 0;
+  try {
+    mtimeMs = statSync(path).mtimeMs;
+  } catch {
+    mtimeMs = 0;
+  }
   return {
-    mtime_ms: st.mtimeMs,
-    size_bytes: Number(st.size),
+    mtime_ms: mtimeMs,
+    // Invariant: size_bytes == offset_bytes. The cursor vouches for exactly the
+    // committed prefix; everything past it is re-read on a later run.
+    size_bytes: result.committedOffset,
     offset_bytes: result.committedOffset,
     line_count: result.lineCount,
     head_sha256: head,
@@ -1222,7 +1245,7 @@ async function processRolloutEntry(
     seed: isAppend ? action.seed : undefined,
   });
 
-  args.newFileCursors[entry.path] = await buildFileCursorAfterParse(entry.path, st, result);
+  args.newFileCursors[entry.path] = await buildFileCursorAfterParse(entry.path, result);
   args.newMtimes[entry.path] = mtime;
   return "parsed";
 }

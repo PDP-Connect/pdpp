@@ -63,6 +63,21 @@
       version and passes against the fix.)
 - [x] 5.9 Local-collector CLI summary redacts `file_cursors` paths/hashes/session_id
       (count only).
+- [x] 5.10 Active-append safety: cursor records `size_bytes == offset_bytes` (re-stat
+      mtime after parse), proven by a partial-trailing-line fixture where raw size >
+      committed offset (test fails against the naive raw-size version).
+
+## 6. Legacy migration / operator recovery
+
+- [x] 6.1 Prove the one-time legacy reparse is harmless: server ingest no-ops
+      byte/semantically-identical re-emits (`records.js:311`,
+      `postgres-records.js:765/776`) → zero new versions, recovers the never-emitted
+      tail. A "prime cursor without emit" mode is rejected (would skip the unemitted
+      tail; legacy state has no recoverable boundary).
+- [x] 6.2 Operator recovery packet `docs/operator/codex-append-cursor-recovery-packet.md`:
+      why the replay is unavoidable + harmless, safe handling of the pre-fix outbox
+      backlog (drain > delete; dead letters escalate), exact pre-restart commands, and
+      acceptance criteria distinguishing safe-drain / safe-delete / needs-manual-review.
 
 ## Acceptance checks
 

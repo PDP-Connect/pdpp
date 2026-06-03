@@ -402,3 +402,73 @@ test("a deferred (active-write) new file is NOT skipped next run — it parses o
   const run2Msgs = recordsFor(run2.messages, "messages");
   assert.equal(run2Msgs.length, 2, "deferred file parses fully on the next quiet run — no silent skip");
 });
+
+test("cursor records size_bytes == committed offset, NOT the larger raw stat size (active-append safety)", async () => {
+  // The hazard: the file is larger on disk than the bytes the parse committed
+  // (a partial trailing line, or growth during the parse). The cursor MUST
+  // record `size_bytes = offset_bytes = committedOffset`, never the raw stat
+  // size — otherwise the next run could see `sizeBytes === cursor.size_bytes`
+  // for a file with an uncommitted tail and SKIP it, losing data. We force the
+  // two to differ by ending the file mid-line (raw size > committed offset).
+  const codexHome = await mkdtemp(join(tmpdir(), "pdpp-codex-append-inv-"));
+  const completePrefix = jsonl([sessionMetaLine(), messageLine("committed")]);
+  const partialTail = messageLine("uncommitted partial"); // no trailing newline
+  const path = await writeRollout(
+    codexHome,
+    OLD_DATE_DIR,
+    `rollout-2026-04-15T12-26-06-${SESSION_ID}.jsonl`,
+    completePrefix + partialTail
+  );
+  const rawSize = Buffer.byteLength(completePrefix + partialTail);
+  const committed = Buffer.byteLength(completePrefix);
+
+  const run = await runCodex({ codexHome, streams: ["messages"] });
+  assert.equal(run.exitCode, 0);
+  const cursor = rolloutStateCursor(run.messages).file_cursors?.[path];
+  assert.ok(cursor, "cursor written");
+  assert.ok(rawSize > committed, "fixture genuinely has an uncommitted tail (raw size > committed)");
+  assert.equal(cursor.offset_bytes, committed, "committed offset stops at the last complete line");
+  assert.equal(cursor.size_bytes, committed, "size_bytes is the committed offset, NOT the larger raw stat size");
+  assert.notEqual(cursor.size_bytes, rawSize, "size_bytes must not record the uncommitted raw size");
+});
+
+test("a trailing partial line (no final newline) is NOT committed and is parsed once completed", async () => {
+  // Models an in-flight append landing exactly during the scan: the file ends
+  // mid-line. The connector must commit only the complete prefix (so the partial
+  // line is never emitted half-formed) and pick up the line once the writer
+  // finishes it — without re-emitting the already-committed prefix.
+  const codexHome = await mkdtemp(join(tmpdir(), "pdpp-codex-append-partial-"));
+  const fileName = `rollout-2026-04-15T12-26-06-${SESSION_ID}.jsonl`;
+  const completePrefix = jsonl([sessionMetaLine(), messageLine("committed line")]);
+  // Append a partial (newline-less) next line — an in-flight write.
+  const partial = messageLine("half-written line"); // no trailing "\n"
+  const path = await writeRollout(codexHome, OLD_DATE_DIR, fileName, completePrefix + partial);
+
+  const run1 = await runCodex({ codexHome, streams: ["messages"] });
+  assert.equal(run1.exitCode, 0);
+  const run1Msgs = recordsFor(run1.messages, "messages").map((r) => r.data.content);
+  assert.deepEqual(
+    run1Msgs,
+    ["committed line"],
+    "only the newline-terminated line is committed; the partial is held back"
+  );
+  const cursor1 = rolloutStateCursor(run1.messages).file_cursors?.[path];
+  assert.ok(cursor1, "cursor written");
+  assert.equal(
+    cursor1.offset_bytes,
+    Buffer.byteLength(completePrefix),
+    "committed offset stops at the last complete line"
+  );
+
+  // The writer finishes the line (adds the terminator). Next run tails ONLY the
+  // now-complete line — not the already-committed prefix.
+  await appendFile(path, "\n");
+  const run2 = await runCodex({
+    codexHome,
+    streams: ["messages"],
+    state: { messages: rolloutStateCursor(run1.messages) },
+  });
+  assert.equal(run2.exitCode, 0);
+  const run2Msgs = recordsFor(run2.messages, "messages").map((r) => r.data.content);
+  assert.deepEqual(run2Msgs, ["half-written line"], "the completed line is emitted once; the prefix is not re-emitted");
+});

@@ -75,7 +75,14 @@ the physical source is an append-only JSONL file.
   for the rollout streams gains per-file offset/integrity fields alongside the
   retained `file_mtimes` legacy key.
 - Backward-compatible cursor: a collector upgrading from the legacy `file_mtimes`
-  cursor reparses a changed long-lived file at most once, then tails.
+  cursor reparses a changed long-lived file at most once, then tails. That one-time
+  reparse is unavoidable at the connector level (legacy state carries no byte
+  offset) but is proven harmless: the reference ingest no-ops byte/semantically
+  identical re-emits (`reference-implementation/server/records.js` and
+  `postgres-records.js`), so the replay creates zero new versions and still recovers
+  any never-emitted tail. The owner-facing restart procedure (drain existing backlog,
+  bound the one-time burst, then tail) is captured in
+  `docs/operator/codex-append-cursor-recovery-packet.md`.
 - Affected tests: `packages/polyfill-connectors/connectors/codex/integration.test.ts`
   and `parsers.test.ts` gain focused coverage for first-run full parse + rich
   cursor write, unchanged-file skip, append-only suffix emit, truncation/replacement
