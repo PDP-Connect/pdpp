@@ -18,6 +18,13 @@ The reference implementation SHALL expose local collector durable-work health fo
 - **AND** it SHALL distinguish that case from a connection that has collected nothing yet
 - **AND** it SHALL point the operator at re-running the collector with its default stream set to emit the coverage diagnostic
 
+#### Scenario: Coverage observation stays bounded on a large or legacy outbox
+
+- **WHEN** the health surface determines whether a connection has carried a coverage-diagnostics record
+- **THEN** it SHALL answer from a payload-light index rather than reparsing retained record payloads, so the determination is bounded regardless of how much retained record data the outbox holds
+- **AND** when the determination cannot be made within a bounded budget — because the outbox predates the index and its unindexed backlog exceeds that budget — it SHALL report coverage observation as unknown rather than perform an unbounded scan
+- **AND** it SHALL NOT report a connection with unknown coverage observation as coverage-diagnostics missing
+
 #### Scenario: Diagnostics are displayed remotely
 
 - **WHEN** durable-work diagnostics are displayed outside the local device

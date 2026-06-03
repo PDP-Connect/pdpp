@@ -21,14 +21,21 @@ The derivation, `deriveLocalCollectorLifecycleState`, is a pure function in `col
 
 ### Detecting "coverage missing" locally
 
-Coverage rides on the `coverage_diagnostics` records stream. Local-device collectors push records from the durable outbox and write no spine run, so the only durable local evidence is the outbox rows themselves. Succeeded `record_batch` rows are retained (only gap rows are deleted on recovery), so two read-only SQLite queries answer it:
+Coverage rides on the `coverage_diagnostics` records stream. Local-device collectors push records from the durable outbox and write no spine run, so the only durable local evidence is the outbox rows themselves. Succeeded `record_batch` rows are retained (only gap rows are deleted on recovery), so two read-only outbox queries answer it:
 
-- `hasObservedStream({ sourceInstanceId, stream })` — `json_each` over `$.records[*].stream` of non-dead-letter `record_batch` rows. A coverage record that only ever dead-lettered was never durably observed, so dead-letter rows are excluded.
-- `countRecordBatches({ sourceInstanceId })` — non-dead-letter record-batch count, to tell an empty lane (nothing to miss) from a collected-but-no-coverage lane.
+- `hasObservedStream({ sourceInstanceId, stream })` — returns `boolean | null`. A coverage record that only ever dead-lettered was never durably observed, so dead-letter rows are excluded.
+- `countRecordBatches({ sourceInstanceId })` — non-dead-letter record-batch count (reads only the indexed `status`/`kind` columns), to tell an empty lane (nothing to miss) from a collected-but-no-coverage lane.
 
 Both read only stream names / counts — never record bodies, paths, or tokens.
 
-When the caller cannot scope the scan (an unscoped `status` with no connection id), `coverageObserved` is `null` and `coverage_missing` is suppressed rather than guessed.
+#### Payload-light, bounded coverage observation (perf construction)
+
+The first implementation answered `hasObservedStream` with `json_each` over `$.records[*].stream` of **every** retained `record_batch` payload. That is O(retained payload bytes) and made `doctor` hang against a real ~35 GB Codex outbox. The corrected construction never reparses payloads on the hot path:
+
+- A schema-v2 payload-light index, `local_device_observed_stream (outbox_id, source_instance_id, stream)`, is maintained on every `record_batch` `enqueue()` from the in-memory payload already in hand (one row per distinct stream; a sentinel row for empty-records batches). The probe reads indexed stream names joined to the row's *live* status, so the dead-letter exclusion needs no index update on a later transition.
+- A pre-index (v1) outbox has `record_batch` rows with no index entry. The probe backfills those **lazily and per-lane-scoped**, bounded by a fixed scan budget: opening the DB does no payload work, and the first coverage probe for a lane reparses at most `budget` of that lane's unindexed rows (indexing each). If the lane's unindexed backlog exceeds the budget, the probe returns `null` (unknown) rather than launch an unbounded scan. Running the collector once more indexes the lane, after which the answer is exact.
+
+When the caller cannot scope the scan (an unscoped `status` with no connection id) **or** a legacy unindexed backlog exceeds the budget, `coverageObserved` is `null` and `coverage_missing` is suppressed rather than guessed.
 
 ## Alternatives considered
 
@@ -37,11 +44,13 @@ When the caller cannot scope the scan (an unscoped `status` with no connection i
 
 ## Scope
 
-In scope: the local `status`/`doctor` JSON surface, the derivation, the two read-only outbox queries, doc updates, tests. Out of scope: heartbeat/wire changes, server rollup changes, outbox schema changes.
+In scope: the local `status`/`doctor` JSON surface, the derivation, the two read-only outbox queries, the payload-light observed-stream index (schema v2) that backs them, doc updates including the published-vs-dev deployment posture, tests. Out of scope: heartbeat/wire changes, server rollup changes, the `local_device_outbox` row schema itself (the index is an additive sidecar table, not a row-shape change).
 
 ## Acceptance checks
 
 - Each of the six states resolves correctly from a constructed outbox (unit tests over the CLI surface).
 - `hasObservedStream`/`countRecordBatches` survive a clean drain and ignore dead-letter rows (outbox unit test).
+- New enqueues populate the observed-stream index; the probe answers from the index without reparsing payloads (proven by blanking `payload_json` out-of-band and still answering correctly).
+- A pre-index (v1) outbox is backfilled within budget and answered exactly; an over-budget legacy backlog returns `observed: null` (bounded, no unbounded scan) and is never labeled `coverage_missing`.
 - `status`/`doctor` JSON leaks no payloads, ids, or tokens.
 - `npx tsc -p packages/local-collector/tsconfig.build.json --noEmit` and the runner-slice typecheck pass.

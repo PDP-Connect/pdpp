@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { tmpdir } from 'node:os';
 
@@ -925,10 +926,93 @@ test('lifecycle/coverage status leaks no payloads', async () => {
   assert.doesNotMatch(rendered, /do-not-print|secret-row|nope/);
 });
 
+test('status/doctor stay bounded and report observed:null on a giant legacy (pre-index) outbox', async () => {
+  // The performance flaw this lane fixes: doctor against a real ~35 GB Codex
+  // outbox hung because coverage detection scanned every retained payload with
+  // json_each. The fix moves coverage to a payload-light index; a pre-index
+  // outbox whose unindexed backlog exceeds the bounded scan budget must report
+  // observed:null (unknown) instead of launching an unbounded scan. We assert
+  // the bounded behavior by timing a status/doctor pass over an over-budget
+  // legacy DB and proving it answers null rather than a partial false negative.
+  const path = await tempOutboxPath();
+  const budget = 5000;
+  seedLegacyV1Outbox(
+    path,
+    Array.from({ length: budget + 50 }, (_value, index) => ({
+      id: `legacy-${index}`,
+      sourceInstanceId: 'src-legacy',
+      streams: ['messages'],
+    }))
+  );
+
+  const status = inspectLocalOutboxStatus({
+    baseUrl: 'http://127.0.0.1:7662',
+    command: 'status',
+    queuePath: path,
+    sourceInstanceId: 'src-legacy',
+  });
+  // Unknown coverage suppresses the coverage_missing verdict (never guess from
+  // a partial scan); the lane is fully drained otherwise, so it is healthy_idle.
+  assert.equal(status.coverage.observed, null);
+  assert.equal(status.lifecycle_state, 'healthy_idle');
+
+  const doctor = buildLocalOutboxDoctor(status);
+  assert.equal(doctor.checks.coverage_diagnostics, 'ok');
+  // The whole pass leaks no payloads even on the legacy path.
+  assert.doesNotMatch(JSON.stringify({ status, doctor }), /messages-\d/);
+});
+
 async function tempOutboxPath() {
   return join(await tempDir(), 'outbox.sqlite');
 }
 
 async function tempDir() {
   return mkdtemp(join(tmpdir(), 'pdpp-local-collector-test-'));
+}
+
+/**
+ * Seed a schema-v1 (pre-observed-stream-index) outbox file directly so the CLI
+ * surface can be tested against the legacy bounded-scan fallback. Mirrors the
+ * v1 table DDL and creates NO observed-stream index table, exactly as a
+ * database created before this index existed would look.
+ */
+function seedLegacyV1Outbox(path, rows) {
+  const db = new DatabaseSync(path);
+  try {
+    db.exec(`
+      CREATE TABLE local_device_outbox (
+        id TEXT PRIMARY KEY,
+        source_instance_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        body_hash TEXT NOT NULL,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at TEXT NOT NULL,
+        lease_holder TEXT,
+        lease_epoch INTEGER NOT NULL DEFAULT 0,
+        lease_until TEXT,
+        last_error TEXT,
+        acknowledged_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      PRAGMA user_version = 1;
+    `);
+    const insert = db.prepare(
+      `INSERT INTO local_device_outbox (
+         id, source_instance_id, kind, status, payload_json, body_hash,
+         attempt_count, next_attempt_at, created_at, updated_at
+       ) VALUES (?, ?, 'record_batch', 'succeeded', ?, 'hash', 0, ?, ?, ?)`
+    );
+    const stamp = '2026-05-19T12:00:00.000Z';
+    for (const row of rows) {
+      const payload = JSON.stringify({
+        records: row.streams.map((stream, index) => ({ data: { id: `${stream}-${index}` }, stream })),
+      });
+      insert.run(row.id, row.sourceInstanceId, payload, stamp, stamp, stamp);
+    }
+  } finally {
+    db.close();
+  }
 }

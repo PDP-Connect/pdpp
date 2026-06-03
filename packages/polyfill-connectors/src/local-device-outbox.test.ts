@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { buildLocalDeviceOutboxId, classifyDeadLetterError, LocalDeviceOutbox } from "./local-device-outbox.ts";
@@ -796,8 +797,187 @@ test("hasObservedStream / countRecordBatches detect coverage records across stat
   }
 });
 
+test("enqueue maintains the observed-stream index so coverage detection never reparses payloads", async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    outbox.enqueue({
+      id: "rb-1",
+      kind: "record_batch",
+      payload: {
+        records: [
+          { data: { id: "s-1" }, stream: "sessions" },
+          { data: { id: "c-1" }, stream: "coverage_diagnostics" },
+        ],
+      },
+      sourceInstanceId: "src-1",
+    });
+  } finally {
+    outbox.close();
+  }
+
+  // Prove the probe reads the index, not the payload: blank out payload_json
+  // for the row out-of-band. A payload-scanning implementation would now miss
+  // the stream; the index-backed one still answers true.
+  const raw = new DatabaseSync(path);
+  try {
+    const indexRows = raw
+      .prepare("SELECT stream FROM local_device_observed_stream WHERE source_instance_id = ? ORDER BY stream")
+      .all("src-1")
+      .map((row) => (row as { stream: string }).stream);
+    assert.deepEqual(indexRows, ["coverage_diagnostics", "sessions"]);
+    raw.prepare("UPDATE local_device_outbox SET payload_json = '{}' WHERE id = ?").run("rb-1");
+  } finally {
+    raw.close();
+  }
+
+  const reopened = new LocalDeviceOutbox({ path });
+  try {
+    assert.equal(reopened.hasObservedStream({ sourceInstanceId: "src-1", stream: "coverage_diagnostics" }), true);
+    assert.equal(reopened.hasObservedStream({ sourceInstanceId: "src-1", stream: "messages" }), false);
+  } finally {
+    reopened.close();
+  }
+});
+
+test("a record_batch carrying no records is indexed (sentinel) and never treated as legacy unindexed", async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    outbox.enqueue({ id: "rb-empty", kind: "record_batch", payload: { records: [] }, sourceInstanceId: "src-1" });
+  } finally {
+    outbox.close();
+  }
+  const raw = new DatabaseSync(path);
+  try {
+    const count = raw
+      .prepare("SELECT COUNT(*) AS n FROM local_device_observed_stream WHERE outbox_id = ?")
+      .get("rb-empty") as { n: number | bigint };
+    assert.equal(Number(count.n), 1, "an empty-records batch must still carry one sentinel index row");
+  } finally {
+    raw.close();
+  }
+});
+
+test("hasObservedStream backfills a legacy (pre-index) outbox within budget and answers exactly", async () => {
+  const path = await tempOutboxPath();
+  // Build a legacy v1 outbox (no observed-stream index table) directly.
+  seedLegacyV1Outbox(path, [
+    { id: "legacy-1", sourceInstanceId: "src-1", streams: ["sessions"] },
+    { id: "legacy-2", sourceInstanceId: "src-1", streams: ["coverage_diagnostics"] },
+    { id: "legacy-3", sourceInstanceId: "src-2", streams: ["messages"] },
+  ]);
+
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    // The schema upgrade backfilled the index from the legacy rows.
+    assert.equal(outbox.hasObservedStream({ sourceInstanceId: "src-1", stream: "coverage_diagnostics" }), true);
+    assert.equal(outbox.hasObservedStream({ sourceInstanceId: "src-1", stream: "sessions" }), true);
+    assert.equal(outbox.hasObservedStream({ sourceInstanceId: "src-1", stream: "messages" }), false);
+    // Source isolation survives the migration.
+    assert.equal(outbox.hasObservedStream({ sourceInstanceId: "src-2", stream: "coverage_diagnostics" }), false);
+    assert.equal(outbox.countRecordBatches({ sourceInstanceId: "src-1" }), 2);
+  } finally {
+    outbox.close();
+  }
+});
+
+test("hasObservedStream is bounded on a giant legacy outbox: over-budget unindexed backlog returns null", async () => {
+  const path = await tempOutboxPath();
+  const budget = 5000;
+  // Seed more unindexed legacy rows for one lane than the bounded scan budget,
+  // none on the queried stream. Opening the DB does NO payload work (the index
+  // is populated lazily), so all of these are unindexed at probe time. A
+  // payload-scanning probe would reparse all of them; the bounded one must
+  // refuse and return null rather than scan unboundedly.
+  const seed = Array.from({ length: budget + 50 }, (_value, index) => ({
+    id: `legacy-${index}`,
+    sourceInstanceId: "src-big",
+    streams: ["messages"],
+  }));
+  seedLegacyV1Outbox(path, seed);
+
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    // The queried stream was never present, and the unindexed backlog exceeds
+    // the budget, so the probe reports "unknown" instead of a false negative
+    // from a partial scan.
+    assert.equal(outbox.hasObservedStream({ sourceInstanceId: "src-big", stream: "coverage_diagnostics" }), null);
+  } finally {
+    outbox.close();
+  }
+});
+
+test("countRecordBatches reads indexed status/kind columns only and ignores dead letters", async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    outbox.enqueue({ id: "rb-a", kind: "record_batch", payload: { records: [] }, sourceInstanceId: "src-1" });
+    outbox.enqueue({ id: "rb-b", kind: "record_batch", payload: { records: [] }, sourceInstanceId: "src-1" });
+    outbox.enqueue({ id: "cp-1", kind: "checkpoint", payload: { state: 1 }, sourceInstanceId: "src-1" });
+    const [claim] = outbox.claimReady({ holder: "w", leaseMs: 60_000, sourceInstanceId: "src-1" });
+    assert.ok(claim);
+    outbox.deadLetter({ error: "terminal", holder: "w", id: claim.id, leaseEpoch: claim.lease_epoch });
+    // One of the two record batches dead-lettered; the checkpoint never counts.
+    assert.equal(outbox.countRecordBatches({ sourceInstanceId: "src-1" }), 1);
+  } finally {
+    outbox.close();
+  }
+});
+
 async function tempOutboxPath(): Promise<string> {
   return join(await mkdtemp(join(tmpdir(), "pdpp-local-outbox-")), "outbox.sqlite");
+}
+
+/**
+ * Seed a schema-v1 (pre-observed-stream-index) outbox file directly, so tests
+ * can exercise the legacy backfill / bounded-scan fallback. Mirrors the v1
+ * table DDL and inserts `record_batch` rows whose payloads carry the given
+ * stream names — but creates NO `local_device_observed_stream` table, exactly
+ * as a database created before this index existed would look.
+ */
+function seedLegacyV1Outbox(
+  path: string,
+  rows: ReadonlyArray<{ id: string; sourceInstanceId: string; streams: readonly string[] }>
+): void {
+  const db = new DatabaseSync(path);
+  try {
+    db.exec(`
+      CREATE TABLE local_device_outbox (
+        id TEXT PRIMARY KEY,
+        source_instance_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        body_hash TEXT NOT NULL,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at TEXT NOT NULL,
+        lease_holder TEXT,
+        lease_epoch INTEGER NOT NULL DEFAULT 0,
+        lease_until TEXT,
+        last_error TEXT,
+        acknowledged_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      PRAGMA user_version = 1;
+    `);
+    const insert = db.prepare(
+      `INSERT INTO local_device_outbox (
+         id, source_instance_id, kind, status, payload_json, body_hash,
+         attempt_count, next_attempt_at, created_at, updated_at
+       ) VALUES (?, ?, 'record_batch', 'succeeded', ?, 'hash', 0, ?, ?, ?)`
+    );
+    const stamp = "2026-05-19T12:00:00.000Z";
+    for (const row of rows) {
+      const payload = JSON.stringify({
+        records: row.streams.map((stream, index) => ({ data: { id: `${stream}-${index}` }, stream })),
+      });
+      insert.run(row.id, row.sourceInstanceId, payload, stamp, stamp, stamp);
+    }
+  } finally {
+    db.close();
+  }
 }
 
 function fixedClock(iso: string): () => Date {

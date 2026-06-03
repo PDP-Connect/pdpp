@@ -303,8 +303,12 @@ export interface LocalOutboxStatusOutput {
    * shape behind the dashboard's stuck `coverage_unknown`.
    *
    * - `observed`: true once any non-dead-letter `record_batch` row has
-   *   carried a `coverage_diagnostics` record; null when no connection id was
-   *   supplied (the surface cannot scope the scan, so it does not guess).
+   *   carried a `coverage_diagnostics` record. `null` when the surface cannot
+   *   answer it: either no connection id was supplied (the scan cannot be
+   *   scoped, so it does not guess), or a legacy pre-index outbox carries more
+   *   unindexed record batches than the bounded coverage-scan budget (the
+   *   probe refuses an unbounded payload scan; re-running the collector
+   *   indexes the lane and a later probe answers exactly).
    * - `record_batches`: count of non-dead-letter record batches for the lane.
    *   Lets `observed: false` mean "collected records but no coverage" rather
    *   than "nothing collected yet".
@@ -850,8 +854,10 @@ function resolveOutboxPath(options: CliOptions): string {
 interface LocalOutboxInspection {
   /**
    * Whether the lane has durably carried a `coverage_diagnostics` record.
-   * Null when no connection id was supplied — the scan is per-lane, so an
-   * unscoped status cannot answer it and must not guess.
+   * Null when the answer is unknowable: no connection id was supplied (the
+   * scan is per-lane, so an unscoped status must not guess), or a legacy
+   * pre-index outbox exceeds the bounded coverage-scan budget (the probe
+   * refuses an unbounded payload scan).
    */
   coverageObserved: boolean | null;
   recordBatchCount: number;

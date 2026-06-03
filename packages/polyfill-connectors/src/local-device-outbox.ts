@@ -3,7 +3,23 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { hashCanonicalJson } from "./local-device-envelope.ts";
 
-const CURRENT_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_VERSION = 2;
+
+/**
+ * Maximum number of legacy (pre-index) `record_batch` rows a coverage probe
+ * will reparse before giving up and answering `null` (unknown).
+ *
+ * New enqueues maintain a payload-light observed-stream index so coverage
+ * detection never touches `payload_json`. A database created before that
+ * index existed has `record_batch` rows with no index entries; the schema
+ * upgrade backfills the index from those rows once, bounded by this budget.
+ * If a giant legacy outbox carries more unindexed batches than the budget,
+ * the probe stops and reports `observed: null` rather than launch an
+ * unbounded `json_each` scan over tens of gigabytes of retained payloads.
+ * Small/test outboxes (well under the budget) are fully backfilled, so their
+ * coverage observation is exact and existing behavior is preserved.
+ */
+const LEGACY_COVERAGE_SCAN_BUDGET = 5000;
 
 export type LocalDeviceOutboxKind = "record_batch" | "checkpoint" | "gap" | "blob_upload";
 export type LocalDeviceOutboxStatus = "ready" | "leased" | "succeeded" | "dead_letter";
@@ -230,11 +246,39 @@ export class LocalDeviceOutbox {
         row.created_at,
         row.updated_at
       );
+    this.#indexObservedStreams(row.id, row.source_instance_id, row.kind, input.payload);
     const inserted = this.get(row.id);
     if (!inserted) {
       throw new Error(`local outbox insert disappeared before readback: ${row.id}`);
     }
     return inserted;
+  }
+
+  /**
+   * Record the distinct stream names a `record_batch` row carries into the
+   * payload-light observed-stream index, so coverage detection can answer
+   * without ever reparsing `payload_json`.
+   *
+   * Reads `$.records[*].stream` from the in-memory payload we already have
+   * (no extra DB read) and inserts one `(outbox_id, source_instance_id,
+   * stream)` row per distinct stream. The index intentionally stores no
+   * record bodies, ids, or counts beyond stream membership; the live
+   * dead-letter exclusion is applied at query time by joining the row's
+   * current status, so a later dead-letter transition needs no index update.
+   * Non-`record_batch` kinds carry no records stream and are skipped. A
+   * record batch that carries no records gets a single sentinel entry so it
+   * still counts as indexed (never mistaken for a legacy unindexed row).
+   */
+  #indexObservedStreams(
+    outboxId: string,
+    sourceInstanceId: string,
+    kind: LocalDeviceOutboxKind,
+    payload: unknown
+  ): void {
+    if (kind !== "record_batch") {
+      return;
+    }
+    this.#backfillObservedStreamIndex(outboxId, sourceInstanceId, distinctRecordStreams(payload));
   }
 
   claimReady(input: LocalDeviceOutboxClaimInput): LocalDeviceOutboxItem[] {
@@ -616,27 +660,55 @@ export class LocalDeviceOutbox {
    * is the exact local shape behind the dashboard's stuck `coverage_unknown`
    * (see `openspec/changes/derive-local-collector-coverage-from-diagnostics`).
    *
-   * Detection scans `record_batch` payloads with `json_each` over
-   * `$.records[*].stream` and reads only the stream name — never record
-   * bodies, paths, or tokens. Succeeded record_batch rows are retained (only
-   * gap rows are deleted on recovery), so the signal survives a clean drain.
-   * Dead-letter rows are excluded: a stream that only ever dead-lettered was
-   * never durably observed by the lane.
+   * Construction (payload-light, bounded):
+   *
+   *   1. Primary path is the `local_device_observed_stream` index maintained
+   *      on every `record_batch` enqueue. The probe reads only stream names
+   *      from that index, joined to the row's *current* status so a stream
+   *      that only ever dead-lettered is excluded. This touches no
+   *      `payload_json` and is O(index hits), regardless of how many gigabytes
+   *      of retained record payloads the outbox holds.
+   *   2. A database created before the index existed (or a row enqueued by an
+   *      older build) has `record_batch` rows with no index entry. Those are
+   *      backfilled once on schema upgrade. If the count of still-unindexed
+   *      non-dead-letter record batches is within {@link
+   *      LEGACY_COVERAGE_SCAN_BUDGET}, the probe reparses only that bounded
+   *      tail. If it exceeds the budget, the probe returns `null` (unknown)
+   *      rather than launch an unbounded scan — the caller surfaces
+   *      `observed: null` and an operator re-runs the collector to populate
+   *      the index going forward.
+   *
+   * Returns `true`/`false` when the answer is known, or `null` when a legacy
+   * unindexed backlog exceeds the bounded scan budget. Never reads record
+   * bodies, paths, or tokens — only stream names.
    */
-  hasObservedStream(input: { sourceInstanceId: string; stream: string }): boolean {
-    const row = this.#db
+  hasObservedStream(input: { sourceInstanceId: string; stream: string }): boolean | null {
+    const indexed = this.#db
       .prepare(
         `SELECT 1 AS found
-           FROM local_device_outbox AS o,
-                json_each(o.payload_json, '$.records') AS rec
-          WHERE o.source_instance_id = ?
-            AND o.kind = 'record_batch'
+           FROM local_device_observed_stream AS idx
+           JOIN local_device_outbox AS o ON o.id = idx.outbox_id
+          WHERE idx.source_instance_id = ?
+            AND idx.stream = ?
             AND o.status != 'dead_letter'
-            AND json_extract(rec.value, '$.stream') = ?
           LIMIT 1`
       )
       .get(input.sourceInstanceId, input.stream);
-    return Boolean(row);
+    if (indexed) {
+      return true;
+    }
+
+    // The index reported no hit. Account for any legacy record_batch rows the
+    // index does not yet cover before concluding `false`, but never scan more
+    // than the bounded budget of payloads.
+    const unindexed = this.#unindexedRecordBatchIds(input.sourceInstanceId, LEGACY_COVERAGE_SCAN_BUDGET + 1);
+    if (unindexed.length === 0) {
+      return false;
+    }
+    if (unindexed.length > LEGACY_COVERAGE_SCAN_BUDGET) {
+      return null;
+    }
+    return this.#legacyHasObservedStream(unindexed, input.stream);
   }
 
   /**
@@ -659,6 +731,89 @@ export class LocalDeviceOutbox {
       )
       .get(input.sourceInstanceId);
     return isRecord(row) ? numberFrom(row.total) : 0;
+  }
+
+  /**
+   * Ids of non-dead-letter `record_batch` rows for a source instance that
+   * carry no observed-stream index entry yet (legacy rows enqueued before the
+   * index existed). Bounded by `limit` so the caller can both detect "more
+   * than the budget exists" and obtain a small set to reparse. Reads only the
+   * `id` column; never `payload_json`.
+   */
+  #unindexedRecordBatchIds(sourceInstanceId: string, limit: number): string[] {
+    const rows = this.#db
+      .prepare(
+        `SELECT o.id AS id
+           FROM local_device_outbox AS o
+          WHERE o.source_instance_id = ?
+            AND o.kind = 'record_batch'
+            AND o.status != 'dead_letter'
+            AND NOT EXISTS (
+              SELECT 1 FROM local_device_observed_stream AS idx
+               WHERE idx.outbox_id = o.id
+            )
+          ORDER BY o.rowid
+          LIMIT ?`
+      )
+      .all(sourceInstanceId, limit);
+    return rows.map((row) => {
+      if (!isRecord(row) || typeof row.id !== "string") {
+        throw new Error("local outbox unindexed record-batch query returned an invalid row");
+      }
+      return row.id;
+    });
+  }
+
+  /**
+   * Reparse a bounded set of legacy (unindexed) `record_batch` payloads to
+   * answer whether any carries the named stream, and lazily backfill the
+   * observed-stream index for each as it is read. Only ever called with a set
+   * no larger than {@link LEGACY_COVERAGE_SCAN_BUDGET}, so the reparse is
+   * bounded. Reads stream names only.
+   */
+  #legacyHasObservedStream(outboxIds: readonly string[], stream: string): boolean {
+    let found = false;
+    for (const id of outboxIds) {
+      const row = this.#db
+        .prepare("SELECT payload_json, source_instance_id FROM local_device_outbox WHERE id = ?")
+        .get(id);
+      if (!isRecord(row) || typeof row.payload_json !== "string" || typeof row.source_instance_id !== "string") {
+        continue;
+      }
+      let payload: unknown;
+      try {
+        payload = JSON.parse(row.payload_json);
+      } catch {
+        continue;
+      }
+      const streams = distinctRecordStreams(payload);
+      this.#backfillObservedStreamIndex(id, row.source_instance_id, streams);
+      if (streams.includes(stream)) {
+        found = true;
+      }
+    }
+    return found;
+  }
+
+  /**
+   * Backfill the observed-stream index for one legacy `record_batch` row.
+   * Idempotent via `INSERT OR IGNORE`. A row that legitimately carries no
+   * records gets a single sentinel index entry so it is never reparsed again
+   * (otherwise an empty-records legacy row would stay "unindexed" forever and
+   * keep being counted against the legacy scan budget).
+   */
+  #backfillObservedStreamIndex(outboxId: string, sourceInstanceId: string, streams: readonly string[]): void {
+    const insert = this.#db.prepare(
+      `INSERT OR IGNORE INTO local_device_observed_stream (outbox_id, source_instance_id, stream)
+         VALUES (?, ?, ?)`
+    );
+    if (streams.length === 0) {
+      insert.run(outboxId, sourceInstanceId, EMPTY_STREAM_SENTINEL);
+      return;
+    }
+    for (const stream of streams) {
+      insert.run(outboxId, sourceInstanceId, stream);
+    }
   }
 
   /**
@@ -761,12 +916,23 @@ export class LocalDeviceOutbox {
         `local outbox schema version ${version} is newer than supported version ${CURRENT_SCHEMA_VERSION}`
       );
     }
-    if (version < 1) {
-      this.#applySchemaV1();
-      this.#db.exec(`PRAGMA user_version = ${CURRENT_SCHEMA_VERSION}`);
-      return;
-    }
+    // Schema DDL is `IF NOT EXISTS`, so applying every step is safe on a fresh
+    // or partially-migrated DB. The version bump only records that the index
+    // table now exists; the index itself is populated lazily and bounded:
+    //
+    //   - new enqueues maintain it directly (fast, payload already in hand);
+    //   - a pre-index (v1) database's legacy rows are backfilled per-lane and
+    //     bounded the first time a coverage probe scopes that lane.
+    //
+    // Opening a giant legacy outbox therefore does NO payload work — the cost
+    // moves to the bounded, source-scoped probe in `hasObservedStream`, never
+    // an unbounded scan at open. This is what keeps `doctor`/`status` fast on
+    // a 35 GB retained outbox.
     this.#applySchemaV1();
+    this.#applySchemaV2();
+    if (version < CURRENT_SCHEMA_VERSION) {
+      this.#db.exec(`PRAGMA user_version = ${CURRENT_SCHEMA_VERSION}`);
+    }
   }
 
   #applySchemaV1(): void {
@@ -794,6 +960,31 @@ export class LocalDeviceOutbox {
         ON local_device_outbox (status, lease_until);
       CREATE INDEX IF NOT EXISTS local_device_outbox_source_idx
         ON local_device_outbox (source_instance_id, status);
+    `);
+  }
+
+  /**
+   * Schema v2 — the payload-light observed-stream index.
+   *
+   * One row per `(record_batch outbox row × distinct stream name)` plus a
+   * sentinel for empty-records batches. Lets `hasObservedStream` answer
+   * coverage observation by reading indexed stream names joined to the row's
+   * live status, instead of an unbounded `json_each` scan over retained
+   * `payload_json`. `outbox_id` is not a declared foreign key (the parent row
+   * is intentionally retained after drain and never cascades), but the join
+   * to `local_device_outbox` at query time supplies the live dead-letter
+   * exclusion.
+   */
+  #applySchemaV2(): void {
+    this.#db.exec(`
+      CREATE TABLE IF NOT EXISTS local_device_observed_stream (
+        outbox_id TEXT NOT NULL,
+        source_instance_id TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        PRIMARY KEY (source_instance_id, stream, outbox_id)
+      ) WITHOUT ROWID;
+      CREATE INDEX IF NOT EXISTS local_device_observed_stream_outbox_idx
+        ON local_device_observed_stream (outbox_id);
     `);
   }
 
@@ -851,6 +1042,35 @@ export function buildLocalDeviceOutboxId(input: BuildLocalDeviceOutboxIdInput): 
     parts: input.parts,
     source_instance_id: input.sourceInstanceId,
   })}`;
+}
+
+/**
+ * Sentinel stream name marking a `record_batch` row that carries no records,
+ * so the observed-stream index covers it (and it is never reparsed as a
+ * legacy unindexed row). The leading space is not a legal manifest stream
+ * name, so it can never collide with a real stream a caller queries for.
+ */
+const EMPTY_STREAM_SENTINEL = " :pdpp-empty-record-batch";
+
+/**
+ * Distinct stream names carried by a record batch payload's `$.records[*]`.
+ *
+ * Reads only the `stream` field of each record envelope — never record
+ * bodies, ids, paths, or tokens — mirroring the envelope shape
+ * `buildLocalDeviceRecordEnvelope` produces. Returns a de-duplicated array so
+ * the index stores one row per `(outbox row, stream)` pair.
+ */
+function distinctRecordStreams(payload: unknown): string[] {
+  if (!(isRecord(payload) && Array.isArray(payload.records))) {
+    return [];
+  }
+  const streams = new Set<string>();
+  for (const record of payload.records) {
+    if (isRecord(record) && typeof record.stream === "string" && record.stream !== "") {
+      streams.add(record.stream);
+    }
+  }
+  return [...streams];
 }
 
 function rowToItem(rowLike: unknown): LocalDeviceOutboxItem {

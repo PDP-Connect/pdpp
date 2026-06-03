@@ -2,7 +2,8 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { hashCanonicalJson } from "./local-device-envelope.js";
-const CURRENT_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_VERSION = 2;
+const LEGACY_COVERAGE_SCAN_BUDGET = 5000;
 export class LocalDeviceOutbox {
     #clock;
     #db;
@@ -67,11 +68,18 @@ export class LocalDeviceOutbox {
           updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
             .run(row.id, row.source_instance_id, row.kind, row.status, row.payload_json, row.body_hash, row.attempt_count, row.next_attempt_at, row.lease_holder, row.lease_epoch, row.lease_until, row.last_error, row.acknowledged_at, row.created_at, row.updated_at);
+        this.#indexObservedStreams(row.id, row.source_instance_id, row.kind, input.payload);
         const inserted = this.get(row.id);
         if (!inserted) {
             throw new Error(`local outbox insert disappeared before readback: ${row.id}`);
         }
         return inserted;
+    }
+    #indexObservedStreams(outboxId, sourceInstanceId, kind, payload) {
+        if (kind !== "record_batch") {
+            return;
+        }
+        this.#backfillObservedStreamIndex(outboxId, sourceInstanceId, distinctRecordStreams(payload));
     }
     claimReady(input) {
         const now = this.#now();
@@ -381,17 +389,26 @@ export class LocalDeviceOutbox {
         return summary;
     }
     hasObservedStream(input) {
-        const row = this.#db
+        const indexed = this.#db
             .prepare(`SELECT 1 AS found
-           FROM local_device_outbox AS o,
-                json_each(o.payload_json, '$.records') AS rec
-          WHERE o.source_instance_id = ?
-            AND o.kind = 'record_batch'
+           FROM local_device_observed_stream AS idx
+           JOIN local_device_outbox AS o ON o.id = idx.outbox_id
+          WHERE idx.source_instance_id = ?
+            AND idx.stream = ?
             AND o.status != 'dead_letter'
-            AND json_extract(rec.value, '$.stream') = ?
           LIMIT 1`)
             .get(input.sourceInstanceId, input.stream);
-        return Boolean(row);
+        if (indexed) {
+            return true;
+        }
+        const unindexed = this.#unindexedRecordBatchIds(input.sourceInstanceId, LEGACY_COVERAGE_SCAN_BUDGET + 1);
+        if (unindexed.length === 0) {
+            return false;
+        }
+        if (unindexed.length > LEGACY_COVERAGE_SCAN_BUDGET) {
+            return null;
+        }
+        return this.#legacyHasObservedStream(unindexed, input.stream);
     }
     countRecordBatches(input) {
         const row = this.#db
@@ -402,6 +419,62 @@ export class LocalDeviceOutbox {
             AND status != 'dead_letter'`)
             .get(input.sourceInstanceId);
         return isRecord(row) ? numberFrom(row.total) : 0;
+    }
+    #unindexedRecordBatchIds(sourceInstanceId, limit) {
+        const rows = this.#db
+            .prepare(`SELECT o.id AS id
+           FROM local_device_outbox AS o
+          WHERE o.source_instance_id = ?
+            AND o.kind = 'record_batch'
+            AND o.status != 'dead_letter'
+            AND NOT EXISTS (
+              SELECT 1 FROM local_device_observed_stream AS idx
+               WHERE idx.outbox_id = o.id
+            )
+          ORDER BY o.rowid
+          LIMIT ?`)
+            .all(sourceInstanceId, limit);
+        return rows.map((row) => {
+            if (!isRecord(row) || typeof row.id !== "string") {
+                throw new Error("local outbox unindexed record-batch query returned an invalid row");
+            }
+            return row.id;
+        });
+    }
+    #legacyHasObservedStream(outboxIds, stream) {
+        let found = false;
+        for (const id of outboxIds) {
+            const row = this.#db
+                .prepare("SELECT payload_json, source_instance_id FROM local_device_outbox WHERE id = ?")
+                .get(id);
+            if (!isRecord(row) || typeof row.payload_json !== "string" || typeof row.source_instance_id !== "string") {
+                continue;
+            }
+            let payload;
+            try {
+                payload = JSON.parse(row.payload_json);
+            }
+            catch {
+                continue;
+            }
+            const streams = distinctRecordStreams(payload);
+            this.#backfillObservedStreamIndex(id, row.source_instance_id, streams);
+            if (streams.includes(stream)) {
+                found = true;
+            }
+        }
+        return found;
+    }
+    #backfillObservedStreamIndex(outboxId, sourceInstanceId, streams) {
+        const insert = this.#db.prepare(`INSERT OR IGNORE INTO local_device_observed_stream (outbox_id, source_instance_id, stream)
+         VALUES (?, ?, ?)`);
+        if (streams.length === 0) {
+            insert.run(outboxId, sourceInstanceId, EMPTY_STREAM_SENTINEL);
+            return;
+        }
+        for (const stream of streams) {
+            insert.run(outboxId, sourceInstanceId, stream);
+        }
     }
     deadLetterErrorSummary(input = {}) {
         const limit = input.limit && input.limit > 0 ? input.limit : 5;
@@ -474,12 +547,11 @@ export class LocalDeviceOutbox {
         if (version > CURRENT_SCHEMA_VERSION) {
             throw new Error(`local outbox schema version ${version} is newer than supported version ${CURRENT_SCHEMA_VERSION}`);
         }
-        if (version < 1) {
-            this.#applySchemaV1();
-            this.#db.exec(`PRAGMA user_version = ${CURRENT_SCHEMA_VERSION}`);
-            return;
-        }
         this.#applySchemaV1();
+        this.#applySchemaV2();
+        if (version < CURRENT_SCHEMA_VERSION) {
+            this.#db.exec(`PRAGMA user_version = ${CURRENT_SCHEMA_VERSION}`);
+        }
     }
     #applySchemaV1() {
         this.#db.exec(`
@@ -506,6 +578,18 @@ export class LocalDeviceOutbox {
         ON local_device_outbox (status, lease_until);
       CREATE INDEX IF NOT EXISTS local_device_outbox_source_idx
         ON local_device_outbox (source_instance_id, status);
+    `);
+    }
+    #applySchemaV2() {
+        this.#db.exec(`
+      CREATE TABLE IF NOT EXISTS local_device_observed_stream (
+        outbox_id TEXT NOT NULL,
+        source_instance_id TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        PRIMARY KEY (source_instance_id, stream, outbox_id)
+      ) WITHOUT ROWID;
+      CREATE INDEX IF NOT EXISTS local_device_observed_stream_outbox_idx
+        ON local_device_observed_stream (outbox_id);
     `);
     }
     #selectReady(sourceInstanceId, now, limit, excludeKinds = []) {
@@ -550,6 +634,19 @@ export function buildLocalDeviceOutboxId(input) {
         parts: input.parts,
         source_instance_id: input.sourceInstanceId,
     })}`;
+}
+const EMPTY_STREAM_SENTINEL = " :pdpp-empty-record-batch";
+function distinctRecordStreams(payload) {
+    if (!(isRecord(payload) && Array.isArray(payload.records))) {
+        return [];
+    }
+    const streams = new Set();
+    for (const record of payload.records) {
+        if (isRecord(record) && typeof record.stream === "string" && record.stream !== "") {
+            streams.add(record.stream);
+        }
+    }
+    return [...streams];
 }
 function rowToItem(rowLike) {
     const row = asOutboxRow(rowLike);

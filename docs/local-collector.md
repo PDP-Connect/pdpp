@@ -59,6 +59,71 @@ A monorepo checkout is only needed for PDPP development or unpublished
 connector work. It is not required for the public Claude Code / Codex collector
 path.
 
+## Deployment Posture: Published vs Dev
+
+A production or operator host MUST run a **pinned, published** package — never
+a monorepo checkout's `dist/`. Mixing the two is the difference between
+operator-host evidence and local-dev evidence, and it is easy to do by
+accident: an `npm link`ed (or otherwise globally symlinked) `pdpp-local-collector`
+resolves the binary into a repo `packages/local-collector/dist/...` tree, so a
+`status`/`doctor`/`run` you believe reflects the published package is really
+exercising your working copy.
+
+**Production / operator host — pin an explicit published version or dist-tag.**
+
+```bash
+# Pin the dist-tag (tracks the latest beta build):
+npm i -g @pdpp/local-collector@beta
+
+# Or pin an exact version for reproducible operator evidence (preferred when
+# capturing host evidence that must be attributable to a known build):
+npm i -g @pdpp/local-collector@0.1.0-beta.7
+```
+
+Confirm what actually resolves before trusting any host evidence:
+
+```bash
+# The realpath must be under a global node_modules, NOT a repo dist/ tree.
+command -v pdpp-local-collector
+readlink -f "$(command -v pdpp-local-collector)"
+# Cross-check the version the binary reports against the version you pinned:
+pdpp-local-collector status | sed -n 's/.*"version": "\(.*\)".*/\1/p' | head -1
+```
+
+If `readlink -f` lands inside a repo `packages/local-collector/dist/`, the host
+is running a **dev override**, not the published package — re-pin before
+treating any output as operator-host evidence.
+
+> **`latest` is a placeholder — do not use it.** The published `latest`
+> dist-tag is currently `0.0.0`, a placeholder that is older than every real
+> build. `npm i -g @pdpp/local-collector` (no tag) or `@latest` therefore
+> installs the placeholder, not a working collector. Always pin `@beta` or an
+> explicit `@0.1.0-beta.<n>` until `latest` is promoted to a real version. The
+> in-repo `package.json` version is also `0.0.0`, by design — the published
+> beta version is set at publish time, and the CLI's own
+> `package.version` echoes whatever build is installed, which is exactly why
+> the `readlink -f` + version cross-check above matters.
+
+**Dev override (monorepo development only).** When iterating on the collector
+itself, build the package and point the global binary at the repo `dist/` on
+purpose, and label it as a dev override wherever you record evidence:
+
+```bash
+# Monorepo dev override — repo dist/, NOT a published package. Mark any
+# evidence captured this way as dev-only.
+( cd packages/local-collector && pnpm build )
+npm i -g "file:$(pwd)/packages/local-collector"   # or: npm link
+readlink -f "$(command -v pdpp-local-collector)"   # confirm it is the repo dist/
+```
+
+Undo the dev override and return to a pinned published package before capturing
+operator-host evidence again:
+
+```bash
+npm rm -g @pdpp/local-collector
+npm i -g @pdpp/local-collector@0.1.0-beta.7   # re-pin a published version
+```
+
 ## Advertise
 
 Advertise the runner capabilities before enrolling a device:

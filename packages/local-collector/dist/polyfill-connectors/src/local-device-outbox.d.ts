@@ -139,7 +139,7 @@ export declare class LocalDeviceOutbox {
     hasObservedStream(input: {
         sourceInstanceId: string;
         stream: string;
-    }): boolean;
+    }): boolean | null;
     countRecordBatches(input: {
         sourceInstanceId: string;
     }): number;

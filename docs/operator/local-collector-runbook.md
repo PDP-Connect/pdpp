@@ -33,6 +33,11 @@ State is authoritative on the server. Before each connector pass the runner fetc
   `npx -y @pdpp/local-collector@beta` available for one-shot execution until
   the package is promoted from beta to latest. A PDPP monorepo checkout is only
   needed for development or unpublished connector work.
+- On an operator host, pin a **published** version or dist-tag and confirm the
+  `pdpp-local-collector` binary does not resolve into a repo `dist/` tree before
+  trusting its output as operator evidence. Do not use the `latest` dist-tag —
+  it is currently the placeholder `0.0.0`. See
+  `docs/local-collector.md`§"Deployment Posture: Published vs Dev".
 
 ## Step 1 &mdash; Confirm collector runtime capabilities
 
@@ -235,8 +240,21 @@ situation from raw counts. It is exactly one of:
 The `coverage` block (`observed`, `record_batches`) is the evidence behind
 `coverage_missing`: `observed: false` with `record_batches > 0` means the
 lane drained real records but no coverage diagnostic. `observed` is `null`
-when no connection id scoped the scan. `doctor` adds a `coverage_diagnostics`
+when the surface cannot answer it — either no connection id scoped the scan,
+or the outbox predates the coverage index and its unindexed backlog is larger
+than the bounded scan budget (see below). `doctor` adds a `coverage_diagnostics`
 check (`ok`/`warn`) and a one-line remediation hint for any non-`ok` state.
+
+> **Coverage detection is payload-light and bounded.** Coverage observation is
+> answered from a small per-stream index the outbox maintains on every enqueue,
+> not by reparsing record payloads — so `doctor`/`status` stay fast even on a
+> multi-gigabyte retained outbox. An outbox created before that index existed
+> backfills lazily and bounded the first time it is probed; if such a legacy
+> outbox has more unindexed record batches than the scan budget, the probe
+> reports `observed: null` (unknown) rather than launch an unbounded scan.
+> Running the collector once more indexes the lane going forward, after which
+> the coverage answer is exact. `observed: null` is never treated as
+> `coverage_missing` — the surface does not guess from a partial scan.
 
 **Server side.** Hit `/_ref/device-exporters/source-instances` (or read it
 through `/dashboard/device-exporters`) and compare per source instance:
