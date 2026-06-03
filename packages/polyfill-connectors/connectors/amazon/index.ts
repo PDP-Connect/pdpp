@@ -374,7 +374,7 @@ async function reportEmptyPageDiagnostics(page: Page, year: number, startIndex: 
     await emit({
       type: "PROGRESS",
       stream: "orders",
-      message: `Amazon year ${year}: sign-in or CAPTCHA challenge detected — manual action required to continue`,
+      message: `Amazon year ${year}: sign-in or CAPTCHA challenge detected; manual action required to continue`,
     });
   }
   if (diag && classification.reason === "selector_drift") {
