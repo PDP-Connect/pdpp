@@ -1331,14 +1331,22 @@ async function tryExportLadder(
   return { csvPath: null, exportEmpty: false, usedSince: null, lastDiag: diagBox.current };
 }
 
-/** Parse the downloaded CSV, emit each transaction, return the latest date seen. */
-async function emitCsvTransactions(
+interface CsvTransactionEmitResult {
+  dataRows: number;
+  latest: string | null;
+  usableCount: number;
+}
+
+/** Parse the downloaded CSV, emit each transaction, and return parse outcome metadata. */
+export async function emitCsvTransactions(
   deps: EmitDeps,
   csvPath: string,
   a: DashboardAccount,
   priorLastDate: string | null,
+  accountOrdinal: number,
+  accountTotal: number,
   fingerprintCursor?: FingerprintCursor
-): Promise<string | null> {
+): Promise<CsvTransactionEmitResult> {
   const text = await readFile(csvPath, "utf8");
   const rows = parseCsv(text);
   const txnAccountId = a.account_id_raw || a.last_four || "unknown";
@@ -1347,6 +1355,28 @@ async function emitCsvTransactions(
     accountName: a.name,
     fetchedAt: nowIso(),
   });
+  // A CSV that was downloaded (so not the known-empty export path) but whose
+  // data rows produced zero usable transactions is a silent coverage loss:
+  // parseCsv returned only a header/garbage, or every data row failed the
+  // header/shape checks in rowsToTransactions. Surface a bounded SKIP_RESULT
+  // by account ordinal (never the account number / last-four) so the run does
+  // not look complete. The caller also refuses to advance this account's
+  // transaction cursor on this outcome, so a parser fix can recover the gap.
+  // `rows.length` is the raw parsed line count; we report data-row count
+  // (rows beyond the header) to keep the number meaningful.
+  const dataRows = Math.max(0, rows.length - 1);
+  if (txns.length === 0) {
+    await deps.emit({
+      type: "SKIP_RESULT",
+      stream: "transactions",
+      reason: dataRows > 0 ? "csv_no_usable_transactions" : "csv_no_data_rows",
+      message:
+        dataRows > 0
+          ? `CSV parsed no usable transactions from ${dataRows} data row(s) for account ${accountOrdinal}/${accountTotal} (header mismatch or unparseable rows)`
+          : `CSV had no data rows for account ${accountOrdinal}/${accountTotal}`,
+      diagnostics: { account_ordinal: accountOrdinal, account_total: accountTotal, data_rows: dataRows },
+    });
+  }
   let latest: string | null = priorLastDate;
   for (const t of txns) {
     // Gate on a per-transaction fingerprint that excludes the run-clock
@@ -1379,7 +1409,7 @@ async function emitCsvTransactions(
       }
     })
     .catch((): undefined => undefined);
-  return latest;
+  return { dataRows, latest, usableCount: txns.length };
 }
 
 async function processAccountTransactions(
@@ -1426,8 +1456,19 @@ async function processAccountTransactions(
     await emitExportFailure(deps, a, lastDiag);
     return null;
   }
-  const latest = await emitCsvTransactions(deps, csvPath, a, priorLastDate, fingerprintCursor);
-  return { last_date: latest || usedSince || null };
+  const csvResult = await emitCsvTransactions(
+    deps,
+    csvPath,
+    a,
+    priorLastDate,
+    accountOrdinal,
+    accountTotal,
+    fingerprintCursor
+  );
+  if (csvResult.usableCount === 0) {
+    return priorLastDate ? { last_date: priorLastDate } : null;
+  }
+  return { last_date: csvResult.latest || usedSince || null };
 }
 
 async function runTransactionsStream(

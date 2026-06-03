@@ -20,7 +20,7 @@
  * which main() surfaces as a retryable DONE failure (see catch at bottom).
  */
 
-import { nowIso, runConnector } from "../../src/connector-runtime.ts";
+import { type EmittedMessage, nowIso, runConnector } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import {
@@ -104,10 +104,12 @@ async function gh<T>(
 // ─── Stream collectors ──────────────────────────────────────────────────
 
 export interface StreamCtx {
-  emit: (msg: { type: "STATE"; stream: string; cursor: unknown }) => Promise<void>;
+  emit: (
+    msg: { type: "STATE"; stream: string; cursor: unknown } | Extract<EmittedMessage, { type: "SKIP_RESULT" }>
+  ) => Promise<void>;
   emitRecord: (stream: string, data: Record<string, unknown>) => Promise<void>;
   progress: (message: string, extra?: ProgressExtra) => Promise<void>;
-  requested: Map<string, { time_range?: { since?: string; until?: string } }>;
+  requested: Map<string, { name?: string; time_range?: { since?: string; until?: string } }>;
   state: Record<string, unknown>;
   token: string;
 }
@@ -213,6 +215,8 @@ async function collectRepositories(ctx: StreamCtx): Promise<void> {
 }
 
 interface StarredPageResult {
+  /** Entries whose `repo` was missing, so starredRecord() returned null. */
+  dropped: number;
   latest: string | null | undefined;
   stop: boolean;
 }
@@ -224,22 +228,27 @@ async function emitStarredPage(
   latestIn: string | null | undefined
 ): Promise<StarredPageResult> {
   let latest = latestIn;
+  let dropped = 0;
   for (const entry of entries) {
     const starredAt = entry.starred_at || null;
     if (priorStarred && starredAt && starredAt <= priorStarred) {
-      return { latest, stop: true };
+      return { dropped, latest, stop: true };
     }
     const rec = starredRecord(entry);
     if (!rec) {
+      // Entry has no `repo` object (e.g. repo deleted/made private since the
+      // star). starredRecord() returns null; we cannot build a record. Count
+      // it so a run that silently drops such entries does not look complete.
+      dropped++;
       continue;
     }
     await ctx.emitRecord("starred", rec);
     latest = laterIso(latest, starredAt);
   }
-  return { latest, stop: false };
+  return { dropped, latest, stop: false };
 }
 
-async function collectStarred(ctx: StreamCtx): Promise<void> {
+export async function collectStarred(ctx: StreamCtx): Promise<void> {
   await ctx.progress("Fetching starred repositories", { stream: "starred", phase: "start" });
   const starredState = ctx.state.starred as { last_starred_at?: string } | undefined;
   const priorStarred = starredState?.last_starred_at;
@@ -248,6 +257,7 @@ async function collectStarred(ctx: StreamCtx): Promise<void> {
   let stop = false;
   let pageIndex = 0;
   let totalSeen = 0;
+  let droppedTotal = 0;
   while (path && !stop) {
     // Use star:timestamp media type to get starred_at
     const pageExtra = {
@@ -279,8 +289,21 @@ async function collectStarred(ctx: StreamCtx): Promise<void> {
     const result = await emitStarredPage(ctx, page.data, priorStarred, latestStarred);
     latestStarred = result.latest;
     stop = result.stop;
+    droppedTotal += result.dropped;
     path = page.nextUrl;
     pageIndex++;
+  }
+  // Stream-level skip evidence: a run that silently drops malformed/unavailable
+  // starred entries must not look complete. One bounded summary per run (count
+  // only — there is nothing to identify; `repo` was absent). No per-item flood.
+  if (droppedTotal > 0) {
+    await ctx.emit({
+      type: "SKIP_RESULT",
+      stream: "starred",
+      reason: "starred_entry_missing_repo",
+      message: `dropped ${String(droppedTotal)} starred entr${droppedTotal === 1 ? "y" : "ies"} with no repo object (repo deleted or made private since starring)`,
+      diagnostics: { dropped: droppedTotal, total_seen: totalSeen },
+    });
   }
   await ctx.emit({
     type: "STATE",
@@ -364,17 +387,25 @@ async function collectIssues(ctx: StreamCtx): Promise<void> {
 // /repos/{owner}/{repo}/pulls/{number}. That's 1 extra request per PR.
 const PR_ERROR_BUBBLE_PATTERN = /rate_limited|auth_failed/;
 
+interface PullDetailResult {
+  detail: GitHubPullDetail | null;
+  /** True when the detail fetch failed (non-fatally), so the emitted PR record
+   *  is degraded to search-summary fields only (merged_at, commits, diff stats,
+   *  reviewers absent). False when there was simply no detail to fetch. */
+  detailFailed: boolean;
+}
+
 async function fetchPullDetail(
   repoFull: string | null,
   number: number | undefined,
   token: string
-): Promise<GitHubPullDetail | null> {
+): Promise<PullDetailResult> {
   if (!(repoFull && number != null)) {
-    return null;
+    return { detail: null, detailFailed: false };
   }
   try {
     const r = await gh<GitHubPullDetail>(`/repos/${repoFull}/pulls/${String(number)}`, token);
-    return r.data;
+    return { detail: r.data, detailFailed: false };
   } catch (e) {
     // Non-fatal: emit what we have from search. Rate-limit errors
     // bubble up from gh() and abort the whole run (retryable).
@@ -382,7 +413,7 @@ async function fetchPullDetail(
     if (PR_ERROR_BUBBLE_PATTERN.test(msg)) {
       throw e;
     }
-    return null;
+    return { detail: null, detailFailed: true };
   }
 }
 
@@ -397,20 +428,29 @@ function buildPrSearchPath(login: string, sinceParam: string | null): string {
 }
 
 interface PrPageResult {
+  /** PRs emitted with degraded detail because the per-PR detail fetch failed. */
+  detailFailed: number;
+  /** PR records actually emitted after since/until filters. */
+  emitted: number;
   latest: string | null | undefined;
   stop: boolean;
+}
+
+interface PrItemResult {
+  detailFailed: boolean;
+  latest: string | null | undefined;
 }
 
 async function emitPullRequestItem(
   ctx: StreamCtx,
   it: GitHubIssue,
   latestIn: string | null | undefined
-): Promise<string | null | undefined> {
+): Promise<PrItemResult> {
   const repoFull = repoFullFromUrl(it.repository_url);
   // Fetch PR detail for fields not in search summary.
-  const detail = await fetchPullDetail(repoFull, it.number, ctx.token);
+  const { detail, detailFailed } = await fetchPullDetail(repoFull, it.number, ctx.token);
   await ctx.emitRecord("pull_requests", pullRequestRecord(it, detail, repoFull));
-  return laterIso(latestIn, it.updated_at);
+  return { detailFailed, latest: laterIso(latestIn, it.updated_at) };
 }
 
 async function emitPullRequestPage(
@@ -421,19 +461,26 @@ async function emitPullRequestPage(
   latestIn: string | null | undefined
 ): Promise<PrPageResult> {
   let latest = latestIn;
+  let detailFailed = 0;
+  let emitted = 0;
   for (const it of items) {
     if (isBeforeSince(it.updated_at, sinceParam)) {
-      return { latest, stop: true };
+      return { detailFailed, emitted, latest, stop: true };
     }
     if (isAtOrAfterUntil(it.updated_at, until)) {
       continue;
     }
-    latest = await emitPullRequestItem(ctx, it, latest);
+    const item = await emitPullRequestItem(ctx, it, latest);
+    latest = item.latest;
+    emitted++;
+    if (item.detailFailed) {
+      detailFailed++;
+    }
   }
-  return { latest, stop: false };
+  return { detailFailed, emitted, latest, stop: false };
 }
 
-async function collectPullRequests(ctx: StreamCtx): Promise<void> {
+export async function collectPullRequests(ctx: StreamCtx): Promise<void> {
   await ctx.progress("Fetching pull requests", { stream: "pull_requests", phase: "start" });
   const req = ctx.requested.get("pull_requests");
   const prState = ctx.state.pull_requests as { last_updated_at?: string } | undefined;
@@ -448,6 +495,8 @@ async function collectPullRequests(ctx: StreamCtx): Promise<void> {
   let stop = false;
   let fetchedCount = 0;
   let pageIndex = 0;
+  let detailFailedTotal = 0;
+  let emittedCount = 0;
   while (path && !stop) {
     const pageExtra = {
       stream: "pull_requests",
@@ -468,6 +517,8 @@ async function collectPullRequests(ctx: StreamCtx): Promise<void> {
     const result = await emitPullRequestPage(ctx, items, sinceParam, until, latestUpdated);
     latestUpdated = result.latest;
     stop = result.stop;
+    detailFailedTotal += result.detailFailed;
+    emittedCount += result.emitted;
     fetchedCount += items.length;
     await ctx.progress("Fetched GitHub pull requests page", {
       stream: "pull_requests",
@@ -481,6 +532,20 @@ async function collectPullRequests(ctx: StreamCtx): Promise<void> {
     });
     path = page.nextUrl;
     pageIndex++;
+  }
+  // Stream-level evidence that some PR records are degraded: the search summary
+  // was emitted but the per-PR detail fetch failed (merged_at, commit/diff
+  // stats, reviewers are absent on those records). One bounded summary per run
+  // (count only — no repo/PR identifiers). Records are NOT dropped, so this is
+  // a coverage-degradation marker, not a terminal skip of the items.
+  if (detailFailedTotal > 0) {
+    await ctx.emit({
+      type: "SKIP_RESULT",
+      stream: "pull_requests",
+      reason: "pr_detail_fetch_failed",
+      message: `${String(detailFailedTotal)} of ${String(emittedCount)} pull request record(s) emitted without detail fields (per-PR detail fetch failed)`,
+      diagnostics: { detail_failed: detailFailedTotal, total_emitted: emittedCount, total_seen: fetchedCount },
+    });
   }
   await ctx.emit({
     type: "STATE",

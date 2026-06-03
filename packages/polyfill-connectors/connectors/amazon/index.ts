@@ -466,10 +466,21 @@ async function scrapeListPage(
  * Fetch the order detail page (if enabled), capture one detail fixture
  * per run, and emit the order + item records.
  */
-async function processListOrder(page: Page, deps: EmitDeps, flags: RunFlags, listOrder: ListPageOrder): Promise<void> {
+/**
+ * Returns `false` when the order row was dropped because its order date could
+ * not be parsed (caller counts these for a per-year summary). Returns `true`
+ * when the order was processed. We never emit the raw order id here — only the
+ * count crosses into operator-visible evidence.
+ */
+export async function processListOrder(
+  page: Page,
+  deps: EmitDeps,
+  flags: RunFlags,
+  listOrder: ListPageOrder
+): Promise<boolean> {
   const orderDate = parseOrderDate(listOrder.orderDateRaw);
   if (!orderDate) {
-    return;
+    return false;
   }
   const detail: OrderDetail | null = deps.skipDetail ? null : await fetchOrderDetail(page, listOrder.orderId);
   if (deps.capture && !(flags.detailCaptured || deps.skipDetail) && detail) {
@@ -477,16 +488,62 @@ async function processListOrder(page: Page, deps: EmitDeps, flags: RunFlags, lis
     flags.detailCaptured = true;
   }
   await emitOrderAndItems(deps, listOrder, detail, orderDate);
+  return true;
+}
+
+interface YearRunResult {
+  orderCount: number;
+  unparseableDateCount: number;
+}
+
+interface YearCompletionArgs {
+  newYearsState: YearsCursor;
+  prior: YearState | undefined;
+  progress: BrowserCollectContext["progress"];
+  unparseableDateCount: number;
+  year: number;
+  yearOrderCount: number;
+}
+
+async function applyYearCompletionState({
+  newYearsState,
+  prior,
+  progress,
+  unparseableDateCount,
+  year,
+  yearOrderCount,
+}: YearCompletionArgs): Promise<void> {
+  // Year completion state with freeze-once-stable policy. If required
+  // list rows were dropped, do not advance `last_scraped`: the next run
+  // must be allowed to retry the year after a parser fix instead of
+  // treating the year as complete forever.
+  if (unparseableDateCount === 0) {
+    const stableCount = prior !== undefined && prior.order_count === yearOrderCount;
+    newYearsState[String(year)] = {
+      order_count: yearOrderCount,
+      frozen: year < new Date().getFullYear() && stableCount,
+      last_scraped: nowIso(),
+    };
+  } else {
+    await progress(
+      `Not advancing Amazon year ${year} cursor because ${unparseableDateCount} order row${
+        unparseableDateCount === 1 ? "" : "s"
+      } could not be emitted`,
+      { stream: "orders" }
+    );
+  }
 }
 
 /**
- * Scrape every list page for one year and emit records. Returns the total
- * order count seen for the year (used for freeze-once-stable policy).
+ * Scrape every list page for one year and emit records. Returns both the total
+ * order count seen for the year (used for freeze-once-stable policy) and the
+ * count of rows we could not emit because their order date was unparseable.
  */
-async function runYear(page: Page, deps: EmitDeps, flags: RunFlags, year: number): Promise<number> {
+async function runYear(page: Page, deps: EmitDeps, flags: RunFlags, year: number): Promise<YearRunResult> {
   let startIndex = 0;
   let pageCount = 0;
   let yearOrderCount = 0;
+  let unparseableDateCount = 0;
   while (pageCount < PAGE_LIMIT) {
     await deps.progress(`Amazon year ${year}: scanning page ${pageCount + 1}`, { stream: "orders" });
     const orders = await scrapeListPage(page, deps.capture, year, startIndex, deps.emit);
@@ -503,13 +560,30 @@ async function runYear(page: Page, deps: EmitDeps, flags: RunFlags, year: number
         `Amazon year ${year}: processing order ${index + 1}/${orders.length} on page ${pageCount + 1}`,
         { stream: "orders" }
       );
-      await processListOrder(page, deps, flags, o);
+      const processed = await processListOrder(page, deps, flags, o);
+      if (!processed) {
+        unparseableDateCount++;
+      }
     }
     pageCount++;
     startIndex += START_INDEX_STEP;
     await politeDelay(POLITE_DELAY_MS);
   }
-  return yearOrderCount;
+  // Bounded per-year coverage evidence: a year that silently drops order rows
+  // with an unparseable order date must not look complete. One count-only
+  // SKIP_RESULT per year (no raw order ids) instead of a per-item flood.
+  if (unparseableDateCount > 0) {
+    await deps.emit({
+      type: "SKIP_RESULT",
+      stream: "orders",
+      reason: "unparseable_order_date",
+      message: `Amazon year ${year}: dropped ${unparseableDateCount} order row${
+        unparseableDateCount === 1 ? "" : "s"
+      } with unparseable dates (of ${yearOrderCount} seen)`,
+      diagnostics: { dropped: unparseableDateCount, total_seen: yearOrderCount, year },
+    });
+  }
+  return { orderCount: yearOrderCount, unparseableDateCount };
 }
 
 // ─── Incremental year planning ───────────────────────────────────────────
@@ -665,15 +739,16 @@ if (isMainModule(import.meta.url)) {
           continue;
         }
 
-        const yearOrderCount = await runYear(page, deps, flags, year);
+        const { orderCount: yearOrderCount, unparseableDateCount } = await runYear(page, deps, flags, year);
 
-        // Year completion state with freeze-once-stable policy
-        const stableCount = prior !== undefined && prior.order_count === yearOrderCount;
-        newYearsState[String(year)] = {
-          order_count: yearOrderCount,
-          frozen: year < new Date().getFullYear() && stableCount,
-          last_scraped: nowIso(),
-        };
+        await applyYearCompletionState({
+          newYearsState,
+          prior,
+          progress,
+          unparseableDateCount,
+          year,
+          yearOrderCount,
+        });
         // Carry the per-order fingerprint map forward alongside the year
         // cursors so the next run can suppress re-scraped orders whose body
         // is unchanged modulo the run clock. NOT pruned: orders is a partial

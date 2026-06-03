@@ -28,8 +28,16 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import type { Page } from "playwright";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
-import { classifyEmptyListPageDiagnostics, type EmitDeps, emitOrderAndItems, planIncrementalYears } from "./index.ts";
+import {
+  classifyEmptyListPageDiagnostics,
+  type EmitDeps,
+  emitOrderAndItems,
+  planIncrementalYears,
+  processListOrder,
+  type RunFlags,
+} from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 import type { DetailItem, ListPageDiagnostics, ListPageOrder, OrderDetail } from "./types.ts";
 
@@ -237,6 +245,89 @@ test("runYear reports non-PII granular progress across list pages and order proc
   }
   assert.match(src, /deps\.progress\([\s\S]*?\{ stream: "orders" \}/);
   assert.doesNotMatch(src, /processing order \$\{o\.orderId\}/);
+});
+
+// ─── Unparseable-order-date drop evidence ─────────────────────────────────
+
+// processListOrder with skipDetail:true never touches `page` for a parseable
+// date, and for an unparseable date it returns false before any page access.
+// A throwing stand-in proves we never reach the browser on the drop path.
+const NEVER_CALLED_PAGE = new Proxy(
+  {},
+  {
+    get(): never {
+      throw new Error("page must not be touched in this test");
+    },
+  }
+) as Page;
+
+function makeRunFlags(): RunFlags {
+  return { detailCaptured: false };
+}
+
+test("processListOrder: unparseable order date returns false (dropped) and emits no records", async () => {
+  const { deps, emitted } = makeRecordingDeps({ skipDetail: true });
+  const dropped = await processListOrder(
+    NEVER_CALLED_PAGE,
+    deps,
+    makeRunFlags(),
+    makeListOrder({ orderDateRaw: "not a real date" })
+  );
+  assert.equal(dropped, false);
+  assert.equal(emitted.length, 0, "a dropped order must emit no records");
+});
+
+test("processListOrder: empty/null order date is also a drop", async () => {
+  const { deps, emitted } = makeRecordingDeps({ skipDetail: true });
+  for (const raw of [null, ""]) {
+    const dropped = await processListOrder(
+      NEVER_CALLED_PAGE,
+      deps,
+      makeRunFlags(),
+      makeListOrder({ orderDateRaw: raw })
+    );
+    assert.equal(dropped, false);
+  }
+  assert.equal(emitted.length, 0);
+});
+
+test("processListOrder: parseable order date returns true and emits the order", async () => {
+  const { deps, emitted } = makeRecordingDeps({ skipDetail: true });
+  const processed = await processListOrder(
+    NEVER_CALLED_PAGE,
+    deps,
+    makeRunFlags(),
+    makeListOrder({ orderDateRaw: "January 5, 2026" })
+  );
+  assert.equal(processed, true);
+  assert.ok(
+    emitted.some((r) => r.stream === "orders"),
+    "a processed order must emit an 'orders' record"
+  );
+});
+
+test("runYear emits bounded per-year unparseable-date SKIP_RESULT evidence with no raw order ids", () => {
+  const src = readFileSync(AMAZON_INDEX_PATH, "utf8");
+  // The count is accumulated from processListOrder's boolean result.
+  assert.match(src, /unparseableDateCount\+\+/);
+  // One bounded per-year SKIP_RESULT summary, gated on count > 0, count + total only.
+  assert.match(src, /type:\s*"SKIP_RESULT"[\s\S]*?stream:\s*"orders"[\s\S]*?reason:\s*"unparseable_order_date"/);
+  assert.match(src, /dropped \$\{unparseableDateCount\} order row/);
+  assert.match(src, /with unparseable dates \(of \$\{yearOrderCount\} seen\)/);
+  assert.match(src, /diagnostics:\s*\{\s*dropped:\s*unparseableDateCount,\s*total_seen:\s*yearOrderCount,\s*year\s*\}/);
+  // The summary is tagged to the orders stream for dashboard routing.
+  assert.match(src, /stream:\s*"orders"/);
+  // It must NOT interpolate any raw order identifier.
+  assert.doesNotMatch(src, /unparseable[\s\S]*?\$\{[^}]*orderId[^}]*\}/);
+});
+
+test("collect path does not advance a year cursor after unparseable order-date drops", () => {
+  const src = readFileSync(AMAZON_INDEX_PATH, "utf8");
+  assert.match(
+    src,
+    /if \(unparseableDateCount === 0\) \{[\s\S]*?last_scraped:\s*nowIso\(\),[\s\S]*?\} else \{[\s\S]*?Not advancing Amazon year \$\{year\} cursor/,
+    "last_scraped must only advance on a year with zero required-row drops"
+  );
 });
 
 test("amazon manifest: successful manual runs have a bounded freshness window", () => {
