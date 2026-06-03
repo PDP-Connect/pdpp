@@ -1,0 +1,43 @@
+## 1. Investigation (done — this lane)
+
+- [x] 1.1 Prove the blocking `grant_package_members.source_json` reference is a non-load-bearing display pointer: child-grant `storage_binding_json` is `{connector_id}` only (`persistChildGrantForPackage`); read fan-in scopes from `listActiveByConnector` + `grant.streams[].connection_id` (`resolveFanInBindings`, `records.js`, `search.js`); no server read path scopes on `grant_package_members.source_json` (grep of `reference-implementation/server`).
+- [x] 1.2 Prove revoking the phantom connection is self-contained: `listActiveByConnector` filters `status='active'`, the dashboard projection hides `revoked`, and `normalizePersistedPackageMemberSource` self-heals stale member display at read time — so no grant-package mutation is needed.
+- [x] 1.3 Identify the one genuinely load-bearing case that MUST stay a hard block: `grant.streams[].connection_id` (grant body) and `storage_binding_json.connector_instance_id`.
+
+## 2. Predicate change — split P5
+
+- [ ] 2.1 In `reasonsFromEvidence`, split the grant check into P5a (load-bearing: `grant.streams[].connection_id` pin + `storage_binding_json.connector_instance_id`) which blocks, and P5b (`grant_package_members.source_json`) which becomes an informational note, not a block. Keep `P5:grants-table-missing` fail-closed.
+- [ ] 2.2 Gather evidence for the grant-stream pin: count active grants whose `grant_json` scopes a stream to this `connector_instance_id`. Add `grantStreamPinRefs` to the SQLite and Postgres evidence gatherers (both arms; missing `grants` table → `missing` → fail closed).
+- [ ] 2.3 Carry the grant-package member reference count as a `note` on candidates (`buildPlan`), and surface it in human + JSON output. A candidate with a member note is still a candidate.
+- [ ] 2.4 Update `PREDICATE_TEXT` and the file header to describe P5a/P5b precisely. No silent behavior change undocumented.
+
+## 3. Operator ergonomics — rollback handle
+
+- [ ] 3.1 Add `--backup-to <path>` for the SQLite arm: `VACUUM INTO` a snapshot before `--apply`, so the operator has a rollback handle. Refuse `--apply` mutation if a requested backup cannot be written.
+- [ ] 3.2 On the Postgres arm, refuse `--apply --backup-to` with a precise message (the script cannot snapshot a remote Postgres; the operator must take their own snapshot). Never imply a backup was taken that was not.
+
+## 4. Tests
+
+- [ ] 4.1 SQLite: a phantom referenced ONLY by `grant_package_members.source_json` IS a candidate; dry-run notes the member ref; apply revokes only the connection; the grant, member row, child grant, and token are unchanged.
+- [ ] 4.2 SQLite: a phantom pinned by an active `grant.streams[].connection_id` is refused (`P5:grant-stream-pin`).
+- [ ] 4.3 SQLite: a phantom named by `storage_binding_json.connector_instance_id` is still refused (`P5:grant-storage-binding`) — regression guard that P5a did not lose the original storage-binding block.
+- [ ] 4.4 SQLite: duplicate Reddit — stale zero-record member-referenced row revoked; data-bearing sibling skipped (`P4:records`) and stays active.
+- [ ] 4.5 SQLite: revoked-placeholder (`P3:status-revoked`) and records-present (`P4:records`) refusals unchanged.
+- [ ] 4.6 Pure-predicate (`reasonsFromEvidence`): member-ref-only → no block + note; grant-stream pin → block; both backends covered by the shared predicate.
+- [ ] 4.7 Apply-time re-evaluation: a grant-stream pin inserted AFTER the plan but BEFORE apply blocks the revoke (skipped-at-apply), proving the load-bearing check re-runs under the lock/transaction.
+- [ ] 4.8 Postgres arm (gated on `PDPP_TEST_POSTGRES_URL`): member-ref-only candidate + grant-stream-pin refusal mirrored.
+- [ ] 4.9 `--backup-to`: a SQLite snapshot is written before apply and the revoke is reversible from it; Postgres `--apply --backup-to` refuses with the precise message.
+
+## 5. Spec + validation
+
+- [ ] 5.1 `openspec validate cleanup-grant-referenced-zero-record-connections --strict`.
+- [ ] 5.2 `git diff --check`.
+- [ ] 5.3 Fold the spec delta into `reference-connector-instances` on archive (owner).
+
+## Acceptance checks
+
+- A member-display-referenced zero-record phantom is revocable; the grant package and all grant rows are untouched.
+- A load-bearing grant-scope pin (stream `connection_id` or storage-binding `connector_instance_id`) is refused with a distinct reason.
+- Duplicate Reddit: stale row revoked, data-bearing sibling spared and still resolvable.
+- All prior P1–P7 fail-closed cases still skip, in plan and at apply-time re-evaluation; missing evidence table fails closed.
+- Cleanup test suite green (SQLite; Postgres gated); `openspec validate … --strict`; `git diff --check` clean.
