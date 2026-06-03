@@ -351,6 +351,12 @@ test("connector-row freshness line shows both last-checked and last-ingest when 
   assert.match(src, LAST_INGEST_LABEL);
 });
 
+test("connector-row freshness line shows device-no-push label when device row exists but no timestamps yet", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.match(src, /data-testid="freshness-device-no-push"/);
+  assert.match(src, /no push received yet/);
+});
+
 test("connector-row no longer carries an inline connectionHealthDisplay vocabulary table", async () => {
   const src = await readFile(ROW_FILE, "utf8");
   assert.equal(src.includes("function connectionHealthDisplay"), false);

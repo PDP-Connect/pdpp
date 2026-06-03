@@ -875,6 +875,12 @@ function ConnectorFreshnessLine({
         </span>
       );
     }
+    // Device row exists (enrollment complete) but no push received yet.
+    return (
+      <span className="text-muted-foreground/70" data-testid="freshness-device-no-push">
+        no push received yet
+      </span>
+    );
   }
 
   if (totalRecords > 0) {

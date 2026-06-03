@@ -102,7 +102,7 @@ function resolvePrimaryEmptyHint(interactive: boolean, hasNoDataRegistrations: b
     return "This sandbox has no seeded data.";
   }
   if (hasNoDataRegistrations) {
-    return "Registered connections with no durable progress yet are listed below. Sync now a scheduled connector, or wait for a local-collector device to push.";
+    return "Registered connections with no durable progress yet are listed below. Use Sync now to trigger a scheduled connector's first pull, or wait for a local-collector device to push.";
   }
   return "No connections are registered on this instance yet.";
 }
