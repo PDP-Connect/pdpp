@@ -79,3 +79,6 @@ skills/*
 .vibe/
 .windsurf/
 .zencoder/
+
+# Design-review screenshot evidence — kept on disk, never committed (binary bloat)
+design-evidence/**/*.png
