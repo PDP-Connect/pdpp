@@ -4,6 +4,7 @@
 
 import type { MessageAddressObject, MessageEnvelopeObject, MessageStructureObject } from "imapflow";
 import { recordFingerprint } from "../../src/fingerprint-cursor.ts";
+import { stripForbiddenControlChars } from "../../src/safe-text-preview.ts";
 import type { AttachmentRecord, BodySource, ClassifiedBody, ThreadAggregate } from "./types.ts";
 
 // ─── Module-scoped regexes (Biome useTopLevelRegex) ─────────────────────
@@ -490,12 +491,20 @@ export function makeSnippet(
     decoded = buffer.toString("utf8");
   }
   // Drop lines that are obviously quoted replies ("> ...") and signature separators
-  const cleaned = decoded
+  const collapsed = decoded
     .split(NEWLINE_SPLIT_RE)
     .filter((ln) => !QUOTED_REPLY_RE.test(ln))
     .join(" ")
     .replace(WHITESPACE_RUN_RE, " ")
     .trim();
+  // A snippet is a lossy, derived preview — not the canonical body (that lives
+  // in message_bodies, blob-routed when control-rich). Strip the forbidden
+  // control characters that JS `\s` whitespace-collapse misses (BEL, ESC, DEL,
+  // and the C1 range), so the messages.snippet field always satisfies the
+  // pdppSafeText brand instead of failing schema validation and dropping the
+  // whole message record as a terminal source gap. Uses the same predicate the
+  // brand enforces, so the result is provably safe.
+  const cleaned = stripForbiddenControlChars(collapsed).trim();
   if (!cleaned) {
     return null;
   }

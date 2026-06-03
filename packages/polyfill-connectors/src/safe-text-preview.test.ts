@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PDPP_PREVIEW_MAX_CHARS, safeTextPreview } from "./safe-text-preview.ts";
+import { pdppSafeText } from "./pdpp-safe-text.ts";
+import { PDPP_PREVIEW_MAX_CHARS, safeTextPreview, stripForbiddenControlChars } from "./safe-text-preview.ts";
 
 function assertTextPreview(preview: string | null): string {
   if (typeof preview !== "string") {
@@ -365,4 +366,80 @@ test("buffer of all null bytes → binary, reason mentions U+0000", () => {
   assert.equal(result.kind, "binary");
   assertReasonIncludes(result.reason, "U+0000");
   assert.equal(result.originalLength, 3);
+});
+
+// ─── stripForbiddenControlChars ─────────────────────────────────────────
+// The sanitizer that lets lossy preview/snippet fields drop a stray control
+// character instead of failing the pdppSafeText brand and dropping the whole
+// record. Its invariant: output always satisfies pdppSafeText.
+
+test("stripForbiddenControlChars: returns the same reference for already-safe text", () => {
+  const input = "Your order shipped — track it at https://x/abc";
+  assert.equal(stripForbiddenControlChars(input), input);
+});
+
+test("stripForbiddenControlChars: preserves \\t, \\n, \\r", () => {
+  const input = "a\tb\nc\rd";
+  assert.equal(stripForbiddenControlChars(input), input);
+});
+
+test("stripForbiddenControlChars: removes BEL (U+0007) that \\s collapse misses", () => {
+  const input = `Hi${String.fromCharCode(0x07)}there`;
+  assert.equal(stripForbiddenControlChars(input), "Hithere");
+});
+
+test("stripForbiddenControlChars: removes DEL (U+007F)", () => {
+  const input = `x${String.fromCharCode(0x7f)}y`;
+  assert.equal(stripForbiddenControlChars(input), "xy");
+});
+
+test("stripForbiddenControlChars: removes C1 controls (U+0080–U+009F)", () => {
+  // C1 controls are NOT covered by the legacy connector control-char regex
+  // (which stops at U+007F), but they ARE forbidden by pdppSafeText.
+  const input = `Order${String.fromCharCode(0x85)}confirmed${String.fromCharCode(0x9f)}!`;
+  assert.equal(stripForbiddenControlChars(input), "Orderconfirmed!");
+});
+
+test("stripForbiddenControlChars: removes NUL (U+0000)", () => {
+  const input = `a${String.fromCharCode(0x00)}b`;
+  assert.equal(stripForbiddenControlChars(input), "ab");
+});
+
+test("stripForbiddenControlChars: removes VT (U+000B) and FF (U+000C)", () => {
+  const input = `a${String.fromCharCode(0x0b)}b${String.fromCharCode(0x0c)}c`;
+  assert.equal(stripForbiddenControlChars(input), "abc");
+});
+
+test("stripForbiddenControlChars: keeps emoji, combining marks, and astral code points", () => {
+  const input = "👋 café naïve 🇺🇸 𝕏";
+  assert.equal(stripForbiddenControlChars(input), input);
+});
+
+test("stripForbiddenControlChars: empty string stays empty", () => {
+  assert.equal(stripForbiddenControlChars(""), "");
+});
+
+test("stripForbiddenControlChars: output always satisfies pdppSafeText (cross-consistency)", () => {
+  // The whole point of the helper: whatever it returns is acceptable to the
+  // brand. Exercise every forbidden code point individually plus a mixed run.
+  const forbiddenCodes: number[] = [];
+  for (let c = 0x00; c <= 0x1f; c++) {
+    forbiddenCodes.push(c);
+  }
+  forbiddenCodes.push(0x7f);
+  for (let c = 0x80; c <= 0x9f; c++) {
+    forbiddenCodes.push(c);
+  }
+  for (const code of forbiddenCodes) {
+    const dirty = `safe${String.fromCharCode(code)}tail`;
+    const cleaned = stripForbiddenControlChars(dirty);
+    assert.equal(
+      pdppSafeText.safeParse(cleaned).success,
+      true,
+      `cleaned output for U+${code.toString(16).padStart(4, "0")} must satisfy pdppSafeText`
+    );
+  }
+  const mixed = `a${String.fromCharCode(0x07)}b${String.fromCharCode(0x85)}c${String.fromCharCode(0x00)}d`;
+  assert.equal(pdppSafeText.safeParse(stripForbiddenControlChars(mixed)).success, true);
+  assert.equal(stripForbiddenControlChars(mixed), "abcd");
 });

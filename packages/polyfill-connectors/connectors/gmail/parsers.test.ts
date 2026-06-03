@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { MessageStructureObject } from "imapflow";
+import { pdppSafeText } from "../../src/pdpp-safe-text.ts";
 import {
   addressListToArray,
   bigintToCursor,
@@ -464,6 +465,59 @@ test("makeSnippet: empty input / all-quoted input → null", () => {
   assert.equal(makeSnippet(Buffer.alloc(0), null, null), null);
   // All lines quoted
   assert.equal(makeSnippet(Buffer.from("> q1\n> q2\n", "utf8"), null, "utf8"), null);
+});
+
+// ─── makeSnippet: PDPP-safe text invariant ──────────────────────────────
+// A real Gmail run produced a terminal schema_validation_failed source gap on
+// messages.snippet because a body carried forbidden control characters that
+// `\s` whitespace-collapse does not strip (BEL, ESC, DEL, the C1 range). The
+// snippet is a lossy derived preview — the canonical body lives in
+// message_bodies (blob-routed when control-rich) — so the correct fix is to
+// strip those characters from the snippet rather than null the whole record.
+
+test("makeSnippet: strips BEL/ESC/DEL that whitespace-collapse misses → schema-valid", () => {
+  const body = Buffer.from(
+    `Meeting${String.fromCharCode(0x07)} at noon${String.fromCharCode(0x1b)}; please${String.fromCharCode(0x7f)} reply`,
+    "utf8"
+  );
+  const snip = makeSnippet(body, null, "utf8");
+  assert.ok(snip, "snippet should not collapse to null when surrounding text is meaningful");
+  assert.equal(snip, "Meeting at noon; please reply");
+  // The exact gate that produced the live source gap now accepts it.
+  assert.equal(pdppSafeText.nullable().safeParse(snip).success, true);
+});
+
+test("makeSnippet: strips C1 controls (U+0080–U+009F) not covered by legacy regex → schema-valid", () => {
+  const body = Buffer.from(`Order${String.fromCharCode(0x85)}confirmed${String.fromCharCode(0x9f)} today`, "utf8");
+  const snip = makeSnippet(body, null, "utf8");
+  assert.equal(snip, "Orderconfirmed today");
+  assert.equal(pdppSafeText.nullable().safeParse(snip).success, true);
+});
+
+test("makeSnippet: NUL byte in body does not fail the record", () => {
+  const body = Buffer.from(`Hi${String.fromCharCode(0x00)}there`, "utf8");
+  const snip = makeSnippet(body, null, "utf8");
+  assert.equal(snip, "Hithere");
+  assert.equal(pdppSafeText.nullable().safeParse(snip).success, true);
+});
+
+test("makeSnippet: a body that is ONLY control characters → null (honest empty)", () => {
+  const body = Buffer.from([0x07, 0x1b, 0x7f, 0x00]);
+  assert.equal(makeSnippet(body, null, "utf8"), null);
+});
+
+test("makeSnippet: ordinary snippet is unchanged by sanitization", () => {
+  const body = Buffer.from("Your order has shipped — track it at the link below.", "utf8");
+  const snip = makeSnippet(body, null, "utf8");
+  assert.equal(snip, "Your order has shipped — track it at the link below.");
+  assert.equal(pdppSafeText.nullable().safeParse(snip).success, true);
+});
+
+test("makeSnippet: tabs/newlines in body remain collapsed to spaces, not stripped to nothing", () => {
+  // \t and \n are PDPP-safe and already handled by whitespace collapse; the new
+  // sanitizer must not change that behavior.
+  const body = Buffer.from("line one\twith tab\nline two", "utf8");
+  assert.equal(makeSnippet(body, null, "utf8"), "line one with tab line two");
 });
 
 // ─── ThreadAggregate ────────────────────────────────────────────────────
