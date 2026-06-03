@@ -1098,6 +1098,10 @@ test('lifecycle_state is coverage_missing after a clean drain that never carried
   assert.equal(doctor.status, 'warning');
   assert.ok(doctor.remediation.some((line) => /coverage_unknown/.test(line)));
   assert.ok(doctor.remediation.some((line) => /default stream set/.test(line)));
+  // The hint must name the npx -y path so an operator with a stale globally-installed
+  // binary (which may predate coverage_diagnostics in bundled defaults) gets the right
+  // recovery: fetch the current build, not just re-run with the existing install.
+  assert.ok(doctor.remediation.some((line) => /npx -y @pdpp\/local-collector@beta/.test(line)), 'coverage_missing remediation must name the npx -y upgrade path');
 });
 
 test('lifecycle_state is healthy_idle once a drained lane has carried a coverage_diagnostics record', async () => {

@@ -666,8 +666,9 @@ export function buildLocalOutboxDoctor(
     remediation.push(
       `This lane drained ${status.coverage.record_batches} record batch(es) but never carried a ` +
         "`coverage_diagnostics` record, so the dashboard can only show coverage_unknown. " +
-        "Re-run `pdpp-local-collector run …` with the default stream set (no `--streams`); " +
-        "it requests `coverage_diagnostics` and the next pass promotes the coverage axis."
+        "Re-run with the current `@beta` and the default stream set (no `--streams`): " +
+        "`npx -y @pdpp/local-collector@beta run …` (or `pdpp-local-collector run …` if already on the current build). " +
+        "Older installs may omit `coverage_diagnostics` from bundled defaults — `npx -y` always fetches the latest published build."
     );
   }
   if (checks.deployment_posture === "warn") {
