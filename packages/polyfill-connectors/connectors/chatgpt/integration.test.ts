@@ -618,7 +618,7 @@ test("processConversationDetail: detail=200 with at least one message — no emp
   assert.equal(emptySkip, undefined, "a conversation with messages must not emit an empty_detail SKIP");
 });
 
-test("runConversationsAndMessagesStreams: unsafe message text is shape-skipped without mid-run cursor advance", async () => {
+test("runConversationsAndMessagesStreams: unsafe message content is sanitized to null, message still emits", async () => {
   const unsafeNodeId = "unsafe-message";
   const safeNodeId = "safe-message";
   const listItem = makeConvo({
@@ -685,12 +685,15 @@ test("runConversationsAndMessagesStreams: unsafe message text is shape-skipped w
     "/conversations?offset=0&limit=100&order=updated",
     "/conversation/convo-with-binary-text",
   ]);
-  assert.equal(harness.skipped.length, 1, "unsafe text should be quarantined by shape-check");
-  assert.equal(harness.skipped[0]?.stream, "messages");
-  assert.equal(harness.skipped[0]?.issues[0]?.path, "content");
-  assert.match(harness.skipped[0]?.issues[0]?.message ?? "", /PDPP-safe Unicode text/);
+  assert.equal(harness.skipped.length, 0, "unsafe text is sanitized to null, not shape-skipped");
   assert.equal(harness.emitted.filter((r) => r.stream === "conversations").length, 1);
-  assert.equal(harness.emitted.filter((r) => r.stream === "messages").length, 1, "safe sibling message still emits");
+  const messageRecords = harness.emitted.filter((r) => r.stream === "messages");
+  assert.equal(messageRecords.length, 2, "both messages emit");
+  const unsafeRecord = messageRecords.find((r) => r.data.id === unsafeNodeId);
+  assert.ok(unsafeRecord, "unsafe message record must be present");
+  assert.equal(unsafeRecord?.data.content, null, "unsafe content is null after sanitization");
+  const safeRecord = messageRecords.find((r) => r.data.id === safeNodeId);
+  assert.equal(safeRecord?.data.content, "safe reply", "safe sibling content is preserved");
 
   const coverage = harness.protocolMessages.find(
     (m): m is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> => m.type === "DETAIL_COVERAGE"
@@ -712,10 +715,10 @@ test("runConversationsAndMessagesStreams: unsafe message text is shape-skipped w
   const stateIdx = harness.events.findIndex(
     (e) => e.kind === "message" && e.message.type === "STATE" && e.message.stream === "conversations"
   );
-  const lastRecordOrSkipIdx = harness.events.findLastIndex((e) => e.kind === "record" || e.kind === "record-skipped");
-  assert.ok(coverageIdx > lastRecordOrSkipIdx, "DETAIL_COVERAGE must emit after detail lane records settle");
+  const lastRecordIdx = harness.events.findLastIndex((e) => e.kind === "record");
+  assert.ok(coverageIdx > lastRecordIdx, "DETAIL_COVERAGE must emit after detail lane records settle");
   assert.ok(stateIdx > coverageIdx, "STATE must emit after DETAIL_COVERAGE");
-  assert.ok(stateIdx > lastRecordOrSkipIdx, "STATE must remain after all record attempts, including quarantined rows");
+  assert.ok(stateIdx > lastRecordIdx, "STATE must remain after all record attempts");
 });
 
 test("runMessagesAndConversationsWithDetail: fetches detail through adaptive lane with serialized jittered pacing", async () => {

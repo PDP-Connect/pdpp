@@ -173,6 +173,23 @@ test("extractContent: empty / null-shaped content falls back to null", () => {
   assert.equal(extractContent({}), null);
 });
 
+test("extractContent: content with U+0000 (NUL) returns null, not shape-check-failing string", () => {
+  assert.equal(extractContent({ content_type: "text", parts: ["hello\x00world"] }), null);
+});
+
+test("extractContent: content with other forbidden control char (VT U+000B) returns null", () => {
+  assert.equal(extractContent({ content_type: "text", parts: ["line1\x0Bline2"] }), null);
+});
+
+test("extractContent: content with only allowed whitespace (\\t \\n \\r) is preserved", () => {
+  assert.equal(extractContent({ content_type: "text", parts: ["a\tb\nc\rd"] }), "a\tb\nc\rd");
+});
+
+test("extractContent: safe full message content is not preview-truncated", () => {
+  const content = "x".repeat(5001);
+  assert.equal(extractContent({ content_type: "text", parts: [content] }), content);
+});
+
 // ─── extractToolCalls ──────────────────────────────────────────────────
 
 test("extractToolCalls: explicit metadata.tool_calls passes through when non-empty", () => {

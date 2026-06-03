@@ -4,6 +4,7 @@
 // index.ts.
 
 import type { RecordData } from "../../src/connector-runtime.ts";
+import { pdppSafeText } from "../../src/pdpp-safe-text.ts";
 import type {
   ChatGptContent,
   ChatGptMessage,
@@ -279,6 +280,13 @@ const CONTENT_EXTRACTORS: Readonly<Record<string, (c: ChatGptContent) => string 
   user_editable_context: extractUserEditableContext,
 };
 
+function toSafeFullContent(s: string | null): string | null {
+  if (s === null) {
+    return null;
+  }
+  return pdppSafeText.safeParse(s).success ? s : null;
+}
+
 /**
  * Extract a string from a ChatGPT message content object. ChatGPT has many
  * content_type shapes; the previous implementation only handled `text` and
@@ -291,10 +299,8 @@ export function extractContent(content: ChatGptContent | undefined): string | nu
   }
   const type = content.content_type;
   const handler = type ? CONTENT_EXTRACTORS[type] : undefined;
-  if (handler) {
-    return handler(content);
-  }
-  return extractFallback(content);
+  const raw = handler ? handler(content) : extractFallback(content);
+  return toSafeFullContent(raw);
 }
 
 // ─── Tool calls ─────────────────────────────────────────────────────────
