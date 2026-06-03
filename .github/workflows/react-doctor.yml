@@ -23,6 +23,11 @@ concurrency:
   group: react-doctor-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+
 jobs:
   react-doctor:
     name: regression scan vs main
@@ -32,14 +37,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          # Need history so --diff main can walk back to the merge base.
-          fetch-depth: 0
 
-      - name: Run React Doctor (diff vs main)
-        uses: millionco/react-doctor@main
+      - name: Run React Doctor (changed PR files)
+        uses: millionco/react-doctor@v1
         with:
-          diff: main
           fail-on: warning
           annotations: true
-          github-token: ${{ secrets.GITHUB_TOKEN }}
