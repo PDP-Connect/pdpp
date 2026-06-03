@@ -22,6 +22,7 @@
 - `node --test --experimental-strip-types reference-implementation/test/connection-health.test.js` — all pass.
 - `openspec validate classify-stalled-outbox-cause --strict` — passes.
 
-## Owner-gated residual
+## Owner integration pass
 
-- [ ] 3.3 Integration coverage of the server rollup-with-cause path (`connection-health-acceptance.test.js`, `ref-connectors-list-operation.test.js`) requires `pnpm install` for the native `better-sqlite3` dependency, which is absent in the worker worktree. Run on the owner integration pass.
+- [x] 3.3 Integration coverage of the server rollup-with-cause path passes in the owner worktree:
+  `connection-health-acceptance.test.js` (35/35) and `ref-connectors-list-operation.test.js` (61/61).
