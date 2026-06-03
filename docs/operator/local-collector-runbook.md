@@ -113,15 +113,17 @@ PDPP_CONNECTION_ID=si_... \
 
 Swap `--connector claude_code` for `codex` to ingest Codex CLI history/skills/etc. The runner:
 
-1. Calls `GET .../state` and replays prior connector state into `START.state`.
-2. Emits `starting` heartbeat.
-3. Spawns the connector subprocess with `START` on stdin.
-4. Buffers emitted records and per-stream `STATE` messages.
-5. Drains the local queue against `POST .../ingest` until every batch is durably accepted.
-6. Calls `PUT .../state` to advance the cursor. If this fails, the heartbeat surfaces `status: "retrying"` with `last_error.kind: "state_put_failed"` and the next pass retries safely.
-7. Emits `healthy` (or `blocked` on `GET state` failure).
+1. Recovers expired outbox leases (work a crashed prior run left claimed).
+2. **Drains the existing durable outbox first.** Any record batches, checkpoints, or gaps already queued for this connection are sent against `POST .../ingest` before anything else.
+3. **Backlog guard.** If durable work is still pending after that drain (ingest is failing, or the queue-depth ceiling is reached), the runner does **not** spawn the connector child. It heartbeats the honest backlog status and exits, so a scheduled run can never re-scan and re-enqueue the same tranche on top of an undrained backlog. The pending work continues to drain on the next pass.
+4. Otherwise: calls `GET .../state`, replays prior connector state into `START.state`, emits `starting`, and spawns the connector subprocess with `START` on stdin.
+5. Buffers emitted records and per-stream `STATE` messages, draining record batches against `POST .../ingest` as they fill.
+6. Calls `PUT .../state` to advance the cursor only after the record drain succeeds. If the state flush fails, the heartbeat surfaces `status: "retrying"` and the next pass retries safely.
+7. Emits `healthy` (or `blocked` on `GET state` failure / dead-letter backlog).
 
-Run the same command on a schedule (cron, systemd timer, ad-hoc) to keep the lane fresh.
+Run the same command on a schedule (cron, systemd timer, ad-hoc) to keep the lane fresh. Because durable backlog wins over source scanning, running more often than a slow lane can drain is safe: extra invocations drain backlog and exit rather than piling on duplicate scans.
+
+> **Persistent state, not `/tmp`.** The durable outbox (`PDPP_COLLECTOR_QUEUE`, default under the package's `.pdpp-data/`) is what carries undrained backlog between runs and makes the backlog guard above work. Keep it — and any captured `run`/`doctor` JSON or `PDPP_DEBUG_CONNECTOR_PROTOCOL_DIR` dump — on a persistent, disk-backed directory (`$XDG_STATE_HOME`/`~/.local/state` on Linux, `~/Library/Application Support` on macOS). On hosts where `/tmp` is a RAM-backed `tmpfs`, pointing the outbox or a large captured summary at `/tmp` consumes memory and loses the backlog on reboot, which defeats the guard and forces a full re-scan. See `docs/local-collector.md`§"Persistent State And Scratch Paths".
 
 ## Step 5 &mdash; Verify on the dashboard
 
@@ -216,6 +218,25 @@ The JSON output's `outbox.counts` carries `pending`, `retrying`, `leased`,
 configured `source_instance_id`. `status: "ok"` means no dead-letter rows
 and a healthy lease table; `status: "warning"` or `"critical"` points at
 the specific check that failed.
+
+Both `status` and `doctor` also report a single `lifecycle_state` for the
+lane, derived from the outbox alone, so you do not have to infer the
+situation from raw counts. It is exactly one of:
+
+| `lifecycle_state`   | Meaning                                                                 | Action |
+|---------------------|-------------------------------------------------------------------------|--------|
+| `healthy_idle`      | Fully drained; coverage accounted for (or nothing collected yet)        | None |
+| `draining`          | Claimable-now or leased work exists — actively moving records           | None; let the run/schedule continue |
+| `retryable_backlog` | Ready work remains but all of it is waiting on retry backoff            | None; the next scheduled run drains it |
+| `dead_letter`       | Rows exhausted retries and need recovery                                | `retry-dead-letters` (preview, then `--apply`), then re-run |
+| `stale_lease`       | A prior run crashed mid-drain and left a lease past expiry              | None; the next run recovers it automatically |
+| `coverage_missing`  | Collected records but never carried a `coverage_diagnostics` record (the local shape behind a stuck dashboard `coverage_unknown`) | Re-run with the default stream set (no `--streams`) once |
+
+The `coverage` block (`observed`, `record_batches`) is the evidence behind
+`coverage_missing`: `observed: false` with `record_batches > 0` means the
+lane drained real records but no coverage diagnostic. `observed` is `null`
+when no connection id scoped the scan. `doctor` adds a `coverage_diagnostics`
+check (`ok`/`warn`) and a one-line remediation hint for any non-`ok` state.
 
 **Server side.** Hit `/_ref/device-exporters/source-instances` (or read it
 through `/dashboard/device-exporters`) and compare per source instance:

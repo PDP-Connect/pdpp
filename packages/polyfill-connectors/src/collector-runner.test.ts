@@ -1067,6 +1067,94 @@ test("runCollectorConnector skips source scan when pre-existing durable work can
   }
 });
 
+test("a backlog-open second pass re-enqueues nothing: the durable rows are byte-identical before and after", async () => {
+  // Target: a scheduled run must not rescan/re-enqueue the same tranche while
+  // local backlog is open. The sharpest proof is row identity — the prior
+  // pass's durable rows (id, body_hash, insert_order) must be unchanged after
+  // a second pass whose connector child, if it ran, would emit new records.
+  const harness = await startCollectorHarness({ ingestFailureMode: "always-503", priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const sourceInstanceId = "src-no-reenqueue";
+
+    // Pass 1: ingest fails, so the child's records stay durably queued.
+    const pass1Fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => { buf += c; if (buf.includes("\\n")) r(); }));
+        process.stdout.write(JSON.stringify({ type: "RECORD", stream: "messages", key: "m-1", data: { id: "m-1" }, emitted_at: "2026-05-19T12:00:00.000Z" }) + "\\n");
+        process.stdout.write(JSON.stringify({ type: "STATE", stream: "messages", cursor: "m-1" }) + "\\n");
+        process.stdout.write(JSON.stringify({ type: "DONE", status: "succeeded", records_emitted: 1 }) + "\\n");
+      `,
+    });
+    const pass1 = await runCollectorConnector({
+      baseUrl: harness.url,
+      batchSize: 1,
+      connector: {
+        args: [pass1Fixture],
+        command: "node",
+        connector_id: "fixture-no-reenqueue",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      outboxPolicy: { retryBackoffMs: 60_000 },
+      queuePath,
+      sourceInstanceId,
+    });
+    assert.equal(pass1.recordsQueued, 1, "pass 1 must durably queue the record");
+
+    // Snapshot the durable rows after pass 1.
+    const snapshot = () => {
+      const outbox = new LocalDeviceOutbox({ path: queuePath });
+      try {
+        return outbox
+          .list({ sourceInstanceId })
+          .map((row) => ({ body_hash: row.body_hash, id: row.id, insert_order: row.insert_order, kind: row.kind }));
+      } finally {
+        outbox.close();
+      }
+    };
+    const before = snapshot();
+    assert.ok(before.length >= 1, "expected at least the pass-1 record batch row");
+
+    // Pass 2: ingest still fails (backlog stays open). This fixture would
+    // emit a DISTINCT record if it ever spawned, so any re-scan would change
+    // the row set. The backlog guard must skip the spawn entirely.
+    const pass2Fixture = await writeFixtureConnector({
+      script: `
+        process.stderr.write("fixture must not spawn while backlog is open\\n");
+        process.stdout.write(JSON.stringify({ type: "RECORD", stream: "messages", key: "m-2", data: { id: "m-2" }, emitted_at: "2026-05-19T12:05:00.000Z" }) + "\\n");
+        process.exit(0);
+      `,
+    });
+    const pass2 = await runCollectorConnector({
+      baseUrl: harness.url,
+      batchSize: 1,
+      connector: {
+        args: [pass2Fixture],
+        command: "node",
+        connector_id: "fixture-no-reenqueue",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      outboxPolicy: { retryBackoffMs: 60_000 },
+      queuePath,
+      sourceInstanceId,
+    });
+
+    assert.equal(pass2.skippedScanForBacklog, true, "pass 2 must skip scanning while backlog is open");
+    assert.equal(pass2.recordsQueued, 0, "pass 2 must not enqueue any new records");
+    const after = snapshot();
+    assert.deepEqual(after, before, "the durable rows must be byte-identical: no re-enqueue of the same tranche");
+  } finally {
+    await harness.close();
+  }
+});
+
 test("runCollectorConnector surfaces state-read failure as a blocked heartbeat and refuses to spawn the connector", async () => {
   const harness = await startCollectorHarness({
     priorState: null,

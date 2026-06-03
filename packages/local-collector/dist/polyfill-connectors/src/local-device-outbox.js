@@ -380,6 +380,29 @@ export class LocalDeviceOutbox {
         }
         return summary;
     }
+    hasObservedStream(input) {
+        const row = this.#db
+            .prepare(`SELECT 1 AS found
+           FROM local_device_outbox AS o,
+                json_each(o.payload_json, '$.records') AS rec
+          WHERE o.source_instance_id = ?
+            AND o.kind = 'record_batch'
+            AND o.status != 'dead_letter'
+            AND json_extract(rec.value, '$.stream') = ?
+          LIMIT 1`)
+            .get(input.sourceInstanceId, input.stream);
+        return Boolean(row);
+    }
+    countRecordBatches(input) {
+        const row = this.#db
+            .prepare(`SELECT COUNT(*) AS total
+           FROM local_device_outbox
+          WHERE source_instance_id = ?
+            AND kind = 'record_batch'
+            AND status != 'dead_letter'`)
+            .get(input.sourceInstanceId);
+        return isRecord(row) ? numberFrom(row.total) : 0;
+    }
     deadLetterErrorSummary(input = {}) {
         const limit = input.limit && input.limit > 0 ? input.limit : 5;
         const rows = input.sourceInstanceId

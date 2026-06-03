@@ -607,6 +607,61 @@ export class LocalDeviceOutbox {
   }
 
   /**
+   * Whether this lane has ever carried a record on the named stream.
+   *
+   * Local-device collectors push records from this durable outbox and write
+   * no spine run, so the connection-health rollup can only project a
+   * non-`unknown` coverage axis from durable `coverage_diagnostics` records.
+   * A drained lane that has carried real records but never a coverage record
+   * is the exact local shape behind the dashboard's stuck `coverage_unknown`
+   * (see `openspec/changes/derive-local-collector-coverage-from-diagnostics`).
+   *
+   * Detection scans `record_batch` payloads with `json_each` over
+   * `$.records[*].stream` and reads only the stream name — never record
+   * bodies, paths, or tokens. Succeeded record_batch rows are retained (only
+   * gap rows are deleted on recovery), so the signal survives a clean drain.
+   * Dead-letter rows are excluded: a stream that only ever dead-lettered was
+   * never durably observed by the lane.
+   */
+  hasObservedStream(input: { sourceInstanceId: string; stream: string }): boolean {
+    const row = this.#db
+      .prepare(
+        `SELECT 1 AS found
+           FROM local_device_outbox AS o,
+                json_each(o.payload_json, '$.records') AS rec
+          WHERE o.source_instance_id = ?
+            AND o.kind = 'record_batch'
+            AND o.status != 'dead_letter'
+            AND json_extract(rec.value, '$.stream') = ?
+          LIMIT 1`
+      )
+      .get(input.sourceInstanceId, input.stream);
+    return Boolean(row);
+  }
+
+  /**
+   * Count of non-dead-letter `record_batch` rows for a source instance.
+   *
+   * Lets the status/doctor surface distinguish an empty/never-run lane
+   * (zero record batches — coverage absence is simply "nothing collected
+   * yet") from a lane that has carried records but no coverage diagnostic
+   * (coverage genuinely missing). Reads only the indexed status/kind
+   * columns; never materializes payloads.
+   */
+  countRecordBatches(input: { sourceInstanceId: string }): number {
+    const row = this.#db
+      .prepare(
+        `SELECT COUNT(*) AS total
+           FROM local_device_outbox
+          WHERE source_instance_id = ?
+            AND kind = 'record_batch'
+            AND status != 'dead_letter'`
+      )
+      .get(input.sourceInstanceId);
+    return isRecord(row) ? numberFrom(row.total) : 0;
+  }
+
+  /**
    * Aggregate the top redacted dead-letter error classes.
    *
    * Reads only the indexed `status` filter plus the `last_error` text column

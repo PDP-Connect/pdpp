@@ -159,6 +159,47 @@ Use the host supervisor for periodic execution, boot/login behavior, jitter,
 resource limits, and logs. That keeps the package small and lets each operating
 system own the lifecycle primitives it already provides.
 
+### Persistent State And Scratch Paths
+
+The collector keeps undrained work in a durable SQLite outbox between runs.
+That file, and any output you capture, must live on a **persistent,
+disk-backed** directory — not a RAM-backed `/tmp`.
+
+On many Linux hosts `/tmp` is a `tmpfs` mounted on RAM (the default on recent
+Ubuntu releases, sized at half of physical memory). A wrapper that points the
+outbox or a captured run summary at `/tmp` therefore: (a) silently consumes RAM
+as the outbox or a large backfill summary grows, and (b) loses undrained
+backlog on reboot, so the next run re-scans and re-enqueues the same tranche
+instead of draining what was already collected.
+
+Set these explicitly in your wrapper or env file:
+
+```bash
+# Durable outbox: a disk-backed state dir, never /tmp.
+# Linux (XDG): $XDG_STATE_HOME or ~/.local/state.
+PDPP_COLLECTOR_QUEUE="${XDG_STATE_HOME:-$HOME/.local/state}/pdpp/collector-runner-queue.json"
+```
+
+When you capture the `run` or `doctor` JSON, write it under the same persistent
+state/cache dir rather than a raw `/tmp` file:
+
+```bash
+# Capture a run summary on a disk-backed path (not /tmp on a tmpfs host).
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/pdpp"
+mkdir -p "$STATE_DIR"
+pdpp-local-collector run --connector claude_code > "$STATE_DIR/last-run.json"
+```
+
+The optional connector-protocol debug dump
+(`PDPP_DEBUG_CONNECTOR_PROTOCOL_DIR`) follows the same rule: point it at a
+persistent directory you can inspect later, not `/tmp`. Leave it unset unless
+you are actively debugging a protocol parse failure.
+
+If a host genuinely has no spare disk and you must use ephemeral scratch, keep
+the durable outbox (`PDPP_COLLECTOR_QUEUE`) on disk regardless — only the
+durable outbox carries undrained backlog across runs, and losing it is what
+causes a re-scan of the same data.
+
 ### systemd
 
 For a durable Linux host, store non-secret settings in an env file and secrets
@@ -235,6 +276,12 @@ Example wrapper:
 set -eu
 source "$HOME/.config/pdpp/local-collector.env"
 source "$HOME/.config/pdpp/local-collector.secret"
+# Keep the durable outbox on a persistent, disk-backed path so undrained
+# backlog survives reboot and a tmpfs /tmp never holds collector state.
+# (macOS /tmp is disk-backed today, but pinning the path keeps the wrapper
+# portable to Linux hosts where /tmp is tmpfs.)
+export PDPP_COLLECTOR_QUEUE="$HOME/Library/Application Support/pdpp/collector-runner-queue.json"
+mkdir -p "$(dirname "$PDPP_COLLECTOR_QUEUE")"
 exec /opt/homebrew/bin/pdpp-local-collector run --connector "$1"
 ```
 

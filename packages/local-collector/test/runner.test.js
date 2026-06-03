@@ -265,10 +265,15 @@ test('local collector doctor flags missing db, expired leases, and dead letters'
 
     assert.equal(doctor.status, 'critical');
     assert.deepEqual(doctor.checks, {
+      coverage_diagnostics: 'ok',
       expired_leases: 'warn',
       outbox_db: 'ok',
       outbox_failures: 'fail',
     });
+    // Dead letters dominate the lifecycle state even though no coverage
+    // diagnostic was observed: a lane that needs recovery is not first
+    // labeled "coverage missing".
+    assert.equal(doctor.lifecycle_state, 'dead_letter');
     assert.equal(doctor.outbox.counts.dead_letter, 1);
     assert.equal(doctor.outbox.counts.retrying, 1);
     assert.equal(doctor.outbox.expired_leases, 1);
@@ -278,11 +283,15 @@ test('local collector doctor flags missing db, expired leases, and dead letters'
     );
 
     // When dead letters are present, doctor points the operator at the
-    // recovery primitive (dry-run preview, then --apply with backup).
+    // recovery primitive (dry-run preview, then --apply with backup). This
+    // scenario also has an expired lease, so doctor emits a distinct
+    // self-heal hint for that — each non-ok check gets its own line.
     assert.ok(Array.isArray(doctor.remediation));
-    assert.equal(doctor.remediation.length, 1);
-    assert.match(doctor.remediation[0], /retry-dead-letters/);
-    assert.match(doctor.remediation[0], /--apply/);
+    const deadLetterHint = doctor.remediation.find((line) => /retry-dead-letters/.test(line));
+    assert.ok(deadLetterHint, 'expected a dead-letter remediation hint');
+    assert.match(deadLetterHint, /--apply/);
+    const expiredLeaseHint = doctor.remediation.find((line) => /past expiry/.test(line));
+    assert.ok(expiredLeaseHint, 'expected an expired-lease remediation hint');
 
     // When an error summary is supplied, doctor surfaces the top redacted
     // error class (the "why") and names it in the remediation hint.
@@ -712,6 +721,208 @@ test('inspectLocalOutboxStatus reads connection-scoped counts from the scoped de
   });
   assert.equal(bOnly.outbox.counts.pending, 1);
   assert.equal(bOnly.outbox.counts.total, 1);
+});
+
+// --- Lifecycle state axis (Target 2/4): status/doctor must distinguish
+// healthy_idle, draining, retryable_backlog, dead_letter, stale_lease, and
+// coverage_missing from the durable outbox alone. ---
+
+function statusFor(path, sourceInstanceId = 'src-1') {
+  return inspectLocalOutboxStatus({
+    baseUrl: 'http://127.0.0.1:7662',
+    command: 'status',
+    queuePath: path,
+    sourceInstanceId,
+  });
+}
+
+/** Enqueue a record_batch whose envelopes carry the given stream names. */
+function enqueueRecordBatch(outbox, { id, sourceInstanceId = 'src-1', streams }) {
+  outbox.enqueue({
+    id,
+    kind: 'record_batch',
+    payload: {
+      batchId: id,
+      batchSeq: 1,
+      connectorId: 'claude_code',
+      deviceId: 'device-1',
+      // Shape mirrors buildLocalDeviceRecordEnvelope output: the outbox's
+      // coverage scan reads $.records[*].stream.
+      records: streams.map((stream, index) => ({ data: { id: `${stream}-${index}` }, stream })),
+      sourceInstanceId,
+    },
+    sourceInstanceId,
+  });
+}
+
+/** Claim + acknowledge a row so it reaches status 'succeeded' (drained). */
+function drainRow(outbox, id, sourceInstanceId = 'src-1') {
+  const [claim] = outbox.claimReady({ holder: 'drainer', leaseMs: 60_000, sourceInstanceId });
+  assert.ok(claim, `expected to claim a ready row for ${id}`);
+  outbox.acknowledge({ holder: 'drainer', id: claim.id, leaseEpoch: claim.lease_epoch });
+}
+
+test('lifecycle_state is healthy_idle on an empty outbox (nothing collected, no coverage to miss)', async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  outbox.close();
+  const status = statusFor(path);
+  assert.equal(status.lifecycle_state, 'healthy_idle');
+  assert.deepEqual(status.coverage, { observed: false, record_batches: 0 });
+  assert.equal(buildLocalOutboxDoctor(status).checks.coverage_diagnostics, 'ok');
+});
+
+test('lifecycle_state is draining when claimable-now record work exists', async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    enqueueRecordBatch(outbox, { id: 'rb-1', streams: ['messages'] });
+  } finally {
+    outbox.close();
+  }
+  assert.equal(statusFor(path).lifecycle_state, 'draining');
+});
+
+test('lifecycle_state is retryable_backlog when all ready work is waiting on backoff', async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    // A ready row whose next_attempt_at is in the future is "retrying":
+    // nothing is claimable this instant, but work remains.
+    outbox.enqueue({
+      id: 'rb-backoff',
+      kind: 'record_batch',
+      nextAttemptAt: new Date('2099-01-01T00:00:00.000Z'),
+      payload: { records: [{ data: { id: 'm-1' }, stream: 'messages' }] },
+      sourceInstanceId: 'src-1',
+    });
+  } finally {
+    outbox.close();
+  }
+  const status = statusFor(path);
+  assert.equal(status.outbox.counts.retrying, 1);
+  assert.equal(status.lifecycle_state, 'retryable_backlog');
+});
+
+test('lifecycle_state is dead_letter when a row exhausted retries', async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    enqueueRecordBatch(outbox, { id: 'rb-dl', streams: ['messages'] });
+    const [claim] = outbox.claimReady({ holder: 'w', leaseMs: 60_000, sourceInstanceId: 'src-1' });
+    outbox.deadLetter({ error: 'terminal', holder: 'w', id: claim.id, leaseEpoch: claim.lease_epoch });
+  } finally {
+    outbox.close();
+  }
+  const status = statusFor(path);
+  assert.equal(status.lifecycle_state, 'dead_letter');
+  assert.equal(buildLocalOutboxDoctor(status).status, 'critical');
+});
+
+test('lifecycle_state is stale_lease when a lease is past expiry', async () => {
+  const path = await tempOutboxPath();
+  let now = new Date('2026-05-19T12:00:00.000Z');
+  const outbox = new LocalDeviceOutbox({ clock: () => now, path });
+  try {
+    enqueueRecordBatch(outbox, { id: 'rb-stale', streams: ['messages'] });
+    outbox.claimReady({ holder: 'w', leaseMs: 1000, sourceInstanceId: 'src-1' });
+    // Advance the clock past the lease so the lease is expired but not yet
+    // recovered — exactly the "previous run crashed mid-drain" shape.
+    now = new Date('2026-05-19T12:01:00.000Z');
+  } finally {
+    outbox.close();
+  }
+  const status = statusFor(path);
+  assert.equal(status.outbox.expired_leases, 1);
+  assert.equal(status.lifecycle_state, 'stale_lease');
+  const doctor = buildLocalOutboxDoctor(status);
+  assert.equal(doctor.checks.expired_leases, 'warn');
+  assert.equal(doctor.status, 'warning');
+  assert.ok(doctor.remediation.some((line) => /past expiry/.test(line)));
+});
+
+test('lifecycle_state is coverage_missing after a clean drain that never carried a coverage record', async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    // Collect and fully drain real records, but none on coverage_diagnostics.
+    enqueueRecordBatch(outbox, { id: 'rb-content', streams: ['sessions', 'messages'] });
+    drainRow(outbox, 'rb-content');
+  } finally {
+    outbox.close();
+  }
+  const status = statusFor(path);
+  assert.equal(status.outbox.counts.pending, 0);
+  assert.equal(status.outbox.counts.leased, 0);
+  assert.equal(status.coverage.observed, false);
+  assert.ok(status.coverage.record_batches >= 1);
+  assert.equal(status.lifecycle_state, 'coverage_missing');
+
+  const doctor = buildLocalOutboxDoctor(status);
+  assert.equal(doctor.checks.coverage_diagnostics, 'warn');
+  assert.equal(doctor.status, 'warning');
+  assert.ok(doctor.remediation.some((line) => /coverage_unknown/.test(line)));
+  assert.ok(doctor.remediation.some((line) => /default stream set/.test(line)));
+});
+
+test('lifecycle_state is healthy_idle once a drained lane has carried a coverage_diagnostics record', async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    enqueueRecordBatch(outbox, { id: 'rb-content', streams: ['messages'] });
+    drainRow(outbox, 'rb-content');
+    enqueueRecordBatch(outbox, { id: 'rb-coverage', streams: ['coverage_diagnostics'] });
+    drainRow(outbox, 'rb-coverage');
+  } finally {
+    outbox.close();
+  }
+  const status = statusFor(path);
+  assert.equal(status.coverage.observed, true);
+  assert.equal(status.lifecycle_state, 'healthy_idle');
+  assert.equal(buildLocalOutboxDoctor(status).checks.coverage_diagnostics, 'ok');
+});
+
+test('coverage observation survives a clean drain and ignores dead-letter rows', async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    // A coverage record that only ever dead-lettered was never durably
+    // observed by the lane, so it must not count as coverage.
+    enqueueRecordBatch(outbox, { id: 'rb-dl-coverage', streams: ['coverage_diagnostics'] });
+    const [claim] = outbox.claimReady({ holder: 'w', leaseMs: 60_000, sourceInstanceId: 'src-1' });
+    outbox.deadLetter({ error: 'terminal', holder: 'w', id: claim.id, leaseEpoch: claim.lease_epoch });
+    // A separate, successfully drained content batch with no coverage.
+    enqueueRecordBatch(outbox, { id: 'rb-content', streams: ['messages'] });
+    drainRow(outbox, 'rb-content');
+  } finally {
+    outbox.close();
+  }
+  // dead_letter dominates the lifecycle verdict, but the coverage signal
+  // itself still reports observed:false because the only coverage row
+  // dead-lettered.
+  const status = statusFor(path);
+  assert.equal(status.coverage.observed, false);
+  assert.equal(status.lifecycle_state, 'dead_letter');
+});
+
+test('lifecycle/coverage status leaks no payloads', async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    outbox.enqueue({
+      id: 'secret-row',
+      kind: 'record_batch',
+      payload: { records: [{ data: { id: 'do-not-print', token: 'nope' }, stream: 'coverage_diagnostics' }] },
+      sourceInstanceId: 'src-1',
+    });
+    drainRow(outbox, 'secret-row');
+  } finally {
+    outbox.close();
+  }
+  const status = statusFor(path);
+  const doctor = buildLocalOutboxDoctor(status);
+  const rendered = JSON.stringify({ status, doctor });
+  assert.doesNotMatch(rendered, /do-not-print|secret-row|nope/);
 });
 
 async function tempOutboxPath() {

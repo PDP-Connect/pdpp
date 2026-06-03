@@ -129,6 +129,14 @@ export interface DrainCollectorOutboxResult {
     sentByKind: Readonly<Partial<Record<LocalDeviceOutboxItem["kind"], number>>>;
 }
 export declare function drainCollectorOutbox(input: DrainCollectorOutboxInput): Promise<DrainCollectorOutboxResult>;
+export declare const LOCAL_COLLECTOR_LIFECYCLE_STATES: readonly ["healthy_idle", "draining", "retryable_backlog", "dead_letter", "stale_lease", "coverage_missing"];
+export type LocalCollectorLifecycleState = (typeof LOCAL_COLLECTOR_LIFECYCLE_STATES)[number];
+export interface LocalCollectorLifecycleInput {
+    coverageObserved: boolean | null;
+    recordBatchCount: number;
+    summary: LocalDeviceOutboxSummary;
+}
+export declare function deriveLocalCollectorLifecycleState(input: LocalCollectorLifecycleInput): LocalCollectorLifecycleState;
 export declare function buildHeartbeatOutboxDiagnostics(summary: LocalDeviceOutboxSummary, options?: {
     backlogOpen?: number;
 }): HeartbeatOutboxDiagnostics;

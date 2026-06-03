@@ -37,7 +37,9 @@ import {
   COLLECTOR_PROTOCOL_VERSION,
   COLLECTOR_RUNTIME_CAPABILITIES,
   type CollectorConnectorSpec,
+  deriveLocalCollectorLifecycleState,
   LocalDeviceOutbox,
+  type LocalCollectorLifecycleState,
   type LocalDeviceOutboxDeadLetterErrorSummary,
   type LocalDeviceOutboxKind,
   type LocalDeviceOutboxSummary,
@@ -46,6 +48,14 @@ import {
   isMainModule,
   runCollectorConnector,
 } from "../src/runner.ts";
+
+/**
+ * Stream name the local source inventory emits coverage records on. Kept
+ * here (not imported) because the CLI only needs the literal to ask the
+ * durable outbox "has this lane ever carried a coverage diagnostic?".
+ * Mirrors `COVERAGE_DIAGNOSTICS_STREAM` in the runner.
+ */
+const COVERAGE_DIAGNOSTICS_STREAM = "coverage_diagnostics";
 
 const DEFAULT_QUEUE_PATH = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -286,11 +296,36 @@ export interface LocalOutboxStatusOutput {
     device_id_configured: boolean;
     device_token_configured: boolean;
   };
+  /**
+   * Local coverage-diagnostic observation for this lane, derived from the
+   * durable outbox alone (never the server). A drained lane that has carried
+   * real records but never a `coverage_diagnostics` record is the local
+   * shape behind the dashboard's stuck `coverage_unknown`.
+   *
+   * - `observed`: true once any non-dead-letter `record_batch` row has
+   *   carried a `coverage_diagnostics` record; null when no connection id was
+   *   supplied (the surface cannot scope the scan, so it does not guess).
+   * - `record_batches`: count of non-dead-letter record batches for the lane.
+   *   Lets `observed: false` mean "collected records but no coverage" rather
+   *   than "nothing collected yet".
+   */
+  coverage: {
+    observed: boolean | null;
+    record_batches: number;
+  };
   db: {
     configured: boolean;
     exists: boolean;
     path: string | null;
   };
+  /**
+   * The single mutually-exclusive lifecycle state for this lane, derived
+   * from the outbox counts plus the coverage observation. One of
+   * healthy_idle, draining, retryable_backlog, dead_letter, stale_lease, or
+   * coverage_missing. This is the honest active/drain/coverage signal an
+   * operator or agent reads instead of inferring from raw counts.
+   */
+  lifecycle_state: LocalCollectorLifecycleState;
   outbox: {
     counts: {
       dead_letter: number;
@@ -315,6 +350,13 @@ export interface LocalOutboxStatusOutput {
 
 export interface LocalOutboxDoctorOutput extends LocalOutboxStatusOutput {
   checks: {
+    /**
+     * `warn` once the lane has collected records but never carried a
+     * `coverage_diagnostics` record (the local shape behind a stuck
+     * dashboard `coverage_unknown`). `ok` when coverage was observed, the
+     * lane is empty, or no connection id scoped the scan.
+     */
+    coverage_diagnostics: "ok" | "warn";
     expired_leases: "ok" | "warn";
     outbox_db: "ok" | "missing";
     outbox_failures: "ok" | "fail";
@@ -372,18 +414,31 @@ export interface RetryDeadLettersOutput {
 export function inspectLocalOutboxStatus(options: CliOptions): LocalOutboxStatusOutput {
   const dbPath = resolveOutboxPath(options);
   const exists = existsSync(dbPath);
-  const summary = exists ? readOutboxSummary(dbPath, options.sourceInstanceId) : emptyOutboxSummary();
+  const inspection = exists
+    ? readOutboxInspection(dbPath, options.sourceInstanceId)
+    : { coverageObserved: null, recordBatchCount: 0, summary: emptyOutboxSummary() };
+  const summary = inspection.summary;
+  const lifecycleState = deriveLocalCollectorLifecycleState({
+    coverageObserved: inspection.coverageObserved,
+    recordBatchCount: inspection.recordBatchCount,
+    summary,
+  });
   return {
     collector_protocol_version: COLLECTOR_PROTOCOL_VERSION,
     configured_device: {
       device_id_configured: Boolean(options.deviceId),
       device_token_configured: Boolean(options.deviceToken),
     },
+    coverage: {
+      observed: inspection.coverageObserved,
+      record_batches: inspection.recordBatchCount,
+    },
     db: {
       configured: Boolean(options.queuePath),
       exists,
       path: dbPath,
     },
+    lifecycle_state: lifecycleState,
     outbox: {
       counts: {
         dead_letter: summary.deadLetter,
@@ -412,6 +467,7 @@ export function buildLocalOutboxDoctor(
   errorSummary?: LocalDeviceOutboxDeadLetterErrorSummary | null
 ): LocalOutboxDoctorOutput {
   const checks: LocalOutboxDoctorOutput["checks"] = {
+    coverage_diagnostics: status.lifecycle_state === "coverage_missing" ? "warn" : "ok",
     expired_leases: status.outbox.expired_leases > 0 ? "warn" : "ok",
     outbox_db: status.db.exists ? "ok" : "missing",
     outbox_failures: status.outbox.counts.dead_letter > 0 ? "fail" : "ok",
@@ -429,19 +485,47 @@ export function buildLocalOutboxDoctor(
         "then re-run the collector to drain the requeued rows."
     );
   }
+  if (checks.expired_leases === "warn") {
+    remediation.push(
+      `${status.outbox.expired_leases} lease(s) are past expiry — a previous run likely crashed mid-drain. ` +
+        "The next `pdpp-local-collector run …` recovers expired leases automatically before scanning; " +
+        "no manual action is required."
+    );
+  }
+  if (checks.coverage_diagnostics === "warn") {
+    remediation.push(
+      `This lane drained ${status.coverage.record_batches} record batch(es) but never carried a ` +
+        "`coverage_diagnostics` record, so the dashboard can only show coverage_unknown. " +
+        "Re-run `pdpp-local-collector run …` with the default stream set (no `--streams`); " +
+        "it requests `coverage_diagnostics` and the next pass promotes the coverage axis."
+    );
+  }
   const includeSummary = Boolean(errorSummary) && status.outbox.counts.dead_letter > 0;
   return {
     ...status,
     checks,
     ...(includeSummary && errorSummary ? { dead_letter_error_summary: errorSummary } : {}),
     ...(remediation.length > 0 ? { remediation } : {}),
-    status:
-      checks.outbox_failures === "fail"
-        ? "critical"
-        : checks.expired_leases === "warn" || checks.outbox_db === "missing"
-          ? "warning"
-          : "ok",
+    status: doctorSeverityForChecks(checks),
   };
+}
+
+/**
+ * Roll the per-check verdicts into the coarse doctor severity. Dead-letter
+ * rows are the only `critical` condition (they need operator recovery);
+ * expired leases, a missing DB, and a coverage gap are `warning` (each
+ * self-heals or is informational); everything else is `ok`. A
+ * `retryable_backlog`/`draining` lane stays `ok` because it drains itself on
+ * the next scheduled run — surfaced via `lifecycle_state`, not as a warning.
+ */
+function doctorSeverityForChecks(checks: LocalOutboxDoctorOutput["checks"]): "ok" | "warning" | "critical" {
+  if (checks.outbox_failures === "fail") {
+    return "critical";
+  }
+  if (checks.expired_leases === "warn" || checks.outbox_db === "missing" || checks.coverage_diagnostics === "warn") {
+    return "warning";
+  }
+  return "ok";
 }
 
 /**
@@ -763,10 +847,29 @@ function resolveOutboxPath(options: CliOptions): string {
     : options.queuePath;
 }
 
-function readOutboxSummary(path: string, sourceInstanceId: string | undefined): LocalDeviceOutboxSummary {
+interface LocalOutboxInspection {
+  /**
+   * Whether the lane has durably carried a `coverage_diagnostics` record.
+   * Null when no connection id was supplied — the scan is per-lane, so an
+   * unscoped status cannot answer it and must not guess.
+   */
+  coverageObserved: boolean | null;
+  recordBatchCount: number;
+  summary: LocalDeviceOutboxSummary;
+}
+
+function readOutboxInspection(path: string, sourceInstanceId: string | undefined): LocalOutboxInspection {
   const outbox = new LocalDeviceOutbox({ path });
   try {
-    return outbox.summary(sourceInstanceId ? { sourceInstanceId } : {});
+    const summary = outbox.summary(sourceInstanceId ? { sourceInstanceId } : {});
+    if (!sourceInstanceId) {
+      return { coverageObserved: null, recordBatchCount: 0, summary };
+    }
+    return {
+      coverageObserved: outbox.hasObservedStream({ sourceInstanceId, stream: COVERAGE_DIAGNOSTICS_STREAM }),
+      recordBatchCount: outbox.countRecordBatches({ sourceInstanceId }),
+      summary,
+    };
   } finally {
     outbox.close();
   }

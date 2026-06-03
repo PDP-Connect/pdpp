@@ -1768,6 +1768,94 @@ function isUnresolvedScanBudgetGap(
   return policy.maxEnqueuedBatchesPerRun <= Number(match[1]);
 }
 
+/**
+ * The mutually exclusive lifecycle states a local collector lane can be in,
+ * derived from the durable outbox alone. This is the single axis the
+ * status/doctor surface and the runbook describe so an operator (or an
+ * agent) reading a `pdpp-local-collector doctor` JSON never has to infer
+ * the situation from raw counts.
+ *
+ * Priority order (most-actionable first) when several conditions overlap:
+ * `dead_letter` > `stale_lease` > `retryable_backlog` > `draining` >
+ * `coverage_missing` > `healthy_idle`.
+ *
+ * - `dead_letter`: at least one row exhausted retries and needs operator
+ *   recovery (`retry-dead-letters`). Drain bandwidth is otherwise fine.
+ * - `stale_lease`: a previous runner instance crashed mid-drain and left a
+ *   lease past its expiry. The next run recovers it automatically; surfaced
+ *   so a stuck lane is visible before then.
+ * - `retryable_backlog`: ready work remains but every ready row is waiting
+ *   on its retry backoff (nothing claimable this instant). Self-heals on the
+ *   next scheduled run; no operator action required.
+ * - `draining`: claimable-now or leased work exists — the lane is actively
+ *   moving records to the server.
+ * - `coverage_missing`: the lane has drained real records but never carried
+ *   a `coverage_diagnostics` record, so the dashboard can only project
+ *   `coverage_unknown`. Re-running with the default stream set (which
+ *   includes `coverage_diagnostics`) promotes the axis. This is the local
+ *   shape behind the upgrade note in the runbook.
+ * - `healthy_idle`: fully drained with coverage accounted for (or nothing
+ *   has been collected yet, so there is no coverage to miss).
+ */
+export const LOCAL_COLLECTOR_LIFECYCLE_STATES = [
+  "healthy_idle",
+  "draining",
+  "retryable_backlog",
+  "dead_letter",
+  "stale_lease",
+  "coverage_missing",
+] as const;
+
+export type LocalCollectorLifecycleState = (typeof LOCAL_COLLECTOR_LIFECYCLE_STATES)[number];
+
+export interface LocalCollectorLifecycleInput {
+  /**
+   * Whether the lane has durably carried a `coverage_diagnostics` record.
+   * When the caller cannot determine this (e.g. an unscoped status with no
+   * connection id), pass `null` to suppress the `coverage_missing` verdict
+   * rather than guess.
+   */
+  coverageObserved: boolean | null;
+  /**
+   * Count of non-dead-letter `record_batch` rows for the lane. Used to tell
+   * an empty/never-run lane (no coverage to miss) apart from one that has
+   * collected records but no coverage diagnostic.
+   */
+  recordBatchCount: number;
+  summary: LocalDeviceOutboxSummary;
+}
+
+/**
+ * Derive the single mutually-exclusive {@link LocalCollectorLifecycleState}
+ * for a lane from its durable outbox summary plus the coverage observation.
+ * Pure and side-effect free so both the heartbeat path and the CLI doctor
+ * read the same taxonomy.
+ */
+export function deriveLocalCollectorLifecycleState(input: LocalCollectorLifecycleInput): LocalCollectorLifecycleState {
+  const { summary } = input;
+  if (summary.deadLetter > 0) {
+    return "dead_letter";
+  }
+  if (summary.staleLeases > 0) {
+    return "stale_lease";
+  }
+  const claimableNow = Math.max(0, summary.ready - summary.retrying);
+  if (summary.leased > 0 || claimableNow > 0) {
+    return "draining";
+  }
+  if (summary.retrying > 0) {
+    return "retryable_backlog";
+  }
+  // Fully drained from here down. Coverage is only "missing" when the lane
+  // has actually collected records but none of them was a coverage
+  // diagnostic; an empty lane has no coverage to miss, and a null
+  // observation means the caller could not check (do not guess).
+  if (input.coverageObserved === false && input.recordBatchCount > 0) {
+    return "coverage_missing";
+  }
+  return "healthy_idle";
+}
+
 function heartbeatStatusForSummary(
   summary: LocalDeviceOutboxSummary,
   policy?: Pick<CollectorOutboxPolicy, "maxQueueDepth">

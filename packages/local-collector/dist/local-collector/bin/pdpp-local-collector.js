@@ -3,7 +3,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ALLOW_CUSTOM_COMMAND_ENV, CollectorCustomCommandRefusedError, CollectorUsageError, } from "../src/errors.js";
-import { BUNDLED_CONNECTOR_IDS, COLLECTOR_PROTOCOL_VERSION, COLLECTOR_RUNTIME_CAPABILITIES, LocalDeviceOutbox, enrollCollector, getBundledConnector, isMainModule, runCollectorConnector, } from "../src/runner.js";
+import { BUNDLED_CONNECTOR_IDS, COLLECTOR_PROTOCOL_VERSION, COLLECTOR_RUNTIME_CAPABILITIES, deriveLocalCollectorLifecycleState, LocalDeviceOutbox, enrollCollector, getBundledConnector, isMainModule, runCollectorConnector, } from "../src/runner.js";
+const COVERAGE_DIAGNOSTICS_STREAM = "coverage_diagnostics";
 const DEFAULT_QUEUE_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", ".pdpp-data", "collector-runner-queue.json");
 const LOCAL_COLLECTOR_PACKAGE_NAME = "@pdpp/local-collector";
 const LOCAL_COLLECTOR_PACKAGE_VERSION_FALLBACK = "0.0.0";
@@ -168,18 +169,31 @@ function summarizeCursor(cursor) {
 export function inspectLocalOutboxStatus(options) {
     const dbPath = resolveOutboxPath(options);
     const exists = existsSync(dbPath);
-    const summary = exists ? readOutboxSummary(dbPath, options.sourceInstanceId) : emptyOutboxSummary();
+    const inspection = exists
+        ? readOutboxInspection(dbPath, options.sourceInstanceId)
+        : { coverageObserved: null, recordBatchCount: 0, summary: emptyOutboxSummary() };
+    const summary = inspection.summary;
+    const lifecycleState = deriveLocalCollectorLifecycleState({
+        coverageObserved: inspection.coverageObserved,
+        recordBatchCount: inspection.recordBatchCount,
+        summary,
+    });
     return {
         collector_protocol_version: COLLECTOR_PROTOCOL_VERSION,
         configured_device: {
             device_id_configured: Boolean(options.deviceId),
             device_token_configured: Boolean(options.deviceToken),
         },
+        coverage: {
+            observed: inspection.coverageObserved,
+            record_batches: inspection.recordBatchCount,
+        },
         db: {
             configured: Boolean(options.queuePath),
             exists,
             path: dbPath,
         },
+        lifecycle_state: lifecycleState,
         outbox: {
             counts: {
                 dead_letter: summary.deadLetter,
@@ -204,6 +218,7 @@ export function inspectLocalOutboxStatus(options) {
 }
 export function buildLocalOutboxDoctor(status, errorSummary) {
     const checks = {
+        coverage_diagnostics: status.lifecycle_state === "coverage_missing" ? "warn" : "ok",
         expired_leases: status.outbox.expired_leases > 0 ? "warn" : "ok",
         outbox_db: status.db.exists ? "ok" : "missing",
         outbox_failures: status.outbox.counts.dead_letter > 0 ? "fail" : "ok",
@@ -219,18 +234,34 @@ export function buildLocalOutboxDoctor(status, errorSummary) {
             "`pdpp-local-collector retry-dead-letters --apply` (backs up the DB first), " +
             "then re-run the collector to drain the requeued rows.");
     }
+    if (checks.expired_leases === "warn") {
+        remediation.push(`${status.outbox.expired_leases} lease(s) are past expiry — a previous run likely crashed mid-drain. ` +
+            "The next `pdpp-local-collector run …` recovers expired leases automatically before scanning; " +
+            "no manual action is required.");
+    }
+    if (checks.coverage_diagnostics === "warn") {
+        remediation.push(`This lane drained ${status.coverage.record_batches} record batch(es) but never carried a ` +
+            "`coverage_diagnostics` record, so the dashboard can only show coverage_unknown. " +
+            "Re-run `pdpp-local-collector run …` with the default stream set (no `--streams`); " +
+            "it requests `coverage_diagnostics` and the next pass promotes the coverage axis.");
+    }
     const includeSummary = Boolean(errorSummary) && status.outbox.counts.dead_letter > 0;
     return {
         ...status,
         checks,
         ...(includeSummary && errorSummary ? { dead_letter_error_summary: errorSummary } : {}),
         ...(remediation.length > 0 ? { remediation } : {}),
-        status: checks.outbox_failures === "fail"
-            ? "critical"
-            : checks.expired_leases === "warn" || checks.outbox_db === "missing"
-                ? "warning"
-                : "ok",
+        status: doctorSeverityForChecks(checks),
     };
+}
+function doctorSeverityForChecks(checks) {
+    if (checks.outbox_failures === "fail") {
+        return "critical";
+    }
+    if (checks.expired_leases === "warn" || checks.outbox_db === "missing" || checks.coverage_diagnostics === "warn") {
+        return "warning";
+    }
+    return "ok";
 }
 export function readLocalOutboxDeadLetterErrorSummary(options) {
     const dbPath = resolveOutboxPath(options);
@@ -508,10 +539,18 @@ function resolveOutboxPath(options) {
         ? scopedDefaultQueuePath(options.queuePath, DEFAULT_QUEUE_PATH, options.sourceInstanceId)
         : options.queuePath;
 }
-function readOutboxSummary(path, sourceInstanceId) {
+function readOutboxInspection(path, sourceInstanceId) {
     const outbox = new LocalDeviceOutbox({ path });
     try {
-        return outbox.summary(sourceInstanceId ? { sourceInstanceId } : {});
+        const summary = outbox.summary(sourceInstanceId ? { sourceInstanceId } : {});
+        if (!sourceInstanceId) {
+            return { coverageObserved: null, recordBatchCount: 0, summary };
+        }
+        return {
+            coverageObserved: outbox.hasObservedStream({ sourceInstanceId, stream: COVERAGE_DIAGNOSTICS_STREAM }),
+            recordBatchCount: outbox.countRecordBatches({ sourceInstanceId }),
+            summary,
+        };
     }
     finally {
         outbox.close();

@@ -1024,6 +1024,34 @@ function isUnresolvedScanBudgetGap(item, policy) {
     }
     return policy.maxEnqueuedBatchesPerRun <= Number(match[1]);
 }
+export const LOCAL_COLLECTOR_LIFECYCLE_STATES = [
+    "healthy_idle",
+    "draining",
+    "retryable_backlog",
+    "dead_letter",
+    "stale_lease",
+    "coverage_missing",
+];
+export function deriveLocalCollectorLifecycleState(input) {
+    const { summary } = input;
+    if (summary.deadLetter > 0) {
+        return "dead_letter";
+    }
+    if (summary.staleLeases > 0) {
+        return "stale_lease";
+    }
+    const claimableNow = Math.max(0, summary.ready - summary.retrying);
+    if (summary.leased > 0 || claimableNow > 0) {
+        return "draining";
+    }
+    if (summary.retrying > 0) {
+        return "retryable_backlog";
+    }
+    if (input.coverageObserved === false && input.recordBatchCount > 0) {
+        return "coverage_missing";
+    }
+    return "healthy_idle";
+}
 function heartbeatStatusForSummary(summary, policy) {
     if (summary.deadLetter > 0) {
         return "blocked";

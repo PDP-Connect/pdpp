@@ -136,6 +136,13 @@ export declare class LocalDeviceOutbox {
     summary(input?: {
         sourceInstanceId?: string;
     }): LocalDeviceOutboxSummary;
+    hasObservedStream(input: {
+        sourceInstanceId: string;
+        stream: string;
+    }): boolean;
+    countRecordBatches(input: {
+        sourceInstanceId: string;
+    }): number;
     deadLetterErrorSummary(input?: LocalDeviceOutboxDeadLetterErrorSummaryInput): LocalDeviceOutboxDeadLetterErrorSummary;
 }
 export declare function buildLocalDeviceOutboxId(input: BuildLocalDeviceOutboxIdInput): string;

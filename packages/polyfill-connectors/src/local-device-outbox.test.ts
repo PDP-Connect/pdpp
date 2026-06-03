@@ -749,6 +749,53 @@ test("classifyDeadLetterError preserves status shape and scrubs secrets, paths, 
   assert.equal(classifyDeadLetterError("first line\nsecond line with /root/secret"), "first line");
 });
 
+test("hasObservedStream / countRecordBatches detect coverage records across statuses and ignore dead letters", async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    // A drained content batch carrying a coverage_diagnostics record.
+    outbox.enqueue({
+      id: "rb-coverage",
+      kind: "record_batch",
+      payload: {
+        records: [
+          { data: { id: "s-1" }, stream: "sessions" },
+          { data: { id: "c-1" }, stream: "coverage_diagnostics" },
+        ],
+      },
+      sourceInstanceId: "src-1",
+    });
+    const [claim] = outbox.claimReady({ holder: "w", leaseMs: 60_000, sourceInstanceId: "src-1" });
+    assert.ok(claim);
+    outbox.acknowledge({ holder: "w", id: claim.id, leaseEpoch: claim.lease_epoch });
+
+    // Coverage observation survives a clean drain (succeeded rows are retained).
+    assert.equal(outbox.hasObservedStream({ sourceInstanceId: "src-1", stream: "coverage_diagnostics" }), true);
+    assert.equal(outbox.hasObservedStream({ sourceInstanceId: "src-1", stream: "messages" }), false);
+    assert.equal(outbox.countRecordBatches({ sourceInstanceId: "src-1" }), 1);
+
+    // Isolation: a different source instance sees none of this.
+    assert.equal(outbox.hasObservedStream({ sourceInstanceId: "src-2", stream: "coverage_diagnostics" }), false);
+    assert.equal(outbox.countRecordBatches({ sourceInstanceId: "src-2" }), 0);
+
+    // A coverage record that only ever dead-lettered must NOT count, and a
+    // dead-letter record batch is excluded from the record-batch count.
+    outbox.enqueue({
+      id: "rb-dl",
+      kind: "record_batch",
+      payload: { records: [{ data: { id: "c-2" }, stream: "coverage_diagnostics" }] },
+      sourceInstanceId: "src-3",
+    });
+    const [dlClaim] = outbox.claimReady({ holder: "w", leaseMs: 60_000, sourceInstanceId: "src-3" });
+    assert.ok(dlClaim);
+    outbox.deadLetter({ error: "terminal", holder: "w", id: dlClaim.id, leaseEpoch: dlClaim.lease_epoch });
+    assert.equal(outbox.hasObservedStream({ sourceInstanceId: "src-3", stream: "coverage_diagnostics" }), false);
+    assert.equal(outbox.countRecordBatches({ sourceInstanceId: "src-3" }), 0);
+  } finally {
+    outbox.close();
+  }
+});
+
 async function tempOutboxPath(): Promise<string> {
   return join(await mkdtemp(join(tmpdir(), "pdpp-local-outbox-")), "outbox.sqlite");
 }
