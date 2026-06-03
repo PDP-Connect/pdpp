@@ -96,7 +96,7 @@ treating any output as operator-host evidence.
 
 > **`latest` is a placeholder — do not use it.** The published `latest`
 > dist-tag is currently `0.0.0`, a placeholder that is older than every real
-> build. `npm i -g @pdpp/local-collector` (no tag) or `@latest` therefore
+> build. A bare global install with no tag, or an explicit `@latest`, therefore
 > installs the placeholder, not a working collector. Always pin `@beta` or an
 > explicit `@0.1.0-beta.<n>` until `latest` is promoted to a real version. The
 > in-repo `package.json` version is also `0.0.0`, by design — the published
