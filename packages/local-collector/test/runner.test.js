@@ -677,6 +677,21 @@ test('local collector run output summarizes state cursors without dumping payloa
           '/private/path/a.jsonl': 1,
           '/private/path/b.jsonl': 2,
         },
+        file_cursors: {
+          '/private/path/a.jsonl': {
+            mtime_ms: 1,
+            size_bytes: 100,
+            offset_bytes: 90,
+            line_count: 3,
+            head_sha256: 'deadbeef'.repeat(8),
+            guard_bytes: 90,
+            session_id: 'sess-private',
+            message_count: 2,
+            function_call_count: 1,
+            first_ts: '2026-05-20T00:00:00.000Z',
+            last_ts: '2026-05-20T00:00:01.000Z',
+          },
+        },
       },
     },
     outboxSummary: {
@@ -708,12 +723,20 @@ test('local collector run output summarizes state cursors without dumping payloa
   });
 
   assert.equal(output.flushedState.streams.messages.file_mtimes_count, 2);
-  assert.deepEqual(output.flushedState.streams.messages.keys, ['fetched_at', 'file_mtimes']);
+  // The append-safe rollout cursor's `file_cursors` map is summarized by count
+  // only — its key (the private path) lands in `keys` as the literal string
+  // "file_cursors", never the path itself.
+  assert.equal(output.flushedState.streams.messages.file_cursors_count, 1);
+  assert.deepEqual(output.flushedState.streams.messages.keys, ['fetched_at', 'file_cursors', 'file_mtimes']);
   assert.equal(output.priorState.streams.messages.file_mtimes_count, 1);
   const rendered = JSON.stringify(output);
   assert.equal(rendered.includes('/private/path'), false);
   assert.equal(rendered.includes('a.jsonl'), false);
   assert.equal(rendered.includes('b.jsonl'), false);
+  // The per-file cursor's offsets, integrity hash, and session id must not leak
+  // into the CLI summary — only the count survives.
+  assert.equal(rendered.includes('deadbeef'), false);
+  assert.equal(rendered.includes('sess-private'), false);
 });
 
 // --- Run-summary drain honesty (outbox-retention-health-v1) ---

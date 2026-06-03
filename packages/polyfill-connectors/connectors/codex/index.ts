@@ -22,9 +22,14 @@
  *   prompts         — user-authored prompts (~/.codex/prompts/*.md).
  *   skills          — user-authored skills (~/.codex/skills/<name>/SKILL.md).
  *
- * Incremental: rollout parsing skips files whose mtime matches the prior run.
- * `state_5.sqlite` is opened READ-ONLY so we never risk corrupting live Codex
- * state.
+ * Incremental: rollout parsing uses an append-safe per-file cursor
+ * (`file_cursors`: identity + committed byte offset + prefix integrity guard),
+ * so a long-lived append-only rollout file is tailed from its last committed
+ * boundary instead of fully reparsed on every append. Unchanged files are
+ * skipped; new files parse in full; truncated/replaced files fall back to a
+ * full reparse. The legacy whole-file `file_mtimes` cursor is still read for
+ * backward compatibility (one-time reparse on upgrade). `state_5.sqlite` is
+ * opened READ-ONLY so we never risk corrupting live Codex state.
  *
  * Env overrides:
  *   CODEX_HOME             default ~/.codex (parent of all paths below)
@@ -35,11 +40,12 @@
  *   CODEX_SKILLS_DIR       default $CODEX_HOME/skills
  */
 
+import { createHash } from "node:crypto";
 import { createReadStream, type Dirent, existsSync, type Stats, statSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { createInterface as createFileReader, createInterface } from "node:readline";
+import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 import { flushAndExitAfterRuntimeAck } from "../../src/connector-exit.ts";
 import type { EmittedMessage, RecordData, StreamScope } from "../../src/connector-runtime-protocol.ts";
@@ -75,6 +81,7 @@ import { validateRecord } from "./schemas.ts";
 import type {
   PendingCall,
   RolloutAggregate,
+  RolloutFileCursor,
   RolloutObject,
   RolloutPayload,
   StartMessage,
@@ -84,6 +91,12 @@ import type {
 
 const DEFAULT_ACTIVE_ROLLOUT_QUIET_MS = 120_000;
 const ACTIVE_ROLLOUT_QUIET_MS_ENV = "PDPP_CODEX_ACTIVE_ROLLOUT_QUIET_MS";
+
+// Bytes of file prefix covered by the rollout cursor integrity guard. Rollout
+// files are append-only, so a changed first 64 KiB means the file was
+// truncated/rotated/replaced and the stored byte offset is no longer valid.
+// Bounded so the guard is O(1) regardless of how large the rollout file grows.
+const GUARD_PREFIX_BYTES = 64 * 1024;
 
 let stdoutDrainPromise: Promise<void> | null = null;
 
@@ -219,23 +232,90 @@ export const CODEX_KNOWN_LOCAL_STORES: KnownLocalStore[] = [
   },
 ];
 
-// ─── JSONL line iteration ───────────────────────────────────────────────
+// ─── JSONL line iteration (byte-offset aware) ───────────────────────────
 
-async function* iterJsonlLines(path: string): AsyncGenerator<RolloutObject> {
-  const r = createFileReader({
-    input: createReadStream(path, { encoding: "utf8" }),
-    terminal: false,
-  });
-  for await (const line of r) {
-    if (!line.trim()) {
-      continue;
-    }
-    try {
-      yield JSON.parse(line) as RolloutObject;
-    } catch {
-      /* skip malformed */
+export interface RolloutLineYield {
+  /** Byte offset just past this line's terminating `\n`. This is the safe
+   *  append boundary: a parse that stops here has consumed only fully
+   *  newline-terminated lines, so a later run can resume from here without
+   *  re-reading or splitting a partial line. */
+  committedOffset: number;
+  obj: RolloutObject;
+}
+
+/**
+ * Stream a rollout JSONL file from `startOffset` (bytes), yielding each
+ * newline-terminated JSON object together with the byte offset just past its
+ * terminator. A trailing chunk with no final `\n` (an in-flight append) is
+ * NOT yielded and its bytes are NOT counted toward the committed offset — it
+ * is re-read on a later run once the writer finishes the line. Memory stays
+ * bounded: at most one line plus the current read chunk is held.
+ *
+ * Byte offsets are tracked over the raw bytes (Buffer length), not decoded
+ * characters, so a multi-byte UTF-8 sequence advances the offset by its true
+ * byte length and the resume offset always lands on a real byte boundary.
+ */
+export async function* iterJsonlLinesFromOffset(path: string, startOffset: number): AsyncGenerator<RolloutLineYield> {
+  const stream = createReadStream(path, { start: startOffset });
+  let pending: Buffer = Buffer.alloc(0);
+  // Byte offset (from file start) just past the last `\n` we have emitted.
+  let committed = startOffset;
+  for await (const chunk of stream) {
+    const buf = chunk as Buffer;
+    pending = pending.length === 0 ? buf : Buffer.concat([pending, buf]);
+    let nl = pending.indexOf(0x0a);
+    while (nl !== -1) {
+      const lineBuf = pending.subarray(0, nl);
+      committed += nl + 1; // bytes consumed up to and including the `\n`
+      const line = lineBuf.toString("utf8");
+      const trimmed = line.trim();
+      if (trimmed) {
+        let parsed: RolloutObject | null = null;
+        try {
+          parsed = JSON.parse(line) as RolloutObject;
+        } catch {
+          parsed = null; // skip malformed, but still advance the offset
+        }
+        if (parsed) {
+          yield { obj: parsed, committedOffset: committed };
+        }
+      }
+      pending = pending.subarray(nl + 1);
+      nl = pending.indexOf(0x0a);
     }
   }
+  // Any leftover `pending` is a partial (unterminated) line — intentionally
+  // dropped without advancing `committed`, so it is re-read next run.
+}
+
+// ─── Rollout file integrity guard ───────────────────────────────────────
+
+/**
+ * SHA-256 over the first `guardBytes` bytes of `path`. Bounded read — never
+ * loads more than the guard prefix into memory. Returns null if the file is
+ * shorter than `guardBytes` (caller treats a short read as an integrity
+ * mismatch and full-reparses) or on any read error.
+ */
+async function hashFilePrefix(path: string, guardBytes: number): Promise<string | null> {
+  if (guardBytes <= 0) {
+    return createHash("sha256").update(Buffer.alloc(0)).digest("hex");
+  }
+  return await new Promise<string | null>((resolve) => {
+    const hash = createHash("sha256");
+    let read = 0;
+    const stream = createReadStream(path, { start: 0, end: guardBytes - 1 });
+    stream.on("data", (chunk) => {
+      const buf = chunk as Buffer;
+      read += buf.length;
+      hash.update(buf);
+    });
+    stream.on("error", () => resolve(null));
+    stream.on("end", () => {
+      // A guard prefix that came up short means the file shrank below the
+      // boundary we committed against — treat as replaced.
+      resolve(read >= guardBytes ? hash.digest("hex") : null);
+    });
+  });
 }
 
 // ─── Rollout directory walking ──────────────────────────────────────────
@@ -526,16 +606,31 @@ export interface RolloutParseState {
   sessionMeta: RolloutPayload | null;
 }
 
-export function makeRolloutParseState(): RolloutParseState {
+/** Optional seed for an append-only resume. Carries forward the parser
+ *  counters and identity that an appended suffix continues, so suffix record
+ *  keys (`${sessionId}:${lineCount}`) never collide with already-emitted keys
+ *  and the resulting aggregate counts are cumulative (prior + delta). The
+ *  appended suffix has no `session_meta` line, so seeding `sessionId` is what
+ *  attributes the suffix response_items to the right session. */
+export interface RolloutParseSeed {
+  firstTimestamp: string | null;
+  functionCallCount: number;
+  lastTimestamp: string | null;
+  lineCount: number;
+  messageCount: number;
+  sessionId: string | null;
+}
+
+export function makeRolloutParseState(seed?: RolloutParseSeed): RolloutParseState {
   return {
-    sessionId: null,
+    sessionId: seed?.sessionId ?? null,
     sessionMeta: null,
-    firstTimestamp: null,
-    lastTimestamp: null,
-    messageCount: 0,
-    functionCallCount: 0,
+    firstTimestamp: seed?.firstTimestamp ?? null,
+    lastTimestamp: seed?.lastTimestamp ?? null,
+    messageCount: seed?.messageCount ?? 0,
+    functionCallCount: seed?.functionCallCount ?? 0,
     pendingCalls: new Map(),
-    lineCount: 0,
+    lineCount: seed?.lineCount ?? 0,
   };
 }
 
@@ -873,10 +968,28 @@ interface ParseRolloutFileArgs {
   path: string;
   requested: Map<string, StreamScope>;
   rolloutAggregates: Map<string, RolloutAggregate>;
+  /** Parser-state seed for an append tail (`undefined` for a full parse). */
+  seed: RolloutParseSeed | undefined;
+  /** Byte offset to start reading from. 0 for a full parse; the prior
+   *  committed offset for an append-only tail. */
+  startOffset: number;
 }
 
-async function parseRolloutFile(args: ParseRolloutFileArgs): Promise<void> {
-  const state = makeRolloutParseState();
+interface ParseRolloutFileResult {
+  /** Byte offset just past the last fully-parsed line — the new commit
+   *  boundary for this file's cursor. Equals `startOffset` when the suffix
+   *  contained no newline-terminated line. */
+  committedOffset: number;
+  firstTimestamp: string | null;
+  functionCallCount: number;
+  lastTimestamp: string | null;
+  lineCount: number;
+  messageCount: number;
+  sessionId: string | null;
+}
+
+async function parseRolloutFile(args: ParseRolloutFileArgs): Promise<ParseRolloutFileResult> {
+  const state = makeRolloutParseState(args.seed);
   const deps: LineEmitDeps = {
     emitRecord: args.emitRecord,
     progress: (message: string): void => {
@@ -884,8 +997,10 @@ async function parseRolloutFile(args: ParseRolloutFileArgs): Promise<void> {
     },
     requested: args.requested,
   };
-  for await (const obj of iterJsonlLines(args.path)) {
+  let committedOffset = args.startOffset;
+  for await (const { obj, committedOffset: lineEnd } of iterJsonlLinesFromOffset(args.path, args.startOffset)) {
     processRolloutLine({ obj, state, deps, file: args.file });
+    committedOffset = lineEnd;
     await waitForEmitDrain();
   }
   flushPendingCalls(state, deps);
@@ -895,18 +1010,91 @@ async function parseRolloutFile(args: ParseRolloutFileArgs): Promise<void> {
       meta: state.sessionMeta || {},
       firstTs: state.firstTimestamp,
       lastTs: state.lastTimestamp,
+      // Counts are cumulative: makeRolloutParseState seeded them from the
+      // prior cursor on an append, so this is prior + delta, not suffix-only.
       messageCount: state.messageCount,
       functionCallCount: state.functionCallCount,
       rolloutPath: args.path,
     });
   }
+  return {
+    committedOffset,
+    sessionId: state.sessionId,
+    lineCount: state.lineCount,
+    messageCount: state.messageCount,
+    functionCallCount: state.functionCallCount,
+    firstTimestamp: state.firstTimestamp,
+    lastTimestamp: state.lastTimestamp,
+  };
+}
+
+// ─── Per-file append-safe decision ──────────────────────────────────────
+
+export type RolloutAction =
+  /** size+mtime match the cursor — nothing changed, skip the file. */
+  | { kind: "skip" }
+  /** No tracked cursor or legacy-mtime-only entry that changed — parse the
+   *  whole file from offset 0 and write a fresh cursor. */
+  | { kind: "full" }
+  /** Cursor present, file grew, prefix guard verified — tail the suffix from
+   *  the committed offset, seeding the parser to continue the sequence. */
+  | { kind: "append"; startOffset: number; seed: RolloutParseSeed }
+  /** Cursor present but file shrank / offset past EOF / prefix guard changed —
+   *  truncated or replaced, full reparse from offset 0 to avoid data loss. */
+  | { kind: "unsafe_full" };
+
+/**
+ * Decide how to process one rollout file given its current stat and the prior
+ * per-file cursor (if any). Pure + I/O-free over its inputs: the caller
+ * supplies the recomputed prefix-guard hash (or null when the file is too
+ * short / unreadable) so this stays unit-testable. `guardMatches` is only
+ * consulted on the grow path — a verified prefix is required before tailing.
+ */
+export function decideRolloutAction(input: {
+  cursor: RolloutFileCursor | undefined;
+  guardMatches: boolean;
+  mtimeMs: number;
+  sizeBytes: number;
+}): RolloutAction {
+  const { cursor, sizeBytes, mtimeMs } = input;
+  if (!cursor) {
+    return { kind: "full" };
+  }
+  if (sizeBytes === cursor.size_bytes && mtimeMs === cursor.mtime_ms) {
+    return { kind: "skip" };
+  }
+  // Anything that is not a clean forward-append over a verified prefix is
+  // treated as truncation/replacement and reparsed in full — never tailed
+  // from a stale offset, never silently skipped.
+  if (sizeBytes < cursor.size_bytes || cursor.offset_bytes > sizeBytes || !input.guardMatches) {
+    return { kind: "unsafe_full" };
+  }
+  if (sizeBytes > cursor.size_bytes) {
+    return {
+      kind: "append",
+      startOffset: cursor.offset_bytes,
+      seed: {
+        sessionId: cursor.session_id,
+        lineCount: cursor.line_count,
+        messageCount: cursor.message_count,
+        functionCallCount: cursor.function_call_count,
+        firstTimestamp: cursor.first_ts,
+        lastTimestamp: cursor.last_ts,
+      },
+    };
+  }
+  // Same size, different mtime, prefix intact: content is byte-identical up to
+  // the boundary and the file did not grow. A touch with no new data — skip.
+  return { kind: "skip" };
 }
 
 interface ScanRolloutsArgs {
   activeQuietMs: number;
   baseDir: string;
   emitRecord: (stream: string, data: RecordData) => void;
+  fileCursors: Record<string, RolloutFileCursor>;
   fileMtimes: Record<string, number>;
+  newFileCursors: Record<string, RolloutFileCursor>;
   newMtimes: Record<string, number>;
   requested: Map<string, StreamScope>;
   rolloutAggregates: Map<string, RolloutAggregate>;
@@ -915,6 +1103,58 @@ interface ScanRolloutsArgs {
 
 interface ScanRolloutsResult {
   parsedFiles: number;
+}
+
+/** Carry a file's prior cursor forward verbatim into the next STATE, and keep
+ *  the legacy mtime map populated so a downgrade still has a usable cursor. */
+function carryFileCursorForward(args: ScanRolloutsArgs, path: string, mtime: number): void {
+  const prior = args.fileCursors[path];
+  if (prior) {
+    args.newFileCursors[path] = prior;
+  }
+  args.newMtimes[path] = mtime;
+}
+
+/** Build (or rebuild) a rich cursor after a parse, hashing the committed
+ *  prefix. The guard covers `min(committedOffset, GUARD_PREFIX_BYTES)` bytes;
+ *  for an append the prefix is unchanged so the prior guard would still match,
+ *  but recomputing keeps the cursor self-consistent and cheap. */
+async function buildFileCursorAfterParse(
+  path: string,
+  st: Stats,
+  result: ParseRolloutFileResult
+): Promise<RolloutFileCursor> {
+  const guardBytes = Math.min(result.committedOffset, GUARD_PREFIX_BYTES);
+  const head = (await hashFilePrefix(path, guardBytes)) ?? "";
+  return {
+    mtime_ms: st.mtimeMs,
+    size_bytes: Number(st.size),
+    offset_bytes: result.committedOffset,
+    line_count: result.lineCount,
+    head_sha256: head,
+    guard_bytes: guardBytes,
+    session_id: result.sessionId,
+    message_count: result.messageCount,
+    function_call_count: result.functionCallCount,
+    first_ts: result.firstTimestamp,
+    last_ts: result.lastTimestamp,
+  };
+}
+
+/** Resolve the append-safe action for one file: recompute the prefix guard
+ *  only when there is a cursor and the file grew (the only path that tails). */
+async function resolveRolloutAction(
+  path: string,
+  st: Stats,
+  cursor: RolloutFileCursor | undefined
+): Promise<RolloutAction> {
+  const sizeBytes = Number(st.size);
+  let guardMatches = false;
+  if (cursor && sizeBytes > cursor.size_bytes && cursor.offset_bytes <= sizeBytes) {
+    const head = await hashFilePrefix(path, cursor.guard_bytes);
+    guardMatches = head !== null && head === cursor.head_sha256;
+  }
+  return decideRolloutAction({ cursor, sizeBytes, mtimeMs: st.mtimeMs, guardMatches });
 }
 
 async function processRolloutEntry(
@@ -929,31 +1169,60 @@ async function processRolloutEntry(
     return "missing";
   }
   const mtime = st.mtimeMs;
-  if (args.fileMtimes[entry.path] === mtime) {
+  const cursor = args.fileCursors[entry.path];
+
+  // Legacy fast path: no rich cursor yet, but the legacy mtime matches — the
+  // previously-emitted records stay valid. Carry the (absent) cursor forward.
+  if (!cursor && args.fileMtimes[entry.path] === mtime) {
     args.newMtimes[entry.path] = mtime;
-    // Skip unchanged files; the previously-emitted rollout record stays valid.
     return "skipped";
   }
+
+  const action = await resolveRolloutAction(entry.path, st, cursor);
+  if (action.kind === "skip") {
+    carryFileCursorForward(args, entry.path, mtime);
+    return "skipped";
+  }
+
   if (shouldDeferActiveRolloutFile({ mtimeMs: mtime, nowMs: args.scanStartedAtMs, quietMs: args.activeQuietMs })) {
     emit({
       type: "PROGRESS",
       message: `Codex phase=index pass=index item=${rolloutOrdinal} backpressure=active_rollout_deferred`,
     });
     await waitForEmitDrain();
+    // Defer: the file is being actively written, so it must be reconsidered
+    // next run once it goes quiet. Carry a prior RICH cursor forward (preserves
+    // its committed offset) but do NOT write a fresh `newMtimes` entry: the
+    // legacy fast path skips a file when `!cursor && fileMtimes[path] === mtime`,
+    // so stamping the mtime of a deferred-but-unparsed new file would skip it
+    // forever (silent data loss). For a file with a prior rich cursor the
+    // newMtimes stamp is harmless (the fast path is gated on `!cursor`), but we
+    // still avoid stamping it so the deferral is a pure no-op on this run's
+    // record emission.
+    if (cursor) {
+      args.newFileCursors[entry.path] = cursor;
+    }
     return "skipped";
   }
+
+  const isAppend = action.kind === "append";
   emit({
     type: "PROGRESS",
-    message: `Codex phase=emit pass=emit item=${rolloutOrdinal} file_size_mb=${(st.size / 1024 / 1024).toFixed(1)}`,
+    message: `Codex phase=emit pass=emit item=${rolloutOrdinal} mode=${isAppend ? "append" : "full"} file_size_mb=${(st.size / 1024 / 1024).toFixed(1)}`,
   });
   await waitForEmitDrain();
-  await parseRolloutFile({
+
+  const result = await parseRolloutFile({
     path: entry.path,
     file: entry.file,
     requested: args.requested,
     emitRecord: args.emitRecord,
     rolloutAggregates: args.rolloutAggregates,
+    startOffset: isAppend ? action.startOffset : 0,
+    seed: isAppend ? action.seed : undefined,
   });
+
+  args.newFileCursors[entry.path] = await buildFileCursorAfterParse(entry.path, st, result);
   args.newMtimes[entry.path] = mtime;
   return "parsed";
 }
@@ -1059,6 +1328,64 @@ function readFileMtimes(startMsg: StartMessage): Record<string, number> {
   );
 }
 
+function coerceRolloutFileCursor(value: unknown): RolloutFileCursor | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const v = value as Record<string, unknown>;
+  const num = (x: unknown): number | null => (typeof x === "number" && Number.isFinite(x) ? x : null);
+  const offset = num(v.offset_bytes);
+  const size = num(v.size_bytes);
+  const mtime = num(v.mtime_ms);
+  const line = num(v.line_count);
+  const guardBytes = num(v.guard_bytes);
+  const head = typeof v.head_sha256 === "string" ? v.head_sha256 : null;
+  // These six are load-bearing for the tail/skip/unsafe decision. A cursor
+  // missing any of them is unusable — drop it so the file full-reparses once
+  // (the same one-time cost as the legacy-mtime upgrade) rather than risk a
+  // bad offset.
+  if (offset === null || size === null || mtime === null || line === null || guardBytes === null || head === null) {
+    return null;
+  }
+  return {
+    mtime_ms: mtime,
+    size_bytes: size,
+    offset_bytes: offset,
+    line_count: line,
+    head_sha256: head,
+    guard_bytes: guardBytes,
+    session_id: typeof v.session_id === "string" ? v.session_id : null,
+    message_count: num(v.message_count) ?? 0,
+    function_call_count: num(v.function_call_count) ?? 0,
+    first_ts: typeof v.first_ts === "string" ? v.first_ts : null,
+    last_ts: typeof v.last_ts === "string" ? v.last_ts : null,
+  };
+}
+
+/**
+ * Decode the prior per-file rollout cursors from STATE. Tolerant of legacy
+ * cursors (no `file_cursors` field), wrong types, and partially-corrupt
+ * entries — a malformed entry is dropped (its file then full-reparses once)
+ * rather than failing the run. Checks the rollout streams plus the sessions
+ * stream so the lookup survives whichever stream carried the cursor.
+ */
+export function readPriorFileCursors(startMsg: StartMessage): Record<string, RolloutFileCursor> {
+  const state = startMsg.state || {};
+  const raw =
+    state.messages?.file_cursors || state.function_calls?.file_cursors || state.sessions?.file_cursors || null;
+  const out: Record<string, RolloutFileCursor> = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return out;
+  }
+  for (const [path, value] of Object.entries(raw)) {
+    const cursor = coerceRolloutFileCursor(value);
+    if (cursor) {
+      out[path] = cursor;
+    }
+  }
+  return out;
+}
+
 function resolveActiveRolloutQuietMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env[ACTIVE_ROLLOUT_QUIET_MS_ENV];
   if (!raw) {
@@ -1127,6 +1454,7 @@ async function assertRequestedCodexSources(dirs: CodexDirs, requested: Map<strin
 }
 
 interface EmitStateCursorsArgs {
+  newFileCursors: Record<string, RolloutFileCursor>;
   newMtimes: Record<string, number>;
   nowIso: () => string;
   requested: Map<string, StreamScope>;
@@ -1136,6 +1464,7 @@ interface EmitStateCursorsArgs {
 
 function emitStateCursors({
   requested,
+  newFileCursors,
   newMtimes,
   nowIso,
   sessionsSourceMtimeMs,
@@ -1157,7 +1486,11 @@ function emitStateCursors({
     emit({
       type: "STATE",
       stream: cursorStream,
-      cursor: { file_mtimes: newMtimes, fetched_at: nowIso() },
+      // file_cursors is the append-safe per-file cursor; file_mtimes is kept
+      // alongside it for backward compatibility with a downgraded collector
+      // (and the legacy fast-path skip on files this connector hasn't yet
+      // upgraded to a rich cursor).
+      cursor: { file_mtimes: newMtimes, file_cursors: newFileCursors, fetched_at: nowIso() },
     });
   }
   for (const s of ["rules", "prompts", "skills"]) {
@@ -1335,6 +1668,7 @@ async function main(): Promise<void> {
   const resFilters = buildResourceFilters(requested);
   const dirs = resolveCodexDirs();
   const fileMtimes = readFileMtimes(startMsg);
+  const fileCursors = readPriorFileCursors(startMsg);
 
   let total = 0;
   const nowIso = (): string => new Date().toISOString();
@@ -1374,6 +1708,11 @@ async function main(): Promise<void> {
   // function_call_count even when state_5 provides the canonical metadata).
   const rolloutAggregates = new Map<string, RolloutAggregate>();
   const newMtimes: Record<string, number> = { ...fileMtimes };
+  // Seed the next rich-cursor map from the prior one; processRolloutEntry
+  // overwrites a file's entry when it parses/tails it and otherwise carries
+  // the prior cursor forward unchanged (so unscanned/deferred files keep
+  // their offset). Deleted files naturally drop out — they are never walked.
+  const newFileCursors: Record<string, RolloutFileCursor> = {};
   const scanStartedAtMs = Date.now();
   const sessionsSourceMtimeMs = fileMtimeMs(dirs.stateDbPath);
   let parsedRolloutFiles = 0;
@@ -1402,7 +1741,9 @@ async function main(): Promise<void> {
     const rolloutScan = await scanRollouts({
       activeQuietMs: resolveActiveRolloutQuietMs(),
       baseDir: dirs.baseDir,
+      fileCursors,
       fileMtimes,
+      newFileCursors,
       newMtimes,
       requested,
       emitRecord,
@@ -1435,7 +1776,7 @@ async function main(): Promise<void> {
     await emitSkillsStream(dirs.skillsDir, emitRecord);
   }
 
-  emitStateCursors({ requested, newMtimes, nowIso, sessionsSourceMtimeMs, threadFingerprints });
+  emitStateCursors({ requested, newFileCursors, newMtimes, nowIso, sessionsSourceMtimeMs, threadFingerprints });
   await waitForEmitDrain();
 
   emit({ type: "DONE", status: "succeeded", records_emitted: total });

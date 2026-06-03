@@ -274,6 +274,9 @@ function summarizeCursor(cursor) {
     if (record.file_mtimes && typeof record.file_mtimes === "object" && !Array.isArray(record.file_mtimes)) {
         summary.file_mtimes_count = Object.keys(record.file_mtimes).length;
     }
+    if (record.file_cursors && typeof record.file_cursors === "object" && !Array.isArray(record.file_cursors)) {
+        summary.file_cursors_count = Object.keys(record.file_cursors).length;
+    }
     return summary;
 }
 export function inspectLocalOutboxStatus(options, deps = {}) {

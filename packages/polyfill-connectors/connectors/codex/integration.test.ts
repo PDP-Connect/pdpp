@@ -36,17 +36,20 @@ import type { RecordData, StreamScope } from "../../src/connector-runtime.ts";
 import { type CarryForwardCursor, openCarryForwardCursor } from "../../src/fingerprint-cursor.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
+  decideRolloutAction,
   emitSessionsFromMaps,
   flushPendingCalls,
   type LineEmitDeps,
   makeRolloutParseState,
   processRolloutLine,
+  readPriorFileCursors,
   readPriorThreadFingerprints,
   shouldDeferActiveRolloutFile,
   shouldReemitThreadSession,
 } from "./index.ts";
 import type {
   RolloutAggregate,
+  RolloutFileCursor,
   RolloutObject,
   RolloutPayload,
   StartMessage,
@@ -794,4 +797,116 @@ test("readPriorThreadFingerprints: tolerates missing state, missing field, and m
     { updated_at: 100, message_count: null, function_call_count: null },
     "missing fields fall back to null"
   );
+});
+
+// ─── Invariant 11: append-safe per-file rollout cursor decision table ───────
+//
+// decideRolloutAction is the I/O-free core of the append-only fix. The caller
+// (processRolloutEntry) supplies the recomputed prefix-guard result; this
+// function maps (cursor, size, mtime, guardMatches) → skip | full | append |
+// unsafe_full. The byte-offset reader, prefix hashing, and STATE round-trip are
+// covered end-to-end in append-cursor.test.ts; here we pin the branch logic.
+
+function makeFileCursor(overrides: Partial<RolloutFileCursor> = {}): RolloutFileCursor {
+  return {
+    mtime_ms: 1000,
+    size_bytes: 500,
+    offset_bytes: 480,
+    line_count: 12,
+    head_sha256: "a".repeat(64),
+    guard_bytes: 480,
+    session_id: "019d922d-c38b-7e11-ae99-9187af386148",
+    message_count: 7,
+    function_call_count: 3,
+    first_ts: "2026-04-15T17:33:32.000Z",
+    last_ts: "2026-04-15T19:29:26.000Z",
+    ...overrides,
+  };
+}
+
+test("decideRolloutAction: no cursor → full parse (new file)", () => {
+  const action = decideRolloutAction({ cursor: undefined, sizeBytes: 100, mtimeMs: 1, guardMatches: false });
+  assert.equal(action.kind, "full");
+});
+
+test("decideRolloutAction: same size + same mtime → skip (unchanged)", () => {
+  const cursor = makeFileCursor({ size_bytes: 500, mtime_ms: 1000 });
+  const action = decideRolloutAction({ cursor, sizeBytes: 500, mtimeMs: 1000, guardMatches: false });
+  assert.equal(action.kind, "skip");
+});
+
+test("decideRolloutAction: grown + guard matches → append from committed offset, seeded from cursor", () => {
+  const cursor = makeFileCursor({
+    size_bytes: 500,
+    offset_bytes: 480,
+    line_count: 12,
+    message_count: 7,
+    function_call_count: 3,
+  });
+  const action = decideRolloutAction({ cursor, sizeBytes: 900, mtimeMs: 2000, guardMatches: true });
+  assert.equal(action.kind, "append");
+  if (action.kind === "append") {
+    assert.equal(action.startOffset, 480, "tails from the prior committed offset");
+    assert.equal(action.seed.lineCount, 12, "continues the line counter");
+    assert.equal(
+      action.seed.sessionId,
+      "019d922d-c38b-7e11-ae99-9187af386148",
+      "seeds the session id (suffix has no session_meta)"
+    );
+    assert.equal(action.seed.messageCount, 7, "seeds cumulative message count");
+    assert.equal(action.seed.functionCallCount, 3, "seeds cumulative function-call count");
+  }
+});
+
+test("decideRolloutAction: grown but guard MISMATCH → unsafe_full (prefix changed = replaced)", () => {
+  const cursor = makeFileCursor({ size_bytes: 500 });
+  const action = decideRolloutAction({ cursor, sizeBytes: 900, mtimeMs: 2000, guardMatches: false });
+  assert.equal(action.kind, "unsafe_full");
+});
+
+test("decideRolloutAction: shrunk below cursor size → unsafe_full (truncated/rotated)", () => {
+  const cursor = makeFileCursor({ size_bytes: 500 });
+  const action = decideRolloutAction({ cursor, sizeBytes: 100, mtimeMs: 2000, guardMatches: true });
+  assert.equal(action.kind, "unsafe_full");
+});
+
+test("decideRolloutAction: committed offset past current EOF → unsafe_full (never tail past end)", () => {
+  const cursor = makeFileCursor({ size_bytes: 500, offset_bytes: 480 });
+  // Same size as cursor but offset claims 480 while file is only 400 bytes.
+  const action = decideRolloutAction({ cursor, sizeBytes: 400, mtimeMs: 2000, guardMatches: true });
+  assert.equal(action.kind, "unsafe_full");
+});
+
+test("decideRolloutAction: same size, different mtime, prefix intact → skip (touch, no new data)", () => {
+  const cursor = makeFileCursor({ size_bytes: 500, mtime_ms: 1000 });
+  // A metadata touch that did not grow the file and did not break the prefix.
+  const action = decideRolloutAction({ cursor, sizeBytes: 500, mtimeMs: 9999, guardMatches: true });
+  assert.equal(action.kind, "skip");
+});
+
+test("readPriorFileCursors: decodes a well-formed cursor and drops malformed/legacy entries", () => {
+  const good = makeFileCursor();
+  // readPriorFileCursors decodes tolerantly from `unknown`, so we hand it a
+  // deliberately mixed map (well-formed, missing-field, and non-object values)
+  // built as a plain record. A single structural cast to StartMessage models a
+  // real on-disk cursor with corrupt entries without per-entry double-casts.
+  const fileCursors: Record<string, unknown> = {
+    "/rollouts/good.jsonl": good,
+    // missing load-bearing offset_bytes → dropped (file will full-reparse once)
+    "/rollouts/partial.jsonl": { size_bytes: 10, mtime_ms: 1, line_count: 1, head_sha256: "x", guard_bytes: 1 },
+    "/rollouts/garbage.jsonl": "nope",
+  };
+  const startMsg = { type: "START", state: { messages: { file_cursors: fileCursors } } } as StartMessage;
+  const decoded = readPriorFileCursors(startMsg);
+  assert.deepEqual(decoded["/rollouts/good.jsonl"], good, "well-formed cursor survives");
+  assert.equal("/rollouts/partial.jsonl" in decoded, false, "cursor missing offset_bytes is dropped");
+  assert.equal("/rollouts/garbage.jsonl" in decoded, false, "non-object cursor value is dropped");
+});
+
+test("readPriorFileCursors: legacy state with only file_mtimes yields no rich cursors", () => {
+  const startMsg: StartMessage = {
+    type: "START",
+    state: { messages: { file_mtimes: { "/rollouts/legacy.jsonl": 123 } } },
+  };
+  assert.deepEqual(readPriorFileCursors(startMsg), {}, "legacy mtime-only state → empty rich-cursor map");
 });

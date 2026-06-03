@@ -432,6 +432,7 @@ export interface LocalCollectorStateSummary {
 
 export interface LocalCollectorCursorSummary {
   fetched_at?: string;
+  file_cursors_count?: number;
   file_mtimes_count?: number;
   keys: string[];
 }
@@ -533,6 +534,13 @@ function summarizeCursor(cursor: unknown): LocalCollectorCursorSummary {
   }
   if (record.file_mtimes && typeof record.file_mtimes === "object" && !Array.isArray(record.file_mtimes)) {
     summary.file_mtimes_count = Object.keys(record.file_mtimes).length;
+  }
+  // The append-safe rollout cursor adds `file_cursors`: a map keyed by private
+  // file path with byte offsets and integrity hashes. Summarize only its COUNT
+  // — never its keys (paths) or values (offsets/hashes) — so the CLI surface
+  // stays free of payloads, paths, and source content, exactly like file_mtimes.
+  if (record.file_cursors && typeof record.file_cursors === "object" && !Array.isArray(record.file_cursors)) {
+    summary.file_cursors_count = Object.keys(record.file_cursors).length;
   }
   return summary;
 }
