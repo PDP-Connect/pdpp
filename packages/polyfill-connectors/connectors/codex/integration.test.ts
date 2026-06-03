@@ -11,7 +11,8 @@
  * (session id must install before any response_item lands), cross-stream
  * gating (messages off still permits function_calls; and vice versa),
  * all-streams-disabled emits nothing, function_call + output pair into
- * a single record at flush, orphan output emits its own record,
+ * a single record on the output line (and `pendingCalls` stays bounded so a
+ * large parse is memory-bounded), orphan output emits its own record,
  * source-order is preserved across streams, timestamps thread into
  * messages, and the sessions pass dedups on session id (thread-preferred
  * when both maps list it).
@@ -24,10 +25,10 @@
  * from an individual payload. These integration tests prove the
  * cross-stream + sessions-merge invariants consumers observe: the
  * parent-before-child contract, that dropping one stream doesn't break
- * siblings, that `function_calls` assembles paired records at EOF, and
- * that a session present in both state_5 and rolloutAggregates lands
- * exactly once. Regressing any of these is a silent data-shape bug
- * parsers.test.ts can't catch.
+ * siblings, that `function_calls` assembles a paired record on the output
+ * line while keeping `pendingCalls` bounded, and that a session present in
+ * both state_5 and rolloutAggregates lands exactly once. Regressing any of
+ * these is a silent data-shape (or memory) bug parsers.test.ts can't catch.
  */
 
 import assert from "node:assert/strict";
@@ -234,9 +235,12 @@ test("processRolloutLine: neither messages nor function_calls requested — noth
   assert.equal(emitted.length, 0, "no per-line records when both streams are off");
 });
 
-// ─── Invariant 4: function_call + output pair into one record at EOF ────────
+// ─── Invariant 4: function_call + output pair into one record on the output line ──
 
-test("flushPendingCalls: function_call + matching output merge into a single record at end-of-file", () => {
+test("processRolloutLine: function_call + matching output merge into a single record", () => {
+  // The merge now happens on the function_call_output line (emit-and-drop), not
+  // at the EOF flush — see the memory-bound regression test below. The observable
+  // contract is unchanged: exactly one merged record carrying both sides.
   const { deps, emitted } = makeHarness();
   drive(deps, [
     sessionMetaLine("sess-E"),
@@ -265,13 +269,72 @@ test("processRolloutLine: orphan function_call_output (no matching call) emits i
   assert.equal(calls[0]?.data.output_preview, "stdout bytes");
 });
 
+// ─── Memory bound: paired calls drain on their output line, not at EOF ──────
+//
+// Regression guard for the tail-scan memory blow-up. A function_call payload
+// registers a PendingCall; the matching function_call_output MUST emit the
+// merged record and drop the entry immediately, so `pendingCalls` is bounded by
+// the number of concurrently-open calls — NOT by the file size. The old code
+// mutated the entry in place and held it until the EOF flush, so a very large
+// active Codex session accumulated one entry per call (O(file) memory, multi-GB
+// observed as a 7.3G systemd peak). If a future change reverts to buffer-until-
+// flush, `pendingCalls.size` grows with the call count and this test fails.
+test("processRolloutLine: paired function_calls drain immediately — pendingCalls stays bounded across a large parse", () => {
+  const { deps, emitted } = makeHarness({ requested: ["function_calls"] });
+  const state = makeRolloutParseState();
+  processRolloutLine({ obj: sessionMetaLine("sess-mem"), state, deps, file: "r.jsonl" });
+
+  const CALLS = 5000;
+  let maxPending = 0;
+  for (let i = 0; i < CALLS; i++) {
+    // Each call is immediately followed by its output, the healthy interleave.
+    processRolloutLine({ obj: functionCallLine(`c${i}`, "shell", "x".repeat(64)), state, deps, file: "r.jsonl" });
+    processRolloutLine({ obj: functionCallOutputLine(`c${i}`, "y".repeat(64)), state, deps, file: "r.jsonl" });
+    if (state.pendingCalls.size > maxPending) {
+      maxPending = state.pendingCalls.size;
+    }
+  }
+
+  // The pending map never holds more than the single currently-open call.
+  // (A reversion to EOF-flush buffering would make this CALLS, not ~1.)
+  assert.ok(maxPending <= 1, `pendingCalls must stay bounded; saw max ${maxPending} for ${CALLS} paired calls`);
+  assert.equal(state.pendingCalls.size, 0, "every paired call drained before EOF");
+  // Records emit eagerly on each output line — not deferred to the flush.
+  const callsBeforeFlush = emitted.filter((r) => r.stream === "function_calls");
+  assert.equal(callsBeforeFlush.length, CALLS, "all paired records landed before any flush");
+  // Flush is now a no-op for paired calls — no duplicate emits.
+  flushPendingCalls(state, deps);
+  const callsAfterFlush = emitted.filter((r) => r.stream === "function_calls");
+  assert.equal(callsAfterFlush.length, CALLS, "EOF flush adds nothing for already-paired calls (no double-emit)");
+});
+
+// A call whose output never arrives MUST still land exactly once — at EOF.
+test("processRolloutLine: an unpaired function_call still flushes once at EOF (no output line)", () => {
+  const { deps, emitted } = makeHarness({ requested: ["function_calls"] });
+  const state = makeRolloutParseState();
+  processRolloutLine({ obj: sessionMetaLine("sess-unpaired"), state, deps, file: "r.jsonl" });
+  processRolloutLine({ obj: functionCallLine("lonely", "shell", "sleep 1"), state, deps, file: "r.jsonl" });
+  // Held pending until EOF because no output line drained it.
+  assert.equal(state.pendingCalls.size, 1, "unpaired call is held until flush");
+  assert.equal(emitted.filter((r) => r.stream === "function_calls").length, 0, "nothing emitted before flush");
+  flushPendingCalls(state, deps);
+  const calls = emitted.filter((r) => r.stream === "function_calls");
+  assert.equal(calls.length, 1, "the unpaired call lands exactly once at EOF");
+  assert.equal(calls[0]?.data.call_id, "lonely");
+  assert.equal(calls[0]?.data.name, "shell");
+  assert.equal(calls[0]?.data.output_preview, null, "no output ever arrived");
+  assert.equal(state.pendingCalls.size, 0, "flush clears the map");
+});
+
 // ─── Invariant 5: source order is preserved across streams ──────────────────
 
-test("processRolloutLine: messages and pre-flush function_calls emit in file-line order within a session", () => {
-  // function_calls emit on EOF flush (or on orphan output), but messages
-  // emit eagerly as their line is processed. Pin the observable sequence:
-  // messages come out in source order; paired calls all land together at
-  // flush after the last message.
+test("processRolloutLine: messages and paired function_calls emit in file-line order within a session", () => {
+  // Messages emit eagerly as their line is processed. A paired function_call
+  // now emits the merged record on its function_call_output line (not at the
+  // EOF flush) — this bounds pendingCalls to open calls only, the memory fix.
+  // Pin the observable sequence: every record lands in source-line order, so
+  // the merged call record sits AFTER the second message (its output line) and
+  // BEFORE the third message — exactly where the output appears in the file.
   const { deps, emitted } = makeHarness();
   drive(deps, [
     sessionMetaLine("sess-G"),
@@ -282,7 +345,6 @@ test("processRolloutLine: messages and pre-flush function_calls emit in file-lin
     messageLine("third message", "user"),
   ]);
   const streams = emitted.map((r) => r.stream);
-  // Three messages emit in source order before the flush-time call record.
   const msgIdxs = streams.flatMap((s, i) => (s === "messages" ? [i] : []));
   const callIdxs = streams.flatMap((s, i) => (s === "function_calls" ? [i] : []));
   assert.equal(msgIdxs.length, 3, "three messages landed");
@@ -291,7 +353,18 @@ test("processRolloutLine: messages and pre-flush function_calls emit in file-lin
   const [c0] = callIdxs;
   assert.ok(m0 !== undefined && m1 !== undefined && m0 < m1, "first < second message");
   assert.ok(m1 !== undefined && m2 !== undefined && m1 < m2, "second < third message");
-  assert.ok(m2 !== undefined && c0 !== undefined && m2 < c0, "function_calls flush lands after all messages");
+  // The merged call record emits on its output line: after message 2, before message 3.
+  assert.ok(m1 !== undefined && c0 !== undefined && m1 < c0, "paired call lands after its preceding (second) message");
+  assert.ok(
+    c0 !== undefined && m2 !== undefined && c0 < m2,
+    "paired call lands before the third message (at its output line)"
+  );
+  // And the merged record still carries both call-side and output-side fields.
+  const callRec = emitted.find((r) => r.stream === "function_calls");
+  assert.equal(callRec?.data.call_id, "c1");
+  assert.equal(callRec?.data.name, "shell", "name from the call side survives the eager emit");
+  assert.equal(callRec?.data.arguments, "ls", "arguments from the call side survive");
+  assert.equal(callRec?.data.output_preview, "out", "output merged in");
 });
 
 // ─── Invariant 6: timestamp propagation ─────────────────────────────────────

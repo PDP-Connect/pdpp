@@ -688,10 +688,22 @@ function applyFunctionCallOutput(
   const existing = callId ? state.pendingCalls.get(callId) : null;
   const previewResult = payloadOutputPreview(payload.output);
   if (existing) {
+    // Emit the merged call+output record NOW and drop the pending entry, rather
+    // than mutating it in place and waiting for the EOF flush. Holding every
+    // paired call in `pendingCalls` until end-of-file made the map grow to one
+    // entry per call across the whole parse — O(file) memory, multi-GB on a
+    // very large active Codex session. The "pendingCalls stays bounded across a
+    // large parse" test in integration.test.ts pins this. The record shape is
+    // identical to what flushPendingCalls produced; only the emit moment moves
+    // earlier, so the stream still lands each call exactly once.
     existing.output_preview = previewResult.preview;
     if (previewResult.binaryReason) {
       existing.output_binary_reason = previewResult.binaryReason;
     }
+    if (callId) {
+      state.pendingCalls.delete(callId);
+    }
+    emitRecord("function_calls", { ...existing });
     return;
   }
   emitRecord("function_calls", {
@@ -813,16 +825,23 @@ export function processRolloutLine({ deps, obj, state }: ProcessRolloutLineArgs)
 // ─── End-of-file flush ──────────────────────────────────────────────────
 
 /**
- * Emit every pending function_call as a combined record at end of file.
- * A function_call payload registers a PendingCall in state.pendingCalls;
- * a matching function_call_output mutates the pending entry in place. At
- * EOF we emit whatever's left (with or without an output_preview) so the
- * function_calls stream lands every call exactly once.
+ * Emit any function_call that never saw a matching function_call_output.
+ * A function_call payload registers a PendingCall in state.pendingCalls; a
+ * matching function_call_output now emits the merged record and removes the
+ * entry immediately (see applyFunctionCallOutput), so `pendingCalls` only ever
+ * holds calls still awaiting their output. At EOF we drain whatever's left —
+ * calls whose output never arrived in this parse window — with a null
+ * output_preview, so the function_calls stream lands every call exactly once.
+ *
+ * Because paired calls drain on their output line, this map is bounded by the
+ * number of concurrently-open (unanswered) calls, NOT by the file size — which
+ * is what keeps a multi-GB session parse memory-bounded.
  */
 export function flushPendingCalls(state: RolloutParseState, deps: LineEmitDeps): void {
   for (const call of state.pendingCalls.values()) {
     deps.emitRecord("function_calls", { ...call });
   }
+  state.pendingCalls.clear();
 }
 
 // ─── Sessions pass (I/O-free) ───────────────────────────────────────────
