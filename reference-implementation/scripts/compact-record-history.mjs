@@ -302,6 +302,83 @@ export const COMPACTION_POLICIES = [
     connectorSource:
       'packages/polyfill-connectors/connectors/ynab/index.ts:BUDGET_FINGERPRINT_EXCLUDE (["last_month","last_modified_on"]) → openBudgetCursor → openFingerprintCursor → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
   },
+  {
+    // `transactions` (USAA) carried a run-clock `fetched_at`. A posted
+    // transaction's identity (id = hashId(accountId|date|amount|original|
+    // #ord)) and its fields are immutable; the only field that moved between
+    // runs was `fetched_at`. Both emit paths re-surfaced the same
+    // transaction every run — the CSV-export path re-downloads an
+    // overlapping incremental date window, and the PDF-statement parse
+    // re-parses the same statement PDFs. The connector now gates BOTH paths
+    // through one shared per-transaction fingerprint cursor with
+    // excludeFromFingerprint ["fetched_at"]; this policy mirrors that
+    // exclusion one-for-one. Excluding ONLY `fetched_at` is lossless: a new
+    // transaction (new id), a corrected amount (new tuple → new id), or a
+    // real field move (e.g. balance_after_cents) is always a fingerprint
+    // boundary that survives; only a re-surfaced byte-identical transaction
+    // (modulo the run clock) collapses.
+    connectorIds: ['usaa', 'https://registry.pdpp.org/connectors/usaa'],
+    stream: 'transactions',
+    excludeKeys: ['fetched_at'],
+    connectorSource:
+      'packages/polyfill-connectors/connectors/usaa/index.ts:emitCsvTransactions+processPdfStatementRow → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
+  },
+  {
+    // `inbox_messages` (USAA) carried a run-clock `fetched_at`. A message's
+    // identity (id = hashId(date_short|preview[:120])) and its body are
+    // immutable until its read/unread status flips, but the inbox page is
+    // re-scraped in full every run, so every still-listed message was
+    // re-emitted with a fresh `fetched_at`. The connector now gates emit
+    // through a per-message fingerprint cursor with excludeFromFingerprint
+    // ["fetched_at"]; this policy mirrors that exclusion one-for-one.
+    // Excluding ONLY `fetched_at` is lossless: a read → unread (or unread →
+    // read) status flip is a fingerprint boundary that survives; only a
+    // byte-identical re-scrape (modulo the run clock) collapses.
+    connectorIds: ['usaa', 'https://registry.pdpp.org/connectors/usaa'],
+    stream: 'inbox_messages',
+    excludeKeys: ['fetched_at'],
+    connectorSource:
+      'packages/polyfill-connectors/connectors/usaa/index.ts:runInboxStream → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
+  },
+  {
+    // `current_activity` (Chase) carried a run-clock `fetched_at`. The
+    // dashboard overview re-renders the same recent rows every run; a row
+    // keyed by a stable `ui_transaction_id` is otherwise immutable until it
+    // transitions pending → posted, so the only field that moved between
+    // byte-identical runs was `fetched_at`. The connector now gates emit
+    // through a per-row fingerprint cursor with excludeFromFingerprint
+    // ["fetched_at"]; this policy mirrors that exclusion one-for-one.
+    // Excluding ONLY `fetched_at` is lossless: a pending → posted transition
+    // (status/posted_date/amount move) on a stable id is a fingerprint
+    // boundary that survives, and a fallback-keyed row whose fields change
+    // gets a new id and appends as a distinct row; only a byte-identical
+    // re-render (modulo the run clock) collapses.
+    connectorIds: ['chase', 'https://registry.pdpp.org/connectors/chase'],
+    stream: 'current_activity',
+    excludeKeys: ['fetched_at'],
+    connectorSource:
+      'packages/polyfill-connectors/connectors/chase/index.ts:emitCurrentActivityForAccount → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
+  },
+  {
+    // `orders` (Amazon) carried a run-clock `fetched_at`. An order's
+    // identity (id = order id) is immutable and its total is fixed once
+    // placed, but the current (unfrozen) year is re-scraped every run and
+    // re-emitted with a fresh `fetched_at`. Year-freezing already bounds the
+    // blast radius to recent years; this gate removes the per-run re-emit
+    // within that window. The connector now gates emit through a per-order
+    // fingerprint cursor with excludeFromFingerprint ["fetched_at"]; this
+    // policy mirrors that exclusion one-for-one. Excluding ONLY `fetched_at`
+    // is lossless: a new order (new id) or a real field move
+    // (delivery_status / status_detail transitioning while the order ships)
+    // is always a fingerprint boundary that survives; only a re-scraped
+    // byte-identical order (modulo the run clock) collapses. `order_items`
+    // carries no `fetched_at` and has no registered policy.
+    connectorIds: ['amazon', 'https://registry.pdpp.org/connectors/amazon'],
+    stream: 'orders',
+    excludeKeys: ['fetched_at'],
+    connectorSource:
+      'packages/polyfill-connectors/connectors/amazon/index.ts:emitOrderAndItems → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
+  },
 
   // ─── Exact stable-JSON identity family ────────────────────────────────
   //

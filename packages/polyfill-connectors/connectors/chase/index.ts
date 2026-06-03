@@ -904,6 +904,12 @@ export type RequestedScopes = BrowserCollectContext["requested"];
  *  orchestration and the helpers are individually testable. */
 export interface EmitDeps {
   capture: CaptureDep;
+  /** Per-row fingerprint cursor for `current_activity` (excludes the
+   *  run-clock `fetched_at`). One cursor for the whole stream because row
+   *  ids (`account_id|ui_transaction_id` or an account-scoped fallback
+   *  hash) are globally unique. Optional so legacy callers/tests emit
+   *  unconditionally. */
+  currentActivityFingerprintCursor?: FingerprintCursor | undefined;
   emit: EmitFn;
   emitRecord: EmitRecordFn;
   emittedAt: string;
@@ -1051,6 +1057,28 @@ export function readPriorStatementFingerprints(state: Record<string, unknown>): 
 }
 
 /**
+ * Parse the prior `current_activity` STATE cursor's `fingerprints` map.
+ * Keyed by the row `id` (`account_id|ui_transaction_id`, or an
+ * account-scoped fallback hash). Legacy cursors (only `{ fetched_at }`)
+ * decode to an empty map, so the first post-deploy run rebuilds the map
+ * and re-emits every still-listed activity row exactly once.
+ */
+export function readPriorCurrentActivityFingerprints(state: Record<string, unknown>): Map<string, string> {
+  const streamState = (state.current_activity ?? {}) as Record<string, unknown>;
+  const raw = streamState.fingerprints;
+  const out = new Map<string, string>();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return out;
+  }
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > 0) {
+      out.set(id, value);
+    }
+  }
+  return out;
+}
+
+/**
  * Parse the prior `transactions` STATE cursor's `fingerprints` map. Keyed
  * by transaction `id` (`account_id|fitid`). The cursor shape is
  * `{ per_account, fingerprints }`; `collect()` may also see the bare
@@ -1149,11 +1177,12 @@ export async function emitTransactionsForAccount(
 export async function emitCurrentActivityForAccount(
   deps: EmitDeps,
   account: ChaseAccount,
-  html: string
+  html: string,
+  fingerprintCursor?: FingerprintCursor
 ): Promise<number> {
   const rows = parseCurrentActivityDom(html, deps.emittedAt.slice(0, 10));
   for (const row of rows) {
-    await deps.emitRecord("current_activity", {
+    const record = {
       id: currentActivityId(account.internal_id, row),
       account_id: account.internal_id,
       account_name: account.name,
@@ -1167,7 +1196,24 @@ export async function emitCurrentActivityForAccount(
       ui_transaction_id: row.ui_transaction_id,
       source: "chase_activity_ui",
       fetched_at: deps.emittedAt,
-    });
+    };
+    // Gate on a per-row fingerprint that excludes the run-clock
+    // `fetched_at`. The dashboard overview re-renders the same recent
+    // rows every run, so without this gate each still-listed activity row
+    // appended a fresh version differing only in `fetched_at`. A row keyed
+    // by a stable `ui_transaction_id` that transitions pending → posted
+    // (status / posted_date / amount move) IS a fingerprint boundary and
+    // re-emits; a fallback-keyed row whose fields change gets a new id and
+    // appends as a distinct row. Only a byte-identical re-render modulo
+    // `fetched_at` is suppressed.
+    //
+    // NOTE: current_activity is a PARTIAL scan (only the dashboard's
+    // recent rows), so this cursor is never `pruneStale()`d — pruning ids
+    // the overview stopped showing would drop their fingerprints and
+    // re-churn a row that scrolls back into the recent window.
+    if (!fingerprintCursor || fingerprintCursor.shouldEmit(record)) {
+      await deps.emitRecord("current_activity", record);
+    }
   }
   return rows.length;
 }
@@ -1433,6 +1479,20 @@ export async function runCurrentActivity(
   dashboardHtml: string,
   filteredAccounts: readonly ChaseAccount[]
 ): Promise<void> {
+  const fingerprintCursor = deps.currentActivityFingerprintCursor;
+  // Build the STATE cursor carrying the per-row fingerprints forward.
+  // NOT pruned (partial scan — see emitCurrentActivityForAccount), so a
+  // run that emits zero rows (no accounts in scope, ambiguous multi-account
+  // overview, or a parse miss) still surfaces every prior fingerprint and
+  // never re-churns a row the next run re-lists.
+  const buildCursor = (): Record<string, unknown> => {
+    const cursor: Record<string, unknown> = { fetched_at: deps.emittedAt };
+    if (fingerprintCursor && fingerprintCursor.size() > 0) {
+      cursor.fingerprints = fingerprintCursor.toState();
+    }
+    return cursor;
+  };
+
   if (filteredAccounts.length === 0) {
     return;
   }
@@ -1454,7 +1514,7 @@ export async function runCurrentActivity(
     await deps.emit({
       type: "STATE",
       stream: "current_activity",
-      cursor: { fetched_at: deps.emittedAt },
+      cursor: buildCursor(),
     });
     return;
   }
@@ -1473,7 +1533,7 @@ export async function runCurrentActivity(
   } as const;
   await deps.emit(progressMsg);
 
-  const emitted = await emitCurrentActivityForAccount(deps, account, dashboardHtml);
+  const emitted = await emitCurrentActivityForAccount(deps, account, dashboardHtml, fingerprintCursor);
   if (emitted === 0) {
     await deps.emit({
       type: "SKIP_RESULT",
@@ -1494,7 +1554,7 @@ export async function runCurrentActivity(
   await deps.emit({
     type: "STATE",
     stream: "current_activity",
-    cursor: { fetched_at: deps.emittedAt },
+    cursor: buildCursor(),
   });
 }
 
@@ -1705,8 +1765,22 @@ if (isMainModule(import.meta.url)) {
           })
         : undefined;
 
+      // Per-row fingerprint cursor for `current_activity` (excludes the
+      // run-clock `fetched_at`). One cursor for the whole stream — row ids
+      // (`account_id|ui_transaction_id` or an account-scoped fallback hash)
+      // are globally unique. Only opened when current_activity is
+      // requested. NOT pruned: the dashboard overview is a partial
+      // (recent-rows) scan (see emitCurrentActivityForAccount).
+      const currentActivityFingerprintCursor = requested.has("current_activity")
+        ? openFingerprintCursor(startState.current_activity, {
+            excludeFromFingerprint: ["fetched_at"],
+            priorFingerprints: readPriorCurrentActivityFingerprints(startState),
+          })
+        : undefined;
+
       const deps: EmitDeps = {
         capture,
+        currentActivityFingerprintCursor,
         emit,
         emitRecord,
         emittedAt,

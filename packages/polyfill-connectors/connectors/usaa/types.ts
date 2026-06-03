@@ -188,12 +188,24 @@ export interface BillingKv {
 
 // ─── State / cursor ──────────────────────────────────────────────────────
 
+/** Per-account incremental watermark entry in the transactions cursor. */
+export interface TransactionsAccountCursor {
+  last_date: string | null;
+}
+
+/** The transactions STATE cursor is a flat map of `accountKey ->
+ *  { last_date }`, plus a reserved `fingerprints` key carrying the
+ *  per-transaction fingerprint map (keyed by the record `id`
+ *  `hashId(accountId|date|amount|original|#ord)`). `fingerprints` is read
+ *  and written through casts at the boundary so the per-account index
+ *  signature stays a clean `{ last_date }` for the incremental loop —
+ *  mirroring how chase keeps `per_account` separate from `fingerprints`. */
 export interface TransactionsStreamCursor {
-  [accountKey: string]: { last_date: string | null } | undefined;
+  [accountKey: string]: TransactionsAccountCursor | undefined;
 }
 
 export interface TransactionsPriorState {
-  [accountKey: string]: { last_date: string | null } | undefined;
+  [accountKey: string]: TransactionsAccountCursor | undefined;
 }
 
 // ─── Export driver ───────────────────────────────────────────────────────

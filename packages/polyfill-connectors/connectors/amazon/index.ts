@@ -20,6 +20,7 @@ import pRetry, { AbortError } from "p-retry";
 import type { Page } from "playwright";
 import { ensureAmazonSession } from "../../src/auto-login/amazon.ts";
 import { type BrowserCollectContext, nowIso, politeDelay, runConnector } from "../../src/connector-runtime.ts";
+import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import {
   buildOrderItemRecord,
@@ -43,7 +44,34 @@ interface YearsCursor {
 }
 
 interface OrdersStateShape {
+  /** Per-order fingerprint map (keyed by order id), excluding the
+   *  run-clock `fetched_at`. Sibling to `years` in the orders STATE
+   *  cursor. */
+  fingerprints?: Record<string, string>;
   years?: YearsCursor;
+}
+
+/**
+ * Parse the prior `orders` STATE cursor's `fingerprints` map. Keyed by the
+ * order record `id` (the Amazon order id). The cursor is `{ years,
+ * fingerprints }`; `collect()` reads `state.orders.fingerprints`. Legacy
+ * cursors (only `{ years }`) decode to an empty map, so the first
+ * post-deploy run rebuilds the map and re-emits every re-scraped order
+ * exactly once.
+ */
+function readPriorOrderFingerprints(state: Record<string, unknown>): Map<string, string> {
+  const streamState = (state.orders ?? {}) as Record<string, unknown>;
+  const raw = streamState.fingerprints;
+  const out = new Map<string, string>();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return out;
+  }
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > 0) {
+      out.set(id, value);
+    }
+  }
+  return out;
 }
 
 type EmptyListPageAction = "abort" | "terminal";
@@ -228,6 +256,11 @@ export interface EmitDeps {
   emit: EmitFn;
   emitRecord: EmitRecordFn;
   emittedAt: string;
+  /** Per-order fingerprint cursor (excludes the run-clock `fetched_at`).
+   *  Shared across all years for the whole orders stream because order ids
+   *  are globally unique. Optional so legacy callers/tests emit
+   *  unconditionally. */
+  ordersFingerprintCursor?: FingerprintCursor | undefined;
   progress: BrowserCollectContext["progress"];
   skipDetail: boolean;
   wantsItems: boolean;
@@ -253,7 +286,24 @@ export async function emitOrderAndItems(
   orderDate: string
 ): Promise<void> {
   if (deps.wantsOrders) {
-    await deps.emitRecord("orders", buildOrderRecord(listOrder, detail, orderDate, deps.emittedAt));
+    // Gate on a per-order fingerprint that excludes the run-clock
+    // `fetched_at`. An order's identity (id = order id) is immutable and its
+    // total is fixed once placed, but the current (unfrozen) year is
+    // re-scraped every run and re-emitted with a fresh `fetched_at`. With
+    // this gate an already-seen order whose body is byte-identical modulo
+    // `fetched_at` is suppressed; a real field move (delivery_status /
+    // status_detail transitioning while the order ships) is a fingerprint
+    // boundary and still emits. `order_items` carries no `fetched_at`, so it
+    // does not churn on a no-op re-scrape and is left ungated.
+    //
+    // NOTE: orders is a PARTIAL scan (year-freezing skips historical years),
+    // so this cursor is never `pruneStale()`d — pruning ids in years the run
+    // did not scrape would drop their fingerprints and re-churn them when the
+    // year is next (re)visited.
+    const orderRecord = buildOrderRecord(listOrder, detail, orderDate, deps.emittedAt);
+    if (!deps.ordersFingerprintCursor || deps.ordersFingerprintCursor.shouldEmit(orderRecord)) {
+      await deps.emitRecord("orders", orderRecord);
+    }
   }
   if (deps.wantsItems) {
     for (const merged of mergeOrderItems(listOrder, detail)) {
@@ -550,6 +600,18 @@ if (isMainModule(import.meta.url)) {
       const legacyYears = (state as { years?: YearsCursor }).years;
       const yearsState: YearsCursor = ordersState.years ?? legacyYears ?? {};
 
+      // Per-order fingerprint cursor (excludes the run-clock `fetched_at`).
+      // One cursor for the whole orders stream — order ids are globally
+      // unique across years. Only opened when orders are requested. NOT
+      // pruned: orders is a partial scan (year-freezing skips historical
+      // years — see emitOrderAndItems).
+      const ordersFingerprintCursor = requested.has("orders")
+        ? openFingerprintCursor(state.orders, {
+            excludeFromFingerprint: ["fetched_at"],
+            priorFingerprints: readPriorOrderFingerprints(state),
+          })
+        : undefined;
+
       await progress("Amazon session verified; discovering years");
       const discoveredYears = await discoverYears(page);
       let years: number[];
@@ -579,6 +641,7 @@ if (isMainModule(import.meta.url)) {
         emit,
         emitRecord,
         emittedAt,
+        ordersFingerprintCursor,
         progress,
         skipDetail: process.env.PDPP_AMAZON_SKIP_DETAIL === "1",
         wantsItems: requested.has("order_items"),
@@ -604,10 +667,18 @@ if (isMainModule(import.meta.url)) {
           frozen: year < new Date().getFullYear() && stableCount,
           last_scraped: nowIso(),
         };
+        // Carry the per-order fingerprint map forward alongside the year
+        // cursors so the next run can suppress re-scraped orders whose body
+        // is unchanged modulo the run clock. NOT pruned: orders is a partial
+        // scan (frozen years are skipped, so their ids are never re-seen).
+        const cursor: OrdersStateShape = { years: newYearsState };
+        if (ordersFingerprintCursor && ordersFingerprintCursor.size() > 0) {
+          cursor.fingerprints = ordersFingerprintCursor.toState();
+        }
         await emit({
           type: "STATE",
           stream: "orders",
-          cursor: { years: newYearsState },
+          cursor,
         });
       }
     },

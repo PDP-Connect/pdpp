@@ -84,6 +84,19 @@ test('COMPACTION_POLICIES exposes the registered policies (short-name canonical 
     ['usaa', 'accounts'],
     ['usaa', 'credit_card_billing'],
     ['ynab', 'budgets'],
+    // usaa/transactions (CSV + PDF paths) + usaa/inbox_messages +
+    // chase/current_activity carry only the run-clock `fetched_at` over
+    // immutable bodies; only `fetched_at` is excluded (forward gate added
+    // 2026-06-03). transactions/current_activity are partial scans (never
+    // pruned); inbox_messages is a full-page scan (pruned).
+    ['usaa', 'transactions'],
+    ['usaa', 'inbox_messages'],
+    ['chase', 'current_activity'],
+    // amazon/orders carries only the run-clock `fetched_at` over an
+    // immutable id/total; only `fetched_at` is excluded. Year-freezing
+    // already bounds the churn window; this is a partial scan (never
+    // pruned). order_items has no fetched_at and no policy. (2026-06-03)
+    ['amazon', 'orders'],
     // exact stable-JSON identity family (codex)
     ['codex', 'messages'],
     ['codex', 'function_calls'],

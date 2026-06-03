@@ -405,6 +405,110 @@ if (canonicalRecordFingerprint) {
     assert.notEqual(noop1, aprMoved, 'an APR move MUST change the fingerprint');
   });
 
+  test('parity: usaa transactions excludes fetched_at but a REAL field move is a boundary', () => {
+    const policy = findPolicy('usaa', 'transactions');
+    // A posted transaction's identity (id = hashId(accountId|date|amount|
+    // original|#ord)) and fields are immutable; only `fetched_at` moves when
+    // the incremental window re-downloads it or the PDF is re-parsed.
+    // Excluding ONLY fetched_at is lossless: a no-op re-surface collapses, a
+    // real field move (e.g. balance_after_cents) does not.
+    const base = {
+      id: '6a249d555d12b055946a3c84248113df',
+      account_id: 'ACCT-CHK-0001',
+      account_name: 'USAA CLASSIC CHECKING',
+      date: '2026-04-10',
+      description: 'COFFEE SHOP',
+      original_description: 'COFFEE SHOP',
+      category: null,
+      amount: -4599,
+      currency: 'USD',
+      balance_after_cents: null,
+      check_number: null,
+      source: 'csv_export',
+    };
+    expectParity({ ...base, fetched_at: '2026-06-01T10:00:00.000Z' }, policy.excludeKeys, 'usaa/transactions t1');
+    expectParity({ ...base, fetched_at: '2026-06-02T10:00:00.000Z' }, policy.excludeKeys, 'usaa/transactions t2');
+    const noop1 = scriptRecordFingerprint({ ...base, fetched_at: '2026-06-01T10:00:00.000Z' }, policy.excludeKeys);
+    const noop2 = scriptRecordFingerprint({ ...base, fetched_at: '2026-06-02T10:00:00.000Z' }, policy.excludeKeys);
+    assert.equal(noop1, noop2, 'fetched_at delta must not change the transactions fingerprint (re-surface collapses)');
+    const balMoved = scriptRecordFingerprint(
+      { ...base, balance_after_cents: 105000, fetched_at: '2026-06-02T10:00:00.000Z' },
+      policy.excludeKeys,
+    );
+    assert.notEqual(noop1, balMoved, 'a balance_after_cents move MUST change the fingerprint — real data is never hidden');
+  });
+
+  test('parity: usaa inbox_messages excludes fetched_at but a read/unread flip is a boundary', () => {
+    const policy = findPolicy('usaa', 'inbox_messages');
+    const base = {
+      id: 'inbox-hash-1',
+      date_received: '2026-05-14',
+      status: 'unread',
+      subject: 'Your statement is ready to view',
+      preview: 'Your statement is ready to view',
+    };
+    expectParity({ ...base, fetched_at: '2026-06-01T10:00:00.000Z' }, policy.excludeKeys, 'usaa/inbox_messages t1');
+    expectParity({ ...base, fetched_at: '2026-06-02T10:00:00.000Z' }, policy.excludeKeys, 'usaa/inbox_messages t2');
+    const noop1 = scriptRecordFingerprint({ ...base, fetched_at: '2026-06-01T10:00:00.000Z' }, policy.excludeKeys);
+    const noop2 = scriptRecordFingerprint({ ...base, fetched_at: '2026-06-02T10:00:00.000Z' }, policy.excludeKeys);
+    assert.equal(noop1, noop2, 'fetched_at delta must not change the inbox fingerprint (no-op re-scrape collapses)');
+    const flipped = scriptRecordFingerprint({ ...base, status: 'read' }, policy.excludeKeys);
+    assert.notEqual(noop1, flipped, 'a read/unread status flip MUST change the fingerprint — a real transition is never hidden');
+  });
+
+  test('parity: chase current_activity excludes fetched_at but a pending→posted transition is a boundary', () => {
+    const policy = findPolicy('chase', 'current_activity');
+    const base = {
+      id: 'INTACC123|txn_20260514_A1',
+      account_id: 'INTACC123',
+      account_name: 'Sapphire Preferred',
+      status: 'pending',
+      activity_date: '2026-05-14',
+      posted_date: null,
+      amount: -4217,
+      currency: 'USD',
+      description: 'Whole Foods Market',
+      memo: null,
+      ui_transaction_id: 'txn_20260514_A1',
+      source: 'chase_activity_ui',
+    };
+    expectParity({ ...base, fetched_at: '2026-06-01T10:00:00.000Z' }, policy.excludeKeys, 'chase/current_activity t1');
+    expectParity({ ...base, fetched_at: '2026-06-02T10:00:00.000Z' }, policy.excludeKeys, 'chase/current_activity t2');
+    const noop1 = scriptRecordFingerprint({ ...base, fetched_at: '2026-06-01T10:00:00.000Z' }, policy.excludeKeys);
+    const noop2 = scriptRecordFingerprint({ ...base, fetched_at: '2026-06-02T10:00:00.000Z' }, policy.excludeKeys);
+    assert.equal(noop1, noop2, 'fetched_at delta must not change the current_activity fingerprint (re-render collapses)');
+    const posted = scriptRecordFingerprint(
+      { ...base, status: 'posted', posted_date: '2026-05-14', fetched_at: '2026-06-02T10:00:00.000Z' },
+      policy.excludeKeys,
+    );
+    assert.notEqual(noop1, posted, 'a pending→posted transition MUST change the fingerprint — a real transition is never hidden');
+  });
+
+  test('parity: amazon orders excludes fetched_at but a delivery_status move is a boundary', () => {
+    const policy = findPolicy('amazon', 'orders');
+    const base = {
+      id: '111-1234567-8901234',
+      order_date: '2026-01-05',
+      order_total: '$42.99',
+      order_total_cents: 4299,
+      delivery_status: 'Shipping',
+      status_detail: null,
+      recipient_name: 'Fake Name',
+      shipping_address_summary: '123 Fake St',
+      payment_method_summary: 'Visa ending in 0000',
+      gift_order: false,
+      digital_order: false,
+      item_count: 1,
+    };
+    expectParity({ ...base, fetched_at: '2026-06-01T10:00:00.000Z' }, policy.excludeKeys, 'amazon/orders t1');
+    expectParity({ ...base, fetched_at: '2026-06-02T10:00:00.000Z' }, policy.excludeKeys, 'amazon/orders t2');
+    const noop1 = scriptRecordFingerprint({ ...base, fetched_at: '2026-06-01T10:00:00.000Z' }, policy.excludeKeys);
+    const noop2 = scriptRecordFingerprint({ ...base, fetched_at: '2026-06-02T10:00:00.000Z' }, policy.excludeKeys);
+    assert.equal(noop1, noop2, 'fetched_at delta must not change the orders fingerprint (re-scrape collapses)');
+    const shipped = scriptRecordFingerprint({ ...base, delivery_status: 'Delivered' }, policy.excludeKeys);
+    assert.notEqual(noop1, shipped, 'a delivery_status move MUST change the fingerprint — real order state is never hidden');
+  });
+
   test('parity: nested objects with mixed key order', () => {
     const a = {
       id: 'x',
@@ -673,8 +777,12 @@ if (canonicalRecordFingerprint) {
       'chase/accounts',
       'chase/statements',
       'chase/transactions',
+      'chase/current_activity',
       'usaa/accounts',
       'usaa/credit_card_billing',
+      'usaa/transactions',
+      'usaa/inbox_messages',
+      'amazon/orders',
       // exact stable-JSON identity family (codex)
       'codex/messages',
       'codex/function_calls',
