@@ -3,7 +3,7 @@
 Status: decided-promote
 Owner: RI owner
 Created: 2026-05-21
-Updated: 2026-05-21
+Updated: 2026-06-02
 Related: design-notes/full-context-refresh.md, openspec/changes/define-schedule-manual-attention-policy, openspec/changes/publish-pdpp-local-collector, openspec/changes/introduce-local-collector-runner
 
 ## Question
@@ -40,6 +40,7 @@ If schedules blindly launch runs, the system wastes compute, annoys the user, ri
 - Account repair is its own lifecycle. A connection can have usable stale data while still being unhealthy for fresh sync. The dashboard must not show green only because old data exists or a notification was delivered.
 - Attention should be a durable task with lifecycle and ownership, not a log line or notification read state. Useful lifecycle states include open, acknowledged, snoozed, resolved, superseded, and expired.
 - Notification is delivery evidence attached to the task. The system should distinguish push not enabled, permission denied, stale subscription, test sent, test confirmed, delivery unknown, and delivery failed.
+- Notification delivery should be channel-agnostic. Email, web push, mobile push, ntfy, Slack, or another operator-approved channel can all carry the same attention request, but none of them should become the authoritative state of the request.
 - Repeated schedule ticks should dedupe by connection, schedule, attention kind, and affected account or resource. Repeated observations should update `last_seen_at` and occurrence count rather than creating new prompts.
 - Catch-up and backfill must be explicit. After attention clears, PDPP should not replay one run for every missed schedule tick. The default should be latest-only catch-up, with bounded or operator-triggered backfill only when a connector has true interval semantics and a safe recovery path.
 - Concurrency and overlap policy are essential complexity. A schedule should have a per-connection concurrency key and an explicit overlap policy rather than letting overlapping runs race.
@@ -52,6 +53,7 @@ The reference implementation should promote an operator-attention policy, not a 
 - `schedule` expresses desired freshness and launch eligibility, not a guarantee that every tick starts a run.
 - `run` remains a bounded execution attempt and can finish as `waiting_for_operator`, `failed_retryable`, `failed_not_retryable`, `succeeded`, or `succeeded_with_gaps`.
 - `attention_request` is a durable, typed object keyed to connection/run/source, with reason, expiry, safe instructions, resume action, notification status, and quiet-hour/suppression metadata.
+- Notification channels should be configured and tested independently from the attention request lifecycle. Adding email should mean adding another delivery adapter and per-channel delivery evidence, not inventing a separate email-only alert model.
 - Repeated failures or unresolved attention should pause or suppress the schedule for that connection after a threshold, while preserving a clear "run now / resume / re-enable" path.
 - Clearing an attention request should enable at most one latest-state catch-up run by default. Any broader backfill should be explicit, bounded, and connector-declared.
 - Local collectors should keep using host supervisors for timing; the server may surface “please run soon” intent and diagnostics, but should not pretend it controls a sleeping laptop or missing filesystem.
@@ -67,3 +69,4 @@ Promote this to OpenSpec before implementing any durable schedule/manual-attenti
 - 2026-05-21: Local repo inventory found no existing schedule/manual-attention prior-art research artifact. Adjacent notes mention source-needs-attention and local collector state, but not a complete schedule policy.
 - 2026-05-21: Captured initial prior-art findings. Current conclusion: scheduling, retries, and human attention should share a small policy model instead of being handled as separate one-off fixes.
 - 2026-05-21: Second-pass SLVP research confirmed the existing OpenSpec direction and added one normative gap: no unbounded replay of missed schedule ticks after attention clears. Promote this note into `openspec/changes/define-schedule-manual-attention-policy`.
+- 2026-06-02: Captured future multi-channel notification requirement from owner feedback. Email is a likely channel, but the important design point is channel fanout over a single durable `attention_request` object.
