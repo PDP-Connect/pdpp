@@ -1067,14 +1067,14 @@ test("backfill mode: a failed historical attachment fetch is counted as a remain
 // while never echoing the full local-part.
 
 test("redactEmailForProgress: masks the local-part but keeps the domain", () => {
-  assert.equal(redactEmailForProgress("the owner.nunamaker@gmail.com"), "t•••@gmail.com");
-  assert.equal(redactEmailForProgress("alice@example.org"), "a•••@example.org");
+  assert.equal(redactEmailForProgress("the owner.nunamaker@gmail.com"), "t***@gmail.com");
+  assert.equal(redactEmailForProgress("alice@example.org"), "a***@example.org");
 });
 
 test("redactEmailForProgress: single-character local-part is fully masked", () => {
   // A 1-char local-part would otherwise be wholly revealed by a "keep first
   // char" rule, so it is masked entirely.
-  assert.equal(redactEmailForProgress("x@example.com"), "•••@example.com");
+  assert.equal(redactEmailForProgress("x@example.com"), "***@example.com");
 });
 
 test("redactEmailForProgress: output never contains the full address or local-part", () => {
@@ -1097,8 +1097,8 @@ test("redactEmailForProgress: output never contains the full address or local-pa
 test("redactEmailForProgress: non-address input falls back to a constant placeholder", () => {
   // Defensive: if an unexpected non-email value reaches the progress line we
   // emit a constant rather than risk echoing a raw value.
-  assert.equal(redactEmailForProgress("not-an-email"), "«redacted-account»");
-  assert.equal(redactEmailForProgress("@no-local.example"), "«redacted-account»");
-  assert.equal(redactEmailForProgress("no-domain@"), "«redacted-account»");
-  assert.equal(redactEmailForProgress(""), "«redacted-account»");
+  assert.equal(redactEmailForProgress("not-an-email"), "[redacted-account]");
+  assert.equal(redactEmailForProgress("@no-local.example"), "[redacted-account]");
+  assert.equal(redactEmailForProgress("no-domain@"), "[redacted-account]");
+  assert.equal(redactEmailForProgress(""), "[redacted-account]");
 });

@@ -528,8 +528,8 @@ export function resolveGmailAddressFromEnv(env: NodeJS.ProcessEnv = process.env)
  * account/domain* connected, so we keep the domain and the first character of
  * the local-part and mask the rest:
  *
- *   "the owner.nunamaker@gmail.com"  ->  "t•••@gmail.com"
- *   "x@example.com"            ->  "•••@example.com"
+ *   "the owner.nunamaker@gmail.com"  ->  "t***@gmail.com"
+ *   "x@example.com"            ->  "***@example.com"
  *
  * If the value does not look like an `local@domain` address (no `@`, or an
  * empty domain), we return a constant placeholder rather than risk echoing an
@@ -540,10 +540,10 @@ export function redactEmailForProgress(address: string): string {
   const local = match?.[1];
   const domain = match?.[2];
   if (!(local && domain)) {
-    return "«redacted-account»";
+    return "[redacted-account]";
   }
   const head = local.length > 1 ? local[0] : "";
-  return `${head}•••@${domain}`;
+  return `${head}***@${domain}`;
 }
 
 async function resolveAddress(): Promise<string | null> {
