@@ -1520,6 +1520,10 @@ test('prune-sent CLI --keep-count limits retained sent rows', async () => {
   const result = pruneSentOutboxRows(opts);
   assert.equal(result.pruned, 2);
   assert.equal(result.status_after.sent, 2);
+  assert.equal(result.filter.keep_count, 2);
+  assert.equal(result.filter.older_than_days, null);
+  assert.equal(result.filter.older_than_iso, null);
+  assert.doesNotMatch(result.note, /older than 30 days/);
 });
 
 test('prune-sent CLI reports no-op when nothing matches the policy', async () => {
@@ -1539,6 +1543,29 @@ test('prune-sent CLI reports no-op when nothing matches the policy', async () =>
   assert.equal(result.matched, 0);
   assert.equal(result.pruned, 0);
   assert.match(result.note, /Nothing to prune/);
+});
+
+test('prune-sent CLI keep-count-only no-op reports the actual policy', async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    for (const id of ['s1', 's2']) {
+      enqueueRecordBatch(outbox, { id, streams: ['messages'] });
+      drainRow(outbox, id);
+    }
+  } finally {
+    outbox.close();
+  }
+
+  const opts = parseArgs(['prune-sent', '--queue', path, '--connection-id', 'src-1', '--keep-count', '2']);
+  const result = pruneSentOutboxRows(opts);
+  assert.equal(result.matched, 0);
+  assert.equal(result.pruned, 0);
+  assert.equal(result.filter.keep_count, 2);
+  assert.equal(result.filter.older_than_days, null);
+  assert.equal(result.filter.older_than_iso, null);
+  assert.match(result.note, /keep-count 2/);
+  assert.doesNotMatch(result.note, /older than 30 days/);
 });
 
 test('active draining without retry/dead-letter shows draining lifecycle_state, not stalled', async () => {

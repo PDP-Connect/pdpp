@@ -977,8 +977,8 @@ export interface PruneSentOutput {
   dry_run: boolean;
   filter: {
     keep_count: number | null;
-    older_than_days: number;
-    older_than_iso: string;
+    older_than_days: number | null;
+    older_than_iso: string | null;
     source_instance_id: string | null;
   };
   matched: number;
@@ -1003,8 +1003,8 @@ export function pruneSentOutboxRows(options: CliOptions): PruneSentOutput {
   const olderThanIso = olderThanDays !== undefined ? daysAgoIso(olderThanDays) : undefined;
   const dbPath = resolveOutboxPath(options);
   const exists = existsSync(dbPath);
-  const reportedOlderThanDays = olderThanDays ?? DEFAULT_PRUNE_SENT_OLDER_THAN_DAYS;
-  const reportedOlderThanIso = olderThanIso ?? daysAgoIso(DEFAULT_PRUNE_SENT_OLDER_THAN_DAYS);
+  const reportedOlderThanDays = olderThanDays ?? null;
+  const reportedOlderThanIso = olderThanIso ?? null;
 
   if (!exists) {
     return {
@@ -1068,11 +1068,11 @@ export function pruneSentOutboxRows(options: CliOptions): PruneSentOutput {
 function pruneSentNote(
   result: LocalDeviceOutboxPruneSentResult,
   dryRun: boolean,
-  olderThanDays: number,
+  olderThanDays: number | null,
   keepCount: number | undefined
 ): string {
   if (result.matched === 0) {
-    return `No sent rows matched the retention policy (older than ${olderThanDays} days${keepCount !== undefined ? `, keep-count ${keepCount}` : ""}). Nothing to prune.`;
+    return `No sent rows matched the retention policy (${pruneSentPolicyDescription(olderThanDays, keepCount)}). Nothing to prune.`;
   }
   if (dryRun) {
     return (
@@ -1086,6 +1086,17 @@ function pruneSentNote(
     `Pending, leased, retrying, and dead-letter rows were not touched. ` +
     `Run \`pdpp-local-collector status\` to confirm the new outbox size.`
   );
+}
+
+function pruneSentPolicyDescription(olderThanDays: number | null, keepCount: number | undefined): string {
+  const parts: string[] = [];
+  if (olderThanDays !== null) {
+    parts.push(`older than ${olderThanDays} days`);
+  }
+  if (keepCount !== undefined) {
+    parts.push(`keep-count ${keepCount}`);
+  }
+  return parts.length > 0 ? parts.join(", ") : "default sent-row retention";
 }
 
 /** ISO timestamp for N days ago (used as the default sent-row retention boundary). */
