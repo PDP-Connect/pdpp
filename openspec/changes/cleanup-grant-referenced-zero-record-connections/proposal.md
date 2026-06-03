@@ -14,7 +14,7 @@ The original P5 hard-block over-refused: it treated a stale display pointer as i
 - A `grant_package_members.source_json` reference to a zero-record phantom default-account row SHALL NOT, by itself, block revoking that connection. The grant package, its members, child grants, and tokens SHALL remain untouched by the connection revoke.
 - A grant-scope pin (`grant.streams[].connection_id`) or a grant `storage_binding_json.connector_instance_id` naming the row SHALL remain a hard fail-closed block (`P5:grant-stream-pin=…` / `P5:grant-storage-binding=…`), because revoking would change what that grant can read.
 - All existing P1–P7 evidence checks (records, blobs, schedules, runs, credentials, device sources, deterministic-id provenance, active-only status) remain unchanged and continue to fail closed, including the apply-time re-evaluation under a row lock / single-writer transaction.
-- The tool stays operator/owner-only (direct database access, dry-run default, no HTTP route, no scheduler), with per-row dry-run reasons for every candidate and every refusal, transactional apply, and a `--backup-to` rollback handle.
+- The tool stays operator/owner-only (direct database access, dry-run default, no HTTP route, no scheduler), with per-row dry-run reasons for every candidate and every refusal. Apply is transactional, and because the revoke is a non-destructive soft-flip, the JSON `revoked[]` output is itself the rollback handle (re-activate by flipping `status` back to `active`).
 
 ## Capabilities
 

@@ -57,9 +57,21 @@
  *       records, record_changes, blobs, connector_state, version_counter,
  *       grant_connector_state, connector_attention_records,
  *       connector_detail_gaps.
- *   P5. No grant references the row: no `grants` row whose
- *       storage_binding_json mentions this connector_instance_id, and no
- *       grant_package_member references it.
+ *   P5. No LOAD-BEARING grant scope references the row. P5 is split (see
+ *       `cleanup-grant-referenced-zero-record-connections`):
+ *         P5a (BLOCKS) — a `grants` row whose storage_binding_json names this
+ *           connector_instance_id, OR an ACTIVE grant whose grant_json pins a
+ *           stream to it via grant.streams[].connection_id. Both genuinely
+ *           scope a read to this connection, so revoking would change what the
+ *           grant can read.
+ *         P5b (does NOT block) — a `grant_package_members.source_json`
+ *           reference is a DISPLAY/audit pointer recorded at package-approval
+ *           time. Read fan-in resolves over the connector's active connections
+ *           plus the P5a grant-body pins; it never scopes a read from
+ *           source_json. So this reference alone is surfaced as an
+ *           informational note on the candidate, not a refusal. The revoke
+ *           touches ONLY the connector_instances row; the grant package, its
+ *           members, child grants, and tokens are left untouched.
  *   P6. No active run (controller_active_runs), no schedule
  *       (connector_schedules), no device source instance
  *       (device_source_instances).
@@ -98,6 +110,21 @@
  * branch is a PREDICATE-LEVEL guarantee proven by `reasonsFromEvidence` tests,
  * but is not reachable via the SQLite CLI path (initDb always bootstraps). The
  * realistic divergent-deployment case is Postgres, where it IS reachable.
+ *
+ * Rollback / audit handle
+ * ------------------------
+ * The revoke is a non-destructive SOFT-FLIP: it changes only
+ * status='revoked' + updated_at/revoked_at on the connector_instances row, with
+ * NO cascade. It is reversible. The `--apply` output IS the rollback manifest:
+ * the JSON `revoked[]` array lists every connector_instance_id revoked and its
+ * revoked_at, so re-activating is:
+ *   UPDATE connector_instances
+ *      SET status = 'active', revoked_at = NULL
+ *    WHERE connector_instance_id IN (<the revoked ids>);
+ * (A default-account row re-activated this way will again project on the
+ * dashboard and participate in grant fan-in, exactly as before the revoke.)
+ * No separate backup file is written — a reversible soft-flip does not need one,
+ * and the revoked-set output already provides the audit trail.
  *
  * Output discipline
  * -----------------
@@ -230,27 +257,56 @@ const PREDICATE_TEXT = `Phantom default-account cleanup safety predicate (ALL mu
   P2 connector_instance_id == deterministic makeDefaultAccountConnectorInstanceId(owner, connector_id)
   P3 status='active'
   P4 zero rows in: ${EVIDENCE_TABLES.join(', ')}
-  P5 no grant references the connector_instance_id (grants.storage_binding_json, grant_package_members.source_json)
+  P5a no LOAD-BEARING grant scope names the connector_instance_id:
+      - grants.storage_binding_json names it (P5:grant-storage-binding), OR
+      - an ACTIVE grant's grant_json pins a stream to it via grant.streams[].connection_id (P5:grant-stream-pin)
+  P5b a grant_package_members.source_json reference is a DISPLAY pointer only and does NOT block;
+      it is surfaced as an informational note (P5b:grant-package-member-display-ref). Read fan-in
+      resolves over active connector_instances + the P5a grant-body pins, never over source_json.
   P6 no controller_active_runs, no connector_schedules, no device_source_instances row
   P7 no connector_instance_credentials row
 Missing evidence table => fail closed (Px:<table>-table-missing), never a silent pass.
-Action on a passing row: updateStatus(id, { status: 'revoked' }). Never delete (deterministic id re-materializes).`;
+Action on a passing row: updateStatus(id, { status: 'revoked' }). Never delete (deterministic id re-materializes).
+The revoke touches ONLY the connector_instances row; no grant, grant_package_member, child grant, or token is modified.`;
 
 // ─── Predicate (backend-agnostic) ─────────────────────────────────────────
 
 /**
  * Shape of the per-instance evidence an arm gathers for the predicate:
  *   evidence (zero-data counts):     { [table]: number | 'missing' }
- *   grantStorageBindingRefs:         number
- *   grantPackageMemberRefs:          number | null   (null = table absent)
+ *   grantStorageBindingRefs:         number | 'missing'   (P5a — load-bearing)
+ *   grantStreamPinRefs:              number | 'missing'   (P5a — load-bearing)
+ *   grantPackageMemberRefs:          number | null        (P5b — display only;
+ *                                                          null = table absent)
  *   activity:                        { [table]: number | 'missing' }
  * A 'missing' value (a required table that does not exist) fails closed.
+ *
+ * P5 is split into two distinct sub-checks (see
+ * `separate-connector-catalog-from-connections` and
+ * `cleanup-grant-referenced-zero-record-connections`):
+ *
+ *   P5a — LOAD-BEARING grant scope (BLOCKS). An active grant that pins this
+ *         connector_instance_id through `grant.streams[].connection_id` in its
+ *         grant body (`grantStreamPinRefs`), or that names it in its
+ *         `storage_binding_json` (`grantStorageBindingRefs`), genuinely scopes
+ *         a read to this connection. Revoking it would change what that grant
+ *         can read, so it is a hard, non-relaxable refusal. A missing `grants`
+ *         table fails closed.
+ *   P5b — NON-load-bearing display reference (does NOT block; informational
+ *         note only). A `grant_package_members.source_json` reference
+ *         (`grantPackageMemberRefs`) is a display/audit pointer recorded at
+ *         package-approval time. Read fan-in resolves over the connector's
+ *         currently-active connections plus the grant-body pins above; it never
+ *         scopes a read from `grant_package_members.source_json`. So this
+ *         reference alone must NOT block cleanup — it is surfaced as a `note`
+ *         so the dry-run still discloses it, then ignored as a refusal reason.
  */
 
 /**
  * Pure predicate: given an instance row and the gathered evidence, return the
  * BLOCKING reasons (empty array === candidate). Single source of truth for
- * P1–P7 across both backends. Performs NO IO.
+ * P1–P7 across both backends. Performs NO IO. The non-blocking P5b display
+ * reference is reported separately by `notesFromEvidence`, not here.
  */
 export function reasonsFromEvidence(instance, evidence) {
   const reasons = [];
@@ -292,16 +348,24 @@ export function reasonsFromEvidence(instance, evidence) {
     else if (Number(count) > 0) reasons.push(`P4:${table}=${Number(count)}`);
   }
 
-  // P5 — no grant references this connection.
+  // P5a — LOAD-BEARING grant scope blocks. A grant's storage_binding_json
+  // naming this connector_instance_id, OR an active grant body pinning a
+  // stream to it via grant.streams[].connection_id, genuinely scopes a read to
+  // this connection. Both come from the `grants` table; a missing grants table
+  // fails closed for both. (grant_package_members.source_json — the P5b display
+  // reference — is NOT consulted here; it is a non-blocking note.)
   if (evidence.grantStorageBindingRefs === 'missing') {
     reasons.push('P5:grants-table-missing');
   } else if (Number(evidence.grantStorageBindingRefs) > 0) {
     reasons.push(`P5:grant-storage-binding=${Number(evidence.grantStorageBindingRefs)}`);
   }
-  // grant_package_members is optional in some schemas; null === table absent
-  // (not a block — the table genuinely does not exist), a number is checked.
-  if (evidence.grantPackageMemberRefs !== null && Number(evidence.grantPackageMemberRefs) > 0) {
-    reasons.push(`P5:grant-package-member=${Number(evidence.grantPackageMemberRefs)}`);
+  if (evidence.grantStreamPinRefs === 'missing') {
+    // Same underlying `grants` table; emit the table-missing reason once.
+    if (evidence.grantStorageBindingRefs !== 'missing') {
+      reasons.push('P5:grants-table-missing');
+    }
+  } else if (Number(evidence.grantStreamPinRefs) > 0) {
+    reasons.push(`P5:grant-stream-pin=${Number(evidence.grantStreamPinRefs)}`);
   }
 
   // P6 / P7 — no active run, schedule, device source instance, or credential.
@@ -312,6 +376,26 @@ export function reasonsFromEvidence(instance, evidence) {
   }
 
   return reasons;
+}
+
+/**
+ * Pure: the NON-blocking informational notes for an instance+evidence. Today
+ * the only note is the P5b grant-package-member display reference — a count of
+ * `grant_package_members.source_json` rows that name this connection. Surfaced
+ * so the dry-run discloses the reference to the operator before they apply,
+ * even though it does not block the revoke. Performs NO IO. Returns [] when the
+ * member table is absent (`null`) or has no matching rows.
+ */
+export function notesFromEvidence(_instance, evidence) {
+  const notes = [];
+  if (
+    evidence.grantPackageMemberRefs !== null &&
+    evidence.grantPackageMemberRefs !== 'missing' &&
+    Number(evidence.grantPackageMemberRefs) > 0
+  ) {
+    notes.push(`P5b:grant-package-member-display-ref=${Number(evidence.grantPackageMemberRefs)}`);
+  }
+  return notes;
 }
 
 // ─── SQLite arm ────────────────────────────────────────────────────────────
@@ -337,10 +421,24 @@ function gatherSqliteEvidence(db, id) {
       ? sqliteCountRows(db, `SELECT COUNT(*) AS c FROM ${table} WHERE connector_instance_id = ?`, [id])
       : 'missing';
   }
-  const grantStorageBindingRefs = sqliteTableExists(db, 'grants')
+  const grantsTableExists = sqliteTableExists(db, 'grants');
+  const grantStorageBindingRefs = grantsTableExists
     ? sqliteCountRows(
         db,
         `SELECT COUNT(*) AS c FROM grants WHERE storage_binding_json IS NOT NULL AND instr(storage_binding_json, ?) > 0`,
+        [id],
+      )
+    : 'missing';
+  // P5a — load-bearing grant-body stream pin. An ACTIVE grant whose grant_json
+  // pins a stream to this connector_instance_id (grant.streams[].connection_id)
+  // genuinely scopes a read. The id is an opaque cin_<hex> token, so a
+  // substring match on the active grant's grant_json is conservative: it
+  // catches the pin and any over-match only adds a (fail-closed) refusal. Only
+  // status='active' grants scope reads, so a revoked grant does not block.
+  const grantStreamPinRefs = grantsTableExists
+    ? sqliteCountRows(
+        db,
+        `SELECT COUNT(*) AS c FROM grants WHERE status = 'active' AND grant_json IS NOT NULL AND instr(grant_json, ?) > 0`,
         [id],
       )
     : 'missing';
@@ -357,17 +455,19 @@ function gatherSqliteEvidence(db, id) {
       ? sqliteCountRows(db, `SELECT COUNT(*) AS c FROM ${table} WHERE connector_instance_id = ?`, [id])
       : 'missing';
   }
-  return { zeroData, grantStorageBindingRefs, grantPackageMemberRefs, activity };
+  return { zeroData, grantStorageBindingRefs, grantStreamPinRefs, grantPackageMemberRefs, activity };
 }
 
 /**
  * Evaluate the safety predicate for one instance row against an open SQLite db.
- * Returns { candidate: boolean, reasons: string[] }. Pure read-only.
- * Kept for in-process testing and backwards-compatible signature.
+ * Returns { candidate: boolean, reasons: string[], notes: string[] }. Pure
+ * read-only. Kept for in-process testing and backwards-compatible signature.
  */
 export function evaluateInstance(db, instance) {
-  const reasons = reasonsFromEvidence(instance, gatherSqliteEvidence(db, instance.connectorInstanceId));
-  return { candidate: reasons.length === 0, reasons };
+  const evidence = gatherSqliteEvidence(db, instance.connectorInstanceId);
+  const reasons = reasonsFromEvidence(instance, evidence);
+  const notes = notesFromEvidence(instance, evidence);
+  return { candidate: reasons.length === 0, reasons, notes };
 }
 
 /**
@@ -380,7 +480,14 @@ export function planCleanup({ ownerSubjectId = OWNER_AUTH_DEFAULT_SUBJECT_ID } =
   if (!db) throw new Error('Database is not initialized.');
   const store = createSqliteConnectorInstanceStore();
   const instances = store.listByOwner(ownerSubjectId, { limit: 5000 });
-  return buildPlan(ownerSubjectId, instances, (instance) => evaluateInstance(db, instance).reasons);
+  // Evaluate each instance once; reuse the same evidence for reasons + notes.
+  const evaluated = new Map(instances.map((i) => [i.connectorInstanceId, evaluateInstance(db, i)]));
+  return buildPlan(
+    ownerSubjectId,
+    instances,
+    (instance) => evaluated.get(instance.connectorInstanceId).reasons,
+    (instance) => evaluated.get(instance.connectorInstanceId).notes,
+  );
 }
 
 /**
@@ -465,7 +572,8 @@ async function gatherPostgresEvidence(runner, id) {
       ? await pgCount(runner, `SELECT COUNT(*) AS c FROM ${table} WHERE connector_instance_id = $1`, [id])
       : 'missing';
   }
-  const grantStorageBindingRefs = (await pgTableExists(runner, 'grants'))
+  const grantsTableExists = await pgTableExists(runner, 'grants');
+  const grantStorageBindingRefs = grantsTableExists
     ? await pgCount(
         runner,
         // JSONB column: compare its text rendering. The deterministic id is an
@@ -473,6 +581,20 @@ async function gatherPostgresEvidence(runner, id) {
         `SELECT COUNT(*) AS c FROM grants
           WHERE storage_binding_json IS NOT NULL
             AND position($1 IN storage_binding_json::text) > 0`,
+        [id],
+      )
+    : 'missing';
+  // P5a — load-bearing grant-body stream pin. An ACTIVE grant whose grant_json
+  // pins a stream to this connector_instance_id (grant.streams[].connection_id)
+  // genuinely scopes a read. Same conservative opaque-id substring match,
+  // restricted to status='active' grants (a revoked grant scopes nothing).
+  const grantStreamPinRefs = grantsTableExists
+    ? await pgCount(
+        runner,
+        `SELECT COUNT(*) AS c FROM grants
+          WHERE status = 'active'
+            AND grant_json IS NOT NULL
+            AND position($1 IN grant_json::text) > 0`,
         [id],
       )
     : 'missing';
@@ -490,7 +612,7 @@ async function gatherPostgresEvidence(runner, id) {
       ? await pgCount(runner, `SELECT COUNT(*) AS c FROM ${table} WHERE connector_instance_id = $1`, [id])
       : 'missing';
   }
-  return { zeroData, grantStorageBindingRefs, grantPackageMemberRefs, activity };
+  return { zeroData, grantStorageBindingRefs, grantStreamPinRefs, grantPackageMemberRefs, activity };
 }
 
 const PG_INSTANCE_COLUMNS = `connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at`;
@@ -537,8 +659,10 @@ async function listOwnerInstancesPg(runner, ownerSubjectId, { limit = 5000 } = {
  * `evaluateInstance`. Pure read-only. Exported for testing.
  */
 export async function evaluateInstancePg(runner, instance) {
-  const reasons = reasonsFromEvidence(instance, await gatherPostgresEvidence(runner, instance.connectorInstanceId));
-  return { candidate: reasons.length === 0, reasons };
+  const evidence = await gatherPostgresEvidence(runner, instance.connectorInstanceId);
+  const reasons = reasonsFromEvidence(instance, evidence);
+  const notes = notesFromEvidence(instance, evidence);
+  return { candidate: reasons.length === 0, reasons, notes };
 }
 
 /**
@@ -549,17 +673,15 @@ export async function evaluateInstancePg(runner, instance) {
 export async function planCleanupPg({ pool, runner, ownerSubjectId = OWNER_AUTH_DEFAULT_SUBJECT_ID }) {
   const queryRunner = runner ?? pool;
   const instances = await listOwnerInstancesPg(queryRunner, ownerSubjectId, { limit: 5000 });
-  const evaluated = [];
+  const evaluated = new Map();
   for (const instance of instances) {
-    evaluated.push({ instance, reasons: (await evaluateInstancePg(queryRunner, instance)).reasons });
+    evaluated.set(instance.connectorInstanceId, await evaluateInstancePg(queryRunner, instance));
   }
   return buildPlan(
     ownerSubjectId,
-    evaluated.map((e) => e.instance),
-    (instance) => {
-      const found = evaluated.find((e) => e.instance.connectorInstanceId === instance.connectorInstanceId);
-      return found.reasons;
-    },
+    instances,
+    (instance) => evaluated.get(instance.connectorInstanceId).reasons,
+    (instance) => evaluated.get(instance.connectorInstanceId).notes,
   );
 }
 
@@ -656,7 +778,7 @@ export async function applyRevokePg({ pool, runner, candidates, now = new Date()
 
 // ─── Shared plan/printing ────────────────────────────────────────────────────
 
-function buildPlan(ownerSubjectId, instances, reasonsFor) {
+function buildPlan(ownerSubjectId, instances, reasonsFor, notesFor = () => []) {
   const candidates = [];
   const skipped = [];
   for (const instance of instances) {
@@ -666,8 +788,15 @@ function buildPlan(ownerSubjectId, instances, reasonsFor) {
       connector_id: instance.connectorId,
       status: instance.status,
     };
-    if (reasons.length === 0) candidates.push(entry);
-    else skipped.push({ ...entry, reasons });
+    if (reasons.length === 0) {
+      // Attach NON-blocking informational notes (e.g. the P5b grant-package
+      // member display reference) so the dry-run discloses them to the operator
+      // even though they did not block the revoke.
+      const notes = notesFor(instance);
+      candidates.push(notes.length > 0 ? { ...entry, notes } : entry);
+    } else {
+      skipped.push({ ...entry, reasons });
+    }
   }
   return { ownerSubjectId, scanned: instances.length, candidates, skipped };
 }
@@ -682,7 +811,9 @@ function printHuman(plan, { apply, revoked, skippedAtApply }) {
   if (plan.candidates.length > 0) {
     lines.push(apply ? 'REVOKED phantom default-account connections:' : 'WOULD REVOKE (dry-run) phantom default-account connections:');
     for (const c of plan.candidates) {
-      lines.push(`  - ${c.connector_instance_id}  connector=${c.connector_id}  status=${c.status}`);
+      const noteSuffix =
+        Array.isArray(c.notes) && c.notes.length > 0 ? `  notes=[${c.notes.join(', ')}]` : '';
+      lines.push(`  - ${c.connector_instance_id}  connector=${c.connector_id}  status=${c.status}${noteSuffix}`);
     }
     lines.push('');
   }

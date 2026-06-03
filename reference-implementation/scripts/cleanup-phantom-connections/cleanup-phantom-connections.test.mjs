@@ -39,6 +39,7 @@ import {
   applyRevokePg,
   evaluateInstance,
   evaluateInstancePg,
+  notesFromEvidence,
   planCleanup,
   planCleanupPg,
   reasonsFromEvidence,
@@ -94,6 +95,67 @@ function seedPhantom({ connectorId = CONNECTOR_ID, now = '2026-06-02T00:00:00.00
 
 function getInstance(id) {
   return createSqliteConnectorInstanceStore().get(id);
+}
+
+// Seed a hosted-MCP grant package whose single member's `source_json` carries a
+// `connection_id` display pointer to `connectionId` — exactly the shape
+// `persistChildGrantForPackage` writes. The child grant's `storage_binding_json`
+// is `{connector_id}` ONLY (never a connector_instance_id), matching
+// `normalizeStorageBinding`, so the member reference is the ONLY place the
+// connection id appears. Returns { packageId, grantId, tokenId }.
+function seedGrantPackageMember({
+  connectionId,
+  connectorId = CONNECTOR_ID,
+  packageId = 'pkg_test',
+  grantId = 'grt_member',
+  tokenId = 'tok_member',
+  grantStatus = 'active',
+  now = '2026-06-02T00:00:00.000Z',
+} = {}) {
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO grant_packages(package_id, subject_id, client_id, status, package_json, created_at, approved_at)
+     VALUES(?, ?, ?, 'active', ?, ?, ?)`,
+  ).run(packageId, OWNER, 'client_test', '{}', now, now);
+  db.prepare(
+    `INSERT INTO grants(grant_id, subject_id, client_id, storage_binding_json, grant_json, access_mode, status, issued_at)
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    grantId,
+    OWNER,
+    'client_test',
+    // storage_binding is {connector_id} ONLY — no connector_instance_id here.
+    JSON.stringify({ connector_id: connectorId }),
+    // grant body does NOT pin a stream connection_id (no P5a stream pin).
+    JSON.stringify({ source: { kind: 'connector', id: connectorId }, streams: [{ name: STREAM }] }),
+    'snapshot',
+    grantStatus,
+    now,
+  );
+  db.prepare(
+    `INSERT INTO grant_package_members(package_id, grant_id, token_id, source_json, status, added_at)
+     VALUES(?, ?, ?, ?, 'active', ?)`,
+  ).run(
+    packageId,
+    grantId,
+    tokenId,
+    // The member's display pointer to the connection — the P5b reference.
+    JSON.stringify({ kind: 'connector', id: connectorId, connection_id: connectionId }),
+    now,
+  );
+  return { packageId, grantId, tokenId };
+}
+
+function getMemberStatus(packageId, grantId) {
+  const row = getDb()
+    .prepare(`SELECT status FROM grant_package_members WHERE package_id = ? AND grant_id = ?`)
+    .get(packageId, grantId);
+  return row?.status ?? null;
+}
+
+function getGrantStatus(grantId) {
+  const row = getDb().prepare(`SELECT status FROM grants WHERE grant_id = ?`).get(grantId);
+  return row?.status ?? null;
 }
 
 test(
@@ -198,6 +260,201 @@ test(
       plan.skipped[0].reasons.some((r) => r.startsWith('P5:grant-storage-binding=')),
       `expected a P5 grant reason, got ${plan.skipped[0].reasons.join(',')}`,
     );
+  }),
+);
+
+// ─── P5 split: grant-package member display ref (P5b) vs grant-scope pin (P5a) ─
+
+test(
+  'P5b does NOT block: a phantom referenced ONLY by a grant-package member display pointer IS a candidate, with an informational note; revoke leaves the grant package + member + child grant + token untouched',
+  withDb(async () => {
+    await registerConnector(listedManifest);
+    const id = seedPhantom();
+    const { packageId, grantId } = seedGrantPackageMember({ connectionId: id });
+
+    // The member reference does NOT block; the row is a candidate and the
+    // dry-run discloses the member reference as a note.
+    const plan = planCleanup({ ownerSubjectId: OWNER });
+    assert.equal(plan.candidates.length, 1, 'member-referenced phantom is a candidate');
+    assert.equal(plan.candidates[0].connector_instance_id, id);
+    assert.equal(plan.skipped.length, 0, 'nothing is skipped');
+    assert.ok(
+      (plan.candidates[0].notes || []).some((n) => n.startsWith('P5b:grant-package-member-display-ref=')),
+      `expected a P5b member note, got ${JSON.stringify(plan.candidates[0].notes)}`,
+    );
+
+    // Apply revokes ONLY the connection_instances row.
+    const { revoked, skippedAtApply } = applyRevoke(plan.candidates);
+    assert.equal(revoked.length, 1);
+    assert.equal(skippedAtApply.length, 0);
+    assert.equal(getInstance(id).status, 'revoked', 'the phantom connection is revoked');
+
+    // The grant package, the member row, the child grant, and the token are
+    // ALL untouched — cleanup never calls grant-package revocation.
+    const pkg = getDb().prepare(`SELECT status FROM grant_packages WHERE package_id = ?`).get(packageId);
+    assert.equal(pkg.status, 'active', 'the grant package stays active');
+    assert.equal(getMemberStatus(packageId, grantId), 'active', 'the member row stays active');
+    assert.equal(getGrantStatus(grantId), 'active', 'the child grant stays active');
+    const tokenRevoked = getDb()
+      .prepare(`SELECT revoked FROM tokens WHERE token_id = ?`)
+      .get('tok_member');
+    // We did not seed a token row; assert we did NOT create/modify one either.
+    assert.equal(tokenRevoked, undefined, 'cleanup did not touch any token row');
+  }),
+);
+
+test(
+  'P5a BLOCKS: a phantom pinned by an active grant.streams[].connection_id is refused',
+  withDb(async () => {
+    await registerConnector(listedManifest);
+    const id = seedPhantom();
+    // An active grant whose grant_json pins a stream to this exact connection.
+    // This IS load-bearing read scope (resolveFanInBindings honors it), so it
+    // must remain a hard block even though it is not a storage-binding ref.
+    getDb()
+      .prepare(
+        `INSERT INTO grants(grant_id, subject_id, client_id, storage_binding_json, grant_json, access_mode, status, issued_at)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        'grant_stream_pin',
+        OWNER,
+        'client_test',
+        // storage_binding is {connector_id} only — the pin lives in grant_json.
+        JSON.stringify({ connector_id: CONNECTOR_ID }),
+        JSON.stringify({ streams: [{ name: STREAM, connection_id: id }] }),
+        'continuous',
+        'active',
+        '2026-06-02T00:00:00.000Z',
+      );
+
+    const plan = planCleanup({ ownerSubjectId: OWNER });
+    assert.equal(plan.candidates.length, 0, 'grant-stream-pinned row is not a candidate');
+    assert.ok(
+      plan.skipped[0].reasons.some((r) => r.startsWith('P5:grant-stream-pin=')),
+      `expected a P5 grant-stream-pin reason, got ${plan.skipped[0].reasons.join(',')}`,
+    );
+  }),
+);
+
+test(
+  'P5a does NOT block when the pinning grant is REVOKED: a revoked grant scopes nothing',
+  withDb(async () => {
+    await registerConnector(listedManifest);
+    const id = seedPhantom();
+    // Same stream pin, but the grant is revoked — it no longer scopes any read,
+    // so it must NOT block. (A member ref to this id is still just a note.)
+    seedGrantPackageMember({ connectionId: id, grantId: 'grt_revoked', grantStatus: 'revoked' });
+    getDb()
+      .prepare(
+        `INSERT INTO grants(grant_id, subject_id, client_id, storage_binding_json, grant_json, access_mode, status, issued_at)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        'grant_stream_pin_revoked',
+        OWNER,
+        'client_test',
+        JSON.stringify({ connector_id: CONNECTOR_ID }),
+        JSON.stringify({ streams: [{ name: STREAM, connection_id: id }] }),
+        'continuous',
+        'revoked',
+        '2026-06-02T00:00:00.000Z',
+      );
+
+    const plan = planCleanup({ ownerSubjectId: OWNER });
+    assert.equal(plan.candidates.length, 1, 'a revoked grant does not block; the phantom is a candidate');
+    assert.equal(plan.candidates[0].connector_instance_id, id);
+  }),
+);
+
+test(
+  'duplicate Reddit: a stale zero-record member-referenced default-account row is revoked; a separate data-bearing connection of the same connector stays active',
+  withDb(async () => {
+    const reddit = 'https://test.pdpp.dev/connectors/reddit';
+    await registerConnector({ ...listedManifest, connector_id: reddit });
+
+    // The stale zero-record default-account placeholder (deterministic id),
+    // referenced only by a grant-package member display pointer.
+    const staleId = seedPhantom({ connectorId: reddit });
+    const { packageId, grantId } = seedGrantPackageMember({ connectionId: staleId, connectorId: reddit });
+
+    // A separate, real, data-bearing Reddit connection: its OWN connector_instance_id
+    // (explicit account binding, not the default marker) with a record.
+    const store = createSqliteConnectorInstanceStore();
+    const realReddit = store.upsert({
+      ownerSubjectId: OWNER,
+      connectorId: reddit,
+      displayName: 'Reddit (real)',
+      status: 'active',
+      sourceKind: 'account',
+      sourceBinding: { account: 'real-reddit-user' },
+      createdAt: '2026-06-02T00:00:00.000Z',
+      updatedAt: '2026-06-02T00:00:00.000Z',
+    });
+    getDb()
+      .prepare(
+        `INSERT INTO records(connector_id, connector_instance_id, stream, record_key, record_json, emitted_at)
+         VALUES(?, ?, ?, ?, ?, ?)`,
+      )
+      .run(reddit, realReddit.connectorInstanceId, STREAM, 'r1', '{"id":"r1"}', '2026-06-02T00:00:00.000Z');
+
+    const plan = planCleanup({ ownerSubjectId: OWNER });
+    assert.equal(plan.candidates.length, 1, 'only the stale zero-record row is a candidate');
+    assert.equal(plan.candidates[0].connector_instance_id, staleId);
+    // The data-bearing real connection is skipped and stays active. It carries
+    // an explicit account binding (not the default marker), so the predicate
+    // fails closed at P1 (out of scope) before it even reaches the P4 records
+    // check — either way it is spared. A data-bearing row is never a candidate.
+    const realSkip = plan.skipped.find((s) => s.connector_instance_id === realReddit.connectorInstanceId);
+    assert.ok(realSkip, 'the data-bearing connection is in the skipped set');
+    assert.ok(
+      realSkip.reasons.some((r) => r === 'P1:not-default-account-provenance' || r.startsWith('P4:records=')),
+      `expected the real connection spared by provenance or records, got ${realSkip.reasons.join(',')}`,
+    );
+
+    applyRevoke(plan.candidates);
+    assert.equal(getInstance(staleId).status, 'revoked', 'stale duplicate revoked');
+    assert.equal(getInstance(realReddit.connectorInstanceId).status, 'active', 'real data-bearing connection spared');
+    // The grant package the stale member belonged to is untouched.
+    assert.equal(getMemberStatus(packageId, grantId), 'active', 'member untouched');
+  }),
+);
+
+test(
+  'apply-time re-evaluation (SQLite): a grant.streams pin inserted AFTER the plan but BEFORE apply blocks the revoke',
+  withDb(async () => {
+    await registerConnector(listedManifest);
+    const id = seedPhantom();
+    // Plan sees a clean phantom (member ref only would also be clean; here none).
+    const plan = planCleanup({ ownerSubjectId: OWNER });
+    assert.equal(plan.candidates.length, 1);
+
+    // Between plan and apply an active grant now pins a stream to this id. The
+    // row's status is unchanged, so the load-bearing P5a re-check must catch it.
+    getDb()
+      .prepare(
+        `INSERT INTO grants(grant_id, subject_id, client_id, storage_binding_json, grant_json, access_mode, status, issued_at)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        'grant_stream_pin_late',
+        OWNER,
+        'client_test',
+        JSON.stringify({ connector_id: CONNECTOR_ID }),
+        JSON.stringify({ streams: [{ name: STREAM, connection_id: id }] }),
+        'continuous',
+        'active',
+        '2026-06-02T00:00:01.000Z',
+      );
+
+    const { revoked, skippedAtApply } = applyRevoke(plan.candidates);
+    assert.equal(revoked.length, 0, 'the now-grant-pinned row is NOT revoked');
+    assert.equal(skippedAtApply.length, 1);
+    assert.ok(
+      skippedAtApply[0].reasons.some((r) => r.startsWith('P5:grant-stream-pin=')),
+      `expected a P5 grant-stream-pin reason at apply, got ${skippedAtApply[0].reasons.join(',')}`,
+    );
+    assert.equal(getInstance(id).status, 'active', 'left active, untouched');
   }),
 );
 
@@ -441,6 +698,7 @@ function cleanEvidence() {
   return {
     zeroData,
     grantStorageBindingRefs: 0,
+    grantStreamPinRefs: 0,
     grantPackageMemberRefs: 0,
     activity: {
       controller_active_runs: 0,
@@ -483,6 +741,44 @@ test('reasonsFromEvidence: grant_package_members null (table absent) does NOT bl
   const ev = cleanEvidence();
   ev.grantPackageMemberRefs = null;
   assert.deepEqual(reasonsFromEvidence(DEFAULT_INSTANCE, ev), [], 'absent optional table is not a block');
+});
+
+test('reasonsFromEvidence: a grant_package_members display reference (P5b) does NOT block', () => {
+  const ev = cleanEvidence();
+  ev.grantPackageMemberRefs = 3;
+  assert.deepEqual(
+    reasonsFromEvidence(DEFAULT_INSTANCE, ev),
+    [],
+    'a member display reference alone is not a blocking reason',
+  );
+});
+
+test('notesFromEvidence: a grant_package_members display reference surfaces as an informational note', () => {
+  const ev = cleanEvidence();
+  ev.grantPackageMemberRefs = 2;
+  assert.deepEqual(notesFromEvidence(DEFAULT_INSTANCE, ev), ['P5b:grant-package-member-display-ref=2']);
+});
+
+test('notesFromEvidence: no member reference => no notes', () => {
+  assert.deepEqual(notesFromEvidence(DEFAULT_INSTANCE, cleanEvidence()), []);
+});
+
+test('reasonsFromEvidence: a load-bearing grant-stream pin (P5a) BLOCKS', () => {
+  const ev = cleanEvidence();
+  ev.grantStreamPinRefs = 1;
+  assert.ok(
+    reasonsFromEvidence(DEFAULT_INSTANCE, ev).includes('P5:grant-stream-pin=1'),
+    'an active grant-body stream pin must block',
+  );
+});
+
+test('reasonsFromEvidence: a MISSING grants table fails closed for the stream-pin check too (emitted once)', () => {
+  const ev = cleanEvidence();
+  ev.grantStorageBindingRefs = 'missing';
+  ev.grantStreamPinRefs = 'missing';
+  const reasons = reasonsFromEvidence(DEFAULT_INSTANCE, ev);
+  const missingCount = reasons.filter((r) => r === 'P5:grants-table-missing').length;
+  assert.equal(missingCount, 1, `grants-table-missing should be emitted exactly once, got ${reasons.join(',')}`);
 });
 
 // ─── Import-safety regression ────────────────────────────────────────────────
@@ -722,6 +1018,98 @@ if (!POSTGRES_URL) {
       assert.ok(
         plan.skipped[0].reasons.some((r) => r.startsWith('P5:grant-storage-binding=')),
         `expected a P5 grant reason, got ${plan.skipped[0].reasons.join(',')}`,
+      );
+    });
+  });
+
+  test('Postgres: P5b does NOT block — a phantom referenced only by a grant-package member display pointer IS a candidate with a note', async () => {
+    await withPg(async ({ pool, owner }) => {
+      const id = await seedPgPhantom(pool, owner);
+      const packageId = `pkg_pg_${owner}`;
+      const grantId = `grt_pg_member_${owner}`;
+      const tokenId = `tok_pg_member_${owner}`;
+      // A grant whose grant_json does NOT pin a stream connection_id (so no P5a),
+      // and storage_binding is {connector_id} only.
+      await pool.query(
+        `INSERT INTO grants(grant_id, subject_id, client_id, storage_binding_json, grant_json, access_mode, status, issued_at)
+         VALUES($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8)`,
+        [
+          grantId,
+          owner,
+          'client_test',
+          JSON.stringify({ connector_id: PG_CONNECTOR_ID }),
+          JSON.stringify({ source: { kind: 'connector', id: PG_CONNECTOR_ID }, streams: [{ name: 'messages' }] }),
+          'snapshot',
+          'active',
+          '2026-06-02T00:00:00.000Z',
+        ],
+      );
+      await pool.query(
+        `INSERT INTO grant_packages(package_id, subject_id, client_id, status, package_json, created_at, approved_at)
+         VALUES($1, $2, $3, 'active', $4::jsonb, $5, $5)`,
+        [packageId, owner, 'client_test', '{}', '2026-06-02T00:00:00.000Z'],
+      );
+      await pool.query(
+        `INSERT INTO grant_package_members(package_id, grant_id, token_id, source_json, status, added_at)
+         VALUES($1, $2, $3, $4::jsonb, 'active', $5)`,
+        [
+          packageId,
+          grantId,
+          tokenId,
+          JSON.stringify({ kind: 'connector', id: PG_CONNECTOR_ID, connection_id: id }),
+          '2026-06-02T00:00:00.000Z',
+        ],
+      );
+
+      const plan = await planCleanupPg({ pool, ownerSubjectId: owner });
+      assert.equal(plan.candidates.length, 1, 'member-referenced phantom is a candidate');
+      assert.equal(plan.candidates[0].connector_instance_id, id);
+      assert.ok(
+        (plan.candidates[0].notes || []).some((n) => n.startsWith('P5b:grant-package-member-display-ref=')),
+        `expected a P5b member note, got ${JSON.stringify(plan.candidates[0].notes)}`,
+      );
+
+      // Apply revokes only the connection; the grant package + member + grant stay active.
+      const { revoked } = await applyRevokePg({ pool, candidates: plan.candidates });
+      assert.equal(revoked.length, 1);
+      const pkg = await pool.query(`SELECT status FROM grant_packages WHERE package_id = $1`, [packageId]);
+      assert.equal(pkg.rows[0].status, 'active', 'grant package untouched');
+      const member = await pool.query(
+        `SELECT status FROM grant_package_members WHERE package_id = $1 AND grant_id = $2`,
+        [packageId, grantId],
+      );
+      assert.equal(member.rows[0].status, 'active', 'member row untouched');
+      const grant = await pool.query(`SELECT status FROM grants WHERE grant_id = $1`, [grantId]);
+      assert.equal(grant.rows[0].status, 'active', 'child grant untouched');
+
+      // Scoped cleanup of the rows this test created (teardown only deletes instances + grants by owner).
+      await pool.query(`DELETE FROM grant_package_members WHERE package_id = $1`, [packageId]);
+      await pool.query(`DELETE FROM grant_packages WHERE package_id = $1`, [packageId]);
+    });
+  });
+
+  test('Postgres: P5a BLOCKS — a phantom pinned by an active grant.streams[].connection_id is refused', async () => {
+    await withPg(async ({ pool, owner }) => {
+      const id = await seedPgPhantom(pool, owner);
+      await pool.query(
+        `INSERT INTO grants(grant_id, subject_id, client_id, storage_binding_json, grant_json, access_mode, status, issued_at)
+         VALUES($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8)`,
+        [
+          `grant_pg_pin_${owner}`,
+          owner,
+          'client_test',
+          JSON.stringify({ connector_id: PG_CONNECTOR_ID }),
+          JSON.stringify({ streams: [{ name: 'messages', connection_id: id }] }),
+          'continuous',
+          'active',
+          '2026-06-02T00:00:00.000Z',
+        ],
+      );
+      const plan = await planCleanupPg({ pool, ownerSubjectId: owner });
+      assert.equal(plan.candidates.length, 0, 'grant-stream-pinned row is not a candidate');
+      assert.ok(
+        plan.skipped[0].reasons.some((r) => r.startsWith('P5:grant-stream-pin=')),
+        `expected a P5 grant-stream-pin reason, got ${plan.skipped[0].reasons.join(',')}`,
       );
     });
   });

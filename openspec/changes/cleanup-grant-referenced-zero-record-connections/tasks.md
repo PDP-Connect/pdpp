@@ -11,10 +11,12 @@
 - [ ] 2.3 Carry the grant-package member reference count as a `note` on candidates (`buildPlan`), and surface it in human + JSON output. A candidate with a member note is still a candidate.
 - [ ] 2.4 Update `PREDICATE_TEXT` and the file header to describe P5a/P5b precisely. No silent behavior change undocumented.
 
-## 3. Operator ergonomics — rollback handle
+## 3. Operator ergonomics — rollback / audit handle
 
-- [ ] 3.1 Add `--backup-to <path>` for the SQLite arm: `VACUUM INTO` a snapshot before `--apply`, so the operator has a rollback handle. Refuse `--apply` mutation if a requested backup cannot be written.
-- [ ] 3.2 On the Postgres arm, refuse `--apply --backup-to` with a precise message (the script cannot snapshot a remote Postgres; the operator must take their own snapshot). Never imply a backup was taken that was not.
+Decision: the revoke is a non-destructive SOFT-FLIP (`status='revoked'`, only `status`/`updated_at`/`revoked_at` change), so it is reversible by flipping the row back to `active`. A separate `VACUUM INTO` backup file would be redundant surface for a reversible flip and is out of scope (no in-repo precedent on this branch base; the task's rollback handle is met without it). Instead, the rollback handle is the apply output itself.
+
+- [x] 3.1 `--apply` JSON output already emits the exact revoked set (`revoked[].connector_instance_id` + `revoked_at`), which is the rollback manifest: re-activating is `UPDATE connector_instances SET status='active', revoked_at=NULL WHERE connector_instance_id IN (<ids>)`. Document this reverse path in the script header.
+- [x] 3.2 No backup-file mechanism added (scope discipline; the soft-flip is reversible and the JSON revoked-set is the audit/rollback handle). Recorded in design + report.
 
 ## 4. Tests
 
