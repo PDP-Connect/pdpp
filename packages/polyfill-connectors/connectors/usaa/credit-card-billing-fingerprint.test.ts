@@ -1,14 +1,18 @@
 /**
- * Per-card fingerprint behavior for the USAA `credit_card_billing` stream.
+ * Per-card fingerprint behavior for the USAA `credit_card_billing` ENTITY
+ * stream.
  *
- * Before this gate, the billing stream appended a fresh version of every
- * card on every run because the record body carried a run-clock
- * `fetched_at`. The body ALSO carries REAL point-in-time financial state
- * (current_balance_cents, available_credit_cents, credit_limit_cents,
- * cash_rewards_cents, APRs, billing_status). The incidental-fix claim is
- * precise: excluding ONLY `fetched_at` is lossless — any real-field move
- * is a fingerprint boundary that re-emits, while a true no-op refresh
- * (body byte-identical modulo `fetched_at`) is suppressed.
+ * Two layers act on this stream. The run-clock gate (this file) excludes
+ * `fetched_at` so a no-op refresh whose body is otherwise byte-identical is
+ * suppressed. The Family-2 split (credit-card-billing-stats.test.ts) moved the
+ * volatile per-cycle fields (current_balance_cents, available_credit_cents,
+ * cash_rewards_cents, billing_status, minimum_payment_met) OUT of the entity
+ * body into the `credit_card_billing_stats` observation stream. After the
+ * split the entity body carries card identity/settings only (account_id,
+ * account_nickname, credit_limit_cents, annual_percent_rate, cash_advance_apr,
+ * card_holders). The combined effect: the entity re-emits only on a real
+ * settings change (a limit increase, an APR change, a nickname edit); a
+ * balance/rewards/cycle-status tick no longer versions it.
  *
  * `runCreditCardBillingStream` interleaves per-card Playwright navigation
  * with emit, so it is not unit-testable without a live browser. These
@@ -19,10 +23,12 @@
  * These tests pin:
  *
  *   1. A no-op refresh (only `fetched_at` differs) is suppressed.
- *   2. A real balance / rewards / APR move re-emits.
+ *   2. A real settings move (credit limit / APR / nickname) re-emits the
+ *      entity; a balance / rewards / cycle-status move does NOT (it is a
+ *      stats-only change — see credit-card-billing-stats.test.ts).
  *   3. The fingerprint excludes `fetched_at` and matches the compaction
- *      policy's exclude set byte-for-byte; a real-field move is a distinct
- *      fingerprint (never collapsed).
+ *      policy's exclude set byte-for-byte over the post-split body; a
+ *      settings move is a distinct fingerprint (never collapsed).
  *   4. `readPriorCreditCardBillingFingerprints` tolerates missing / legacy
  *      / malformed state.
  */
@@ -89,26 +95,38 @@ test("credit_card_billing: a no-op refresh (only fetched_at differs) is suppress
   assert.equal(wouldEmit(cursor2, a, billing, RUN2_AT), false, "no-op refresh suppressed");
 });
 
-test("credit_card_billing: a real balance move re-emits", () => {
-  const a = makeCardAccount();
-  const cursor1 = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
-  wouldEmit(cursor1, a, makeBilling({ "Current Balance": "$1,200.00" }), RUN1_AT);
-  cursor1.pruneStale();
-  const state1 = { credit_card_billing: { fingerprints: cursor1.toState() } };
+test("credit_card_billing: a balance / rewards / cycle-status move does NOT re-emit the entity", () => {
+  // These fields moved to credit_card_billing_stats, so they are gone from
+  // the entity body — a move is a stats-only change, not an entity version.
+  for (const change of [
+    { "Current Balance": "$1,500.00" },
+    { "Cash Rewards": "$22.50" },
+    { "Billing Information": "Payment due" },
+  ]) {
+    const a = makeCardAccount();
+    const cursor1 = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
+    wouldEmit(cursor1, a, makeBilling(), RUN1_AT);
+    cursor1.pruneStale();
+    const state1 = { credit_card_billing: { fingerprints: cursor1.toState() } };
 
-  const cursor2 = openFingerprintCursor(state1.credit_card_billing, {
-    excludeFromFingerprint: ["fetched_at"],
-    priorFingerprints: readPriorCreditCardBillingFingerprints(state1),
-  });
-  assert.equal(
-    wouldEmit(cursor2, a, makeBilling({ "Current Balance": "$1,500.00" }), RUN2_AT),
-    true,
-    "a balance move re-emits — the fix never hides a real value"
-  );
+    const cursor2 = openFingerprintCursor(state1.credit_card_billing, {
+      excludeFromFingerprint: ["fetched_at"],
+      priorFingerprints: readPriorCreditCardBillingFingerprints(state1),
+    });
+    assert.equal(
+      wouldEmit(cursor2, a, makeBilling(change), RUN2_AT),
+      false,
+      `a ${Object.keys(change)[0]} move is stats-only and must NOT re-version the entity`
+    );
+  }
 });
 
-test("credit_card_billing: a rewards move and an APR move each re-emit", () => {
-  for (const change of [{ "Cash Rewards": "$22.50" }, { "Annual Percent Rate": "26.99%" }]) {
+test("credit_card_billing: a credit-limit / APR / nickname move each re-emit the entity", () => {
+  for (const change of [
+    { "Credit Limit": "$7,500.00" },
+    { "Annual Percent Rate": "26.99%" },
+    { "Account Nickname": "Travel Card" },
+  ]) {
     const a = makeCardAccount();
     const cursor1 = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
     wouldEmit(cursor1, a, makeBilling(), RUN1_AT);
@@ -122,7 +140,7 @@ test("credit_card_billing: a rewards move and an APR move each re-emit", () => {
     assert.equal(
       wouldEmit(cursor2, a, makeBilling(change), RUN2_AT),
       true,
-      `a ${Object.keys(change)[0]} move re-emits`
+      `a ${Object.keys(change)[0]} move is a real settings event and re-emits`
     );
   }
 });
@@ -138,21 +156,29 @@ test("credit_card_billing: STATE round-trips a fingerprints map keyed by card id
   assert.ok(fps.get("CC-0001"), "keyed by billing record id");
 });
 
-test("credit_card_billing: connector fingerprint == compaction fingerprint (excludes fetched_at), real move is distinct", () => {
+test("credit_card_billing: connector fingerprint == compaction fingerprint (excludes fetched_at) over the post-split body", () => {
   const a = makeCardAccount();
   const body = buildCreditCardBillingRecord(a, makeBilling(), RUN1_AT);
   const laterNoop = buildCreditCardBillingRecord(a, makeBilling(), RUN2_AT);
-  const laterMoved = buildCreditCardBillingRecord(a, makeBilling({ "Current Balance": "$2,000.00" }), RUN2_AT);
+  // A balance move is NOT on the entity body post-split, so it does not change
+  // the entity fingerprint; a settings move (credit limit) does.
+  const laterBalanceMove = buildCreditCardBillingRecord(a, makeBilling({ "Current Balance": "$2,000.00" }), RUN2_AT);
+  const laterLimitMove = buildCreditCardBillingRecord(a, makeBilling({ "Credit Limit": "$7,500.00" }), RUN2_AT);
 
   assert.equal(
     recordFingerprint(body, ["fetched_at"]),
     recordFingerprint(laterNoop, ["fetched_at"]),
     "fetched_at must not participate; a no-op refresh hashes identically (compaction parity)"
   );
+  assert.equal(
+    recordFingerprint(body, ["fetched_at"]),
+    recordFingerprint(laterBalanceMove, ["fetched_at"]),
+    "a balance move is not on the entity body, so the entity fingerprint is unchanged"
+  );
   assert.notEqual(
     recordFingerprint(body, ["fetched_at"]),
-    recordFingerprint(laterMoved, ["fetched_at"]),
-    "a balance move is a real change and MUST produce a different fingerprint"
+    recordFingerprint(laterLimitMove, ["fetched_at"]),
+    "a credit-limit move is a real settings change and MUST produce a different fingerprint"
   );
 });
 

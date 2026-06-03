@@ -6,8 +6,10 @@ import { fileURLToPath } from "node:url";
 import {
   BACKFILL_17MO,
   buildAccountRecord,
+  buildAccountStatsRecord,
   buildCandidateStarts,
   buildCreditCardBillingRecord,
+  buildCreditCardBillingStatsRecord,
   buildInboxMessageRecord,
   checkNumberFromDescription,
   currencyToCents,
@@ -429,20 +431,39 @@ function makeAccount(overrides: Partial<DashboardAccount> = {}): DashboardAccoun
   };
 }
 
-test("buildAccountRecord: happy path", () => {
+test("buildAccountRecord: happy path (entity carries identity/settings only, no balances)", () => {
   const rec = buildAccountRecord(makeAccount(), "2026-04-22T00:00:00Z");
   assert.equal(rec.id, "ACCT1");
   assert.equal(rec.type, "checking");
   assert.equal(rec.name, "Primary Checking");
   assert.equal(rec.last_four, "1234");
-  assert.equal(rec.balance_cents, 10_000);
   assert.equal(rec.status, "open");
   assert.equal(rec.fetched_at, "2026-04-22T00:00:00Z");
+  // Point-in-time balances moved to account_stats; the entity no longer carries them.
+  assert.equal("balance_cents" in rec, false, "entity drops balance_cents");
+  assert.equal("available_balance_cents" in rec, false, "entity drops available_balance_cents");
 });
 
 test("buildAccountRecord: falls back to hashed raw_text when account_id_raw is null", () => {
   const rec = buildAccountRecord(makeAccount({ account_id_raw: null, raw_text: "abc" }), "t");
   assert.equal(rec.id, "ba7816bf8f01cfea414140de5dae2223");
+});
+
+test("buildAccountStatsRecord: date-scoped key carries the balances and joins to the entity id", () => {
+  const stat = buildAccountStatsRecord(makeAccount(), "2026-04-22");
+  assert.equal(stat.id, "ACCT1:2026-04-22", "id is {account_id}:{observed_on}");
+  assert.equal(stat.account_id, "ACCT1", "joins back to accounts.id");
+  assert.equal(stat.observed_on, "2026-04-22");
+  assert.equal(stat.balance_cents, 10_000);
+  assert.equal(stat.available_balance_cents, null);
+});
+
+test("buildAccountStatsRecord: account_id uses the same hashed fallback as the entity", () => {
+  const a = makeAccount({ account_id_raw: null, raw_text: "abc" });
+  const entity = buildAccountRecord(a, "t");
+  const stat = buildAccountStatsRecord(a, "2026-04-22");
+  assert.equal(stat.account_id, entity.id, "stats.account_id == entity.id");
+  assert.equal(stat.id, `${entity.id}:2026-04-22`);
 });
 
 test("buildInboxMessageRecord: maps UNREAD status and slices subject", () => {
@@ -466,36 +487,62 @@ test("buildInboxMessageRecord: parses 'MMM DD' + year into ISO date", () => {
   assert.equal(rec.date_received, "2026-04-13");
 });
 
-test("buildCreditCardBillingRecord: maps label-keyed kv into the record shape", () => {
-  const billing: BillingKv = {
-    "Account Nickname": "My Card",
-    "Current Balance": "$123.45",
-    "Available Credit": "$500.00",
-    "Credit Limit": "$1,000.00",
-    "Annual Percent Rate": "20.24%",
-    "Cash Advance APR": "25.99%",
-    "Cash Rewards": "$5.00",
-    "Billing Information": "Minimum payment met",
-    "Card Holders": "Jane Doe",
-  };
+const CC_BILLING_KV: BillingKv = {
+  "Account Nickname": "My Card",
+  "Current Balance": "$123.45",
+  "Available Credit": "$500.00",
+  "Credit Limit": "$1,000.00",
+  "Annual Percent Rate": "20.24%",
+  "Cash Advance APR": "25.99%",
+  "Cash Rewards": "$5.00",
+  "Billing Information": "Minimum payment met",
+  "Card Holders": "Jane Doe",
+};
+
+test("buildCreditCardBillingRecord: entity carries identity/settings only (no volatile fields)", () => {
   const rec = buildCreditCardBillingRecord(
     makeAccount({ account_id_raw: "CC1", account_type: "credit-card" }),
-    billing,
+    CC_BILLING_KV,
     "t"
   );
   assert.equal(rec.id, "CC1");
   assert.equal(rec.account_nickname, "My Card");
-  assert.equal(rec.current_balance_cents, 12_345);
-  assert.equal(rec.available_credit_cents, 50_000);
   assert.equal(rec.credit_limit_cents, 100_000);
-  assert.equal(rec.cash_rewards_cents, 500);
-  assert.equal(rec.billing_status, "Minimum payment met");
-  assert.equal(rec.minimum_payment_met, true);
+  assert.equal(rec.annual_percent_rate, "20.24%");
+  assert.equal(rec.cash_advance_apr, "25.99%");
+  assert.equal(rec.card_holders, "Jane Doe");
+  // Volatile per-cycle fields moved to credit_card_billing_stats.
+  for (const moved of [
+    "current_balance_cents",
+    "available_credit_cents",
+    "cash_rewards_cents",
+    "billing_status",
+    "minimum_payment_met",
+  ]) {
+    assert.equal(moved in rec, false, `entity drops ${moved}`);
+  }
 });
 
-test("buildCreditCardBillingRecord: minimum_payment_met=false when label absent", () => {
-  const rec = buildCreditCardBillingRecord(makeAccount(), {}, "t");
-  assert.equal(rec.minimum_payment_met, false);
+test("buildCreditCardBillingStatsRecord: date-scoped key carries the volatile fields", () => {
+  const stat = buildCreditCardBillingStatsRecord(
+    makeAccount({ account_id_raw: "CC1", account_type: "credit-card" }),
+    CC_BILLING_KV,
+    "2026-04-22"
+  );
+  assert.equal(stat.id, "CC1:2026-04-22", "id is {card_id}:{observed_on}");
+  assert.equal(stat.card_id, "CC1", "joins back to credit_card_billing.id");
+  assert.equal(stat.account_id, "CC1");
+  assert.equal(stat.observed_on, "2026-04-22");
+  assert.equal(stat.current_balance_cents, 12_345);
+  assert.equal(stat.available_credit_cents, 50_000);
+  assert.equal(stat.cash_rewards_cents, 500);
+  assert.equal(stat.billing_status, "Minimum payment met");
+  assert.equal(stat.minimum_payment_met, true);
+});
+
+test("buildCreditCardBillingStatsRecord: minimum_payment_met=false when label absent", () => {
+  const stat = buildCreditCardBillingStatsRecord(makeAccount(), {}, "2026-04-22");
+  assert.equal(stat.minimum_payment_met, false);
 });
 
 // ─── resolveAccountIdForRef ──────────────────────────────────────────────

@@ -1,21 +1,22 @@
 /**
- * Per-account fingerprint behavior for the USAA `accounts` stream.
+ * Per-account fingerprint behavior for the USAA `accounts` ENTITY stream.
  *
- * Before this gate, `emitAccountsStream` appended a fresh version of every
- * account on every run because the record body carried a run-clock
- * `fetched_at` (the shared run `emittedAt`). Unlike chase/accounts (all
- * balances null), USAA's `accounts` body carries a REAL point-in-time
- * `balance_cents`. The incidental-fix claim is precise: excluding ONLY
- * `fetched_at` from the fingerprint is lossless — a balance/name/status
- * move is a fingerprint boundary that re-emits, while a true no-op refresh
- * (body byte-identical modulo `fetched_at`) is suppressed.
+ * Two layers act on this stream. The run-clock gate (this file) excludes
+ * `fetched_at` so a no-op refresh whose body is otherwise byte-identical is
+ * suppressed. The Family-2 split (account-stats.test.ts) moved the
+ * point-in-time `balance_cents` / `available_balance_cents` OUT of the entity
+ * body into the `account_stats` observation stream, so after the split the
+ * entity body carries identity/settings only (id, type, name, last_four,
+ * status). The combined effect: the entity re-emits only on a real
+ * identity/settings change; a balance tick no longer versions it (it appends a
+ * point to `account_stats` instead — proven in account-stats.test.ts).
  *
  * These tests pin:
  *
  *   1. Re-emitting the same accounts with only a new `fetched_at` is fully
- *      suppressed on the second run (the incidental churn that previously
- *      appended ~one version/run).
- *   2. A real balance move re-emits (the fix never hides a real value).
+ *      suppressed on the second run.
+ *   2. A real identity/status move re-emits (the gate never hides a real
+ *      change to an entity field).
  *   3. A disappeared account is pruned so its re-appearance re-emits.
  *   4. The fingerprint cursor's STATE round-trips and excludes
  *      `fetched_at` so it survives the next run.
@@ -23,7 +24,8 @@
  *      state.
  *   6. Legacy callers without a cursor still emit unconditionally.
  *   7. Connector fingerprint (excludes `fetched_at`) == compaction
- *      fingerprint over the stored body with excludeKeys ['fetched_at'].
+ *      fingerprint over the stored (post-split) body with excludeKeys
+ *      ['fetched_at'].
  */
 
 import assert from "node:assert/strict";
@@ -95,23 +97,43 @@ test("accounts: re-emitting with only a new fetched_at is fully suppressed", asy
   assert.equal(run2.emitted.length, 0, "unchanged accounts are fully suppressed on the second run");
 });
 
-test("accounts: a real balance move re-emits (the fix never hides a real value)", async () => {
+test("accounts: a balance-only move does NOT re-emit the entity (balance lives on account_stats)", async () => {
   const accounts = [makeAccount({ account_id_raw: "A1", balance_cents: 100_000 })];
+
+  const run1 = makeHarness();
+  const cursor1 = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
+  await emitAccountsStream(run1.deps, accounts, RUN1_AT, cursor1);
+  assert.equal(run1.emitted.length, 1, "first run emits the entity");
+
+  // Second run: balance moved 100000 → 95000. After the Family-2 split the
+  // balance is no longer on the entity body, so the entity record modulo
+  // fetched_at is byte-identical → suppressed. The new balance is captured on
+  // account_stats instead (see account-stats.test.ts).
+  const moved = [makeAccount({ account_id_raw: "A1", balance_cents: 95_000 })];
+  const priorState = nextStateFrom(run1.messages);
+  const run2 = makeHarness();
+  const cursor2 = openAccountsCursor(priorState);
+  await emitAccountsStream(run2.deps, moved, RUN2_AT, cursor2);
+  assert.equal(run2.emitted.length, 0, "a balance-only move no longer versions the entity record");
+});
+
+test("accounts: a real identity/status move re-emits the entity", async () => {
+  const accounts = [makeAccount({ account_id_raw: "A1", name: "USAA CLASSIC CHECKING" })];
 
   const run1 = makeHarness();
   const cursor1 = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
   await emitAccountsStream(run1.deps, accounts, RUN1_AT, cursor1);
   assert.equal(run1.emitted.length, 1, "first run emits the account");
 
-  // Second run: balance moved 100000 → 95000. Real change → re-emit.
-  const moved = [makeAccount({ account_id_raw: "A1", balance_cents: 95_000 })];
+  // Second run: a real entity field (name) moved → re-emit.
+  const renamed = [makeAccount({ account_id_raw: "A1", name: "USAA PERFORMANCE CHECKING" })];
   const priorState = nextStateFrom(run1.messages);
   const run2 = makeHarness();
   const cursor2 = openAccountsCursor(priorState);
-  await emitAccountsStream(run2.deps, moved, RUN2_AT, cursor2);
-  assert.equal(run2.emitted.length, 1, "a balance move is a fingerprint boundary and re-emits");
-  const emittedRec = run2.emitted[0]?.data as { balance_cents?: number };
-  assert.equal(emittedRec.balance_cents, 95_000, "the re-emitted record carries the new balance");
+  await emitAccountsStream(run2.deps, renamed, RUN2_AT, cursor2);
+  assert.equal(run2.emitted.length, 1, "an identity move is a fingerprint boundary and re-emits");
+  const emittedRec = run2.emitted[0]?.data as { name?: string };
+  assert.equal(emittedRec.name, "USAA PERFORMANCE CHECKING", "the re-emitted record carries the new name");
 });
 
 test("accounts: a disappeared account is pruned so its re-appearance re-emits", async () => {
@@ -185,32 +207,33 @@ test("readPriorAccountFingerprints: tolerates missing / legacy / malformed state
   assert.equal(ok.size, 1, "valid entries kept, invalid dropped");
 });
 
-test("accounts: connector fingerprint (excludes fetched_at) == compaction fingerprint over stored body", () => {
-  // Byte-parity contract for the historical compaction policy: the
-  // connector excludes fetched_at; the compaction script must use the same
-  // exclude set over the stored record_json. A balance change must produce
-  // a DIFFERENT fingerprint (it is a real boundary, never collapsed).
+test("accounts: connector fingerprint (excludes fetched_at) == compaction fingerprint over the post-split body", () => {
+  // Byte-parity contract for the entity compaction policy over the
+  // post-split body: the connector excludes fetched_at; the compaction
+  // script must use the same exclude set over the stored record_json. The
+  // entity body no longer carries balances, so a no-op refresh hashes
+  // identically and a real identity/status move produces a DIFFERENT
+  // fingerprint (never collapsed). Balance churn is handled by the
+  // account_stats stream, not by re-versioning the entity.
   const body = {
     id: "A1",
     type: "checking",
     name: "USAA CLASSIC CHECKING",
     last_four: "9241",
-    balance_cents: 123_456,
-    available_balance_cents: null,
     status: "open",
     fetched_at: "2026-06-01T10:00:00.000Z",
   };
-  const laterSameBalance = { ...body, fetched_at: "2026-06-02T10:00:00.000Z" };
-  const laterMovedBalance = { ...laterSameBalance, balance_cents: 100_000 };
+  const laterNoop = { ...body, fetched_at: "2026-06-02T10:00:00.000Z" };
+  const laterRenamed = { ...laterNoop, name: "USAA PERFORMANCE CHECKING" };
 
   assert.equal(
     recordFingerprint(body, ["fetched_at"]),
-    recordFingerprint(laterSameBalance, ["fetched_at"]),
+    recordFingerprint(laterNoop, ["fetched_at"]),
     "fetched_at must not participate; a no-op refresh hashes identically"
   );
   assert.notEqual(
     recordFingerprint(body, ["fetched_at"]),
-    recordFingerprint(laterMovedBalance, ["fetched_at"]),
-    "a balance move is a real change and MUST produce a different fingerprint"
+    recordFingerprint(laterRenamed, ["fetched_at"]),
+    "an identity move is a real change and MUST produce a different fingerprint"
   );
 });

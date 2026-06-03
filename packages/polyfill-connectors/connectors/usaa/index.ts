@@ -45,8 +45,10 @@ import { isMainModule } from "../../src/is-main-module.ts";
 import { readPlaywrightDownloadBufferDetailed } from "../../src/playwright-download.ts";
 import {
   buildAccountRecord,
+  buildAccountStatsRecord,
   buildCandidateStarts,
   buildCreditCardBillingRecord,
+  buildCreditCardBillingStatsRecord,
   buildInboxMessageRecord,
   hashId,
   isoDate,
@@ -194,33 +196,69 @@ export function buildIndexRows(docs: readonly DocRow[], accounts: readonly Dashb
     });
 }
 
-/** Emit one `accounts` record per dashboard account, followed by a
- *  STATE checkpoint. Record `fetched_at` threads the run-level
- *  emittedAt so every record in a run shares one timestamp; STATE
- *  cursor uses `nowIso()` at emit time since it's a heartbeat, not a
- *  record field.
+/** Options controlling which of the two account streams emit. The entity
+ *  (`accounts`) and the observation (`account_stats`) are independently
+ *  scoped: a client may request the entity, the daily balances, or both.
+ *  `observedOn` is the UTC date (`YYYY-MM-DD`) the balances were sampled.
+ *  `emitEntity` defaults to `true` so legacy callers (and tests that pass no
+ *  options) keep emitting the entity record + STATE unchanged. */
+export interface AccountsEmitOptions {
+  emitEntity?: boolean;
+  emitStats?: boolean;
+  observedOn?: string;
+}
+
+/** Emit one `accounts` entity record per dashboard account (gated), and
+ *  optionally one `account_stats` observation record per account, followed
+ *  by per-stream STATE checkpoints. Record `fetched_at` threads the
+ *  run-level emittedAt so every record in a run shares one timestamp; STATE
+ *  cursors use `nowIso()` at emit time since they're heartbeats, not record
+ *  fields.
  *
- *  Gate on a per-account fingerprint that excludes the run-clock
- *  `fetched_at`. The account body carries a real point-in-time
- *  `balance_cents` (and `available_balance_cents`, currently null),
- *  so a balance move IS a fingerprint boundary and re-emits — only a
- *  run where the entire body modulo `fetched_at` is byte-identical to
- *  the prior version (a true no-op refresh: same balance, same name,
- *  same status) is suppressed. Without this gate every run appended a
- *  fresh version of every account differing only in `fetched_at`. When
- *  no cursor is supplied (legacy callers/tests) the record always
- *  emits and no STATE is written. */
+ *  Entity gate: a per-account fingerprint that excludes the run-clock
+ *  `fetched_at`. After the Family-2 split the entity body carries only
+ *  identity/settings (id, type, name, last_four, status), so it re-emits
+ *  only on a real identity/settings change — a balance-only tick no longer
+ *  versions the entity. The point-in-time `balance_cents` /
+ *  `available_balance_cents` live on `account_stats`, keyed
+ *  `{account_id}:{observed_on}` so same-day re-pulls are idempotent and a
+ *  later day appends a new point in the balance time series. When no cursor
+ *  is supplied (legacy callers/tests) the entity record always emits and no
+ *  entity STATE is written. */
 export async function emitAccountsStream(
   deps: EmitDeps,
   accounts: readonly DashboardAccount[],
   emittedAt: string,
-  fingerprintCursor?: FingerprintCursor
+  fingerprintCursor?: FingerprintCursor,
+  options: AccountsEmitOptions = {}
 ): Promise<void> {
+  const emitEntity = options.emitEntity ?? true;
+  const emitStats = options.emitStats ?? false;
+  const observedOn = options.observedOn ?? emittedAt.slice(0, 10);
   for (const a of accounts) {
-    const rec = buildAccountRecord(a, emittedAt);
-    if (!fingerprintCursor || fingerprintCursor.shouldEmit(rec)) {
-      await deps.emitRecord("accounts", rec);
+    if (emitEntity) {
+      const rec = buildAccountRecord(a, emittedAt);
+      if (!fingerprintCursor || fingerprintCursor.shouldEmit(rec)) {
+        await deps.emitRecord("accounts", rec);
+      }
     }
+    // Observation stream: append-keyed daily balance snapshot, emitted
+    // unconditionally (the runtime byte-equivalence check collapses an
+    // unchanged same-day re-pull). Not fingerprint-gated — the append key
+    // already makes same-day re-pulls idempotent.
+    if (emitStats) {
+      await deps.emitRecord("account_stats", buildAccountStatsRecord(a, observedOn));
+    }
+  }
+  if (emitStats) {
+    await deps.emit({
+      type: "STATE",
+      stream: "account_stats",
+      cursor: { observed_on: observedOn, fetched_at: nowIso() },
+    });
+  }
+  if (!emitEntity) {
+    return;
   }
   if (!fingerprintCursor) {
     await deps.emit({
@@ -241,6 +279,35 @@ export async function emitAccountsStream(
     type: "STATE",
     stream: "accounts",
     cursor,
+  });
+}
+
+/** Run the `accounts` entity and/or `account_stats` observation streams
+ *  based on the requested scope. The entity fingerprint cursor is only
+ *  opened when the entity stream is requested; the observation stream is
+ *  append-keyed and needs no cursor. Extracted from `collect()` to keep that
+ *  orchestrator under the cognitive-complexity budget. */
+async function maybeRunAccountsStreams(
+  deps: EmitDeps,
+  accounts: readonly DashboardAccount[],
+  state: Record<string, unknown>,
+  requested: RequestedScopes,
+  emittedAt: string
+): Promise<void> {
+  const wantsAccounts = requested.has("accounts");
+  const wantsAccountStats = requested.has("account_stats");
+  if (!(wantsAccounts || wantsAccountStats)) {
+    return;
+  }
+  const accountsFingerprintCursor = wantsAccounts
+    ? openFingerprintCursor(state.accounts, {
+        excludeFromFingerprint: ["fetched_at"],
+        priorFingerprints: readPriorAccountFingerprints(state),
+      })
+    : undefined;
+  await emitAccountsStream(deps, accounts, emittedAt, accountsFingerprintCursor, {
+    emitEntity: wantsAccounts,
+    emitStats: wantsAccountStats,
   });
 }
 
@@ -1806,12 +1873,24 @@ export function readPriorCreditCardBillingFingerprints(state: Record<string, unk
   return out;
 }
 
+/** Which of the two credit-card streams to emit. The entity
+ *  (`credit_card_billing`) and the observation (`credit_card_billing_stats`)
+ *  are independently scoped. `observedOn` is the UTC sample date. The entity
+ *  cursor is only supplied when the entity is requested. */
+interface CreditCardBillingEmitOptions {
+  emitEntity: boolean;
+  emitStats: boolean;
+  fingerprintCursor: FingerprintCursor | undefined;
+  observedOn: string;
+}
+
 async function runCreditCardBillingStream(
   deps: EmitDeps,
   page: Page,
   accounts: readonly DashboardAccount[],
-  fingerprintCursor?: FingerprintCursor
+  options: CreditCardBillingEmitOptions
 ): Promise<void> {
+  const { emitEntity, emitStats, fingerprintCursor, observedOn } = options;
   try {
     await deps.emit({
       type: "PROGRESS",
@@ -1828,19 +1907,33 @@ async function runCreditCardBillingStream(
         .catch((): undefined => undefined);
       await politeDelay(CC_SETTLE_DELAY_MS);
       const billing = await scrapeCreditCardBilling(page);
-      // Gate on a per-card fingerprint that excludes the run-clock
-      // `fetched_at`. The body carries real point-in-time financial state
-      // (current_balance_cents, available_credit_cents, cash_rewards_cents,
-      // APRs, billing_status), so any of those moving IS a fingerprint
-      // boundary and re-emits — only a run whose entire body modulo
-      // `fetched_at` is byte-identical to the prior version is suppressed.
-      // Without this gate every run appended a fresh version of every card
-      // differing only in `fetched_at`. When no cursor is supplied
-      // (legacy callers/tests) the record always emits.
-      const rec = buildCreditCardBillingRecord(a, billing, nowIso());
-      if (!fingerprintCursor || fingerprintCursor.shouldEmit(rec)) {
-        await deps.emitRecord("credit_card_billing", rec);
+      // Entity gate: a per-card fingerprint that excludes the run-clock
+      // `fetched_at`. After the Family-2 split the entity body carries only
+      // card identity/settings (account_id, nickname, credit_limit_cents,
+      // APRs, card_holders), so it re-emits only on a real settings change —
+      // a balance/rewards/cycle-status tick no longer versions it. The
+      // volatile per-cycle fields go to `credit_card_billing_stats`, keyed
+      // `{card_id}:{observed_on}` so same-day re-pulls are idempotent and a
+      // later day appends a new point in the series.
+      if (emitEntity) {
+        const rec = buildCreditCardBillingRecord(a, billing, nowIso());
+        if (!fingerprintCursor || fingerprintCursor.shouldEmit(rec)) {
+          await deps.emitRecord("credit_card_billing", rec);
+        }
       }
+      if (emitStats) {
+        await deps.emitRecord("credit_card_billing_stats", buildCreditCardBillingStatsRecord(a, billing, observedOn));
+      }
+    }
+    if (emitStats) {
+      await deps.emit({
+        type: "STATE",
+        stream: "credit_card_billing_stats",
+        cursor: { observed_on: observedOn, fetched_at: nowIso() },
+      });
+    }
+    if (!emitEntity) {
+      return;
     }
     if (!fingerprintCursor) {
       await deps.emit({
@@ -1875,6 +1968,38 @@ async function runCreditCardBillingStream(
       },
     });
   }
+}
+
+/** Run the `credit_card_billing` entity and/or `credit_card_billing_stats`
+ *  observation streams based on the requested scope. The entity fingerprint
+ *  cursor is only opened when the entity stream is requested. Extracted from
+ *  `collect()` to keep that orchestrator under the cognitive-complexity
+ *  budget. */
+async function maybeRunCreditCardBillingStreams(
+  deps: EmitDeps,
+  page: Page,
+  accounts: readonly DashboardAccount[],
+  state: Record<string, unknown>,
+  requested: RequestedScopes,
+  emittedAt: string
+): Promise<void> {
+  const wantsCardBilling = requested.has("credit_card_billing");
+  const wantsCardBillingStats = requested.has("credit_card_billing_stats");
+  if (!(wantsCardBilling || wantsCardBillingStats)) {
+    return;
+  }
+  const billingFingerprintCursor = wantsCardBilling
+    ? openFingerprintCursor(state.credit_card_billing, {
+        excludeFromFingerprint: ["fetched_at"],
+        priorFingerprints: readPriorCreditCardBillingFingerprints(state),
+      })
+    : undefined;
+  await runCreditCardBillingStream(deps, page, accounts, {
+    emitEntity: wantsCardBilling,
+    emitStats: wantsCardBillingStats,
+    fingerprintCursor: billingFingerprintCursor,
+    observedOn: emittedAt.slice(0, 10),
+  });
 }
 
 // ─── Connector entry point ────────────────────────────────────────────────
@@ -1917,17 +2042,7 @@ if (isMainModule(import.meta.url)) {
       const accounts = await extractAccounts(page);
       await progress(`Found ${accounts.length} account(s)`);
 
-      if (requested.has("accounts")) {
-        // Per-account fingerprint cursor (excludes the run-clock
-        // `fetched_at`) so an unchanged account stops appending a new
-        // version every run. A real balance/name/status move is a
-        // fingerprint boundary and still re-emits.
-        const accountsFingerprintCursor = openFingerprintCursor(state.accounts, {
-          excludeFromFingerprint: ["fetched_at"],
-          priorFingerprints: readPriorAccountFingerprints(state),
-        });
-        await emitAccountsStream(deps, accounts, emittedAt, accountsFingerprintCursor);
-      }
+      await maybeRunAccountsStreams(deps, accounts, state, requested, emittedAt);
 
       // Signal raised by the transactions loop when a page redirects to
       // /my/logon mid-run — meaning USAA's session has lapsed.
@@ -2009,17 +2124,11 @@ if (isMainModule(import.meta.url)) {
         await runInboxStream(deps, page, state);
       }
 
-      // CREDIT_CARD_BILLING — one record per credit-card account.
-      // Per-card fingerprint cursor (excludes the run-clock `fetched_at`)
-      // so an unchanged card stops appending a new version every run. A
-      // real balance/rewards/APR/status move is a fingerprint boundary and
-      // still re-emits.
-      if (requested.has("credit_card_billing") && !streamState.sessionDeadMidRun) {
-        const billingFingerprintCursor = openFingerprintCursor(state.credit_card_billing, {
-          excludeFromFingerprint: ["fetched_at"],
-          priorFingerprints: readPriorCreditCardBillingFingerprints(state),
-        });
-        await runCreditCardBillingStream(deps, page, accounts, billingFingerprintCursor);
+      // CREDIT_CARD_BILLING — entity (identity/settings) + optional
+      // `credit_card_billing_stats` observation. See
+      // `maybeRunCreditCardBillingStreams`.
+      if (!streamState.sessionDeadMidRun) {
+        await maybeRunCreditCardBillingStreams(deps, page, accounts, state, requested, emittedAt);
       }
 
       await emitDeferredStreams(emit, requested);

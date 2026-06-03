@@ -34,14 +34,27 @@ export interface DashboardAccount {
 // ─── Emitted records ─────────────────────────────────────────────────────
 
 export interface AccountRecord extends RecordData {
-  available_balance_cents: number | null;
-  balance_cents: number | null;
   fetched_at: string;
   id: string;
   last_four: string | null;
   name: string | null;
   status: "open";
   type: string;
+}
+
+/**
+ * Family-2 observation record: a daily balance snapshot for one account,
+ * keyed `{account_id}:{observed_on}` so repeated same-day pulls are
+ * idempotent and daily balance history is preserved. The point-in-time
+ * balance fields live here, not on `AccountRecord`, so a balance tick no
+ * longer versions the entity record.
+ */
+export interface AccountStatsRecord extends RecordData {
+  account_id: string;
+  available_balance_cents: number | null;
+  balance_cents: number | null;
+  id: string;
+  observed_on: string;
 }
 
 export interface TransactionRecord extends RecordData {
@@ -85,16 +98,31 @@ export interface CreditCardBillingRecord extends RecordData {
   account_id: string | null;
   account_nickname: string | null;
   annual_percent_rate: string | null;
-  available_credit_cents: number | null;
-  billing_status: string | null;
   card_holders: string | null;
   cash_advance_apr: string | null;
-  cash_rewards_cents: number | null;
   credit_limit_cents: number | null;
-  current_balance_cents: number | null;
   fetched_at: string;
   id: string;
+}
+
+/**
+ * Family-2 observation record: the per-cycle volatile financial state for
+ * one credit card, keyed `{card_id}:{observed_on}`. Current balance,
+ * available credit, accrued rewards, and the cycle billing-status flip live
+ * here so they no longer version the `credit_card_billing` entity record.
+ * Stable settings (`credit_limit_cents`, APRs, nickname, card holders) stay
+ * on the entity — see design.md for the classification rationale.
+ */
+export interface CreditCardBillingStatsRecord extends RecordData {
+  account_id: string | null;
+  available_credit_cents: number | null;
+  billing_status: string | null;
+  card_id: string;
+  cash_rewards_cents: number | null;
+  current_balance_cents: number | null;
+  id: string;
   minimum_payment_met: boolean;
+  observed_on: string;
 }
 
 // ─── Diagnostics (live-page drift detection) ─────────────────────────────
