@@ -366,7 +366,13 @@ export function openBudgetCursor(state: Record<string, unknown>): FingerprintCur
   });
 }
 
-function accountRecord(a: YnabAccount, budgetId: string): RecordData {
+// Account entity record: identity and settings fields only. The
+// point-in-time balance metrics (`balance`, `cleared_balance`,
+// `uncleared_balance`) are projected into the `account_stats` observation
+// stream so a balance move does not version this entity record. See
+// `accountStatsRecord` and the `split-ynab-account-balance-observation-stream`
+// OpenSpec change.
+export function accountRecord(a: YnabAccount, budgetId: string): RecordData {
   return {
     id: a.id,
     budget_id: budgetId,
@@ -374,9 +380,6 @@ function accountRecord(a: YnabAccount, budgetId: string): RecordData {
     type: a.type,
     on_budget: a.on_budget,
     closed: a.closed,
-    balance: a.balance,
-    cleared_balance: a.cleared_balance,
-    uncleared_balance: a.uncleared_balance,
     transfer_payee_id: a.transfer_payee_id ?? null,
     direct_import_linked: a.direct_import_linked ?? null,
     direct_import_in_error: a.direct_import_in_error ?? null,
@@ -386,6 +389,23 @@ function accountRecord(a: YnabAccount, budgetId: string): RecordData {
     debt_minimum_payments: a.debt_minimum_payments ?? null,
     debt_escrow_amounts: a.debt_escrow_amounts ?? null,
     deleted: a.deleted,
+  };
+}
+
+// Account balance observation record: point-in-time balances keyed by
+// `{account_id}:{observed_on}` (UTC date). One record per account per
+// calendar day; re-emitting on the same day with the same balances is
+// idempotent under the runtime byte-equivalence check. A later day appends a
+// new record, accumulating a daily balance time series.
+export function accountStatsRecord(a: YnabAccount, budgetId: string, observedOn: string): RecordData {
+  return {
+    id: `${a.id}:${observedOn}`,
+    account_id: a.id,
+    budget_id: budgetId,
+    observed_on: observedOn,
+    balance: a.balance,
+    cleared_balance: a.cleared_balance,
+    uncleared_balance: a.uncleared_balance,
   };
 }
 
@@ -579,8 +599,28 @@ export interface BudgetCtx {
   trackAndEmit: TrackedEmitRecord;
 }
 
+/**
+ * Per-budget fingerprint cursor for the `accounts` entity stream. After the
+ * balance fields move to `account_stats`, the entity record carries only
+ * identity and settings fields, so a full fingerprint (no exclusions) is
+ * correct: the record re-emits only when one of those fields actually changes.
+ *
+ * State shape: `state.accounts[budgetId].fingerprints`, opened per budget so a
+ * multi-budget owner cannot cross-contaminate fingerprint maps. The per-budget
+ * entry also carries the existing `server_knowledge` cursor; this wrapper reads
+ * only the `fingerprints` field.
+ */
+export function openAccountCursor(state: Record<string, unknown>, budgetId: string): FingerprintCursor {
+  const streamState = state.accounts;
+  let budgetEntry: unknown;
+  if (streamState && typeof streamState === "object" && !Array.isArray(streamState)) {
+    budgetEntry = (streamState as Record<string, unknown>)[budgetId];
+  }
+  return openFingerprintCursor(budgetEntry);
+}
+
 async function collectAccounts(ctx: BudgetCtx): Promise<void> {
-  const { budgetId, budgetOrdinal = 0, token, state, newState, emit, trackAndEmit, progress } = ctx;
+  const { budgetId, budgetOrdinal = 0, token, state, newState, requested, emit, trackAndEmit, progress } = ctx;
   const knowledge = priorKnowledge(state, "accounts", budgetId);
   await progress("Fetching YNAB accounts window", {
     stream: "accounts",
@@ -613,13 +653,52 @@ async function collectAccounts(ctx: BudgetCtx): Promise<void> {
     count: res.data.accounts.length,
     total: res.data.accounts.length,
   });
+
+  // Entity stream: gate on a per-record fingerprint so a balance-only delta
+  // does not version the account. `/accounts` is a `server_knowledge` PARTIAL
+  // scan — it returns only accounts changed since the prior knowledge value —
+  // so we must NOT prune: an account absent from this delta was not deleted,
+  // it just did not change. A real deletion arrives as a returned record with
+  // `deleted: true`, which the fingerprint treats as a normal field change.
+  const entityCursor = openAccountCursor(state, budgetId);
+  const wantsEntity = requested.has("accounts");
+  const wantsStats = requested.has("account_stats");
+  const observedOn = nowIso().slice(0, 10);
   for (const a of res.data.accounts) {
-    await trackAndEmit("accounts", accountRecord(a, budgetId));
+    if (wantsEntity) {
+      const entityRec = accountRecord(a, budgetId);
+      if (entityCursor.shouldEmit(entityRec)) {
+        await trackAndEmit("accounts", entityRec);
+      }
+    }
+    // Observation stream: append-keyed daily balance snapshot. Emitted
+    // unconditionally for returned accounts; the date-scoped key + runtime
+    // byte-equivalence make same-day same-balance re-emits idempotent.
+    if (wantsStats) {
+      await trackAndEmit("account_stats", accountStatsRecord(a, budgetId, observedOn));
+    }
   }
-  const accounts = (newState.accounts as Record<string, { server_knowledge: number }> | undefined) ?? {};
-  accounts[budgetId] = { server_knowledge: res.data.server_knowledge };
-  newState.accounts = accounts;
-  await emit({ type: "STATE", stream: "accounts", cursor: newState.accounts });
+
+  if (wantsEntity) {
+    const accounts =
+      (newState.accounts as
+        | Record<string, { server_knowledge: number; fingerprints?: Record<string, string> }>
+        | undefined) ?? {};
+    accounts[budgetId] = { server_knowledge: res.data.server_knowledge, fingerprints: entityCursor.toState() };
+    newState.accounts = accounts;
+    await emit({ type: "STATE", stream: "accounts", cursor: newState.accounts });
+  } else {
+    // `account_stats` requested without `accounts`: still advance the
+    // server_knowledge delta cursor so the next run continues incrementally.
+    const accounts = (newState.accounts as Record<string, { server_knowledge: number }> | undefined) ?? {};
+    accounts[budgetId] = { ...accounts[budgetId], server_knowledge: res.data.server_knowledge };
+    newState.accounts = accounts;
+    await emit({ type: "STATE", stream: "accounts", cursor: newState.accounts });
+  }
+
+  if (wantsStats) {
+    await emit({ type: "STATE", stream: "account_stats", cursor: { observed_on: observedOn, fetched_at: nowIso() } });
+  }
 }
 
 async function collectCategoriesAndGroups(ctx: BudgetCtx): Promise<void> {
@@ -1060,7 +1139,7 @@ export async function collectMonthCategories(
 
 async function collectForBudget(ctx: BudgetCtx): Promise<void> {
   const { requested } = ctx;
-  if (requested.has("accounts")) {
+  if (requested.has("accounts") || requested.has("account_stats")) {
     await collectAccounts(ctx);
   }
   if (requested.has("categories") || requested.has("category_groups")) {
