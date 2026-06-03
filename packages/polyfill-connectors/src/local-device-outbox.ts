@@ -501,24 +501,31 @@ export class LocalDeviceOutbox {
       return { matched, requeued: 0 };
     }
 
+    // Chunk the id set so a large requeue (an unlimited dead-letter backlog)
+    // never exceeds SQLite's per-statement variable limit. One transaction
+    // wraps every chunk so the requeue is still all-or-nothing.
     this.#db.exec("BEGIN IMMEDIATE");
     try {
-      const result = this.#db
-        .prepare(
-          `UPDATE local_device_outbox
-              SET status = 'ready',
-                  attempt_count = 0,
-                  next_attempt_at = ?,
-                  lease_holder = NULL,
-                  lease_until = NULL,
-                  last_error = NULL,
-                  updated_at = ?
-            WHERE id IN (${ids.map(() => "?").join(", ")})
-              AND status = 'dead_letter'`
-        )
-        .run(now, now, ...ids);
+      let requeued = 0;
+      for (const chunk of chunkArray(ids, SQLITE_IN_CLAUSE_CHUNK)) {
+        const result = this.#db
+          .prepare(
+            `UPDATE local_device_outbox
+                SET status = 'ready',
+                    attempt_count = 0,
+                    next_attempt_at = ?,
+                    lease_holder = NULL,
+                    lease_until = NULL,
+                    last_error = NULL,
+                    updated_at = ?
+              WHERE id IN (${chunk.map(() => "?").join(", ")})
+                AND status = 'dead_letter'`
+          )
+          .run(now, now, ...chunk);
+        requeued += Number(result.changes);
+      }
       this.#db.exec("COMMIT");
-      return { matched, requeued: Number(result.changes) };
+      return { matched, requeued };
     } catch (error) {
       this.#db.exec("ROLLBACK");
       throw error;
@@ -609,15 +616,26 @@ export class LocalDeviceOutbox {
       return { matched, pruned: 0 };
     }
 
-    const placeholders = ids.map(() => "?").join(", ");
+    // Delete in bounded id-chunks. A single `DELETE ... WHERE id IN (...)`
+    // over the full set would exceed SQLite's per-statement variable limit
+    // (~32k) — the exact failure an operator hits pruning the live 169k-row
+    // outbox this command exists to clean up. Chunking under
+    // SQLITE_IN_CLAUSE_CHUNK keeps every statement well within the limit; the
+    // whole prune is still one transaction so the outbox table and its
+    // observed-stream index are never left partially pruned.
     this.#db.exec("BEGIN IMMEDIATE");
     try {
-      this.#db.prepare(`DELETE FROM local_device_observed_stream WHERE outbox_id IN (${placeholders})`).run(...ids);
-      const result = this.#db
-        .prepare(`DELETE FROM local_device_outbox WHERE id IN (${placeholders}) AND status = 'succeeded'`)
-        .run(...ids);
+      let pruned = 0;
+      for (const chunk of chunkArray(ids, SQLITE_IN_CLAUSE_CHUNK)) {
+        const placeholders = chunk.map(() => "?").join(", ");
+        this.#db.prepare(`DELETE FROM local_device_observed_stream WHERE outbox_id IN (${placeholders})`).run(...chunk);
+        const result = this.#db
+          .prepare(`DELETE FROM local_device_outbox WHERE id IN (${placeholders}) AND status = 'succeeded'`)
+          .run(...chunk);
+        pruned += Number(result.changes);
+      }
       this.#db.exec("COMMIT");
-      return { matched, pruned: Number(result.changes) };
+      return { matched, pruned };
     } catch (error) {
       this.#db.exec("ROLLBACK");
       throw error;
@@ -1264,6 +1282,27 @@ function normalizeLimit(value: number | undefined): number | null {
 
 function sqlStringLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
+}
+
+/**
+ * Max bound parameters to put in a single `... IN (?, ?, …)` statement.
+ *
+ * SQLite caps host parameters per prepared statement (commonly 32,766 in
+ * recent builds; `node:sqlite` rejects ≥ 32,767 with "too many SQL
+ * variables"). A bulk prune/requeue over the live 169k-row outbox would blow
+ * past that as one statement. 500 is far below every build's ceiling, keeps
+ * each statement small, and still drains a 169k-row backlog in ~340 chunks
+ * inside one transaction.
+ */
+const SQLITE_IN_CLAUSE_CHUNK = 500;
+
+/** Split an array into consecutive chunks of at most `size` elements. */
+function chunkArray<T>(items: readonly T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
 }
 
 const DEAD_LETTER_SECRET_RE =
