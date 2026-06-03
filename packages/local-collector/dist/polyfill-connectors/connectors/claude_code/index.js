@@ -365,7 +365,7 @@ async function parseJsonlFile(args) {
         if (!buildOnly && lineCount % LINE_PROGRESS_INTERVAL === 0) {
             await emit({
                 type: "PROGRESS",
-                message: `  ${path}: ${lineCount} lines parsed`,
+                message: `Claude Code phase=emit pass=emit lines_parsed=${lineCount}`,
             });
         }
         const messageCountBeforeLine = obs.messageCount;
@@ -506,7 +506,7 @@ async function emitProjectMemoryNotes({ emitRecord, fileMtimes, newMtimes, proje
         await emitRecord("memory_notes", buildMemoryNoteRecord({ projectDir, relPath, frontmatter, body, path: fullPath, mtimeMs: st.mtimeMs }));
     }
 }
-async function processJsonlFile({ args, forcedSessionId, path, progressLabel, projectDir, }) {
+async function processJsonlFile({ args, forcedSessionId, path, projectDir }) {
     let st;
     try {
         st = statSync(path);
@@ -521,7 +521,7 @@ async function processJsonlFile({ args, forcedSessionId, path, progressLabel, pr
     }
     await args.emit({
         type: "PROGRESS",
-        message: `${args.buildOnly ? "Indexing" : "Emitting"} ${progressLabel} (${(st.size / BYTES_PER_MB).toFixed(1)}MB)`,
+        message: `Claude Code phase=${args.buildOnly ? "index" : "emit"} pass=${args.buildOnly ? "index" : "emit"} file_size_mb=${(st.size / BYTES_PER_MB).toFixed(1)}`,
     });
     await parseJsonlFile({
         buildOnly: args.buildOnly,
@@ -542,7 +542,6 @@ async function processTopLevelJsonl(entries, projectPath, projectDir, args) {
             args,
             forcedSessionId: null,
             path: join(projectPath, f),
-            progressLabel: `${projectDir}/${f}`,
             projectDir,
         });
     }
@@ -561,7 +560,6 @@ async function processSessionDir(sessEnt, projectPath, projectDir, args) {
             args,
             forcedSessionId: sessionId,
             path: join(subagentsDir, f),
-            progressLabel: `${projectDir}/${sessionId}/subagents/${f}`,
             projectDir,
         });
     }
@@ -606,13 +604,12 @@ async function listProjectDirs(baseDir, emit) {
     try {
         projectDirs = (await readdir(baseDir)).filter((name) => !name.startsWith("."));
     }
-    catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
+    catch {
         await emit({
             type: "SKIP_RESULT",
             stream: "sessions",
             reason: "claude_dir_not_found",
-            message: `${baseDir} not readable: ${errMsg}`,
+            message: "Claude Code projects directory not readable",
         });
         return null;
     }
@@ -625,9 +622,10 @@ export async function scanProjectDirs(args) {
     if (projectDirs === null) {
         return;
     }
+    const totalProjectDirs = projectDirs.length;
     await args.emit({
         type: "PROGRESS",
-        message: `${projectDirs.length} project dirs in scope`,
+        message: `Claude Code phase=index pass=index total_project_dirs=${totalProjectDirs}`,
     });
     for (const projectDir of projectDirs) {
         await scanProjectDir(projectDir, args);
@@ -661,9 +659,16 @@ async function assertRequestedClaudeSources(input) {
         throw new Error(`requested Claude Code local source path(s) are missing or unreadable: ${missing.join(", ")}`);
     }
 }
+async function emitCoverageDiagnostics(input) {
+    if (!input.requested.has("coverage_diagnostics")) {
+        return;
+    }
+    for (const record of input.inventory.coverage) {
+        await input.emitRecord("coverage_diagnostics", record);
+    }
+}
 async function emitLocalInventoryStreams(input) {
-    const inventory = await buildLocalSourceInventory("claude_code", input.claudeHome, CLAUDE_CODE_KNOWN_LOCAL_STORES);
-    for (const [stream, records] of inventory.recordsByStream) {
+    for (const [stream, records] of input.inventory.recordsByStream) {
         if (!input.requested.has(stream)) {
             continue;
         }
@@ -684,11 +689,6 @@ async function emitLocalInventoryStreams(input) {
             await input.emitRecord("file_history", record);
         }
     }
-    if (input.requested.has("coverage_diagnostics")) {
-        for (const record of inventory.coverage) {
-            await input.emitRecord("coverage_diagnostics", record);
-        }
-    }
 }
 async function runSkillsAndCommands(claudeHome, requested, emit, emitRecord, state) {
     try {
@@ -700,9 +700,8 @@ async function runSkillsAndCommands(claudeHome, requested, emit, emitRecord, sta
             newMtimes: state.newSkillsMtimes,
         });
     }
-    catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        await emit({ type: "PROGRESS", message: `skills scan skipped: ${msg}` });
+    catch {
+        await emit({ type: "PROGRESS", message: "Claude Code phase=index pass=index stream=skills scan_skipped=true" });
     }
     try {
         await emitSlashCommands({
@@ -713,9 +712,11 @@ async function runSkillsAndCommands(claudeHome, requested, emit, emitRecord, sta
             newMtimes: state.newSlashCommandMtimes,
         });
     }
-    catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        await emit({ type: "PROGRESS", message: `slash_commands scan skipped: ${msg}` });
+    catch {
+        await emit({
+            type: "PROGRESS",
+            message: "Claude Code phase=index pass=index stream=slash_commands scan_skipped=true",
+        });
     }
     if (requested.has("skills")) {
         await emit({
@@ -742,6 +743,8 @@ if (isMainModule(import.meta.url)) {
         async collect({ state, requested, emit, emitRecord }) {
             const claudeHome = process.env.CLAUDE_CODE_HOME || join(homedir(), ".claude");
             const baseDir = process.env.CLAUDE_CODE_PROJECTS_DIR || join(claudeHome, "projects");
+            const inventory = await buildLocalSourceInventory("claude_code", claudeHome, CLAUDE_CODE_KNOWN_LOCAL_STORES);
+            await emitCoverageDiagnostics({ emitRecord, inventory, requested });
             await assertRequestedClaudeSources({ baseDir, claudeHome, requested });
             const typedState = state;
             const messageFileMtimes = streamFileMtimes(typedState, "messages") ?? typedState.file_mtimes ?? {};
@@ -752,7 +755,7 @@ if (isMainModule(import.meta.url)) {
             const newSkillsMtimes = { ...skillsMtimes };
             const newSlashCommandMtimes = { ...slashCommandMtimes };
             const newMemoryNoteMtimes = { ...memoryNoteMtimes };
-            await emitLocalInventoryStreams({ claudeHome, requested, emitRecord });
+            await emitLocalInventoryStreams({ claudeHome, inventory, requested, emitRecord });
             await runSkillsAndCommands(claudeHome, requested, emit, emitRecord, {
                 skillsMtimes,
                 newSkillsMtimes,

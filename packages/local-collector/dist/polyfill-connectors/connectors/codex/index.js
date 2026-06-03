@@ -227,11 +227,10 @@ function openThreadsDb(dbPath) {
     try {
         return new DatabaseSync(dbPath, { readOnly: true });
     }
-    catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+    catch {
         emit({
             type: "PROGRESS",
-            message: `state_5.sqlite unreadable (${msg}); falling back to rollouts only`,
+            message: "Codex phase=index pass=index state_db_readable=false fallback=rollouts_only",
         });
         return null;
     }
@@ -241,11 +240,10 @@ function queryThreadsRows(db) {
         const rawRows = db.prepare(THREADS_QUERY).all();
         return rawRows;
     }
-    catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+    catch {
         emit({
             type: "PROGRESS",
-            message: `threads query failed (${msg}); falling back to rollouts only`,
+            message: "Codex phase=index pass=index state_db_query_failed=true fallback=rollouts_only",
         });
         return [];
     }
@@ -460,10 +458,10 @@ const PROGRESS_EVERY = 2000;
 export function shouldDeferActiveRolloutFile(input) {
     return input.quietMs > 0 && input.mtimeMs > input.nowMs - input.quietMs;
 }
-export function processRolloutLine({ deps, file, obj, state }) {
+export function processRolloutLine({ deps, obj, state }) {
     state.lineCount++;
     if (state.lineCount % PROGRESS_EVERY === 0) {
-        deps.progress(`  ${file}: ${state.lineCount} lines parsed`);
+        deps.progress(`Codex phase=emit pass=emit lines_parsed=${state.lineCount}`);
     }
     const ts = obj.timestamp || null;
     const range = { firstTs: state.firstTimestamp, lastTs: state.lastTimestamp };
@@ -563,7 +561,7 @@ async function parseRolloutFile(args) {
         });
     }
 }
-async function processRolloutEntry(entry, args) {
+async function processRolloutEntry(entry, args, rolloutOrdinal) {
     let st;
     try {
         st = statSync(entry.path);
@@ -579,14 +577,14 @@ async function processRolloutEntry(entry, args) {
     if (shouldDeferActiveRolloutFile({ mtimeMs: mtime, nowMs: args.scanStartedAtMs, quietMs: args.activeQuietMs })) {
         emit({
             type: "PROGRESS",
-            message: `Deferring active rollout ${entry.year}/${entry.month}/${entry.day}/${entry.file}`,
+            message: `Codex phase=index pass=index item=${rolloutOrdinal} backpressure=active_rollout_deferred`,
         });
         await waitForEmitDrain();
         return "skipped";
     }
     emit({
         type: "PROGRESS",
-        message: `Parsing ${entry.year}/${entry.month}/${entry.day}/${entry.file} (${(st.size / 1024 / 1024).toFixed(1)}MB)`,
+        message: `Codex phase=emit pass=emit item=${rolloutOrdinal} file_size_mb=${(st.size / 1024 / 1024).toFixed(1)}`,
     });
     await waitForEmitDrain();
     await parseRolloutFile({
@@ -604,25 +602,25 @@ async function scanRollouts(args) {
     if (!baseExists) {
         emit({
             type: "PROGRESS",
-            message: `${args.baseDir} not readable`,
+            message: "Codex phase=index pass=index sessions_dir_readable=false",
         });
         await waitForEmitDrain();
         return { parsedFiles: 0 };
     }
-    let fileCount = 0;
-    let parsedFiles = 0;
+    let totalRollouts = 0;
+    let parsedRollouts = 0;
     for await (const entry of walkRollouts(args.baseDir)) {
-        fileCount++;
-        if ((await processRolloutEntry(entry, args)) === "parsed") {
-            parsedFiles++;
+        totalRollouts++;
+        if ((await processRolloutEntry(entry, args, totalRollouts)) === "parsed") {
+            parsedRollouts++;
         }
     }
     emit({
         type: "PROGRESS",
-        message: `Scanned ${fileCount} rollout files`,
+        message: `Codex phase=index pass=index total_items=${totalRollouts} parsed_items=${parsedRollouts}`,
     });
     await waitForEmitDrain();
-    return { parsedFiles };
+    return { parsedFiles: parsedRollouts };
 }
 function emitSessions({ stateDbPath, rolloutAggregates, emitRecord, cursor }) {
     const { map: threadsById } = loadThreadsMap(stateDbPath);
@@ -826,9 +824,17 @@ function fileMtimeMs(path) {
         return 0;
     }
 }
+async function emitCoverageDiagnostics(input) {
+    if (!input.requested.has("coverage_diagnostics")) {
+        return;
+    }
+    for (const record of input.inventory.coverage) {
+        input.emitRecord("coverage_diagnostics", record);
+        await waitForEmitDrain();
+    }
+}
 async function emitLocalInventoryStreams(input) {
-    const inventory = await buildLocalSourceInventory("codex", input.codexHome, CODEX_KNOWN_LOCAL_STORES);
-    for (const [stream, records] of inventory.recordsByStream) {
+    for (const [stream, records] of input.inventory.recordsByStream) {
         if (!input.requested.has(stream)) {
             continue;
         }
@@ -858,12 +864,6 @@ async function emitLocalInventoryStreams(input) {
             await waitForEmitDrain();
         }
     }
-    if (input.requested.has("coverage_diagnostics")) {
-        for (const record of inventory.coverage) {
-            input.emitRecord("coverage_diagnostics", record);
-            await waitForEmitDrain();
-        }
-    }
 }
 async function main() {
     const startMsg = await readStartMessage();
@@ -876,7 +876,6 @@ async function main() {
     }
     const resFilters = buildResourceFilters(requested);
     const dirs = resolveCodexDirs();
-    await assertRequestedCodexSources(dirs, requested);
     const fileMtimes = readFileMtimes(startMsg);
     let total = 0;
     const nowIso = () => new Date().toISOString();
@@ -916,7 +915,10 @@ async function main() {
     const sessionsSourceMtimeMs = fileMtimeMs(dirs.stateDbPath);
     let parsedRolloutFiles = 0;
     const threadFingerprints = openCarryForwardCursor(readPriorThreadFingerprints(startMsg));
-    await emitLocalInventoryStreams({ codexHome: dirs.codexHome, requested, emitRecord });
+    const inventory = await buildLocalSourceInventory("codex", dirs.codexHome, CODEX_KNOWN_LOCAL_STORES);
+    await emitCoverageDiagnostics({ emitRecord, inventory, requested });
+    await assertRequestedCodexSources(dirs, requested);
+    await emitLocalInventoryStreams({ codexHome: dirs.codexHome, inventory, requested, emitRecord });
     if (needRollouts) {
         const rolloutScan = await scanRollouts({
             activeQuietMs: resolveActiveRolloutQuietMs(),
