@@ -50,8 +50,8 @@ pdpp-local-collector --help
 `@pdpp/cli` is separate:
 
 ```bash
-# @pdpp/cli package, installs the pdpp binary
-npm i -g @pdpp/cli
+# @pdpp/cli@beta package, installs the pdpp binary
+npm i -g @pdpp/cli@beta
 pdpp --help
 ```
 

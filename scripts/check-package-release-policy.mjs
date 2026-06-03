@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 
 const repoRoot = process.cwd();
 const expectedPublishConfig = {
@@ -13,8 +14,96 @@ const expectedPublishConfig = {
 const expectedRepositoryUrl = 'git+https://github.com/vana-com/pdpp.git';
 const expectedNodeEngine = '>=22.14.0';
 
+// While the release train is in its beta-only posture (see
+// docs/package-release-policy.md), npm's default `latest` dist-tag still points
+// at the placeholder 0.0.0 that was published during owner bootstrap. Any
+// operator-facing install/exec instruction that omits an explicit dist-tag
+// therefore resolves to that empty placeholder. We require the `@beta` tag (or
+// a pinned version) on every publishable-package install command in the active
+// docs below, so the docs cannot silently regress operators onto `latest`.
+const betaPostureDistTag = 'beta';
+const installDocRoots = [
+  'README.md',
+  'docs',
+  'reference-implementation/README.md',
+  'reference-implementation/docs',
+  'apps/site/content/docs',
+  'packages/cli/README.md',
+  'packages/local-collector/README.md',
+  'packages/mcp-server/README.md',
+];
+
 function readJson(filePath) {
   return JSON.parse(readFileSync(filePath, 'utf8'));
+}
+
+function listMarkdownFiles(relativeRoot) {
+  const absolute = path.join(repoRoot, relativeRoot);
+  if (!existsSync(absolute)) {
+    return [];
+  }
+  const out = [];
+  function walk(target) {
+    const stat = statSync(target);
+    if (stat.isFile()) {
+      if (target.endsWith('.md')) {
+        out.push(path.relative(repoRoot, target));
+      }
+      return;
+    }
+    if (!stat.isDirectory()) {
+      return;
+    }
+    for (const entry of readdirSync(target, { withFileTypes: true })) {
+      if (entry.name === 'node_modules' || entry.name === '.next') {
+        continue;
+      }
+      walk(path.join(target, entry.name));
+    }
+  }
+  walk(absolute);
+  return out;
+}
+
+// Returns one error string per active-doc install command that references a
+// publishable package without an explicit `@beta`/pinned tag. Pure over its
+// inputs so it can be unit tested without touching the registry.
+export function findUntaggedInstallDocReferences({ packageNames, docFiles, readFile }) {
+  const problems = [];
+  // Match `npm i`, `npm install`, `npm add`, `pnpm add`, `pnpm install`,
+  // `pnpm dlx`, `pnpm exec`, and `npx` invocations only — prose mentions of a
+  // package name (specs, comments) are intentionally ignored.
+  const installCommand = /\b(?:npm\s+(?:i|install|add)|pnpm\s+(?:add|install|dlx|exec)|npx)\b/;
+  for (const docFile of docFiles) {
+    const lines = readFile(docFile).split('\n');
+    for (const line of lines) {
+      // Skip shell comments and Markdown headings (`# ...`): they describe an
+      // install command in prose but cannot execute one, so a bare package
+      // name there is not an operator hazard.
+      if (/^\s*#/.test(line)) {
+        continue;
+      }
+      if (!installCommand.test(line)) {
+        continue;
+      }
+      for (const packageName of packageNames) {
+        // The package reference is acceptable when it carries an explicit tag
+        // (`@beta`) or a pinned version (`@1.2.3`, `@^1`, `@0.1.0-beta.7`).
+        const taggedReference = new RegExp(`${escapeRegExp(packageName)}@[^\\s'"\`]+`);
+        const bareReference = new RegExp(`${escapeRegExp(packageName)}(?![@\\w./-])`);
+        if (bareReference.test(line) && !taggedReference.test(line)) {
+          problems.push(
+            `${docFile} installs ${packageName} without an explicit @${betaPostureDistTag} tag (resolves to placeholder latest while in beta-only posture): ${line.trim()}`,
+          );
+        }
+      }
+    }
+  }
+  return problems;
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function listPackageJsonFiles(rootDir = '.') {
@@ -47,6 +136,8 @@ function fail(errors, message) {
   errors.push(message);
 }
 
+const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
+
 const errors = [];
 const rootPackage = readJson(path.join(repoRoot, 'package.json'));
 if (rootPackage.private !== true) {
@@ -63,7 +154,7 @@ const publishablePackages = packages
   .filter(({ dir, manifest }) => dir.startsWith('packages/') && manifest.name?.startsWith('@pdpp/') && manifest.private !== true)
   .sort((a, b) => a.dir.localeCompare(b.dir));
 
-for (const { file, dir, manifest } of packages) {
+for (const { file, manifest } of packages) {
   if (file === 'package.json') {
     continue;
   }
@@ -136,14 +227,31 @@ for (const scope of packageScopes) {
   }
 }
 
-if (errors.length > 0) {
-  console.error('PDPP package release policy check failed:');
-  for (const error of errors) {
-    console.error(`- ${error}`);
-  }
-  process.exit(1);
+const publishablePackageNames = publishablePackages.map(({ manifest }) => manifest.name);
+const installDocFiles = installDocRoots.flatMap((root) => listMarkdownFiles(root));
+const untaggedInstallDocReferences = findUntaggedInstallDocReferences({
+  packageNames: publishablePackageNames,
+  docFiles: installDocFiles,
+  readFile: (relativePath) => readFileSync(path.join(repoRoot, relativePath), 'utf8'),
+});
+for (const problem of untaggedInstallDocReferences) {
+  fail(errors, problem);
 }
 
-console.log(
-  `PDPP package release policy OK: ${publishablePackages.map(({ manifest }) => manifest.name).join(', ') || 'no publishable packages'}`,
-);
+// Exported so a unit test can assert the live repository passes without
+// re-running the CLI side effects.
+export const policyErrors = errors;
+
+if (isMainModule) {
+  if (errors.length > 0) {
+    console.error('PDPP package release policy check failed:');
+    for (const error of errors) {
+      console.error(`- ${error}`);
+    }
+    process.exit(1);
+  }
+
+  console.log(
+    `PDPP package release policy OK: ${publishablePackages.map(({ manifest }) => manifest.name).join(', ') || 'no publishable packages'}`,
+  );
+}

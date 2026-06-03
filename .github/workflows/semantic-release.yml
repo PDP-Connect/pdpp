@@ -97,6 +97,9 @@ jobs:
       - name: Check package release policy
         run: pnpm release:policy-check
 
+      - name: Test package release policy checks
+        run: pnpm release:policy-check:test
+
       - name: Typecheck operator console app
         run: pnpm --dir apps/console run types:check
 
