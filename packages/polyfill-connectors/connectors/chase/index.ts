@@ -1358,7 +1358,7 @@ async function processAccountDownload(
   const progressMsg = {
     type: "PROGRESS",
     stream: "transactions",
-    message: `Downloading QFX for account ${progressLabel} (activity=${activityChoice.activity})`,
+    message: `Downloading QFX for account ${progressLabel} (activity=${activityChoice.activity}, timeout=${DOWNLOAD_TIMEOUT_MS / 1000}s)`,
     ...(accountProgress ? { count: accountProgress.index, total: accountProgress.total } : {}),
   } as const;
   await deps.emit(progressMsg);

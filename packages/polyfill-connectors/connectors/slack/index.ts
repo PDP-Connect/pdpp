@@ -920,15 +920,19 @@ async function ensureArchiveOnDisk(deps: EnsureArchiveDeps): Promise<void> {
  */
 async function runRequestedStreams(deps: StreamDeps, state: CollectContext["state"]): Promise<string | null> {
   if (deps.requested.has("workspace")) {
+    deps.progress("Slack: emitting workspace record", { stream: "workspace" });
     await runWorkspaceStream(deps);
   }
   if (deps.requested.has("channels") || deps.requested.has("channel_stats")) {
+    deps.progress("Slack: emitting channels", { stream: "channels" });
     await runChannelsStream(deps);
   }
   if (deps.requested.has("channel_memberships")) {
+    deps.progress("Slack: emitting channel memberships", { stream: "channel_memberships" });
     await runChannelMembershipsStream(deps);
   }
   if (deps.requested.has("users")) {
+    deps.progress("Slack: emitting users", { stream: "users" });
     await runUsersStream(deps);
   }
   // Messages, reactions, message_attachments share one pass for efficiency.
@@ -936,13 +940,19 @@ async function runRequestedStreams(deps: StreamDeps, state: CollectContext["stat
   if (deps.requested.has("messages") || deps.requested.has("reactions") || deps.requested.has("message_attachments")) {
     const messagesState = state.messages as MessagesState | undefined;
     const priorTs = messagesState?.last_ts || null;
+    deps.progress(
+      priorTs ? `Slack: emitting messages newer than ${priorTs}` : "Slack: emitting all messages (full pass)",
+      { stream: "messages" }
+    );
     const result = await runMessagesUnifiedPass(deps, priorTs);
     maxMessageTs = result.maxMessageTs;
   }
   if (deps.requested.has("files")) {
+    deps.progress("Slack: emitting files", { stream: "files" });
     await runFilesStream(deps);
   }
   if (deps.requested.has("canvases")) {
+    deps.progress("Slack: emitting canvases", { stream: "canvases" });
     await runCanvasesStream(deps);
   }
   return maxMessageTs;

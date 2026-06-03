@@ -1073,7 +1073,7 @@ async function listConversationsSinceCursor(
   deps.emit({
     type: "PROGRESS",
     stream: "conversations",
-    message: "Listing conversations",
+    message: priorCursor ? `Listing conversations updated after ${priorCursor}` : "Listing conversations (full pass)",
   });
   while (!stopPaging) {
     const res = await deps.api.fetch(`/conversations?offset=${offset}&limit=${limit}&order=updated`);

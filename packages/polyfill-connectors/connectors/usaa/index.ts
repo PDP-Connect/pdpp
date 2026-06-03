@@ -1455,6 +1455,11 @@ async function runTransactionsStream(
       continue;
     }
     if (streamState.sessionDeadMidRun) {
+      await deps.emit({
+        type: "PROGRESS",
+        stream: "transactions",
+        message: `Session died mid-run; skipping remaining ${transactionAccounts.length - i} account(s)`,
+      });
       break;
     }
     const accountKey = a.account_id_raw || "";

@@ -370,6 +370,13 @@ async function reportEmptyPageDiagnostics(page: Page, year: number, startIndex: 
   if (classification.action === "terminal") {
     return;
   }
+  if (classification.reason === "source_auth_or_challenge") {
+    await emit({
+      type: "PROGRESS",
+      stream: "orders",
+      message: `Amazon year ${year}: sign-in or CAPTCHA challenge detected — manual action required to continue`,
+    });
+  }
   if (diag && classification.reason === "selector_drift") {
     const shotPath = `/tmp/amazon-drift-${year}-${startIndex}.png`;
     await page.screenshot({ path: shotPath, fullPage: true }).catch((): undefined => undefined);
