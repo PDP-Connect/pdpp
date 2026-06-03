@@ -34,7 +34,7 @@
  *                               balances/rewards/APRs preserved as boundaries)
  *
  *   2. "Exact stable-JSON identity" — local-device connectors
- *      (codex, claude_code) whose record bodies are derived from
+ *      (codex, claude-code) whose record bodies are derived from
  *      on-disk JSONL / sqlite without volatile fields in the record
  *      payload itself (no `fetched_at` in `record_json`, timestamps
  *      come from the underlying source event, mtimes are gated at the
@@ -46,7 +46,7 @@
  *      mtime-gate miss. Compacting it removes nothing the connector
  *      would consider a meaningful version transition.
  *        - codex      / messages, function_calls, sessions, skills, prompts, rules
- *        - claude_code / messages, attachments, sessions, skills,
+ *        - claude-code / messages, attachments, sessions, skills,
  *                        memory_notes, slash_commands
  *
  * Authorization is by direct database access — possession of
@@ -409,23 +409,23 @@ export const COMPACTION_POLICIES = [
   //     Records carry `mtime_epoch` (seconds, floor(mtimeMs/1000)).
   //     Every full-scan emit re-stamps the file unless content changes.
   //     Adjacent identical JSON = mtime unchanged AND content unchanged.
-  //   claude_code/messages, claude_code/attachments
+  //   claude-code/messages, claude-code/attachments
   //     Like Codex, fields come from JSONL line events; `timestamp` is
   //     from the source line (or, for `tool_result_file` attachments,
   //     from the file mtime — but those re-emit only on mtime change,
   //     so adjacent identical JSON still means no real change).
-  //   claude_code/sessions
+  //   claude-code/sessions
   //     Aggregated per-session record. `last_event_at` widens to the
   //     observed max; `message_count` is a running tally. Adjacent
   //     identical JSON means the aggregate didn't move.
-  //   claude_code/memory_notes, claude_code/skills, claude_code/slash_commands
+  //   claude-code/memory_notes, claude-code/skills, claude-code/slash_commands
   //     Local markdown/JSON files with `mtime_epoch` (seconds) in the
   //     payload. Adjacent identical JSON = file content didn't change.
   //
   // `connector_id` values in the live database for these connectors
-  // are `local-device:codex` and `local-device:claude_code`. The
-  // short forms (`codex`, `claude_code`) are also accepted so the
-  // operator does not need to translate.
+  // are `codex` and `claude-code` (hyphen, not underscore). Multi-device
+  // local-collector deployments use `local-device:codex` and
+  // `local-device:claude-code`; both forms are covered by each policy.
   ...buildLocalDeviceExactJsonPolicies('codex', [
     'messages',
     'function_calls',
@@ -434,23 +434,23 @@ export const COMPACTION_POLICIES = [
     'prompts',
     'rules',
   ]),
-  ...buildLocalDeviceExactJsonPolicies('claude_code', [
+  ...buildLocalDeviceExactJsonPolicies('claude-code', [
     'messages',
     'attachments',
     'sessions',
     'skills',
     'memory_notes',
     'slash_commands',
-  ]),
+  ], 'claude_code'),
 ];
 
-function buildLocalDeviceExactJsonPolicies(connector, streams) {
+function buildLocalDeviceExactJsonPolicies(connector, streams, dirName = connector) {
   return streams.map((stream) => ({
     connectorIds: [connector, `local-device:${connector}`],
     stream,
     excludeKeys: [],
     connectorSource:
-      `packages/polyfill-connectors/connectors/${connector}/ — exact stable-JSON identity ` +
+      `packages/polyfill-connectors/connectors/${dirName}/ — exact stable-JSON identity ` +
       `(no fetched_at in record_json; record payload derived from immutable source events ` +
       `and/or mtime-gated file emits)`,
   }));

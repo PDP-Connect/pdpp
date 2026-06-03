@@ -104,13 +104,13 @@ test('COMPACTION_POLICIES exposes the registered policies (short-name canonical 
     ['codex', 'skills'],
     ['codex', 'prompts'],
     ['codex', 'rules'],
-    // exact stable-JSON identity family (claude_code)
-    ['claude_code', 'messages'],
-    ['claude_code', 'attachments'],
-    ['claude_code', 'sessions'],
-    ['claude_code', 'skills'],
-    ['claude_code', 'memory_notes'],
-    ['claude_code', 'slash_commands'],
+    // exact stable-JSON identity family (claude-code)
+    ['claude-code', 'messages'],
+    ['claude-code', 'attachments'],
+    ['claude-code', 'sessions'],
+    ['claude-code', 'skills'],
+    ['claude-code', 'memory_notes'],
+    ['claude-code', 'slash_commands'],
   ];
   const actual = COMPACTION_POLICIES.map((p) => [p.connectorIds[0], p.stream]);
   assert.deepEqual(actual, expected);
@@ -120,14 +120,14 @@ test('findPolicy returns null for unknown streams', () => {
   assert.equal(findPolicy('slack', 'messages'), null);
   assert.equal(findPolicy('gmail', 'messages'), null);
   assert.equal(findPolicy('codex', 'unknown_stream'), null);
-  assert.equal(findPolicy('claude_code', 'unknown_stream'), null);
+  assert.equal(findPolicy('claude-code', 'unknown_stream'), null);
   assert.equal(findPolicy('chatgpt', 'messages'), null);
 });
 
-test('findPolicy resolves codex and claude_code via short name or `local-device:` prefix', () => {
+test('findPolicy resolves codex and claude-code via short name or `local-device:` prefix', () => {
   for (const [short, prefixed] of [
     ['codex', 'local-device:codex'],
-    ['claude_code', 'local-device:claude_code'],
+    ['claude-code', 'local-device:claude-code'],
   ]) {
     const streams = short === 'codex'
       ? ['messages', 'function_calls', 'sessions', 'skills', 'prompts', 'rules']

@@ -667,7 +667,7 @@ if (canonicalRecordFingerprint) {
     );
   });
 
-  test('parity: claude_code local-device record shapes (messages, attachments, sessions, mtime-stamped artifacts)', () => {
+  test('parity: claude-code local-device record shapes (messages, attachments, sessions, mtime-stamped artifacts)', () => {
     expectParity(
       {
         id: 'uuid-1',
@@ -682,7 +682,7 @@ if (canonicalRecordFingerprint) {
         agent_id: null,
       },
       [],
-      'claude_code/messages',
+      'claude-code/messages',
     );
     expectParity(
       {
@@ -698,7 +698,7 @@ if (canonicalRecordFingerprint) {
         timestamp: '2026-05-26T10:00:01.000Z',
       },
       [],
-      'claude_code/attachments',
+      'claude-code/attachments',
     );
     expectParity(
       {
@@ -714,7 +714,7 @@ if (canonicalRecordFingerprint) {
         entrypoint: 'cli',
       },
       [],
-      'claude_code/sessions',
+      'claude-code/sessions',
     );
     expectParity(
       {
@@ -728,7 +728,7 @@ if (canonicalRecordFingerprint) {
         mtime_epoch: 1716700000,
       },
       [],
-      'claude_code/skills',
+      'claude-code/skills',
     );
     expectParity(
       {
@@ -743,7 +743,7 @@ if (canonicalRecordFingerprint) {
         mtime_epoch: 1716700000,
       },
       [],
-      'claude_code/memory_notes',
+      'claude-code/memory_notes',
     );
     expectParity(
       {
@@ -756,7 +756,7 @@ if (canonicalRecordFingerprint) {
         mtime_epoch: 1716700000,
       },
       [],
-      'claude_code/slash_commands',
+      'claude-code/slash_commands',
     );
   });
 
@@ -790,13 +790,13 @@ if (canonicalRecordFingerprint) {
       'codex/skills',
       'codex/prompts',
       'codex/rules',
-      // exact stable-JSON identity family (claude_code)
-      'claude_code/messages',
-      'claude_code/attachments',
-      'claude_code/sessions',
-      'claude_code/skills',
-      'claude_code/memory_notes',
-      'claude_code/slash_commands',
+      // exact stable-JSON identity family (claude-code)
+      'claude-code/messages',
+      'claude-code/attachments',
+      'claude-code/sessions',
+      'claude-code/skills',
+      'claude-code/memory_notes',
+      'claude-code/slash_commands',
     ]);
     for (const p of COMPACTION_POLICIES) {
       const pair = `${p.connectorIds[0]}/${p.stream}`;
