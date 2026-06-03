@@ -97,6 +97,13 @@ test('COMPACTION_POLICIES exposes the registered policies (short-name canonical 
     // already bounds the churn window; this is a partial scan (never
     // pruned). order_items has no fetched_at and no policy. (2026-06-03)
     ['amazon', 'orders'],
+    // chatgpt custom_instructions / shared_conversations re-emit a stable-id
+    // body with NO run-clock field every run; the connector now gates emit
+    // through a whole-body fingerprint cursor (excludeFromFingerprint []) and
+    // this mirrors it with excludeKeys []. A no-op refresh collapses; a real
+    // edit / new share is a boundary that survives. (2026-06-03)
+    ['chatgpt', 'custom_instructions'],
+    ['chatgpt', 'shared_conversations'],
     // exact stable-JSON identity family (codex)
     ['codex', 'messages'],
     ['codex', 'function_calls'],

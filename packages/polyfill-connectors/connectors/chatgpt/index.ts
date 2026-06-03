@@ -27,6 +27,7 @@ import {
   runConnector,
   type ValidateRecord,
 } from "../../src/connector-runtime.ts";
+import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import type { CaptureSession } from "../../src/fixture-capture.ts";
 import {
   RetryExhaustedError,
@@ -823,7 +824,10 @@ export async function runMemoriesStream(deps: StreamDeps): Promise<void> {
  * other non-200 → SKIP "http_error". Success path emits the record and a
  * STATE heartbeat.
  */
-export async function runCustomInstructionsStream(deps: StreamDeps): Promise<void> {
+export async function runCustomInstructionsStream(
+  deps: StreamDeps,
+  state: CollectContext["state"] = {}
+): Promise<void> {
   deps.emit({
     type: "PROGRESS",
     stream: "custom_instructions",
@@ -849,11 +853,21 @@ export async function runCustomInstructionsStream(deps: StreamDeps): Promise<voi
     });
     return;
   }
-  await deps.emitRecord("custom_instructions", buildCustomInstructionsRecord(res.json as RawCustomInstructionsBody));
+  // `/user_system_messages` returns the full custom-instructions body every run.
+  // The record carries a stable synthetic id and no run-clock field, so a
+  // per-record fingerprint over the whole body is the exact "did the source
+  // move?" gate. Without it, this single record re-versions on every run even
+  // when the user never edits their instructions (the dashboard's
+  // custom_instructions churn was 100% byte-identical no-op re-emit).
+  const fingerprintCursor = openFingerprintCursor(state.custom_instructions);
+  const record = buildCustomInstructionsRecord(res.json as RawCustomInstructionsBody);
+  if (fingerprintCursor.shouldEmit(record)) {
+    await deps.emitRecord("custom_instructions", record);
+  }
   deps.emit({
     type: "STATE",
     stream: "custom_instructions",
-    cursor: { fetched_at: nowIso() },
+    cursor: { fetched_at: nowIso(), fingerprints: fingerprintCursor.toState() },
   });
 }
 
@@ -996,12 +1010,24 @@ export async function runCustomGptsStream(deps: StreamDeps): Promise<void> {
   }
 }
 
-export async function runSharedConversationsStream(deps: StreamDeps): Promise<void> {
+export async function runSharedConversationsStream(
+  deps: StreamDeps,
+  state: CollectContext["state"] = {}
+): Promise<void> {
   deps.emit({
     type: "PROGRESS",
     stream: "shared_conversations",
     message: "Fetching shared conversations",
   });
+  // `/shared_conversations` is re-listed in full every run; each share record
+  // carries a stable id and no run-clock field, so a per-record fingerprint
+  // over the whole body is the exact "did this share move?" gate. Without it
+  // every still-present share re-versions on every run even when nothing
+  // changed (the dashboard's shared_conversations churn was 100%
+  // byte-identical no-op re-emit). This is a full scan, so stale ids (shares
+  // the user deleted on the source) are pruned from the carry-forward map
+  // after a clean pass.
+  const fingerprintCursor = openFingerprintCursor(state.shared_conversations);
   let offset = 0;
   const limit = 100;
   let sawError = false;
@@ -1034,7 +1060,7 @@ export async function runSharedConversationsStream(deps: StreamDeps): Promise<vo
     }
     for (const s of items) {
       const rec = buildSharedConversationRecord(s);
-      if (rec) {
+      if (rec && fingerprintCursor.shouldEmit(rec)) {
         await deps.emitRecord("shared_conversations", rec);
       }
     }
@@ -1047,10 +1073,13 @@ export async function runSharedConversationsStream(deps: StreamDeps): Promise<vo
     }
   }
   if (!sawError) {
+    // Only prune after a clean full pass — an aborted/errored scan never saw
+    // every id and must not drop carry-forward entries it failed to observe.
+    fingerprintCursor.pruneStale();
     deps.emit({
       type: "STATE",
       stream: "shared_conversations",
-      cursor: { fetched_at: nowIso() },
+      cursor: { fetched_at: nowIso(), fingerprints: fingerprintCursor.toState() },
     });
   }
 }
@@ -1878,10 +1907,10 @@ if (isMainModule(import.meta.url)) {
         await runCustomGptsStream(deps);
       }
       if (requested.has("custom_instructions")) {
-        await runCustomInstructionsStream(deps);
+        await runCustomInstructionsStream(deps, state);
       }
       if (requested.has("shared_conversations")) {
-        await runSharedConversationsStream(deps);
+        await runSharedConversationsStream(deps, state);
       }
       if (requested.has("conversations") || requested.has("messages")) {
         await runConversationsAndMessagesStreams(deps, state);

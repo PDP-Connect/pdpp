@@ -380,6 +380,43 @@ export const COMPACTION_POLICIES = [
       'packages/polyfill-connectors/connectors/amazon/index.ts:emitOrderAndItems → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
   },
 
+  {
+    // `custom_instructions` re-emitted the single full custom-instructions
+    // body (`/user_system_messages`) on every run. The record carries a stable
+    // synthetic id (`user_custom_instructions`) and NO run-clock field —
+    // `updated_at` is the source's own edit timestamp, not a fetch clock — so
+    // every run that found the instructions unchanged produced a byte-identical
+    // new version (the dashboard's custom_instructions churn was 100%
+    // byte-identical no-op re-emit). The connector now gates emit through a
+    // per-record fingerprint cursor over the whole body
+    // (excludeFromFingerprint []); this policy mirrors that with an empty
+    // exclude set, so a "removable historical version" here equals the
+    // connector's own "no-op emit." A real instructions edit moves the body
+    // hash and is always retained as a fingerprint boundary.
+    connectorIds: ['chatgpt', 'https://registry.pdpp.org/connectors/chatgpt'],
+    stream: 'custom_instructions',
+    excludeKeys: [],
+    connectorSource:
+      'packages/polyfill-connectors/connectors/chatgpt/index.ts:runCustomInstructionsStream → openFingerprintCursor() (excludeFromFingerprint []) → src/fingerprint-cursor.ts:recordFingerprint (canonical). Stored record_json is the full builder body (incl. id); script excludeKeys [] hashes the same body.',
+  },
+  {
+    // `shared_conversations` is re-listed in full every run and each still-
+    // present share was re-emitted with a byte-identical body — the record
+    // carries a stable share id and NO run-clock field (`created_at` is the
+    // source's share-creation time), so the dashboard's shared_conversations
+    // churn was 100% byte-identical no-op re-emit. The connector now gates emit
+    // through a per-record fingerprint cursor over the whole body
+    // (excludeFromFingerprint []) and prunes stale ids after a clean full pass;
+    // this policy mirrors that with an empty exclude set. A new share (new id)
+    // or a changed title/visibility moves the body hash and is always retained
+    // as a fingerprint boundary; only a byte-identical re-list collapses.
+    connectorIds: ['chatgpt', 'https://registry.pdpp.org/connectors/chatgpt'],
+    stream: 'shared_conversations',
+    excludeKeys: [],
+    connectorSource:
+      'packages/polyfill-connectors/connectors/chatgpt/index.ts:runSharedConversationsStream → openFingerprintCursor() (excludeFromFingerprint []) → src/fingerprint-cursor.ts:recordFingerprint (canonical). Stored record_json is the full builder body (incl. id); script excludeKeys [] hashes the same body.',
+  },
+
   // ─── Exact stable-JSON identity family ────────────────────────────────
   //
   // Codex and Claude Code emit records from local on-disk source events

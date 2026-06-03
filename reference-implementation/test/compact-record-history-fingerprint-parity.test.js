@@ -509,6 +509,53 @@ if (canonicalRecordFingerprint) {
     assert.notEqual(noop1, shipped, 'a delivery_status move MUST change the fingerprint — real order state is never hidden');
   });
 
+  test('parity: chatgpt custom_instructions whole-body fingerprint (no exclude); an edit is a boundary', () => {
+    const policy = findPolicy('chatgpt', 'custom_instructions');
+    assert.deepEqual(policy.excludeKeys, [], 'custom_instructions hashes the whole body (no run-clock field)');
+    // The stored record_json is the full builder body including the stable
+    // synthetic id. The connector gates with openFingerprintCursor() over the
+    // whole record (excludeFromFingerprint []), so script(body, []) must equal
+    // connector(body, []).
+    const base = {
+      id: 'user_custom_instructions',
+      about_user: "I'm a tester",
+      response_style: 'Be concise',
+      enabled: true,
+      updated_at: '2026-05-26T10:00:00.000Z',
+    };
+    expectParity(base, policy.excludeKeys, 'chatgpt/custom_instructions');
+    // A true no-op refresh (identical body) is the same fingerprint → collapses.
+    const noop1 = scriptRecordFingerprint(base, policy.excludeKeys);
+    const noop2 = scriptRecordFingerprint({ ...base }, policy.excludeKeys);
+    assert.equal(noop1, noop2, 'an identical body is one fingerprint (no-op re-emit collapses)');
+    // A real instructions edit moves the body hash → retained as a boundary.
+    const edited = scriptRecordFingerprint({ ...base, about_user: 'A different bio' }, policy.excludeKeys);
+    assert.notEqual(noop1, edited, 'an instructions edit MUST change the fingerprint — real edits are never hidden');
+  });
+
+  test('parity: chatgpt shared_conversations whole-body fingerprint (no exclude); new id / title move is a boundary', () => {
+    const policy = findPolicy('chatgpt', 'shared_conversations');
+    assert.deepEqual(policy.excludeKeys, [], 'shared_conversations hashes the whole body (no run-clock field)');
+    const base = {
+      id: 'share-abc',
+      conversation_id: 'conv-abc',
+      share_url: 'https://chatgpt.com/share/share-abc',
+      title: 'A shared chat',
+      created_at: '2026-05-26T10:00:00.000Z',
+      anonymous: false,
+      is_public: true,
+      highlighted_text: null,
+    };
+    expectParity(base, policy.excludeKeys, 'chatgpt/shared_conversations');
+    const noop1 = scriptRecordFingerprint(base, policy.excludeKeys);
+    const noop2 = scriptRecordFingerprint({ ...base }, policy.excludeKeys);
+    assert.equal(noop1, noop2, 'a byte-identical re-list is one fingerprint (no-op re-emit collapses)');
+    const retitled = scriptRecordFingerprint({ ...base, title: 'Renamed chat' }, policy.excludeKeys);
+    assert.notEqual(noop1, retitled, 'a title change MUST change the fingerprint — real changes are never hidden');
+    const newShare = scriptRecordFingerprint({ ...base, id: 'share-xyz' }, policy.excludeKeys);
+    assert.notEqual(noop1, newShare, 'a new share id is a distinct fingerprint');
+  });
+
   test('parity: nested objects with mixed key order', () => {
     const a = {
       id: 'x',
@@ -783,6 +830,8 @@ if (canonicalRecordFingerprint) {
       'usaa/transactions',
       'usaa/inbox_messages',
       'amazon/orders',
+      'chatgpt/custom_instructions',
+      'chatgpt/shared_conversations',
       // exact stable-JSON identity family (codex)
       'codex/messages',
       'codex/function_calls',

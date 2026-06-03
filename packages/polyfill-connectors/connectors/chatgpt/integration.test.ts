@@ -1596,6 +1596,166 @@ test("runSharedConversationsStream: 404 → SKIP_RESULT('not_available'), no rec
   assert.equal(messages.filter((m) => m.type === "STATE").length, 0);
 });
 
+// ─── Invariant 7: fingerprint no-op suppression (version-churn fix) ──────
+// `custom_instructions` and `shared_conversations` re-derive the full record
+// every run from a source that does not change between most runs. Before the
+// fingerprint gate, every run re-emitted byte-identical records and the
+// dashboard's version-churn surface showed them as high/watch streams whose
+// history was 100% no-op re-emit. These tests pin the gate: a record only
+// re-emits when its body actually moves, and a true no-op refresh emits zero
+// records while STILL advancing STATE so the cursor never stalls.
+
+/** Pull the STATE cursor a stream runner wrote, so a second run can be seeded
+ *  with the same prior state the runtime would persist between runs. */
+function lastStateCursor(messages: readonly EmittedMessage[], stream: string): Record<string, unknown> {
+  const states = messages.filter(
+    (m): m is Extract<EmittedMessage, { type: "STATE" }> => m.type === "STATE" && m.stream === stream
+  );
+  const cursor = states.at(-1)?.cursor;
+  return (cursor as Record<string, unknown> | undefined) ?? {};
+}
+
+test("runCustomInstructionsStream: unchanged body on a second run emits zero records but still writes STATE", async () => {
+  const body = { about_user_message: "I'm a tester", about_model_message: "Be concise", enabled: true };
+
+  const first = makeHarness({ fetchQueue: [{ status: 200, json: body }], requested: ["custom_instructions"] });
+  await runCustomInstructionsStream(first.deps, {});
+  assert.equal(
+    first.emitted.filter((r) => r.stream === "custom_instructions").length,
+    1,
+    "cold state → the record emits once"
+  );
+  const priorCursor = lastStateCursor(first.messages, "custom_instructions");
+  assert.ok(
+    priorCursor.fingerprints && typeof priorCursor.fingerprints === "object",
+    "STATE carries a fingerprints map so the next run can detect a no-op"
+  );
+
+  const second = makeHarness({ fetchQueue: [{ status: 200, json: body }], requested: ["custom_instructions"] });
+  await runCustomInstructionsStream(second.deps, { custom_instructions: priorCursor });
+  assert.equal(
+    second.emitted.filter((r) => r.stream === "custom_instructions").length,
+    0,
+    "byte-identical refresh → no re-emit (no version churn)"
+  );
+  assert.equal(
+    second.messages.filter((m) => m.type === "STATE" && m.stream === "custom_instructions").length,
+    1,
+    "STATE still fires on a no-op run so the cursor advances"
+  );
+});
+
+test("runCustomInstructionsStream: a real edit on the second run re-emits the record", async () => {
+  const v1 = { about_user_message: "I'm a tester", enabled: true };
+  const v2 = { about_user_message: "I'm a tester now with a different bio", enabled: true };
+
+  const first = makeHarness({ fetchQueue: [{ status: 200, json: v1 }], requested: ["custom_instructions"] });
+  await runCustomInstructionsStream(first.deps, {});
+  const priorCursor = lastStateCursor(first.messages, "custom_instructions");
+
+  const second = makeHarness({ fetchQueue: [{ status: 200, json: v2 }], requested: ["custom_instructions"] });
+  await runCustomInstructionsStream(second.deps, { custom_instructions: priorCursor });
+  const shares = second.emitted.filter((r) => r.stream === "custom_instructions");
+  assert.equal(shares.length, 1, "an edited body is a fingerprint boundary → it re-emits");
+  assert.equal(shares[0]?.data.about_user, "I'm a tester now with a different bio");
+});
+
+test("runSharedConversationsStream: unchanged shares on a second run emit zero records but still write STATE", async () => {
+  const items = Array.from({ length: 3 }, (_, idx) => ({
+    share_id: `s-${idx}`,
+    conversation_id: `c-${idx}`,
+    title: `Share ${idx}`,
+    create_time: 1_700_000_000 + idx,
+  }));
+
+  const first = makeHarness({ fetchQueue: [{ status: 200, json: { items } }], requested: ["shared_conversations"] });
+  await runSharedConversationsStream(first.deps, {});
+  assert.equal(
+    first.emitted.filter((r) => r.stream === "shared_conversations").length,
+    3,
+    "cold state → all shares emit once"
+  );
+  const priorCursor = lastStateCursor(first.messages, "shared_conversations");
+
+  const second = makeHarness({ fetchQueue: [{ status: 200, json: { items } }], requested: ["shared_conversations"] });
+  await runSharedConversationsStream(second.deps, { shared_conversations: priorCursor });
+  assert.equal(
+    second.emitted.filter((r) => r.stream === "shared_conversations").length,
+    0,
+    "byte-identical re-list → no re-emit (no version churn)"
+  );
+  assert.equal(
+    second.messages.filter((m) => m.type === "STATE" && m.stream === "shared_conversations").length,
+    1,
+    "STATE still fires on a no-op run so the cursor advances"
+  );
+});
+
+test("runSharedConversationsStream: a newly-shared conversation on the second run emits only that one", async () => {
+  const run1Items = [
+    { share_id: "s-0", conversation_id: "c-0", title: "Share 0", create_time: 1_700_000_000 },
+    { share_id: "s-1", conversation_id: "c-1", title: "Share 1", create_time: 1_700_000_001 },
+  ];
+  const run2Items = [
+    ...run1Items,
+    { share_id: "s-2", conversation_id: "c-2", title: "Brand new share", create_time: 1_700_000_002 },
+  ];
+
+  const first = makeHarness({
+    fetchQueue: [{ status: 200, json: { items: run1Items } }],
+    requested: ["shared_conversations"],
+  });
+  await runSharedConversationsStream(first.deps, {});
+  const priorCursor = lastStateCursor(first.messages, "shared_conversations");
+
+  const second = makeHarness({
+    fetchQueue: [{ status: 200, json: { items: run2Items } }],
+    requested: ["shared_conversations"],
+  });
+  await runSharedConversationsStream(second.deps, { shared_conversations: priorCursor });
+  const shares = second.emitted.filter((r) => r.stream === "shared_conversations");
+  assert.equal(shares.length, 1, "only the new share is a fingerprint boundary → only it re-emits");
+  assert.equal(shares[0]?.data.id, "s-2");
+});
+
+test("runSharedConversationsStream: a deleted share is pruned so it does not block a future re-share", async () => {
+  // Full-scan prune: once a share disappears from the source, dropping it from
+  // the carry-forward map means if the same id is shared again later it is
+  // (correctly) treated as new and re-emits, rather than being gated forever
+  // against a fingerprint the source no longer returns.
+  const run1Items = [
+    { share_id: "s-0", conversation_id: "c-0", title: "Share 0", create_time: 1_700_000_000 },
+    { share_id: "s-1", conversation_id: "c-1", title: "Share 1", create_time: 1_700_000_001 },
+  ];
+  const first = makeHarness({
+    fetchQueue: [{ status: 200, json: { items: run1Items } }],
+    requested: ["shared_conversations"],
+  });
+  await runSharedConversationsStream(first.deps, {});
+  const cursor1 = lastStateCursor(first.messages, "shared_conversations");
+
+  // Run 2: s-1 is gone from the source. Prune drops it from the map.
+  const second = makeHarness({
+    fetchQueue: [{ status: 200, json: { items: [run1Items[0]] } }],
+    requested: ["shared_conversations"],
+  });
+  await runSharedConversationsStream(second.deps, { shared_conversations: cursor1 });
+  const cursor2 = lastStateCursor(second.messages, "shared_conversations");
+  const fingerprints2 = cursor2.fingerprints as Record<string, unknown>;
+  assert.ok(!("s-1" in fingerprints2), "the vanished share is pruned from the carry-forward map");
+
+  // Run 3: s-1 is re-shared. Because it was pruned, it is treated as new.
+  const reshared = { share_id: "s-1", conversation_id: "c-1", title: "Share 1", create_time: 1_700_000_001 };
+  const third = makeHarness({
+    fetchQueue: [{ status: 200, json: { items: [run1Items[0], reshared] } }],
+    requested: ["shared_conversations"],
+  });
+  await runSharedConversationsStream(third.deps, { shared_conversations: cursor2 });
+  const shares = third.emitted.filter((r) => r.stream === "shared_conversations");
+  assert.equal(shares.length, 1, "the re-shared conversation re-emits after having been pruned");
+  assert.equal(shares[0]?.data.id, "s-1");
+});
+
 // ─── Cold-state preflight source-pressure classifier ─────────────────────
 // The preflight is an owner-only A/B safety rail: it only fires when the owner
 // has raised detail concurrency above the frozen serial default (a probe env
