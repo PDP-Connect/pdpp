@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 
 // Use a tsx-loader-style import indirectly: the runner module is .ts, so
 // these tests exercise the same path the bin uses. Node 22+ supports
@@ -23,6 +23,7 @@ import {
 import {
   buildConnectorSpec,
   buildLocalOutboxDoctor,
+  classifyLocalCollectorDeploymentPosture,
   inspectLocalOutboxStatus,
   parseArgs,
   readLocalOutboxDeadLetterErrorSummary,
@@ -31,6 +32,21 @@ import {
   scopedDefaultQueuePath,
   summarizeRunResultForCli,
 } from '../bin/pdpp-local-collector.ts';
+
+/**
+ * Neutral published posture injected into outbox-focused tests so their
+ * assertions about queue health stay deterministic regardless of where the
+ * test process itself resolves from (the test runs from the repo worktree, so
+ * live detection would classify repo_dist_override). Posture classification has
+ * its own dedicated tests below.
+ */
+const PUBLISHED_POSTURE = Object.freeze({
+  kind: 'published_package',
+  is_placeholder_version: false,
+  location_hint: 'node_modules/@pdpp/local-collector',
+  module_basename: 'pdpp-local-collector.js',
+  version: '0.1.0-beta.7',
+});
 import {
   ALLOW_CUSTOM_COMMAND_ENV,
   CollectorCustomCommandRefusedError,
@@ -215,7 +231,10 @@ test('local collector status reports aggregate durable outbox health without pay
 });
 
 test('local collector doctor flags missing db, expired leases, and dead letters', async () => {
-  const missing = inspectLocalOutboxStatus(parseArgs(['doctor', '--queue', join(await tempDir(), 'missing.sqlite')]));
+  const missing = inspectLocalOutboxStatus(
+    parseArgs(['doctor', '--queue', join(await tempDir(), 'missing.sqlite')]),
+    { deploymentPosture: PUBLISHED_POSTURE }
+  );
   const missingDoctor = buildLocalOutboxDoctor(missing);
   assert.equal(missingDoctor.checks.outbox_db, 'missing');
   assert.equal(missingDoctor.status, 'warning');
@@ -256,17 +275,21 @@ test('local collector doctor flags missing db, expired leases, and dead letters'
     now = new Date('2026-05-19T12:00:02.000Z');
 
     const doctor = buildLocalOutboxDoctor(
-      inspectLocalOutboxStatus({
-        baseUrl: 'http://127.0.0.1:7662',
-        command: 'doctor',
-        queuePath: path,
-        sourceInstanceId: 'src-1',
-      })
+      inspectLocalOutboxStatus(
+        {
+          baseUrl: 'http://127.0.0.1:7662',
+          command: 'doctor',
+          queuePath: path,
+          sourceInstanceId: 'src-1',
+        },
+        { deploymentPosture: PUBLISHED_POSTURE }
+      )
     );
 
     assert.equal(doctor.status, 'critical');
     assert.deepEqual(doctor.checks, {
       coverage_diagnostics: 'ok',
+      deployment_posture: 'ok',
       expired_leases: 'warn',
       outbox_db: 'ok',
       outbox_failures: 'fail',
@@ -297,12 +320,15 @@ test('local collector doctor flags missing db, expired leases, and dead letters'
     // When an error summary is supplied, doctor surfaces the top redacted
     // error class (the "why") and names it in the remediation hint.
     const doctorWithCause = buildLocalOutboxDoctor(
-      inspectLocalOutboxStatus({
-        baseUrl: 'http://127.0.0.1:7662',
-        command: 'doctor',
-        queuePath: path,
-        sourceInstanceId: 'src-1',
-      }),
+      inspectLocalOutboxStatus(
+        {
+          baseUrl: 'http://127.0.0.1:7662',
+          command: 'doctor',
+          queuePath: path,
+          sourceInstanceId: 'src-1',
+        },
+        { deploymentPosture: PUBLISHED_POSTURE }
+      ),
       readLocalOutboxDeadLetterErrorSummary({
         baseUrl: 'http://127.0.0.1:7662',
         command: 'doctor',
@@ -335,19 +361,224 @@ test('local collector doctor omits remediation when the outbox is healthy', asyn
       sourceInstanceId: 'src-1',
     });
     const doctor = buildLocalOutboxDoctor(
-      inspectLocalOutboxStatus({
-        baseUrl: 'http://127.0.0.1:7662',
-        command: 'doctor',
-        queuePath: path,
-        sourceInstanceId: 'src-1',
-      })
+      inspectLocalOutboxStatus(
+        {
+          baseUrl: 'http://127.0.0.1:7662',
+          command: 'doctor',
+          queuePath: path,
+          sourceInstanceId: 'src-1',
+        },
+        { deploymentPosture: PUBLISHED_POSTURE }
+      )
     );
     assert.equal(doctor.checks.outbox_failures, 'ok');
+    assert.equal(doctor.checks.deployment_posture, 'ok');
     assert.equal(doctor.remediation, undefined);
   } finally {
     outbox.close();
   }
 });
+
+// --- Deployment posture (published-vs-dev runtime classification). Make the
+// documented `command -v` + `readlink -f` + version cross-check mechanical:
+// status/doctor must classify a published install vs a repo dist override vs
+// unknown, redaction-safe. ---
+
+/**
+ * Write a synthetic `@pdpp/local-collector` package layout under `root` and
+ * return the absolute path to the (real, on-disk) bin module so
+ * `classifyLocalCollectorDeploymentPosture` can resolve and realpath it.
+ *
+ * @param {object} opts
+ * @param {string[]} opts.packageDirSegments path segments from root to the package root
+ * @param {string} [opts.version] manifest version (default a real beta)
+ * @param {boolean} [opts.repoSiblings] also create repo-only siblings (src/, bin/)
+ * @param {string} [opts.binExt] bin module extension ('.js' built, '.ts' source)
+ */
+async function writeCollectorLayout(root, opts) {
+  const {
+    packageDirSegments,
+    version = '0.1.0-beta.7',
+    repoSiblings = false,
+    binExt = '.js',
+  } = opts;
+  const packageRoot = join(root, ...packageDirSegments);
+  const binDir = join(packageRoot, 'dist', 'local-collector', 'bin');
+  await mkdir(binDir, { recursive: true });
+  await writeFile(
+    join(packageRoot, 'package.json'),
+    JSON.stringify({ name: '@pdpp/local-collector', version })
+  );
+  if (repoSiblings) {
+    await mkdir(join(packageRoot, 'src'), { recursive: true });
+    await mkdir(join(packageRoot, 'bin'), { recursive: true });
+  }
+  const binPath = join(binDir, `pdpp-local-collector${binExt}`);
+  await writeFile(binPath, '// synthetic bin\n');
+  return binPath;
+}
+
+test('deployment posture classifies a node_modules install as published_package', async () => {
+  const root = await tempDir();
+  const binPath = await writeCollectorLayout(root, {
+    packageDirSegments: ['node_modules', '@pdpp', 'local-collector'],
+    version: '0.1.0-beta.7',
+  });
+
+  const posture = classifyLocalCollectorDeploymentPosture(binPath);
+  assert.equal(posture.kind, 'published_package');
+  assert.equal(posture.is_placeholder_version, false);
+  assert.equal(posture.version, '0.1.0-beta.7');
+  assert.equal(posture.location_hint, 'node_modules/@pdpp/local-collector');
+  assert.equal(posture.module_basename, 'pdpp-local-collector.js');
+  // No absolute home path leaks through the redacted descriptor.
+  assert.doesNotMatch(JSON.stringify(posture), new RegExp(escapeRegExp(root)));
+});
+
+test('deployment posture classifies a repo checkout (src/+bin/ siblings) as repo_dist_override', async () => {
+  const root = await tempDir();
+  const binPath = await writeCollectorLayout(root, {
+    packageDirSegments: ['pdpp', 'packages', 'local-collector'],
+    version: '0.0.0',
+    repoSiblings: true,
+  });
+
+  const posture = classifyLocalCollectorDeploymentPosture(binPath);
+  assert.equal(posture.kind, 'repo_dist_override');
+  // The in-repo manifest is the 0.0.0 placeholder by design.
+  assert.equal(posture.is_placeholder_version, true);
+  assert.equal(posture.location_hint, 'packages/local-collector');
+  // The redacted hint exposes the package dir name, never the home path above it.
+  assert.doesNotMatch(JSON.stringify(posture), new RegExp(escapeRegExp(root)));
+});
+
+test('deployment posture treats a raw .ts entrypoint as a repo/source override', async () => {
+  const root = await tempDir();
+  // No node_modules, no repo siblings — but the entrypoint is raw .ts, which
+  // the published package never ships, so it is a source override.
+  const binPath = await writeCollectorLayout(root, {
+    packageDirSegments: ['somewhere', 'local-collector'],
+    version: '0.1.0-beta.7',
+    binExt: '.ts',
+  });
+
+  const posture = classifyLocalCollectorDeploymentPosture(binPath);
+  assert.equal(posture.kind, 'repo_dist_override');
+  assert.equal(posture.module_basename, 'pdpp-local-collector.ts');
+});
+
+test('deployment posture is unknown when neither published nor repo signals are present', async () => {
+  const root = await tempDir();
+  // Built .js bin, no node_modules ancestor, no repo-only siblings — the
+  // surface refuses to guess published_package.
+  const binPath = await writeCollectorLayout(root, {
+    packageDirSegments: ['opt', 'vendored', 'local-collector'],
+    version: '0.1.0-beta.7',
+    repoSiblings: false,
+    binExt: '.js',
+  });
+
+  const posture = classifyLocalCollectorDeploymentPosture(binPath);
+  assert.equal(posture.kind, 'unknown');
+});
+
+test('status carries the deployment_posture block; doctor warns (not critical) for a repo override', async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  outbox.close();
+
+  const repoPosture = {
+    kind: 'repo_dist_override',
+    is_placeholder_version: true,
+    location_hint: 'packages/local-collector',
+    module_basename: 'pdpp-local-collector.ts',
+    version: '0.0.0',
+  };
+  const status = inspectLocalOutboxStatus(
+    {
+      baseUrl: 'http://127.0.0.1:7662',
+      command: 'doctor',
+      queuePath: path,
+      sourceInstanceId: 'src-1',
+    },
+    { deploymentPosture: repoPosture }
+  );
+  assert.deepEqual(status.deployment_posture, repoPosture);
+
+  const doctor = buildLocalOutboxDoctor(status);
+  assert.equal(doctor.checks.deployment_posture, 'warn');
+  // A dev/placeholder posture is a warning that disqualifies operator-host
+  // evidence — never the critical severity reserved for dead-letter recovery.
+  assert.equal(doctor.status, 'warning');
+  assert.ok(Array.isArray(doctor.remediation));
+  const postureHint = doctor.remediation.find((line) => /Deployment Posture/.test(line));
+  assert.ok(postureHint, 'expected a deployment-posture remediation hint');
+  assert.match(postureHint, /repo `dist\/` override/);
+  assert.match(postureHint, /0\.0\.0/);
+  assert.match(postureHint, /@pdpp\/local-collector@beta/);
+});
+
+test('doctor deployment_posture check is ok for a pinned published install', async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  outbox.close();
+
+  const doctor = buildLocalOutboxDoctor(
+    inspectLocalOutboxStatus(
+      {
+        baseUrl: 'http://127.0.0.1:7662',
+        command: 'doctor',
+        queuePath: path,
+        sourceInstanceId: 'src-1',
+      },
+      { deploymentPosture: PUBLISHED_POSTURE }
+    )
+  );
+  assert.equal(doctor.checks.deployment_posture, 'ok');
+});
+
+test('doctor deployment_posture warns on the 0.0.0 placeholder even for a node_modules install', async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  outbox.close();
+
+  // A bare/`@latest` global install resolves the placeholder under
+  // node_modules — published-package layout, but still not real evidence.
+  const placeholderPublished = {
+    kind: 'published_package',
+    is_placeholder_version: true,
+    location_hint: 'node_modules/@pdpp/local-collector',
+    module_basename: 'pdpp-local-collector.js',
+    version: '0.0.0',
+  };
+  const doctor = buildLocalOutboxDoctor(
+    inspectLocalOutboxStatus(
+      {
+        baseUrl: 'http://127.0.0.1:7662',
+        command: 'doctor',
+        queuePath: path,
+        sourceInstanceId: 'src-1',
+      },
+      { deploymentPosture: placeholderPublished }
+    )
+  );
+  assert.equal(doctor.checks.deployment_posture, 'warn');
+  assert.equal(doctor.status, 'warning');
+});
+
+test('live deployment posture detection of the running test process never leaks an absolute home path', () => {
+  // No argument → live detection from the running module. In the repo worktree
+  // this is a repo override; the point is that whatever it resolves, the
+  // emitted block is redaction-safe (no leading-slash absolute path).
+  const posture = classifyLocalCollectorDeploymentPosture();
+  assert.ok(['published_package', 'repo_dist_override', 'unknown'].includes(posture.kind));
+  assert.doesNotMatch(posture.location_hint, /^\//);
+  assert.doesNotMatch(posture.location_hint, new RegExp(escapeRegExp(homedir())));
+});
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 test('local collector retry-dead-letters is dry-run by default and backs up before apply', async () => {
   const path = await tempOutboxPath();
@@ -729,12 +960,15 @@ test('inspectLocalOutboxStatus reads connection-scoped counts from the scoped de
 // coverage_missing from the durable outbox alone. ---
 
 function statusFor(path, sourceInstanceId = 'src-1') {
-  return inspectLocalOutboxStatus({
-    baseUrl: 'http://127.0.0.1:7662',
-    command: 'status',
-    queuePath: path,
-    sourceInstanceId,
-  });
+  return inspectLocalOutboxStatus(
+    {
+      baseUrl: 'http://127.0.0.1:7662',
+      command: 'status',
+      queuePath: path,
+      sourceInstanceId,
+    },
+    { deploymentPosture: PUBLISHED_POSTURE }
+  );
 }
 
 /** Enqueue a record_batch whose envelopes carry the given stream names. */

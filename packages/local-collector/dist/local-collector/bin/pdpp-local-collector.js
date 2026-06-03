@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync } from "node:fs";
-import { basename, dirname, extname, join } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { basename, dirname, extname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ALLOW_CUSTOM_COMMAND_ENV, CollectorCustomCommandRefusedError, CollectorUsageError, } from "../src/errors.js";
 import { BUNDLED_CONNECTOR_IDS, COLLECTOR_PROTOCOL_VERSION, COLLECTOR_RUNTIME_CAPABILITIES, deriveLocalCollectorLifecycleState, LocalDeviceOutbox, enrollCollector, getBundledConnector, isMainModule, runCollectorConnector, } from "../src/runner.js";
@@ -8,10 +8,19 @@ const COVERAGE_DIAGNOSTICS_STREAM = "coverage_diagnostics";
 const DEFAULT_QUEUE_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", ".pdpp-data", "collector-runner-queue.json");
 const LOCAL_COLLECTOR_PACKAGE_NAME = "@pdpp/local-collector";
 const LOCAL_COLLECTOR_PACKAGE_VERSION_FALLBACK = "0.0.0";
-export function resolveLocalCollectorPackageVersion(startUrl = import.meta.url) {
-    let current = typeof startUrl === "string" && !startUrl.startsWith("file:")
-        ? dirname(startUrl)
-        : dirname(fileURLToPath(startUrl));
+const LOCAL_COLLECTOR_PLACEHOLDER_VERSION = "0.0.0";
+const REPO_ONLY_PACKAGE_SIBLINGS = ["src", "bin", "test", "scripts", "tsconfig.build.json"];
+function resolveLocalCollectorManifest(startUrl) {
+    const startPath = typeof startUrl === "string" && !startUrl.startsWith("file:")
+        ? startUrl
+        : fileURLToPath(startUrl);
+    let realStart = startPath;
+    try {
+        realStart = realpathSync(startPath);
+    }
+    catch {
+    }
+    let current = dirname(realStart);
     for (;;) {
         const manifestPath = join(current, "package.json");
         if (existsSync(manifestPath)) {
@@ -20,7 +29,7 @@ export function resolveLocalCollectorPackageVersion(startUrl = import.meta.url) 
                 if (manifest.name === LOCAL_COLLECTOR_PACKAGE_NAME &&
                     typeof manifest.version === "string" &&
                     manifest.version) {
-                    return manifest.version;
+                    return { packageRoot: current, version: manifest.version };
                 }
             }
             catch {
@@ -28,10 +37,52 @@ export function resolveLocalCollectorPackageVersion(startUrl = import.meta.url) 
         }
         const parent = dirname(current);
         if (parent === current) {
-            return LOCAL_COLLECTOR_PACKAGE_VERSION_FALLBACK;
+            return { packageRoot: null, version: LOCAL_COLLECTOR_PACKAGE_VERSION_FALLBACK };
         }
         current = parent;
     }
+}
+export function resolveLocalCollectorPackageVersion(startUrl = import.meta.url) {
+    return resolveLocalCollectorManifest(startUrl).version;
+}
+export function classifyLocalCollectorDeploymentPosture(startUrl = import.meta.url) {
+    const startPath = typeof startUrl === "string" && !startUrl.startsWith("file:")
+        ? startUrl
+        : fileURLToPath(startUrl);
+    const moduleBasename = basename(startPath);
+    const isSourceEntrypoint = extname(startPath) === ".ts";
+    const { packageRoot, version } = resolveLocalCollectorManifest(startUrl);
+    let kind;
+    let locationHint;
+    if (!packageRoot) {
+        kind = isSourceEntrypoint ? "repo_dist_override" : "unknown";
+        locationHint = "unresolved";
+    }
+    else if (isUnderNodeModulesPackage(packageRoot)) {
+        kind = "published_package";
+        locationHint = `node_modules/${LOCAL_COLLECTOR_PACKAGE_NAME}`;
+    }
+    else if (isSourceEntrypoint || hasRepoOnlySiblings(packageRoot)) {
+        kind = "repo_dist_override";
+        locationHint = `packages/${basename(packageRoot)}`;
+    }
+    else {
+        kind = "unknown";
+        locationHint = `packages/${basename(packageRoot)}`;
+    }
+    return {
+        kind,
+        is_placeholder_version: version === LOCAL_COLLECTOR_PLACEHOLDER_VERSION,
+        location_hint: locationHint,
+        module_basename: moduleBasename,
+        version,
+    };
+}
+function isUnderNodeModulesPackage(dir) {
+    return dir.split(sep).includes("node_modules");
+}
+function hasRepoOnlySiblings(packageRoot) {
+    return REPO_ONLY_PACKAGE_SIBLINGS.some((entry) => existsSync(join(packageRoot, entry)));
 }
 const HELP_TEXT = `pdpp-local-collector — PDPP local collector runner.
 
@@ -166,7 +217,7 @@ function summarizeCursor(cursor) {
     }
     return summary;
 }
-export function inspectLocalOutboxStatus(options) {
+export function inspectLocalOutboxStatus(options, deps = {}) {
     const dbPath = resolveOutboxPath(options);
     const exists = existsSync(dbPath);
     const inspection = exists
@@ -178,6 +229,7 @@ export function inspectLocalOutboxStatus(options) {
         recordBatchCount: inspection.recordBatchCount,
         summary,
     });
+    const deploymentPosture = deps.deploymentPosture ?? classifyLocalCollectorDeploymentPosture();
     return {
         collector_protocol_version: COLLECTOR_PROTOCOL_VERSION,
         configured_device: {
@@ -193,6 +245,7 @@ export function inspectLocalOutboxStatus(options) {
             exists,
             path: dbPath,
         },
+        deployment_posture: deploymentPosture,
         lifecycle_state: lifecycleState,
         outbox: {
             counts: {
@@ -217,8 +270,11 @@ export function inspectLocalOutboxStatus(options) {
     };
 }
 export function buildLocalOutboxDoctor(status, errorSummary) {
+    const posture = status.deployment_posture;
+    const postureDisqualifiesEvidence = posture.kind === "repo_dist_override" || posture.is_placeholder_version;
     const checks = {
         coverage_diagnostics: status.lifecycle_state === "coverage_missing" ? "warn" : "ok",
+        deployment_posture: postureDisqualifiesEvidence ? "warn" : "ok",
         expired_leases: status.outbox.expired_leases > 0 ? "warn" : "ok",
         outbox_db: status.db.exists ? "ok" : "missing",
         outbox_failures: status.outbox.counts.dead_letter > 0 ? "fail" : "ok",
@@ -245,6 +301,9 @@ export function buildLocalOutboxDoctor(status, errorSummary) {
             "Re-run `pdpp-local-collector run …` with the default stream set (no `--streams`); " +
             "it requests `coverage_diagnostics` and the next pass promotes the coverage axis.");
     }
+    if (checks.deployment_posture === "warn") {
+        remediation.push(deploymentPostureRemediation(posture));
+    }
     const includeSummary = Boolean(errorSummary) && status.outbox.counts.dead_letter > 0;
     return {
         ...status,
@@ -254,11 +313,30 @@ export function buildLocalOutboxDoctor(status, errorSummary) {
         status: doctorSeverityForChecks(checks),
     };
 }
+function deploymentPostureRemediation(posture) {
+    const parts = [];
+    if (posture.kind === "repo_dist_override") {
+        parts.push(`This collector resolves to a repo \`dist/\` override (${posture.location_hint}), ` +
+            "not a published package — treat its output as dev evidence, not published " +
+            "operator-host evidence.");
+    }
+    if (posture.is_placeholder_version) {
+        parts.push(`The reported version is the \`${posture.version}\` placeholder, which is older than ` +
+            "every real build (a bare or `@latest` global install resolves it).");
+    }
+    parts.push("Pin a published version before capturing operator-host evidence: " +
+        "`npm i -g @pdpp/local-collector@beta` (or an explicit `@0.1.0-beta.<n>`). " +
+        "See docs/local-collector.md §\"Deployment Posture: Published vs Dev\".");
+    return parts.join(" ");
+}
 function doctorSeverityForChecks(checks) {
     if (checks.outbox_failures === "fail") {
         return "critical";
     }
-    if (checks.expired_leases === "warn" || checks.outbox_db === "missing" || checks.coverage_diagnostics === "warn") {
+    if (checks.expired_leases === "warn" ||
+        checks.outbox_db === "missing" ||
+        checks.coverage_diagnostics === "warn" ||
+        checks.deployment_posture === "warn") {
         return "warning";
     }
     return "ok";

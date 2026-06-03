@@ -23,8 +23,8 @@
  * Spec: openspec/changes/publish-pdpp-local-collector/design.md.
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { basename, dirname, extname, join } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { basename, dirname, extname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -65,12 +65,50 @@ const DEFAULT_QUEUE_PATH = join(
 );
 const LOCAL_COLLECTOR_PACKAGE_NAME = "@pdpp/local-collector";
 const LOCAL_COLLECTOR_PACKAGE_VERSION_FALLBACK = "0.0.0";
+/**
+ * Placeholder version published to the `latest` dist-tag and carried by the
+ * in-repo `package.json` by design. It is older than every real beta build, so
+ * a host reporting it is either an unpinned `latest` install of the placeholder
+ * or an in-repo manifest — neither is real published operator-host evidence.
+ * See `docs/local-collector.md`§"Deployment Posture".
+ */
+const LOCAL_COLLECTOR_PLACEHOLDER_VERSION = "0.0.0";
+/**
+ * Sibling entries that exist in a monorepo checkout's
+ * `packages/local-collector` root but are excluded from the published tarball
+ * (`files: ["dist/", "README.md"]`). Their presence next to the resolved
+ * manifest is the layout-based discriminator for a repo `dist/` override that
+ * does not depend on home-path strings.
+ */
+const REPO_ONLY_PACKAGE_SIBLINGS = ["src", "bin", "test", "scripts", "tsconfig.build.json"] as const;
 
-export function resolveLocalCollectorPackageVersion(startUrl: string | URL = import.meta.url): string {
-  let current =
+interface LocalCollectorManifestResolution {
+  /** Directory holding the resolved `@pdpp/local-collector` package.json. */
+  packageRoot: string | null;
+  /** Resolved package version, or the placeholder fallback when not found. */
+  version: string;
+}
+
+/**
+ * Walk up from `startUrl` (with symlinks resolved) to the nearest
+ * `@pdpp/local-collector` package.json, returning its directory and version.
+ * Realpath resolution matters: a dev override is usually an `npm link` /
+ * `file:` install that symlinks the global bin back into the repo `dist/`, so
+ * resolving symlinks is what lets posture classification see the repo tree.
+ */
+function resolveLocalCollectorManifest(startUrl: string | URL): LocalCollectorManifestResolution {
+  const startPath =
     typeof startUrl === "string" && !startUrl.startsWith("file:")
-      ? dirname(startUrl)
-      : dirname(fileURLToPath(startUrl));
+      ? startUrl
+      : fileURLToPath(startUrl);
+  let realStart = startPath;
+  try {
+    realStart = realpathSync(startPath);
+  } catch {
+    // Module path may not exist on disk in some test harnesses; fall back to
+    // the lexical path so the walk still resolves the manifest.
+  }
+  let current = dirname(realStart);
 
   for (;;) {
     const manifestPath = join(current, "package.json");
@@ -85,7 +123,7 @@ export function resolveLocalCollectorPackageVersion(startUrl: string | URL = imp
           typeof manifest.version === "string" &&
           manifest.version
         ) {
-          return manifest.version;
+          return { packageRoot: current, version: manifest.version };
         }
       } catch {
         // Keep walking; malformed parent manifests should not break diagnostics.
@@ -94,10 +132,105 @@ export function resolveLocalCollectorPackageVersion(startUrl: string | URL = imp
 
     const parent = dirname(current);
     if (parent === current) {
-      return LOCAL_COLLECTOR_PACKAGE_VERSION_FALLBACK;
+      return { packageRoot: null, version: LOCAL_COLLECTOR_PACKAGE_VERSION_FALLBACK };
     }
     current = parent;
   }
+}
+
+export function resolveLocalCollectorPackageVersion(startUrl: string | URL = import.meta.url): string {
+  return resolveLocalCollectorManifest(startUrl).version;
+}
+
+/** Mutually-exclusive runtime-install classification for the collector. */
+export type LocalCollectorDeploymentKind = "published_package" | "repo_dist_override" | "unknown";
+
+export interface LocalCollectorDeploymentPosture {
+  /**
+   * How the running collector resolves: a published `node_modules` install, a
+   * monorepo `dist/` (or source) override, or unknown when neither pattern is
+   * conclusive. `unknown` is the conservative default — it never guesses
+   * `published_package`.
+   */
+  kind: LocalCollectorDeploymentKind;
+  /**
+   * True when the resolved version is the `0.0.0` placeholder. Independent of
+   * `kind`: a real pinned beta is good even though the in-repo manifest is
+   * `0.0.0`, and an unpinned `latest` install of the placeholder is bad even if
+   * it lives under `node_modules`. See `LOCAL_COLLECTOR_PLACEHOLDER_VERSION`.
+   */
+  is_placeholder_version: boolean;
+  /**
+   * Redacted module-location descriptor. Never an absolute home path: for a
+   * published install this is `node_modules/@pdpp/local-collector`; for a repo
+   * override it is the repo-relative package dir name `packages/local-collector`
+   * (or `unresolved` when the manifest could not be located).
+   */
+  location_hint: string;
+  /** Bin filename only (`pdpp-local-collector.js` / `.ts`), never a path. */
+  module_basename: string;
+  /** Resolved package version (echoes whatever build is installed). */
+  version: string;
+}
+
+/**
+ * Classify the running collector's deployment posture from its own resolved
+ * module location plus the package manifest the CLI already reads. This is the
+ * mechanical replacement for the documented manual `command -v` + `readlink -f`
+ * + version cross-check ritual in `docs/local-collector.md`§"Deployment
+ * Posture". Pure on `startUrl` so it is unit-testable against synthesized
+ * published-like and repo-dist-like layouts.
+ *
+ * Spec: openspec/changes/add-local-collector-deployment-posture-surface.
+ */
+export function classifyLocalCollectorDeploymentPosture(
+  startUrl: string | URL = import.meta.url
+): LocalCollectorDeploymentPosture {
+  const startPath =
+    typeof startUrl === "string" && !startUrl.startsWith("file:")
+      ? startUrl
+      : fileURLToPath(startUrl);
+  const moduleBasename = basename(startPath);
+  const isSourceEntrypoint = extname(startPath) === ".ts";
+
+  const { packageRoot, version } = resolveLocalCollectorManifest(startUrl);
+
+  let kind: LocalCollectorDeploymentKind;
+  let locationHint: string;
+  if (!packageRoot) {
+    // A `.ts` entrypoint is always source/dev even when no manifest resolved.
+    kind = isSourceEntrypoint ? "repo_dist_override" : "unknown";
+    locationHint = "unresolved";
+  } else if (isUnderNodeModulesPackage(packageRoot)) {
+    kind = "published_package";
+    locationHint = `node_modules/${LOCAL_COLLECTOR_PACKAGE_NAME}`;
+  } else if (isSourceEntrypoint || hasRepoOnlySiblings(packageRoot)) {
+    // Not under node_modules, and either running the raw `.ts` source or the
+    // package root still carries repo-only siblings the tarball never ships.
+    kind = "repo_dist_override";
+    locationHint = `packages/${basename(packageRoot)}`;
+  } else {
+    kind = "unknown";
+    locationHint = `packages/${basename(packageRoot)}`;
+  }
+
+  return {
+    kind,
+    is_placeholder_version: version === LOCAL_COLLECTOR_PLACEHOLDER_VERSION,
+    location_hint: locationHint,
+    module_basename: moduleBasename,
+    version,
+  };
+}
+
+/** True when `dir` sits inside a `node_modules/@pdpp/local-collector` path. */
+function isUnderNodeModulesPackage(dir: string): boolean {
+  return dir.split(sep).includes("node_modules");
+}
+
+/** True when the package root carries any repo-only sibling entry. */
+function hasRepoOnlySiblings(packageRoot: string): boolean {
+  return REPO_ONLY_PACKAGE_SIBLINGS.some((entry) => existsSync(join(packageRoot, entry)));
 }
 
 export interface CliOptions {
@@ -323,6 +456,14 @@ export interface LocalOutboxStatusOutput {
     path: string | null;
   };
   /**
+   * Redaction-safe published-vs-dev runtime posture for the running collector,
+   * derived from the module's own resolved location plus the package manifest.
+   * Lets an operator or agent tell published operator-host evidence from local
+   * development evidence without the manual `command -v`/`readlink -f` ritual.
+   * Never carries an absolute home path.
+   */
+  deployment_posture: LocalCollectorDeploymentPosture;
+  /**
    * The single mutually-exclusive lifecycle state for this lane, derived
    * from the outbox counts plus the coverage observation. One of
    * healthy_idle, draining, retryable_backlog, dead_letter, stale_lease, or
@@ -361,6 +502,13 @@ export interface LocalOutboxDoctorOutput extends LocalOutboxStatusOutput {
      * lane is empty, or no connection id scoped the scan.
      */
     coverage_diagnostics: "ok" | "warn";
+    /**
+     * `warn` when the running collector is a `repo_dist_override` or reports the
+     * `0.0.0` placeholder version — either disqualifies the output as published
+     * operator-host evidence. `ok` for a published install on a real version.
+     * This is a warning (dev is the supported monorepo path), never `critical`.
+     */
+    deployment_posture: "ok" | "warn";
     expired_leases: "ok" | "warn";
     outbox_db: "ok" | "missing";
     outbox_failures: "ok" | "fail";
@@ -415,7 +563,19 @@ export interface RetryDeadLettersOutput {
   status_before: LocalOutboxStatusOutput["outbox"]["counts"] | null;
 }
 
-export function inspectLocalOutboxStatus(options: CliOptions): LocalOutboxStatusOutput {
+export interface InspectLocalOutboxStatusDeps {
+  /**
+   * Injected deployment posture, defaulting to live detection from the running
+   * module. Tests inject a synthesized posture so outbox-shape assertions stay
+   * deterministic regardless of where the test process itself resolves from.
+   */
+  deploymentPosture?: LocalCollectorDeploymentPosture;
+}
+
+export function inspectLocalOutboxStatus(
+  options: CliOptions,
+  deps: InspectLocalOutboxStatusDeps = {}
+): LocalOutboxStatusOutput {
   const dbPath = resolveOutboxPath(options);
   const exists = existsSync(dbPath);
   const inspection = exists
@@ -427,6 +587,7 @@ export function inspectLocalOutboxStatus(options: CliOptions): LocalOutboxStatus
     recordBatchCount: inspection.recordBatchCount,
     summary,
   });
+  const deploymentPosture = deps.deploymentPosture ?? classifyLocalCollectorDeploymentPosture();
   return {
     collector_protocol_version: COLLECTOR_PROTOCOL_VERSION,
     configured_device: {
@@ -442,6 +603,7 @@ export function inspectLocalOutboxStatus(options: CliOptions): LocalOutboxStatus
       exists,
       path: dbPath,
     },
+    deployment_posture: deploymentPosture,
     lifecycle_state: lifecycleState,
     outbox: {
       counts: {
@@ -470,8 +632,12 @@ export function buildLocalOutboxDoctor(
   status: LocalOutboxStatusOutput,
   errorSummary?: LocalDeviceOutboxDeadLetterErrorSummary | null
 ): LocalOutboxDoctorOutput {
+  const posture = status.deployment_posture;
+  const postureDisqualifiesEvidence =
+    posture.kind === "repo_dist_override" || posture.is_placeholder_version;
   const checks: LocalOutboxDoctorOutput["checks"] = {
     coverage_diagnostics: status.lifecycle_state === "coverage_missing" ? "warn" : "ok",
+    deployment_posture: postureDisqualifiesEvidence ? "warn" : "ok",
     expired_leases: status.outbox.expired_leases > 0 ? "warn" : "ok",
     outbox_db: status.db.exists ? "ok" : "missing",
     outbox_failures: status.outbox.counts.dead_letter > 0 ? "fail" : "ok",
@@ -504,6 +670,9 @@ export function buildLocalOutboxDoctor(
         "it requests `coverage_diagnostics` and the next pass promotes the coverage axis."
     );
   }
+  if (checks.deployment_posture === "warn") {
+    remediation.push(deploymentPostureRemediation(posture));
+  }
   const includeSummary = Boolean(errorSummary) && status.outbox.counts.dead_letter > 0;
   return {
     ...status,
@@ -515,18 +684,54 @@ export function buildLocalOutboxDoctor(
 }
 
 /**
+ * Static guidance for a posture warning. Counts/classification only — no row
+ * data, paths beyond the redacted hint, tokens, or payloads. Distinguishes the
+ * two disqualifying shapes (repo override vs placeholder version) and points at
+ * the posture section of the operator doc.
+ */
+function deploymentPostureRemediation(posture: LocalCollectorDeploymentPosture): string {
+  const parts: string[] = [];
+  if (posture.kind === "repo_dist_override") {
+    parts.push(
+      `This collector resolves to a repo \`dist/\` override (${posture.location_hint}), ` +
+        "not a published package — treat its output as dev evidence, not published " +
+        "operator-host evidence."
+    );
+  }
+  if (posture.is_placeholder_version) {
+    parts.push(
+      `The reported version is the \`${posture.version}\` placeholder, which is older than ` +
+        "every real build (a bare or `@latest` global install resolves it)."
+    );
+  }
+  parts.push(
+    "Pin a published version before capturing operator-host evidence: " +
+      "`npm i -g @pdpp/local-collector@beta` (or an explicit `@0.1.0-beta.<n>`). " +
+      "See docs/local-collector.md §\"Deployment Posture: Published vs Dev\"."
+  );
+  return parts.join(" ");
+}
+
+/**
  * Roll the per-check verdicts into the coarse doctor severity. Dead-letter
  * rows are the only `critical` condition (they need operator recovery);
- * expired leases, a missing DB, and a coverage gap are `warning` (each
- * self-heals or is informational); everything else is `ok`. A
- * `retryable_backlog`/`draining` lane stays `ok` because it drains itself on
- * the next scheduled run — surfaced via `lifecycle_state`, not as a warning.
+ * expired leases, a missing DB, a coverage gap, and a dev/placeholder
+ * deployment posture are `warning` (each self-heals, is informational, or is a
+ * supported dev path that merely disqualifies operator-host evidence);
+ * everything else is `ok`. A `retryable_backlog`/`draining` lane stays `ok`
+ * because it drains itself on the next scheduled run — surfaced via
+ * `lifecycle_state`, not as a warning.
  */
 function doctorSeverityForChecks(checks: LocalOutboxDoctorOutput["checks"]): "ok" | "warning" | "critical" {
   if (checks.outbox_failures === "fail") {
     return "critical";
   }
-  if (checks.expired_leases === "warn" || checks.outbox_db === "missing" || checks.coverage_diagnostics === "warn") {
+  if (
+    checks.expired_leases === "warn" ||
+    checks.outbox_db === "missing" ||
+    checks.coverage_diagnostics === "warn" ||
+    checks.deployment_posture === "warn"
+  ) {
     return "warning";
   }
   return "ok";

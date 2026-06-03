@@ -80,19 +80,37 @@ npm i -g @pdpp/local-collector@beta
 npm i -g @pdpp/local-collector@0.1.0-beta.7
 ```
 
-Confirm what actually resolves before trusting any host evidence:
+Confirm what actually resolves before trusting any host evidence. The collector
+classifies its own posture — prefer the mechanical `deployment_posture` block on
+`status`/`doctor` over a manual path check:
+
+```bash
+# Mechanical check (primary): status and doctor carry a redaction-safe
+# deployment_posture block. kind is published_package, repo_dist_override, or
+# unknown; is_placeholder_version flags the 0.0.0 build; location_hint is a
+# redacted descriptor (never a home path).
+pdpp-local-collector status | sed -n '/"deployment_posture"/,/}/p'
+# doctor turns a repo override or the 0.0.0 placeholder into a warning with a
+# remediation hint, so an unhealthy posture surfaces without reading JSON:
+pdpp-local-collector doctor
+```
+
+A `deployment_posture.kind` of `published_package` with `is_placeholder_version:
+false` is the only posture that should back operator-host evidence. A
+`repo_dist_override`, an `unknown`, or `is_placeholder_version: true` means
+re-pin before treating any output as operator-host evidence.
+
+The manual path check still works as an out-of-band cross-check:
 
 ```bash
 # The realpath must be under a global node_modules, NOT a repo dist/ tree.
 command -v pdpp-local-collector
 readlink -f "$(command -v pdpp-local-collector)"
-# Cross-check the version the binary reports against the version you pinned:
-pdpp-local-collector status | sed -n 's/.*"version": "\(.*\)".*/\1/p' | head -1
 ```
 
 If `readlink -f` lands inside a repo `packages/local-collector/dist/`, the host
-is running a **dev override**, not the published package — re-pin before
-treating any output as operator-host evidence.
+is running a **dev override**, not the published package — and
+`deployment_posture.kind` reports `repo_dist_override` for the same reason.
 
 > **`latest` is a placeholder — do not use it.** The published `latest`
 > dist-tag is currently `0.0.0`, a placeholder that is older than every real
@@ -102,7 +120,8 @@ treating any output as operator-host evidence.
 > in-repo `package.json` version is also `0.0.0`, by design — the published
 > beta version is set at publish time, and the CLI's own
 > `package.version` echoes whatever build is installed, which is exactly why
-> the `readlink -f` + version cross-check above matters.
+> the `deployment_posture` block flags `is_placeholder_version` and the manual
+> cross-check above still matters.
 
 **Dev override (monorepo development only).** When iterating on the collector
 itself, build the package and point the global binary at the repo `dist/` on
