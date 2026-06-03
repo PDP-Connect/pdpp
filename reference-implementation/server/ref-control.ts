@@ -17,6 +17,7 @@ import { readBrowserSurfaceProfileKey } from "../runtime/browser-surface-profile
 import {
   type ConnectionAttentionEvidence,
   type ConnectionHealthSnapshot,
+  type ConnectionLocalDeviceCollectionEvidence,
   type ConnectionRemoteSurfaceEvidence,
   type CoverageAxis,
   computeConnectionHealth,
@@ -2001,6 +2002,18 @@ export function projectConnectorSummaryConnectionHealth(input: {
    */
   readonly localCoverage?: LocalCoverageDiagnosticAxis | null;
   /**
+   * Whether this connection is backed by a local-device collector
+   * (`sourceKind === "local_device"`). Only the caller knows the source
+   * kind. When `true`, the projection MAY establish the local-device
+   * collection verdict — a trusted idle/drained outbox plus a `complete`
+   * local coverage axis is the device-side analog of a succeeded run, so
+   * `CollectionSucceeded` can be satisfied without a spine run. The verdict
+   * is gated entirely here; the run path always takes precedence. Defaults
+   * to `false`, preserving the prior behavior for scheduler-managed
+   * connections (device evidence never greens them).
+   */
+  readonly localDeviceBacked?: boolean;
+  /**
    * Manifest-declared streams. The projection reads each stream's
    * `required` flag and `coverage_policy` to roll up accepted-coverage
    * labels (`unsupported`, `unavailable`, `deferred`, `inventory_only`)
@@ -2054,18 +2067,42 @@ export function projectConnectorSummaryConnectionHealth(input: {
     lastErrorCode,
     nowIso,
   });
+  const coverage = buildCoverageEvidence(
+    input.lastRun,
+    pendingDetailGaps,
+    input.manifestStreams ?? [],
+    input.localCoverage ?? null
+  );
+  const outbox = input.outbox ?? { axis: "unknown" };
+  const freshnessAxis = mapFreshnessAxis(input.freshness);
+  // Local-device collection verdict: a local-device-backed connection whose
+  // outbox is idle from trusted heartbeat evidence, whose resolved coverage is
+  // `complete`, and whose freshness is genuinely `fresh` has finished a clean,
+  // current collection cycle — the device-side analog of a recent succeeded
+  // run. Establishing the verdict only when freshness is also `fresh` keeps
+  // the change purely additive: a drained collector with complete coverage but
+  // no satisfied freshness policy keeps `CollectionSucceeded` unknown and stays
+  // `idle` exactly as before; only the fully-green case is upgraded to
+  // `healthy`. The classifier still honors the verdict only when no run verdict
+  // exists (a run is authoritative), and every degrading axis still wins via
+  // the ordered precedence, so this can never green a stalled, gappy, stale, or
+  // unproven connection. Scheduler-managed connections never reach here because
+  // the caller passes `localDeviceBacked: false` for them.
+  const localDeviceCollection: ConnectionLocalDeviceCollectionEvidence | null =
+    input.localDeviceBacked === true &&
+    outbox.axis === "idle" &&
+    coverage.axis === "complete" &&
+    freshnessAxis === "fresh"
+      ? { verdict: "succeeded" }
+      : null;
   return computeConnectionHealth({
     activity: { active: activeRunId !== null },
     attention,
     backoff: backoffEvidence.backoff,
-    coverage: buildCoverageEvidence(
-      input.lastRun,
-      pendingDetailGaps,
-      input.manifestStreams ?? [],
-      input.localCoverage ?? null
-    ),
-    freshness: { axis: mapFreshnessAxis(input.freshness) },
-    outbox: input.outbox ?? { axis: "unknown" },
+    coverage,
+    freshness: { axis: freshnessAxis },
+    localDeviceCollection,
+    outbox,
     projection: { unreliableSources: input.unreliableSources ?? [] },
     remoteSurface: input.remoteSurface ?? null,
     run: {
@@ -2292,6 +2329,7 @@ export async function listConnectorSummaries(
         lastRun,
         lastSuccessfulRun,
         localCoverage,
+        localDeviceBacked: instance.sourceKind === "local_device",
         manifestStreams: manifest.streams ?? [],
         outbox: { axis: outbox.axis, cause: outbox.cause },
         pendingDetailGaps: detailGaps.gaps,
@@ -2365,6 +2403,12 @@ export async function getConnectorDetail(
     lastRun,
     lastSuccessfulRun,
     localCoverage,
+    // The connector-keyed detail path has no instance row, so it cannot read
+    // `sourceKind`. A connector with enrolled device heartbeat evidence is
+    // local-device-backed; the verdict gate additionally requires an `idle`
+    // axis (only ever derived from trusted heartbeats), so the presence of
+    // heartbeat rows is a sufficient, honest discriminator here.
+    localDeviceBacked: outbox.heartbeats.length > 0,
     manifestStreams: manifest.streams ?? [],
     outbox: { axis: outbox.axis, cause: outbox.cause },
     pendingDetailGaps: detailGaps.gaps,

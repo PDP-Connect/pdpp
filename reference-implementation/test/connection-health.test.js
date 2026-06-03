@@ -422,6 +422,100 @@ test('healthy: success + complete coverage + fresh + no attention/backoff', () =
   assert.equal(snap.badges.syncing, false);
 });
 
+// ─── 7b. Local-device collection verdict ──────────────────────────────────
+// A local collector writes no spine run, so `run` is null and
+// `CollectionSucceeded` would be unknown. The caller establishes the verdict
+// only when the device-side evidence is fully green (trusted idle outbox +
+// complete coverage + fresh); the classifier then treats it as a terminal
+// succeeded collection equivalent to a run.
+
+test('local-device verdict: no run + verdict + complete coverage + fresh + idle → healthy', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: null,
+      localDeviceCollection: { verdict: 'succeeded' },
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      outbox: { axis: 'idle' },
+    })
+  );
+  assert.equal(snap.state, 'healthy');
+  const collection = findCondition(snap, 'CollectionSucceeded');
+  assert.equal(collection?.status, 'true');
+  assert.equal(collection?.origin, 'local_device');
+  assert.equal(collection?.reason, CONNECTION_CONDITION_REASONS.COLLECTION_SUCCEEDED_LOCAL_DEVICE);
+});
+
+test('local-device verdict: absent verdict (no run) is not healthy — the verdict is what flips it', () => {
+  // Same green axes as the healthy case above but WITHOUT the verdict: with no
+  // run and no verdict, `CollectionSucceeded` is unknown, so fresh evidence
+  // without a collection verdict is honestly `unknown` (never silently
+  // healthy). The verdict is the only thing that turns this into `healthy`.
+  const snap = computeConnectionHealth(
+    input({
+      run: null,
+      localDeviceCollection: null,
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      outbox: { axis: 'idle' },
+    })
+  );
+  assert.notEqual(snap.state, 'healthy');
+  assert.equal(snap.state, 'unknown');
+  assert.equal(findCondition(snap, 'CollectionSucceeded')?.status, 'unknown');
+});
+
+test('local-device verdict: no refresh policy (freshness unknown) without verdict stays idle, not unknown', () => {
+  // This mirrors the live drained-collector-without-policy case: the caller
+  // does NOT establish the verdict when freshness is unknown, so the no-run
+  // connection keeps its honest `idle` headline (CollectionSucceeded unknown,
+  // Fresh unknown → never-run idle rung). The change is purely additive here.
+  const snap = computeConnectionHealth(
+    input({
+      run: null,
+      localDeviceCollection: null,
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'unknown' },
+      outbox: { axis: 'idle' },
+    })
+  );
+  assert.equal(snap.state, 'idle');
+  assert.equal(findCondition(snap, 'CollectionSucceeded')?.status, 'unknown');
+});
+
+test('local-device verdict: a real run verdict is authoritative over the device verdict', () => {
+  // A failed run must never be greened by device evidence. The verdict is only
+  // consulted when there is no run verdict at all.
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ latestStatus: 'failed', reasonCode: 'connector_error' }),
+      localDeviceCollection: { verdict: 'succeeded' },
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      outbox: { axis: 'idle' },
+    })
+  );
+  const collection = findCondition(snap, 'CollectionSucceeded');
+  assert.equal(collection?.status, 'false');
+  assert.notEqual(snap.state, 'healthy');
+});
+
+test('local-device verdict: a stalled outbox still degrades even if a verdict is passed', () => {
+  // The verdict only sets CollectionSucceeded; degrading axes win via the
+  // ordered precedence. (In practice the caller would not pass a verdict for a
+  // stalled outbox, but the classifier must be safe even if it does.)
+  const snap = computeConnectionHealth(
+    input({
+      run: null,
+      localDeviceCollection: { verdict: 'succeeded' },
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      outbox: { axis: 'stalled', cause: 'dead_letter_backlog' },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+});
+
 test('conditions: remote-surface failure becomes runtime availability evidence', () => {
   const snap = computeConnectionHealth(
     input({

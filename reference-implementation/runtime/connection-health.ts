@@ -90,6 +90,7 @@ export const CONNECTION_CONDITION_REASONS = Object.freeze({
   COLLECTION_FAILED: "collection_failed",
   COLLECTION_NOT_OBSERVED: "collection_not_observed",
   COLLECTION_SUCCEEDED: "collection_succeeded",
+  COLLECTION_SUCCEEDED_LOCAL_DEVICE: "collection_succeeded_local_device",
   COVERAGE_UNKNOWN: "coverage_unknown",
   CREDENTIAL_REJECTED: "credential_rejected",
   CREDENTIALS_ACCEPTED: "credentials_accepted",
@@ -510,6 +511,24 @@ export interface ConnectionRunEvidence {
   readonly reasonCode: string | null;
 }
 
+/**
+ * Local-device collection verdict.
+ *
+ * A local-device collector writes no spine run, so `ConnectionRunEvidence`
+ * can never carry a `succeeded` status for it. Its terminal collection
+ * evidence is instead the device's own report that it ran and finished
+ * cleanly: a trusted idle/drained outbox plus durable coverage diagnostics
+ * proving complete coverage. The caller establishes the verdict only when
+ * those gates hold AND the connection is local-device-backed
+ * (`sourceKind === "local_device"`); the projection trusts the flag and
+ * treats `verdict === "succeeded"` as a terminal collection-succeeded
+ * outcome equivalent to a run, but only when no run verdict exists (a run
+ * is always authoritative). `null`/absent preserves the prior behavior.
+ */
+export interface ConnectionLocalDeviceCollectionEvidence {
+  readonly verdict: "succeeded";
+}
+
 /** Scheduler/backoff projection — same shape as `scheduler-backoff.ts`. */
 export interface ConnectionBackoffEvidence {
   readonly backoffApplied: boolean;
@@ -641,6 +660,7 @@ export interface ComputeConnectionHealthInput {
   readonly backoff: ConnectionBackoffEvidence | null;
   readonly coverage: ConnectionCoverageEvidence | null;
   readonly freshness: ConnectionFreshnessEvidence | null;
+  readonly localDeviceCollection?: ConnectionLocalDeviceCollectionEvidence | null;
   readonly observedAt?: string | null;
   readonly outbox: ConnectionOutboxEvidence | null;
   readonly projection: ConnectionProjectionEvidence | null;
@@ -1218,6 +1238,24 @@ function attentionClearCondition(input: ComputeConnectionHealthInput): Connectio
 
 function collectionSucceededCondition(input: ComputeConnectionHealthInput): ConnectionHealthCondition {
   if (!input.run || input.run.latestStatus === null) {
+    // A local-device collector writes no spine run, so there is no run
+    // verdict to read. When the caller has established the local-device
+    // collection verdict (trusted idle/drained outbox + complete coverage on
+    // a local-device-backed connection), that is the device-side analog of a
+    // succeeded run and SHALL satisfy this condition. Gating happens in the
+    // caller; the projection trusts the verdict only in the no-run branch so
+    // a real run is always authoritative.
+    if (input.localDeviceCollection?.verdict === "succeeded") {
+      return condition({
+        type: "CollectionSucceeded",
+        status: "true",
+        severity: "info",
+        reason: CONDITION_REASON.COLLECTION_SUCCEEDED_LOCAL_DEVICE,
+        message: "The local collector drained cleanly with complete coverage.",
+        origin: "local_device",
+        observedAt: input.run?.lastSuccessAt ?? null,
+      });
+    }
     return condition({
       type: "CollectionSucceeded",
       status: "unknown",

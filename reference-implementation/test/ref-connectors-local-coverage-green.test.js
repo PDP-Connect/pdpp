@@ -41,15 +41,17 @@ function withTmpDb(fn) {
   };
 }
 
-function seedConnector() {
+function seedConnector({ refreshPolicy = null } = {}) {
+  const capabilities = { public_listing: { listed: true, status: 'test' } };
+  if (refreshPolicy) {
+    capabilities.refresh_policy = refreshPolicy;
+  }
   const manifest = {
     protocol_version: '0.1.0',
     connector_id: CONNECTOR_ID,
     version: '1.0.0',
     display_name: 'Local Coverage Collector',
-    capabilities: {
-      public_listing: { listed: true, status: 'test' },
-    },
+    capabilities,
     streams: [
       { name: 'messages', primary_key: ['id'] },
       { name: 'sessions', primary_key: ['id'] },
@@ -130,6 +132,38 @@ async function seedHealthyDrainedHeartbeat() {
   });
 }
 
+// A blocked heartbeat carrying dead-lettered records: the outbox axis derives
+// to `stalled` with cause `dead_letter_backlog`, so the verdict must not fire.
+async function seedDeadLetterHeartbeat() {
+  const store = getDefaultDeviceExporterStore();
+  await store.createDevice({
+    deviceId: DEVICE_ID,
+    ownerSubjectId: OWNER,
+    displayName: 'peregrine',
+    status: 'active',
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+  await store.upsertSourceInstance({
+    sourceInstanceId: SOURCE_INSTANCE_ID,
+    deviceId: DEVICE_ID,
+    connectorId: CONNECTOR_ID,
+    connectorInstanceId: CONNECTOR_INSTANCE_ID,
+    localBindingId: 'peregrine',
+    displayName: 'peregrine Claude Code',
+    status: 'active',
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+  await store.markSourceInstanceHeartbeat(DEVICE_ID, SOURCE_INSTANCE_ID, {
+    receivedAt: HEARTBEAT_AT,
+    lastError: { kind: 'dead_letter_backlog', classes: { '400 invalid_request': 3 } },
+    status: 'blocked',
+    recordsPending: 3,
+    outboxDiagnostics: { pending: 0, dead_letter: 3, stale_leases: 0, succeeded: 9, total: 12 },
+  });
+}
+
 async function projectConnection() {
   const summaries = await listConnectorSummaries();
   const row = summaries.find((summary) => summary.connector_instance_id === CONNECTOR_INSTANCE_ID);
@@ -172,13 +206,90 @@ test(
     assert.equal(coverageCondition.status, 'true');
     assert.notEqual(coverageCondition.reason, 'coverage_unknown');
 
-    // Headline: a local collector writes no spine run, so `CollectionSucceeded`
-    // has no terminal verdict and the honest headline is `idle` (the
-    // device-ingest-state rung from the "Local-device connection without
-    // scheduler run" spec scenario), NOT `unknown` and NOT a fabricated
-    // `healthy`. Coverage no longer drags the projection to unknown.
+    // Headline: this connector declares NO refresh policy, so freshness is
+    // `unknown` and the local-device collection verdict is not established. The
+    // honest headline is `idle` (the device-ingest-state rung from the
+    // "Local-device connection without scheduler run" spec scenario), NOT
+    // `unknown` and NOT a fabricated `healthy`. Coverage no longer drags the
+    // projection to unknown.
     assert.equal(health.state, 'idle');
     assert.notEqual(health.state, 'unknown');
+  }),
+);
+
+// A century-long staleness window so the fixed-timestamp heartbeat reads as
+// `current` regardless of real wall-clock time when the test runs (the server
+// rollup uses `new Date()` for `now`; no injection seam exists here).
+const ALWAYS_FRESH_REFRESH_POLICY = { maximum_staleness_seconds: 100 * 365 * 24 * 60 * 60 };
+
+test(
+  'healthy drained local collector with complete coverage AND a satisfied freshness policy projects healthy',
+  withTmpDb(async () => {
+    // Same fully-green device evidence as the idle case above, but the manifest
+    // now declares a refresh policy that the recent healthy heartbeat satisfies.
+    // With trusted idle outbox + complete coverage + fresh freshness, the
+    // local-device collection verdict is established and the connection projects
+    // `healthy` — the device-side analog of a recent succeeded run.
+    seedConnector({ refreshPolicy: ALWAYS_FRESH_REFRESH_POLICY });
+    await seedInstance();
+    seedRecord({
+      stream: 'messages',
+      key: 'msg_1',
+      data: { id: 'msg_1', text: 'collected message' },
+      emittedAt: '2026-06-03T11:58:00.000Z',
+    });
+    seedCoverage([
+      { store: 'sessions', stream: 'sessions', status: 'collected' },
+      { store: 'messages', stream: 'messages', status: 'collected' },
+      { store: 'cache', stream: null, status: 'inventory_only' },
+      { store: 'auth', stream: null, status: 'excluded' },
+    ]);
+    await seedHealthyDrainedHeartbeat();
+    await rebuildRetainedSize();
+
+    const row = await projectConnection();
+    const health = row.connection_health;
+
+    assert.equal(health.axes.coverage, 'complete');
+    assert.equal(health.axes.outbox, 'idle');
+    assert.equal(health.axes.freshness, 'fresh');
+    assert.equal(health.state, 'healthy');
+
+    const collection = health.conditions.find((c) => c.type === 'CollectionSucceeded');
+    assert.ok(collection);
+    assert.equal(collection.status, 'true');
+    assert.equal(collection.origin, 'local_device');
+  }),
+);
+
+test(
+  'stalled local collector with a satisfied freshness policy stays degraded, never healthy',
+  withTmpDb(async () => {
+    // A refresh policy is satisfied and coverage is complete, but the outbox is
+    // NOT idle — a dead-letter backlog. The verdict must not fire; the stalled
+    // axis degrades the headline. Proves the freshness policy alone cannot green
+    // a connection whose device work is stuck.
+    seedConnector({ refreshPolicy: ALWAYS_FRESH_REFRESH_POLICY });
+    await seedInstance();
+    seedRecord({
+      stream: 'messages',
+      key: 'msg_1',
+      data: { id: 'msg_1', text: 'collected message' },
+      emittedAt: '2026-06-03T11:58:00.000Z',
+    });
+    seedCoverage([
+      { store: 'sessions', stream: 'sessions', status: 'collected' },
+      { store: 'messages', stream: 'messages', status: 'collected' },
+    ]);
+    await seedDeadLetterHeartbeat();
+    await rebuildRetainedSize();
+
+    const row = await projectConnection();
+    const health = row.connection_health;
+
+    assert.equal(health.axes.outbox, 'stalled');
+    assert.equal(health.state, 'degraded');
+    assert.notEqual(health.state, 'healthy');
   }),
 );
 
