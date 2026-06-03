@@ -82,6 +82,10 @@ import type {
 
 const EMAIL_AT_RE = /@/;
 const RETRYABLE_ERROR_RE = /ECONN|ETIMEDOUT|fetch failed|EPIPE|timeout/i;
+// Splits an address into [local-part, domain] for progress redaction. Only the
+// last `@` is treated as the domain delimiter so quoted local-parts that embed
+// an `@` still redact (the domain is whatever follows the final `@`).
+const EMAIL_SPLIT_RE = /^(.*)@([^@]+)$/;
 
 // ─── Constants ──────────────────────────────────────────────────────────
 
@@ -513,6 +517,33 @@ export function resolveGmailAddressFromEnv(env: NodeJS.ProcessEnv = process.env)
     return env.AMAZON_USERNAME;
   }
   return null;
+}
+
+/**
+ * Mask an email address for an operator/model-visible PROGRESS message.
+ *
+ * The owner's full Gmail address is a raw PII identifier; emitting it verbatim
+ * in a PROGRESS line leaks it to every consumer of the run stream (dashboard,
+ * timeline, logs, model). We still want the progress line to confirm *which
+ * account/domain* connected, so we keep the domain and the first character of
+ * the local-part and mask the rest:
+ *
+ *   "the owner.nunamaker@gmail.com"  ->  "t•••@gmail.com"
+ *   "x@example.com"            ->  "•••@example.com"
+ *
+ * If the value does not look like an `local@domain` address (no `@`, or an
+ * empty domain), we return a constant placeholder rather than risk echoing an
+ * unexpected raw value. The output never contains the full local-part.
+ */
+export function redactEmailForProgress(address: string): string {
+  const match = EMAIL_SPLIT_RE.exec(address);
+  const local = match?.[1];
+  const domain = match?.[2];
+  if (!(local && domain)) {
+    return "«redacted-account»";
+  }
+  const head = local.length > 1 ? local[0] : "";
+  return `${head}•••@${domain}`;
 }
 
 async function resolveAddress(): Promise<string | null> {
@@ -1684,7 +1715,7 @@ async function main(): Promise<void> {
   await client.connect();
 
   try {
-    await emit({ type: "PROGRESS", message: `Connected to ${address}` });
+    await emit({ type: "PROGRESS", message: `Connected to ${redactEmailForProgress(address)}` });
 
     if (requested.has("labels")) {
       await emitLabelsStream(client, emitRecord, state);

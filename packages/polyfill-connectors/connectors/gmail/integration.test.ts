@@ -46,6 +46,7 @@ import {
   makeAttachmentHydrator,
   type PerMessageDeps,
   processMessage,
+  redactEmailForProgress,
   resolveAttachmentBackfillWindowUids,
   resolveGmailAddressFromEnv,
   resolveGmailPasswordFromEnv,
@@ -1055,4 +1056,49 @@ test("backfill mode: a failed historical attachment fetch is counted as a remain
   assert.equal(summary.failed, 1);
   assert.equal(summary.hydrated, 0);
   assert.equal(summary.remaining_historical_gaps, 1);
+});
+
+// ─── redactEmailForProgress ─────────────────────────────────────────────
+//
+// The "Connected to <address>" PROGRESS message is operator/model-visible.
+// Emitting the owner's full Gmail address leaks a raw PII identifier into
+// every consumer of the run stream. These tests prove the redaction keeps
+// the domain (so the progress line still confirms which account connected)
+// while never echoing the full local-part.
+
+test("redactEmailForProgress: masks the local-part but keeps the domain", () => {
+  assert.equal(redactEmailForProgress("the owner.nunamaker@gmail.com"), "t•••@gmail.com");
+  assert.equal(redactEmailForProgress("alice@example.org"), "a•••@example.org");
+});
+
+test("redactEmailForProgress: single-character local-part is fully masked", () => {
+  // A 1-char local-part would otherwise be wholly revealed by a "keep first
+  // char" rule, so it is masked entirely.
+  assert.equal(redactEmailForProgress("x@example.com"), "•••@example.com");
+});
+
+test("redactEmailForProgress: output never contains the full address or local-part", () => {
+  for (const address of [
+    "the owner.nunamaker@gmail.com",
+    "first.last+tag@corp.example.co.uk",
+    'weird"@"local@host.example', // quoted local-part embedding an @
+  ]) {
+    const redacted = redactEmailForProgress(address);
+    assert.ok(!redacted.includes(address), `redacted output must not contain the full address: ${redacted}`);
+    // Multi-char local-parts (the only ones that carry meaningful identity)
+    // must never appear verbatim in the redacted output. A 1-char local-part
+    // is masked entirely and is excluded here because it can collide with an
+    // unrelated character in the kept domain.
+    const localPart = address.slice(0, address.lastIndexOf("@"));
+    assert.ok(!redacted.includes(localPart), `redacted output must not contain the full local-part: ${redacted}`);
+  }
+});
+
+test("redactEmailForProgress: non-address input falls back to a constant placeholder", () => {
+  // Defensive: if an unexpected non-email value reaches the progress line we
+  // emit a constant rather than risk echoing a raw value.
+  assert.equal(redactEmailForProgress("not-an-email"), "«redacted-account»");
+  assert.equal(redactEmailForProgress("@no-local.example"), "«redacted-account»");
+  assert.equal(redactEmailForProgress("no-domain@"), "«redacted-account»");
+  assert.equal(redactEmailForProgress(""), "«redacted-account»");
 });
