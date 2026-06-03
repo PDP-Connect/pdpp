@@ -42,6 +42,8 @@ import {
   type LocalCollectorLifecycleState,
   type LocalDeviceOutboxDeadLetterErrorSummary,
   type LocalDeviceOutboxKind,
+  type LocalDeviceOutboxPruneSentInput,
+  type LocalDeviceOutboxPruneSentResult,
   type LocalDeviceOutboxSummary,
   enrollCollector,
   getBundledConnector,
@@ -238,14 +240,16 @@ export interface CliOptions {
   args?: string[];
   baseUrl: string;
   code?: string;
-  command: "enroll" | "run" | "advertise" | "status" | "doctor" | "retry-dead-letters";
+  command: "enroll" | "run" | "advertise" | "status" | "doctor" | "retry-dead-letters" | "prune-sent";
   connector?: string;
   deadLetterKind?: LocalDeviceOutboxKind;
   deviceId?: string;
   deviceLabel?: string;
   deviceToken?: string;
   entrypointCommand?: string;
+  keepCount?: number;
   limit?: number;
+  olderThanDays?: number;
   queuePath: string;
   runId?: string;
   sourceInstanceId?: string;
@@ -274,6 +278,13 @@ Subcommands:
           [--kind record_batch|checkpoint|gap|blob_upload]
           [--limit <n>]
           [--apply]                Dry-run by default; --apply mutates after a DB backup.
+  prune-sent                      Delete sent (succeeded) outbox rows to reclaim disk space.
+          [--queue <path>]
+          [--connection-id <id>]
+          [--older-than-days <n>]  Delete sent rows older than N days (default: 30).
+          [--keep-count <n>]       Keep at most N most-recent sent rows per connection.
+          [--apply]                Dry-run by default; --apply mutates after a DB backup.
+                                   Never touches pending, leased, retrying, or dead-letter rows.
   enroll  --base-url <url>        Exchange a one-time enrollment code for a
           --code <code>             device id + device token.
           [--device-label <label>]
@@ -331,6 +342,12 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (options.command === "prune-sent") {
+    const result = pruneSentOutboxRows(options);
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
   if (options.command === "enroll") {
     if (!options.code) {
       throw new CollectorUsageError("enroll requires --code <one-time-code>");
@@ -369,8 +386,43 @@ async function main(): Promise<void> {
 type CollectorRunResult = Awaited<ReturnType<typeof runCollectorConnector>>;
 
 export interface LocalCollectorRunOutput extends Omit<CollectorRunResult, "flushedState" | "priorState"> {
+  /**
+   * One honest, operator-facing line describing the drain outcome of this
+   * invocation. A successful connector pass (`done.status === "succeeded"`)
+   * does NOT imply the outbox is empty: the run can succeed on the source
+   * while leaving ready/retrying/leased rows that drain on the next scheduled
+   * run, or dead-letter rows that need recovery. This note states which.
+   */
+  drain_note: string;
+  /**
+   * True only when this invocation left the lane fully drained — no ready,
+   * retrying, leased, or dead-letter work remains. False whenever any
+   * non-succeeded row is still in the outbox after the drain, so a run that
+   * exits with a ready backlog is never reported as fully drained.
+   */
+  drained: boolean;
   flushedState: LocalCollectorStateSummary | null;
+  /**
+   * Drain-state lifecycle derived from {@link CollectorRunResult.outboxSummary}
+   * using the same taxonomy the `status`/`doctor` surface reports, so the run
+   * path and the inspect path never disagree about whether the lane is idle.
+   * Coverage is intentionally NOT folded in here (the run separately reports
+   * `completeness`); this axis is purely "did the queue drain?".
+   */
+  lifecycle_state: LocalCollectorLifecycleState;
   priorState: LocalCollectorStateSummary | null;
+  /**
+   * What is still in the outbox after this invocation. Surfaced as a named
+   * block (not just buried in `outboxSummary`) precisely so a successful run
+   * that left work behind reads as "still has a backlog", not "done".
+   */
+  residual_backlog: {
+    dead_letter: number;
+    leased: number;
+    ready: number;
+    retrying: number;
+    total_open: number;
+  };
 }
 
 export interface LocalCollectorStateSummary {
@@ -385,11 +437,73 @@ export interface LocalCollectorCursorSummary {
 }
 
 export function summarizeRunResultForCli(result: CollectorRunResult): LocalCollectorRunOutput {
+  const summary = result.outboxSummary;
+  // Derive the drain-state lifecycle from the post-drain outbox summary using
+  // the shared taxonomy. Coverage is a separate axis (reported via
+  // `completeness` and surfaced by `doctor`), so it is suppressed here with a
+  // null observation; this verdict is purely about queue drain state.
+  const lifecycleState = deriveLocalCollectorLifecycleState({
+    coverageObserved: null,
+    recordBatchCount: 0,
+    summary,
+  });
+  const openWork = pendingOpenWork(summary);
+  const drained = openWork === 0;
   return {
     ...result,
+    drain_note: runDrainNote(result, summary, drained),
+    drained,
     flushedState: summarizeCollectorState(result.flushedState),
+    lifecycle_state: lifecycleState,
     priorState: summarizeCollectorState(result.priorState),
+    residual_backlog: {
+      dead_letter: summary.deadLetter,
+      leased: summary.leased,
+      ready: summary.ready,
+      retrying: summary.retrying,
+      total_open: openWork,
+    },
   };
+}
+
+/**
+ * One honest line about the drain outcome. A connector pass can succeed on the
+ * source while leaving a ready backlog (the next scheduled run drains it),
+ * retrying rows (waiting on backoff), or dead-letter rows (need recovery). The
+ * note never says "drained" when work remains — this is the line that keeps a
+ * 177k-record run that exits with `pending=1203` from reading as complete.
+ */
+function runDrainNote(result: CollectorRunResult, summary: LocalDeviceOutboxSummary, drained: boolean): string {
+  if (result.skippedScanForBacklog) {
+    return (
+      `Scan was skipped: ${pendingOpenWork(summary)} open outbox row(s) from a prior run still need to drain first. ` +
+      "No new source work was collected this pass; re-run to continue draining."
+    );
+  }
+  if (drained) {
+    return "Outbox fully drained — no ready, retrying, leased, or dead-letter work remains.";
+  }
+  const parts: string[] = [];
+  if (summary.ready > 0) {
+    parts.push(`${summary.ready} ready (drains on the next scheduled run)`);
+  }
+  if (summary.retrying > 0) {
+    parts.push(`${summary.retrying} retrying (waiting on backoff)`);
+  }
+  if (summary.leased > 0) {
+    parts.push(`${summary.leased} leased (in flight)`);
+  }
+  if (summary.deadLetter > 0) {
+    parts.push(`${summary.deadLetter} dead-letter (run \`retry-dead-letters\` then re-run)`);
+  }
+  const scanNote = result.scanBudgetExceeded
+    ? " The connector was stopped by the per-run enqueue budget, so more source work likely remains; re-run to continue."
+    : "";
+  return `Run succeeded on the source but the outbox is NOT fully drained: ${parts.join(", ")}.${scanNote}`;
+}
+
+function pendingOpenWork(summary: LocalDeviceOutboxSummary): number {
+  return summary.ready + summary.retrying + summary.leased + summary.deadLetter;
 }
 
 function summarizeCollectorState(state: Record<string, unknown> | null): LocalCollectorStateSummary | null {
@@ -806,7 +920,7 @@ export function retryLocalOutboxDeadLetters(options: CliOptions): RetryDeadLette
       options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {}
     );
     const dryRun = !options.apply;
-    const backupPath = dryRun ? null : backupSqliteDb(outbox, dbPath);
+    const backupPath = dryRun ? null : backupSqliteDb(outbox, dbPath, "retry-dead-letters");
     const result = outbox.requeueDeadLetters({
       dryRun,
       ...(options.deadLetterKind ? { kind: options.deadLetterKind } : {}),
@@ -846,9 +960,154 @@ function summaryCounts(summary: LocalDeviceOutboxSummary): LocalOutboxStatusOutp
   };
 }
 
-function backupSqliteDb(outbox: Pick<LocalDeviceOutbox, "backupTo">, dbPath: string): string {
+/**
+ * Default sent-row retention policy applied when neither --older-than-days
+ * nor --keep-count is supplied. 30 days is long enough to cover any operator
+ * debugging window while preventing unbounded growth on a continuously-running
+ * host collector.
+ */
+const DEFAULT_PRUNE_SENT_OLDER_THAN_DAYS = 30;
+
+export interface PruneSentOutput {
+  backup_path: string | null;
+  db: {
+    exists: boolean;
+    path: string;
+  };
+  dry_run: boolean;
+  filter: {
+    keep_count: number | null;
+    older_than_days: number | null;
+    older_than_iso: string | null;
+    source_instance_id: string | null;
+  };
+  matched: number;
+  note: string;
+  pruned: number;
+  status_after: LocalOutboxStatusOutput["outbox"]["counts"] | null;
+  status_before: LocalOutboxStatusOutput["outbox"]["counts"] | null;
+}
+
+/**
+ * Prune succeeded (sent) outbox rows to reclaim disk space. Never touches
+ * pending, leased, retrying, or dead-letter rows. Dry-run by default;
+ * --apply backs up the DB first, then deletes.
+ */
+export function pruneSentOutboxRows(options: CliOptions): PruneSentOutput {
+  // Apply the default age-based filter only when the operator has not specified
+  // keepCount as their sole policy. If keepCount is the only flag, skip the age
+  // filter so the count cap works independently of row age. If --older-than-days
+  // is explicitly set, always apply it (alone or combined with keepCount).
+  const olderThanDays =
+    options.olderThanDays ?? (options.keepCount === undefined ? DEFAULT_PRUNE_SENT_OLDER_THAN_DAYS : undefined);
+  const olderThanIso = olderThanDays !== undefined ? daysAgoIso(olderThanDays) : undefined;
+  const dbPath = resolveOutboxPath(options);
+  const exists = existsSync(dbPath);
+  const reportedOlderThanDays = olderThanDays ?? null;
+  const reportedOlderThanIso = olderThanIso ?? null;
+
+  if (!exists) {
+    return {
+      backup_path: null,
+      db: { exists: false, path: dbPath },
+      dry_run: !options.apply,
+      filter: {
+        keep_count: options.keepCount ?? null,
+        older_than_days: reportedOlderThanDays,
+        older_than_iso: reportedOlderThanIso,
+        source_instance_id: options.sourceInstanceId ?? null,
+      },
+      matched: 0,
+      note: "Outbox DB does not exist; nothing to prune.",
+      pruned: 0,
+      status_after: null,
+      status_before: null,
+    };
+  }
+
+  const outbox = new LocalDeviceOutbox({ path: dbPath });
+  try {
+    const statusBefore = summaryCounts(outbox.summary(options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {}));
+    const dryRun = !options.apply;
+
+    const pruneInput: LocalDeviceOutboxPruneSentInput = {
+      dryRun,
+      ...(olderThanIso !== undefined ? { olderThanIso } : {}),
+      ...(options.keepCount !== undefined ? { keepCount: options.keepCount } : {}),
+      ...(options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {}),
+    };
+
+    // For dry-run, preview the match count without acquiring a write lock.
+    // For apply, back up first then delete.
+    const backupPath = dryRun ? null : backupSqliteDb(outbox, dbPath, "prune-sent");
+    const result = outbox.pruneSent(pruneInput);
+    const statusAfter = summaryCounts(outbox.summary(options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {}));
+
+    const note = pruneSentNote(result, dryRun, reportedOlderThanDays, options.keepCount);
+    return {
+      backup_path: backupPath,
+      db: { exists: true, path: dbPath },
+      dry_run: dryRun,
+      filter: {
+        keep_count: options.keepCount ?? null,
+        older_than_days: reportedOlderThanDays,
+        older_than_iso: reportedOlderThanIso,
+        source_instance_id: options.sourceInstanceId ?? null,
+      },
+      matched: result.matched,
+      note,
+      pruned: result.pruned,
+      status_after: statusAfter,
+      status_before: statusBefore,
+    };
+  } finally {
+    outbox.close();
+  }
+}
+
+function pruneSentNote(
+  result: LocalDeviceOutboxPruneSentResult,
+  dryRun: boolean,
+  olderThanDays: number | null,
+  keepCount: number | undefined
+): string {
+  if (result.matched === 0) {
+    return `No sent rows matched the retention policy (${pruneSentPolicyDescription(olderThanDays, keepCount)}). Nothing to prune.`;
+  }
+  if (dryRun) {
+    return (
+      `${result.matched} sent row(s) would be pruned (dry run). ` +
+      `Re-run with --apply to delete (backs up the DB first). ` +
+      `This only removes sent rows — pending, leased, retrying, and dead-letter rows are never touched.`
+    );
+  }
+  return (
+    `${result.pruned} sent row(s) pruned. ` +
+    `Pending, leased, retrying, and dead-letter rows were not touched. ` +
+    `Run \`pdpp-local-collector status\` to confirm the new outbox size.`
+  );
+}
+
+function pruneSentPolicyDescription(olderThanDays: number | null, keepCount: number | undefined): string {
+  const parts: string[] = [];
+  if (olderThanDays !== null) {
+    parts.push(`older than ${olderThanDays} days`);
+  }
+  if (keepCount !== undefined) {
+    parts.push(`keep-count ${keepCount}`);
+  }
+  return parts.length > 0 ? parts.join(", ") : "default sent-row retention";
+}
+
+/** ISO timestamp for N days ago (used as the default sent-row retention boundary). */
+function daysAgoIso(days: number): string {
+  const ms = days * 24 * 60 * 60 * 1000;
+  return new Date(Date.now() - ms).toISOString();
+}
+
+function backupSqliteDb(outbox: Pick<LocalDeviceOutbox, "backupTo">, dbPath: string, label: string): string {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const backupPath = `${dbPath}.pre-retry-dead-letters-${stamp}.bak`;
+  const backupPath = `${dbPath}.pre-${label}-${stamp}.bak`;
   outbox.backupTo(backupPath);
   return backupPath;
 }
@@ -901,10 +1160,11 @@ export function parseArgs(args: string[]): CliOptions {
     command !== "advertise" &&
     command !== "status" &&
     command !== "doctor" &&
-    command !== "retry-dead-letters"
+    command !== "retry-dead-letters" &&
+    command !== "prune-sent"
   ) {
     throw new CollectorUsageError(
-      `usage: pdpp-local-collector <enroll|run|advertise|status|doctor|retry-dead-letters> --base-url <url> [options]`
+      `usage: pdpp-local-collector <enroll|run|advertise|status|doctor|retry-dead-letters|prune-sent> --base-url <url> [options]`
     );
   }
   const options: CliOptions = {
@@ -1008,6 +1268,12 @@ function applyOption(options: CliOptions, arg: string, value: string | undefined
     "--args": (next) => {
       options.args = next.split(" ").filter(Boolean);
     },
+    "--older-than-days": (next) => {
+      options.olderThanDays = parseNonNegativeInteger("--older-than-days", next);
+    },
+    "--keep-count": (next) => {
+      options.keepCount = parseNonNegativeInteger("--keep-count", next);
+    },
   };
   const set = setters[arg];
   if (!set) {
@@ -1027,6 +1293,14 @@ function parsePositiveInteger(label: string, value: string): number {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed <= 0) {
     throw new CollectorUsageError(`${label} must be a positive integer`);
+  }
+  return parsed;
+}
+
+function parseNonNegativeInteger(label: string, value: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new CollectorUsageError(`${label} must be a non-negative integer`);
   }
   return parsed;
 }

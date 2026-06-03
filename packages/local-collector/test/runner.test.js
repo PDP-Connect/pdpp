@@ -26,6 +26,7 @@ import {
   classifyLocalCollectorDeploymentPosture,
   inspectLocalOutboxStatus,
   parseArgs,
+  pruneSentOutboxRows,
   readLocalOutboxDeadLetterErrorSummary,
   resolveLocalCollectorPackageVersion,
   retryLocalOutboxDeadLetters,
@@ -715,6 +716,129 @@ test('local collector run output summarizes state cursors without dumping payloa
   assert.equal(rendered.includes('b.jsonl'), false);
 });
 
+// --- Run-summary drain honesty (outbox-retention-health-v1) ---
+//
+// A connector pass can succeed on the source (done.status === 'succeeded')
+// while leaving ready/retrying/leased/dead-letter work in the durable outbox.
+// The live incident: records_queued=177387, sent_batches=276, then the queue
+// still held pending=1203. summarizeRunResultForCli must never let such a run
+// read as "fully drained".
+
+/** A baseline succeeded-source run result with a fully drained outbox. */
+function baseRunResult(outboxSummary) {
+  return {
+    completeness: null,
+    done: { records_emitted: 1, status: 'succeeded', type: 'DONE' },
+    enqueuedBatches: 1,
+    flushedState: {},
+    outboxSummary: {
+      deadLetter: 0,
+      leased: 0,
+      oldestReadyAt: null,
+      ready: 0,
+      retrying: 0,
+      staleLeases: 0,
+      succeeded: 1,
+      total: 1,
+      ...outboxSummary,
+    },
+    priorState: {},
+    recordsQueued: 1,
+    recoveredLeases: 0,
+    satisfiedBindings: ['filesystem'],
+    scanBudgetExceeded: false,
+    sentBatches: 1,
+    skippedScanForBacklog: false,
+    statePutFailed: false,
+    streamingBufferHighWaterMark: 1,
+  };
+}
+
+test('run summary reports drained:true and healthy_idle on a fully drained outbox', () => {
+  const output = summarizeRunResultForCli(baseRunResult({ ready: 0, succeeded: 5, total: 5 }));
+  assert.equal(output.drained, true);
+  assert.equal(output.lifecycle_state, 'healthy_idle');
+  assert.equal(output.residual_backlog.total_open, 0);
+  assert.match(output.drain_note, /Outbox fully drained/);
+});
+
+test('a succeeded run that leaves a ready backlog is NOT reported as fully drained', () => {
+  // The live incident shape: source succeeded, but pending work remains.
+  const output = summarizeRunResultForCli(
+    baseRunResult({ ready: 1203, succeeded: 177387, total: 178590 })
+  );
+  assert.equal(output.done.status, 'succeeded');
+  assert.equal(output.drained, false, 'a ready backlog must never read as drained');
+  assert.equal(output.lifecycle_state, 'draining');
+  assert.equal(output.residual_backlog.ready, 1203);
+  assert.equal(output.residual_backlog.total_open, 1203);
+  // The note must assert the negative ("NOT fully drained"); it must never
+  // claim the lane is drained.
+  assert.doesNotMatch(output.drain_note, /Outbox fully drained/);
+  assert.match(output.drain_note, /NOT fully drained/);
+  assert.match(output.drain_note, /1203 ready/);
+});
+
+test('run summary surfaces a retry backlog distinctly from a ready backlog', () => {
+  // All ready rows are waiting on backoff (ready === retrying), nothing
+  // claimable now: lifecycle is retryable_backlog, not draining.
+  const output = summarizeRunResultForCli(
+    baseRunResult({ ready: 4, retrying: 4, succeeded: 10, total: 14 })
+  );
+  assert.equal(output.drained, false);
+  assert.equal(output.lifecycle_state, 'retryable_backlog');
+  assert.equal(output.residual_backlog.retrying, 4);
+  assert.match(output.drain_note, /retrying/);
+});
+
+test('run summary surfaces a dead-letter backlog with a recovery pointer', () => {
+  const output = summarizeRunResultForCli(
+    baseRunResult({ deadLetter: 2, succeeded: 8, total: 10 })
+  );
+  assert.equal(output.drained, false);
+  assert.equal(output.lifecycle_state, 'dead_letter');
+  assert.equal(output.residual_backlog.dead_letter, 2);
+  assert.match(output.drain_note, /retry-dead-letters/);
+});
+
+test('run summary explains a backlog-skipped scan without claiming a fresh drain', () => {
+  const result = baseRunResult({ ready: 50, succeeded: 0, total: 50 });
+  result.skippedScanForBacklog = true;
+  const output = summarizeRunResultForCli(result);
+  assert.equal(output.drained, false);
+  assert.match(output.drain_note, /Scan was skipped/);
+  assert.match(output.drain_note, /50 open/);
+});
+
+test('run summary names the scan-budget cutoff so the backlog is not read as the whole source', () => {
+  const result = baseRunResult({ ready: 500, succeeded: 1000, total: 1500 });
+  result.scanBudgetExceeded = true;
+  const output = summarizeRunResultForCli(result);
+  assert.equal(output.drained, false);
+  assert.match(output.drain_note, /enqueue budget/);
+});
+
+test('run summary drained flag is true iff lifecycle_state is healthy_idle', () => {
+  // Invariant: the boolean honesty flag and the lifecycle taxonomy must never
+  // disagree. Exercise every non-stale open-work shape plus the idle case.
+  const shapes = [
+    { deadLetter: 0, leased: 0, ready: 0, retrying: 0 }, // idle
+    { deadLetter: 0, leased: 0, ready: 5, retrying: 0 }, // draining
+    { deadLetter: 0, leased: 0, ready: 5, retrying: 5 }, // retryable_backlog
+    { deadLetter: 0, leased: 3, ready: 0, retrying: 0 }, // draining (leased)
+    { deadLetter: 2, leased: 0, ready: 0, retrying: 0 }, // dead_letter
+  ];
+  for (const shape of shapes) {
+    const total = shape.deadLetter + shape.leased + shape.ready + 1;
+    const output = summarizeRunResultForCli(baseRunResult({ ...shape, succeeded: 1, total }));
+    assert.equal(
+      output.drained,
+      output.lifecycle_state === 'healthy_idle',
+      `drained/lifecycle mismatch for ${JSON.stringify(shape)} → ${output.lifecycle_state}`
+    );
+  }
+});
+
 // --- Connector adoption (tasks 5.1-5.4) ---
 
 test('pdpp-local-collector run --connector claude_code resolves to the bundled durable-outbox entrypoint', () => {
@@ -1198,6 +1322,305 @@ test('status/doctor stay bounded and report observed:null on a giant legacy (pre
   assert.equal(doctor.checks.coverage_diagnostics, 'ok');
   // The whole pass leaks no payloads even on the legacy path.
   assert.doesNotMatch(JSON.stringify({ status, doctor }), /messages-\d/);
+});
+
+// --- Sent-row retention / prune-sent (outbox-retention-health-v1) ---
+//
+// Invariant: pruneSent never touches pending, leased, retrying, or dead-letter
+// rows. It only deletes succeeded rows that satisfy the age/count policy.
+
+test('pruneSent dry-run reports matched count without deleting', async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    // Drain three rows so they are in succeeded status.
+    for (const id of ['sent-1', 'sent-2', 'sent-3']) {
+      enqueueRecordBatch(outbox, { id, streams: ['messages'] });
+      drainRow(outbox, id);
+    }
+    assert.equal(outbox.summary({ sourceInstanceId: 'src-1' }).succeeded, 3);
+
+    // Dry-run (the default): use a future timestamp so all rows are "older than" it.
+    const future = new Date(Date.now() + 60_000).toISOString();
+    const result = outbox.pruneSent({ olderThanIso: future });
+    assert.equal(result.matched, 3);
+    assert.equal(result.pruned, 0);
+    // DB unchanged.
+    assert.equal(outbox.summary({ sourceInstanceId: 'src-1' }).succeeded, 3);
+  } finally {
+    outbox.close();
+  }
+});
+
+test('pruneSent deletes only succeeded rows, never pending/leased/retrying/dead-letter', async () => {
+  const path = await tempOutboxPath();
+  let now = new Date('2026-01-01T00:00:00.000Z');
+  const outbox = new LocalDeviceOutbox({ clock: () => now, path });
+  try {
+    // One sent row (old).
+    enqueueRecordBatch(outbox, { id: 'sent-old', streams: ['messages'] });
+    drainRow(outbox, 'sent-old');
+
+    // One pending row (should survive).
+    enqueueRecordBatch(outbox, { id: 'pending-row', streams: ['messages'] });
+
+    // One retrying row (future next_attempt_at; should survive).
+    outbox.enqueue({
+      id: 'retrying-row',
+      kind: 'record_batch',
+      nextAttemptAt: new Date('2099-01-01T00:00:00.000Z'),
+      payload: { records: [] },
+      sourceInstanceId: 'src-1',
+    });
+
+    // One dead-letter row (should survive).
+    outbox.enqueue({ id: 'dl-row', kind: 'record_batch', payload: { records: [] }, sourceInstanceId: 'src-1' });
+    const [dlClaim] = outbox.claimReady({ holder: 'w', leaseMs: 60_000, sourceInstanceId: 'src-1' });
+    outbox.deadLetter({ error: 'terminal', holder: 'w', id: dlClaim.id, leaseEpoch: dlClaim.lease_epoch });
+
+    const before = outbox.summary({ sourceInstanceId: 'src-1' });
+    assert.equal(before.succeeded, 1);
+    assert.equal(before.ready, 2); // pending + retrying
+    assert.equal(before.deadLetter, 1);
+
+    const result = outbox.pruneSent({ dryRun: false, olderThanIso: new Date().toISOString() });
+    assert.equal(result.matched, 1);
+    assert.equal(result.pruned, 1);
+
+    const after = outbox.summary({ sourceInstanceId: 'src-1' });
+    assert.equal(after.succeeded, 0);
+    assert.equal(after.ready, 2, 'pending + retrying must survive');
+    assert.equal(after.deadLetter, 1, 'dead-letter must survive');
+  } finally {
+    outbox.close();
+  }
+});
+
+test('pruneSent keepCount retains the N most-recent sent rows per source', async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    for (const id of ['sent-1', 'sent-2', 'sent-3', 'sent-4', 'sent-5']) {
+      enqueueRecordBatch(outbox, { id, streams: ['messages'] });
+      drainRow(outbox, id);
+    }
+    assert.equal(outbox.summary({ sourceInstanceId: 'src-1' }).succeeded, 5);
+
+    // Keep the 2 most-recent; prune the 3 older ones.
+    const result = outbox.pruneSent({ dryRun: false, keepCount: 2 });
+    assert.equal(result.matched, 3);
+    assert.equal(result.pruned, 3);
+    assert.equal(outbox.summary({ sourceInstanceId: 'src-1' }).succeeded, 2);
+  } finally {
+    outbox.close();
+  }
+});
+
+test('pruneSent keepCount=0 prunes all sent rows', async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    for (const id of ['sent-a', 'sent-b']) {
+      enqueueRecordBatch(outbox, { id, streams: ['messages'] });
+      drainRow(outbox, id);
+    }
+    const result = outbox.pruneSent({ dryRun: false, keepCount: 0 });
+    assert.equal(result.pruned, 2);
+    assert.equal(outbox.summary({ sourceInstanceId: 'src-1' }).succeeded, 0);
+  } finally {
+    outbox.close();
+  }
+});
+
+test('pruneSent cascades to the observed-stream index', async () => {
+  // When a sent row is pruned, its local_device_observed_stream index entries
+  // must also be removed so the index stays consistent.
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    enqueueRecordBatch(outbox, { id: 'rb-1', streams: ['messages', 'sessions'] });
+    drainRow(outbox, 'rb-1');
+
+    // Verify coverage observation works before pruning.
+    assert.equal(outbox.hasObservedStream({ sourceInstanceId: 'src-1', stream: 'messages' }), true);
+
+    const result = outbox.pruneSent({ dryRun: false, keepCount: 0 });
+    assert.equal(result.pruned, 1);
+
+    // After pruning, the parent outbox row is gone. The index entries for this
+    // outbox_id are also gone (no orphan rows left behind).
+    // The coverage observation now returns false (no non-dead-letter record_batch rows).
+    assert.equal(outbox.hasObservedStream({ sourceInstanceId: 'src-1', stream: 'messages' }), false);
+    assert.equal(outbox.countRecordBatches({ sourceInstanceId: 'src-1' }), 0);
+  } finally {
+    outbox.close();
+  }
+});
+
+test('prune-sent CLI is dry-run by default and backs up before apply', async () => {
+  const path = await tempOutboxPath();
+  let now = new Date('2026-01-01T00:00:00.000Z');
+  const outbox = new LocalDeviceOutbox({ clock: () => now, path });
+  try {
+    // Drain 3 old rows.
+    for (const id of ['sent-1', 'sent-2', 'sent-3']) {
+      enqueueRecordBatch(outbox, { id, streams: ['messages'] });
+      drainRow(outbox, id);
+    }
+    // Keep one pending row alive.
+    enqueueRecordBatch(outbox, { id: 'pending-row', streams: ['messages'] });
+  } finally {
+    outbox.close();
+  }
+
+  // Dry-run with --older-than-days 0 targets all sent rows.
+  const dryRunOpts = parseArgs(['prune-sent', '--queue', path, '--connection-id', 'src-1', '--older-than-days', '0']);
+  assert.equal(dryRunOpts.command, 'prune-sent');
+  assert.equal(dryRunOpts.apply, undefined);
+
+  const dryRun = pruneSentOutboxRows(dryRunOpts);
+  assert.equal(dryRun.dry_run, true);
+  assert.equal(dryRun.matched, 3);
+  assert.equal(dryRun.pruned, 0);
+  assert.equal(dryRun.backup_path, null);
+  assert.equal(dryRun.status_before.sent, 3);
+  assert.equal(dryRun.status_before.pending, 1);
+  assert.equal(dryRun.status_after.sent, 3, 'dry-run must not mutate');
+  assert.match(dryRun.note, /dry run/);
+  assert.match(dryRun.note, /--apply/);
+
+  // Apply: backs up, then actually deletes sent rows.
+  const applyOpts = parseArgs(['prune-sent', '--queue', path, '--connection-id', 'src-1', '--older-than-days', '0', '--apply']);
+  const applied = pruneSentOutboxRows(applyOpts);
+  assert.equal(applied.dry_run, false);
+  assert.equal(applied.matched, 3);
+  assert.equal(applied.pruned, 3);
+  assert.ok(applied.backup_path, 'apply must produce a backup path');
+  assert.equal(existsSync(applied.backup_path), true);
+  assert.equal(applied.status_after.sent, 0);
+  assert.equal(applied.status_after.pending, 1, 'pending row must survive');
+  assert.match(applied.note, /pruned/);
+});
+
+test('prune-sent CLI --keep-count limits retained sent rows', async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    for (const id of ['s1', 's2', 's3', 's4']) {
+      enqueueRecordBatch(outbox, { id, streams: ['messages'] });
+      drainRow(outbox, id);
+    }
+  } finally {
+    outbox.close();
+  }
+
+  const opts = parseArgs(['prune-sent', '--queue', path, '--connection-id', 'src-1', '--keep-count', '2', '--apply']);
+  assert.equal(opts.keepCount, 2);
+
+  const result = pruneSentOutboxRows(opts);
+  assert.equal(result.pruned, 2);
+  assert.equal(result.status_after.sent, 2);
+  assert.equal(result.filter.keep_count, 2);
+  assert.equal(result.filter.older_than_days, null);
+  assert.equal(result.filter.older_than_iso, null);
+  assert.doesNotMatch(result.note, /older than 30 days/);
+});
+
+test('prune-sent CLI reports no-op when nothing matches the policy', async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    enqueueRecordBatch(outbox, { id: 'fresh-sent', streams: ['messages'] });
+    drainRow(outbox, 'fresh-sent');
+  } finally {
+    outbox.close();
+  }
+
+  // --older-than-days 9999 means "only prune rows more than 9999 days old";
+  // the fresh row is not that old.
+  const opts = parseArgs(['prune-sent', '--queue', path, '--connection-id', 'src-1', '--older-than-days', '9999']);
+  const result = pruneSentOutboxRows(opts);
+  assert.equal(result.matched, 0);
+  assert.equal(result.pruned, 0);
+  assert.match(result.note, /Nothing to prune/);
+});
+
+test('prune-sent CLI keep-count-only no-op reports the actual policy', async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    for (const id of ['s1', 's2']) {
+      enqueueRecordBatch(outbox, { id, streams: ['messages'] });
+      drainRow(outbox, id);
+    }
+  } finally {
+    outbox.close();
+  }
+
+  const opts = parseArgs(['prune-sent', '--queue', path, '--connection-id', 'src-1', '--keep-count', '2']);
+  const result = pruneSentOutboxRows(opts);
+  assert.equal(result.matched, 0);
+  assert.equal(result.pruned, 0);
+  assert.equal(result.filter.keep_count, 2);
+  assert.equal(result.filter.older_than_days, null);
+  assert.equal(result.filter.older_than_iso, null);
+  assert.match(result.note, /keep-count 2/);
+  assert.doesNotMatch(result.note, /older than 30 days/);
+});
+
+test('active draining without retry/dead-letter shows draining lifecycle_state, not stalled', async () => {
+  // Regression guard: a large sent-only outbox that is actively draining
+  // (has claimable pending work) must be classified as draining, not any
+  // unhealthy state.
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    // Many succeeded (sent) rows simulate a large pre-prune backlog.
+    for (let i = 0; i < 5; i++) {
+      enqueueRecordBatch(outbox, { id: `sent-${i}`, streams: ['messages'] });
+      drainRow(outbox, `sent-${i}`);
+    }
+    // One active pending row (drain in progress).
+    enqueueRecordBatch(outbox, { id: 'active-pending', streams: ['messages'] });
+  } finally {
+    outbox.close();
+  }
+
+  const status = statusFor(path);
+  assert.equal(status.lifecycle_state, 'draining');
+  assert.equal(status.outbox.counts.sent, 5);
+  assert.equal(status.outbox.counts.pending, 1);
+  const doctor = buildLocalOutboxDoctor(status);
+  // Doctor must be ok (no dead letters, no stale leases, no failures).
+  assert.equal(doctor.checks.outbox_failures, 'ok');
+  assert.equal(doctor.remediation, undefined);
+});
+
+test('stalled/dead-letter still surfaces as a problem even with a large sent backlog', async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    // Many succeeded rows.
+    for (let i = 0; i < 3; i++) {
+      enqueueRecordBatch(outbox, { id: `sent-${i}`, streams: ['messages'] });
+      drainRow(outbox, `sent-${i}`);
+    }
+    // One dead-letter row.
+    outbox.enqueue({ id: 'dl-row', kind: 'record_batch', payload: { records: [] }, sourceInstanceId: 'src-1' });
+    const [claim] = outbox.claimReady({ holder: 'w', leaseMs: 60_000, sourceInstanceId: 'src-1' });
+    outbox.deadLetter({ error: 'server rejected', holder: 'w', id: claim.id, leaseEpoch: claim.lease_epoch });
+  } finally {
+    outbox.close();
+  }
+
+  const status = statusFor(path);
+  assert.equal(status.lifecycle_state, 'dead_letter');
+  assert.equal(status.outbox.counts.dead_letter, 1);
+  const doctor = buildLocalOutboxDoctor(status);
+  assert.equal(doctor.checks.outbox_failures, 'fail');
+  assert.equal(doctor.status, 'critical');
+  assert.ok(Array.isArray(doctor.remediation));
+  assert.ok(doctor.remediation.some((line) => /retry-dead-letters/.test(line)));
 });
 
 async function tempOutboxPath() {

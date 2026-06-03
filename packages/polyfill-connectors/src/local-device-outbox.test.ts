@@ -983,3 +983,90 @@ function seedLegacyV1Outbox(
 function fixedClock(iso: string): () => Date {
   return () => new Date(iso);
 }
+
+/**
+ * Bulk-insert `count` succeeded `record_batch` rows directly into a current
+ * (v2) outbox file, fast enough to seed past SQLite's per-statement variable
+ * limit. Opening a `LocalDeviceOutbox` first creates the v2 schema; the raw
+ * inserts then mirror what an acknowledged drain leaves behind, without the
+ * per-row hashing/index cost of 30k+ real enqueues.
+ */
+function seedSucceededRows(path: string, sourceInstanceId: string, count: number): void {
+  new LocalDeviceOutbox({ path }).close();
+  const db = new DatabaseSync(path);
+  try {
+    const insert = db.prepare(
+      `INSERT INTO local_device_outbox (
+         id, source_instance_id, kind, status, payload_json, body_hash,
+         attempt_count, next_attempt_at, acknowledged_at, created_at, updated_at
+       ) VALUES (?, ?, 'record_batch', 'succeeded', '{"records":[]}', 'hash', 0, ?, ?, ?, ?)`
+    );
+    const stamp = "2026-05-19T12:00:00.000Z";
+    db.exec("BEGIN");
+    for (let index = 0; index < count; index++) {
+      insert.run(`${sourceInstanceId}:row:${index}`, sourceInstanceId, stamp, stamp, stamp, stamp);
+    }
+    db.exec("COMMIT");
+  } finally {
+    db.close();
+  }
+}
+
+test("pruneSent deletes a backlog larger than SQLite's per-statement variable limit", async () => {
+  // The live incident shape: ~170k succeeded rows. A single
+  // `DELETE ... WHERE id IN (...)` over that set throws "too many SQL
+  // variables" (limit ~32,766). pruneSent must chunk and delete them all.
+  const path = await tempOutboxPath();
+  const sourceInstanceId = "src-huge";
+  // One over the variable limit is enough to force >1 chunk and prove the
+  // single-statement path would have failed.
+  const total = 32_767 + 10;
+  seedSucceededRows(path, sourceInstanceId, total);
+
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    assert.equal(outbox.summary({ sourceInstanceId }).succeeded, total);
+    const result = outbox.pruneSent({ dryRun: false, keepCount: 0, sourceInstanceId });
+    assert.equal(result.matched, total);
+    assert.equal(result.pruned, total);
+    assert.equal(outbox.summary({ sourceInstanceId }).succeeded, 0);
+  } finally {
+    outbox.close();
+  }
+});
+
+test("requeueDeadLetters requeues a backlog larger than the per-statement variable limit", async () => {
+  const path = await tempOutboxPath();
+  const sourceInstanceId = "src-dl-huge";
+  const total = 32_767 + 5;
+  // Seed dead-letter rows directly (status override) on the current schema.
+  new LocalDeviceOutbox({ path }).close();
+  const db = new DatabaseSync(path);
+  try {
+    const insert = db.prepare(
+      `INSERT INTO local_device_outbox (
+         id, source_instance_id, kind, status, payload_json, body_hash,
+         attempt_count, next_attempt_at, last_error, created_at, updated_at
+       ) VALUES (?, ?, 'record_batch', 'dead_letter', '{"records":[]}', 'hash', 5, ?, '400', ?, ?)`
+    );
+    const stamp = "2026-05-19T12:00:00.000Z";
+    db.exec("BEGIN");
+    for (let index = 0; index < total; index++) {
+      insert.run(`${sourceInstanceId}:dl:${index}`, sourceInstanceId, stamp, stamp, stamp);
+    }
+    db.exec("COMMIT");
+  } finally {
+    db.close();
+  }
+
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    const result = outbox.requeueDeadLetters({ sourceInstanceId });
+    assert.equal(result.matched, total);
+    assert.equal(result.requeued, total);
+    assert.equal(outbox.summary({ sourceInstanceId }).deadLetter, 0);
+    assert.equal(outbox.summary({ sourceInstanceId }).ready, total);
+  } finally {
+    outbox.close();
+  }
+});

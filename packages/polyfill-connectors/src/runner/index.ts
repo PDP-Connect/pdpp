@@ -111,7 +111,11 @@ export {
   type LocalDeviceOutboxKind,
   type LocalDeviceOutboxLeaseInput,
   type LocalDeviceOutboxOptions,
+  type LocalDeviceOutboxPruneSentInput,
+  type LocalDeviceOutboxPruneSentResult,
   type LocalDeviceOutboxRenewInput,
+  type LocalDeviceOutboxRequeueDeadLettersInput,
+  type LocalDeviceOutboxRequeueDeadLettersResult,
   type LocalDeviceOutboxStatus,
   type LocalDeviceOutboxSummary,
 } from "../local-device-outbox.ts";
