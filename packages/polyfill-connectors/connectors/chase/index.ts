@@ -106,6 +106,14 @@ const CHASE_DOWNLOAD_ROUTE_RE = /downloadAccountTransactions|confirmDownloadAcco
 const NO_ACTIVITY_CONFIRMATION_RE = /we couldn't find any activity that matched the date range you chose/iu;
 const DASHBOARD_ACCOUNT_SELECTOR =
   '[id^="accounts-name-link-button-"][id$="-label"], button[id^="accounts-name-link-button-"], button[data-testid^="accounts-name-link-button-"]';
+export const CHASE_QFX_ACTIVITY_SELECT_SELECTORS = [
+  "#downloadActivityOptionId",
+  "#select-downloadActivityOptionId",
+] as const;
+export const CHASE_QFX_FILE_TYPE_SELECT_SELECTORS = [
+  "#downloadFileTypeOption",
+  "#select-downloadFileTypeOption",
+] as const;
 const TIME_RANGE_FIELD_BY_STREAM: Record<string, string> = {
   balances: "as_of",
   current_activity: "activity_date",
@@ -167,7 +175,7 @@ async function discoverAccounts(page: Page): Promise<ChaseAccount[]> {
 // We use the visible labels as locators (Playwright's `getByRole('option')`
 // pierces shadow DOM).
 async function selectActivity(page: Page, optionLabel: string): Promise<void> {
-  await page.locator("#select-downloadActivityOptionId").click({ timeout: CLICK_TIMEOUT_MS });
+  await page.locator(CHASE_QFX_ACTIVITY_SELECT_SELECTORS.join(", ")).first().click({ timeout: CLICK_TIMEOUT_MS });
   const opt = page.getByRole("option", {
     name: new RegExp(`^${optionLabel}$`, "i"),
   });
@@ -183,7 +191,7 @@ async function selectActivity(page: Page, optionLabel: string): Promise<void> {
  * Range on Activity) revert file type back to CSV. Clicking is durable.
  */
 async function selectFileType(page: Page, label: string): Promise<void> {
-  await page.locator("#select-downloadFileTypeOption").click({ timeout: CLICK_TIMEOUT_MS });
+  await page.locator(CHASE_QFX_FILE_TYPE_SELECT_SELECTORS.join(", ")).first().click({ timeout: CLICK_TIMEOUT_MS });
   const opt = page.getByRole("option", {
     name: new RegExp(`^${label}`, "i"),
   });
@@ -784,7 +792,7 @@ function chaseLocatorProbesForLabel(label: string): readonly LocatorProbe[] {
         description: "QFX activity select host.",
         id: "qfx-activity-select-host",
         kind: "css",
-        selector: "#select-downloadActivityOptionId",
+        selector: CHASE_QFX_ACTIVITY_SELECT_SELECTORS.join(", "),
       },
       {
         description: "Whether the activity select has a stable accessible combobox name.",
@@ -797,7 +805,7 @@ function chaseLocatorProbesForLabel(label: string): readonly LocatorProbe[] {
         description: "QFX file-type select host.",
         id: "qfx-file-type-select-host",
         kind: "css",
-        selector: "#select-downloadFileTypeOption",
+        selector: CHASE_QFX_FILE_TYPE_SELECT_SELECTORS.join(", "),
       },
       {
         description: "Whether the file-type select has a stable accessible combobox name.",
