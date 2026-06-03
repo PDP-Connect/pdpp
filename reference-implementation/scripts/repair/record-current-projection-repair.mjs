@@ -769,7 +769,8 @@ function printSummary(result) {
     } else if (result.retainedSizeDirtyMarked) {
       console.log('  retained-size read model: marked dirty (rebuild to refresh)');
       console.log('  follow-up (owner): refresh the retained-size read model so the dashboard size is correct:');
-      console.log('    POST /v1/_ref/dataset/retained-size/rebuild   (owner-authenticated)');
+      console.log('    POST /_ref/dataset/size/reconcile   (owner-authenticated, dirty rows only)');
+      console.log('    — or POST /_ref/dataset/size/rebuild for a full retained-size rebuild');
       console.log('    — or call rebuildRetainedSize() from reference-implementation/server/retained-size-read-model.js');
     } else if (result.retainedSizeDirtyError) {
       console.log(`  retained-size read model: dirty-mark failed (${result.retainedSizeDirtyError}); rebuild still required`);
