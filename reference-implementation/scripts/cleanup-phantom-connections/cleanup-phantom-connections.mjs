@@ -47,10 +47,28 @@
  *   P1. Default-account provenance: source_kind === 'account',
  *       source_binding_key === 'default', and source_binding_json parses to
  *       exactly { kind: 'default_account' }.
- *   P2. Deterministic-id self-consistency: the row's connector_instance_id
- *       equals makeDefaultAccountConnectorInstanceId(owner, connector_id).
- *       (Proves it is a materialized default-account row, not a spoofed
- *       binding that merely copied the marker fields.)
+ *   P2. Default-account-id self-consistency, split into P2a (current) and P2b
+ *       (legacy) — see `cleanup-legacy-default-account-id-connections`:
+ *         P2a — the row's connector_instance_id equals the CURRENT
+ *           makeDefaultAccountConnectorInstanceId(owner, connector_id).
+ *         P2b — the id does NOT match the current formula, but the row is
+ *           ACCEPTED because P1 above already proved default-account provenance
+ *           (source_kind='account', source_binding_key='default',
+ *           source_binding_json == {kind:'default_account'}); a legacy
+ *           materialization minted under an earlier id-hash formula has exactly
+ *           that shape with only the id hash differing. The original P2 hard
+ *           block treated a legacy id as a spoofing risk, but spoofing is
+ *           neutralized by P4–P7 (any record/grant/schedule/run/credential/
+ *           device evidence still refuses the row), so a ZERO-evidence row with
+ *           the exact default-account markers is a phantom regardless of which
+ *           id formula minted it. P2b does not block; the legacy id is surfaced
+ *           as an informational note (P2b:legacy-default-account-id).
+ *           Durability: a revoked legacy row survives future reads because
+ *           ensureDefaultAccountConnection's guard looks the row up BY BINDING
+ *           (owner+connector+account+default), not by id, and returns a revoked
+ *           row unchanged (no re-materialization). A non-default binding with a
+ *           legacy id is still refused at P1, and a non-deterministic row with
+ *           any real evidence is still refused at P4–P7.
  *   P3. status === 'active' (a non-active row is already clean; we never
  *       touch paused/revoked rows).
  *   P4. Zero data across EVERY connector_instance_id-keyed evidence table:
@@ -170,6 +188,8 @@
  *   PDPP_OWNER_SUBJECT_ID                          owner subject id (default: owner_local)
  *
  * Spec: openspec/changes/separate-connector-catalog-from-connections/
+ *   P5 split:  openspec/changes/cleanup-grant-referenced-zero-record-connections/
+ *   P2 split:  openspec/changes/cleanup-legacy-default-account-id-connections/
  */
 
 import process from 'node:process';
@@ -254,7 +274,13 @@ function resolveBackend(opts, env = process.env) {
 
 const PREDICATE_TEXT = `Phantom default-account cleanup safety predicate (ALL must hold; fail closed):
   P1 source_kind='account' AND source_binding_key='default' AND source_binding_json == {"kind":"default_account"}
-  P2 connector_instance_id == deterministic makeDefaultAccountConnectorInstanceId(owner, connector_id)
+  P2a/P2b default-account-id self-consistency:
+      P2a connector_instance_id == deterministic makeDefaultAccountConnectorInstanceId(owner, connector_id), OR
+      P2b a LEGACY default-account id (does NOT match the current formula) is ACCEPTED, because P1 above
+          already proved default-account provenance and P4-P7 fail closed on any real evidence. The
+          non-deterministic id is surfaced as an informational note (P2b:legacy-default-account-id), not a
+          block. A revoked legacy row is durable: ensureDefaultAccountConnection's guard looks the row up by
+          BINDING (owner+connector+account+default), not by id, and returns a revoked row unchanged.
   P3 status='active'
   P4 zero rows in: ${EVIDENCE_TABLES.join(', ')}
   P5a no LOAD-BEARING grant scope names the connector_instance_id:
@@ -266,7 +292,9 @@ const PREDICATE_TEXT = `Phantom default-account cleanup safety predicate (ALL mu
   P6 no controller_active_runs, no connector_schedules, no device_source_instances row
   P7 no connector_instance_credentials row
 Missing evidence table => fail closed (Px:<table>-table-missing), never a silent pass.
-Action on a passing row: updateStatus(id, { status: 'revoked' }). Never delete (deterministic id re-materializes).
+Action on a passing row: updateStatus(id, { status: 'revoked' }). Never delete: a deleted default-account
+binding (current or legacy id) re-materializes to 'active' on the next read; a revoked one is returned
+unchanged by the binding-keyed durability guard.
 The revoke touches ONLY the connector_instances row; no grant, grant_package_member, child grant, or token is modified.`;
 
 // ─── Predicate (backend-agnostic) ─────────────────────────────────────────
@@ -280,6 +308,12 @@ The revoke touches ONLY the connector_instances row; no grant, grant_package_mem
  *                                                          null = table absent)
  *   activity:                        { [table]: number | 'missing' }
  * A 'missing' value (a required table that does not exist) fails closed.
+ *
+ * P2 is split into P2a (current deterministic id) and P2b (legacy id) — see
+ * `cleanup-legacy-default-account-id-connections`. A legacy id does NOT block;
+ * it is surfaced as a `P2b:legacy-default-account-id` note (see
+ * `notesFromEvidence`). The blocking predicate (`reasonsFromEvidence`) does not
+ * consult the id beyond P1's provenance markers.
  *
  * P5 is split into two distinct sub-checks (see
  * `separate-connector-catalog-from-connections` and
@@ -310,7 +344,6 @@ The revoke touches ONLY the connector_instances row; no grant, grant_package_mem
  */
 export function reasonsFromEvidence(instance, evidence) {
   const reasons = [];
-  const id = instance.connectorInstanceId;
 
   // P1 — default-account provenance.
   const bindingIsDefault =
@@ -330,11 +363,36 @@ export function reasonsFromEvidence(instance, evidence) {
     return reasons;
   }
 
-  // P2 — deterministic-id self-consistency.
-  const expectedId = makeDefaultAccountConnectorInstanceId(instance.ownerSubjectId, instance.connectorId);
-  if (id !== expectedId) {
-    reasons.push('P2:id-not-deterministic-default-account');
-  }
+  // P2 — default-account-id self-consistency (split into P2a current / P2b
+  // legacy; see `cleanup-legacy-default-account-id-connections`).
+  //
+  //   P2a (current) — `connector_instance_id` equals the current deterministic
+  //     `makeDefaultAccountConnectorInstanceId(owner, connector_id)`.
+  //   P2b (legacy)  — the id does NOT match the current formula, but the row
+  //     already PROVED default-account provenance to reach this line: P1 above
+  //     verified `source_kind='account'` + `source_binding_key='default'` +
+  //     `source_binding_json == {kind:'default_account'}` and returned early on
+  //     any failure. A row that the legacy read-time fan-out materialized under
+  //     an earlier id formula (or a different owner-subject hashing input) is
+  //     exactly this shape: the marker fields are intact, only the id hash
+  //     differs. The original P2 hard-block treated that legacy materialization
+  //     as a spoofing risk, but spoofing is already neutralized downstream —
+  //     P4–P7 fail closed on ANY record/grant/schedule/run/credential/device
+  //     evidence, so a marker-spoofed row that carried real owner-meaningful
+  //     state is still refused by its data. A zero-evidence row with the exact
+  //     default-account markers is, behaviorally, a phantom regardless of which
+  //     id formula minted it, and the revoke is a reversible soft-flip.
+  //
+  // Durability of a legacy revoke: `ensureDefaultAccountConnection`'s guard
+  // looks the row up by BINDING (owner + connector + source_kind='account' +
+  // source_binding_key='default'), not by id, and returns a `revoked` row
+  // unchanged — so a revoked legacy row survives every future read exactly like
+  // a revoked current-id row, with no re-materialization. (A genuinely missing
+  // row re-materializes under the CURRENT id; that is correct, not a leak.)
+  //
+  // P2b therefore does NOT block. The non-deterministic id is surfaced as an
+  // informational note (`notesFromEvidence`) so the dry-run discloses every
+  // legacy revoke to the operator before they apply. P2a needs no note.
 
   // P3 — active only.
   if (instance.status !== 'active') {
@@ -379,15 +437,31 @@ export function reasonsFromEvidence(instance, evidence) {
 }
 
 /**
- * Pure: the NON-blocking informational notes for an instance+evidence. Today
- * the only note is the P5b grant-package-member display reference — a count of
- * `grant_package_members.source_json` rows that name this connection. Surfaced
- * so the dry-run discloses the reference to the operator before they apply,
- * even though it does not block the revoke. Performs NO IO. Returns [] when the
- * member table is absent (`null`) or has no matching rows.
+ * Pure: the NON-blocking informational notes for an instance+evidence. Notes
+ * disclose facts about a candidate the operator should see before applying,
+ * even though they did not block the revoke. Performs NO IO.
+ *
+ *   - `P2b:legacy-default-account-id` — the row's `connector_instance_id` does
+ *     NOT equal the CURRENT deterministic
+ *     `makeDefaultAccountConnectorInstanceId(owner, connector_id)`. Because
+ *     notes are only attached to rows that already passed the full P1–P7
+ *     predicate (P1 proved default-account provenance, P3 active, P4–P7 zero
+ *     evidence), a non-matching id here is a legacy default-account
+ *     materialization minted under an earlier id formula. The revoke is durable
+ *     by binding (see the P2 comment in `reasonsFromEvidence`). Disclosed so the
+ *     operator can see exactly which revokes target legacy ids.
+ *   - `P5b:grant-package-member-display-ref` — a count of
+ *     `grant_package_members.source_json` rows that name this connection (a
+ *     display/audit pointer, not grant scope; see `reasonsFromEvidence` P5).
+ *
+ * Returns [] when nothing notable applies.
  */
-export function notesFromEvidence(_instance, evidence) {
+export function notesFromEvidence(instance, evidence) {
   const notes = [];
+  const expectedId = makeDefaultAccountConnectorInstanceId(instance.ownerSubjectId, instance.connectorId);
+  if (instance.connectorInstanceId !== expectedId) {
+    notes.push('P2b:legacy-default-account-id');
+  }
   if (
     evidence.grantPackageMemberRefs !== null &&
     evidence.grantPackageMemberRefs !== 'missing' &&

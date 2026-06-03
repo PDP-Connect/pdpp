@@ -93,6 +93,41 @@ function seedPhantom({ connectorId = CONNECTOR_ID, now = '2026-06-02T00:00:00.00
   return instance.connectorInstanceId;
 }
 
+// Materialize a LEGACY default-account row: the exact default-account markers
+// (source_kind='account', source_binding_key='default', source_binding_json
+// {kind:'default_account'}, status='active') but a connector_instance_id that
+// does NOT match the current deterministic formula — i.e. a row minted before
+// the id-hash formula reached its current shape. This is the live row shape the
+// P2 split targets. The id is supplied explicitly so it is provably legacy.
+function seedLegacyPhantom({
+  connectorId = CONNECTOR_ID,
+  connectorInstanceId = 'cin_legacy0000000000000000',
+  status = 'active',
+  now = '2026-06-02T00:00:00.000Z',
+} = {}) {
+  const store = createSqliteConnectorInstanceStore();
+  // Sanity: the seeded id must be provably legacy (non-deterministic) so the
+  // test is exercising P2b, not accidentally re-deriving the current id.
+  assert.notEqual(
+    connectorInstanceId,
+    makeDefaultAccountConnectorInstanceId(OWNER, connectorId),
+    'seedLegacyPhantom id must differ from the current deterministic id',
+  );
+  const instance = store.upsert({
+    connectorInstanceId,
+    ownerSubjectId: OWNER,
+    connectorId,
+    displayName: connectorId,
+    status,
+    sourceKind: 'account',
+    sourceBindingKey: 'default',
+    sourceBinding: { kind: 'default_account' },
+    createdAt: now,
+    updatedAt: now,
+  });
+  return instance.connectorInstanceId;
+}
+
 function getInstance(id) {
   return createSqliteConnectorInstanceStore().get(id);
 }
@@ -458,6 +493,180 @@ test(
   }),
 );
 
+// ─── P2 split: legacy default-account id (P2b) vs current deterministic id (P2a) ─
+
+test(
+  'P2b does NOT block: a zero-record legacy default-account row (non-deterministic id) IS a candidate, with a legacy-id note; revoke is durable across the next read',
+  withDb(async () => {
+    await registerConnector(listedManifest);
+    const legacyId = seedLegacyPhantom();
+    // Pre-condition: the legacy row is an active, visible connection.
+    assert.equal(getInstance(legacyId).status, 'active');
+    const before = await listConnectorSummaries();
+    assert.equal(before.length, 1, 'legacy phantom is visible before cleanup');
+
+    const plan = planCleanup({ ownerSubjectId: OWNER });
+    assert.equal(plan.candidates.length, 1, 'the legacy zero-record row is a candidate');
+    assert.equal(plan.candidates[0].connector_instance_id, legacyId);
+    assert.equal(plan.skipped.length, 0, 'nothing is skipped');
+    assert.ok(
+      (plan.candidates[0].notes || []).includes('P2b:legacy-default-account-id'),
+      `expected a P2b legacy-id note, got ${JSON.stringify(plan.candidates[0].notes)}`,
+    );
+
+    const { revoked, skippedAtApply } = applyRevoke(plan.candidates);
+    assert.equal(revoked.length, 1);
+    assert.equal(revoked[0].status, 'revoked');
+    assert.equal(skippedAtApply.length, 0);
+
+    // Removed from the projection and from grant fan-in.
+    const after = await listConnectorSummaries();
+    assert.equal(after.length, 0, 'revoked legacy phantom no longer projects');
+    const { bindings } = await resolveFanInBindings({ ownerSubjectId: OWNER, connectorId: CONNECTOR_ID });
+    assert.deepEqual(bindings, [], 'fan-in fails closed after revoke');
+
+    // Durability: the binding-keyed guard must NOT resurrect the legacy row, and
+    // a subsequent dashboard read must NOT silently materialize a NEW current-id
+    // row (ensureDefaultAccountConnection's getByBinding finds the revoked legacy
+    // row and returns it unchanged).
+    const reread = await listConnectorSummaries();
+    assert.equal(reread.length, 0, 'revoke survives the next read (no re-materialization)');
+    assert.equal(getInstance(legacyId).status, 'revoked', 'legacy row stays revoked');
+    // No phantom re-appeared under the current deterministic id either.
+    const currentId = makeDefaultAccountConnectorInstanceId(OWNER, CONNECTOR_ID);
+    assert.equal(getInstance(currentId), null, 'no new current-id row was materialized');
+  }),
+);
+
+test(
+  'P2a current deterministic-id candidate carries NO legacy-id note',
+  withDb(async () => {
+    await registerConnector(listedManifest);
+    const id = seedPhantom();
+    assert.equal(id, makeDefaultAccountConnectorInstanceId(OWNER, CONNECTOR_ID));
+
+    const plan = planCleanup({ ownerSubjectId: OWNER });
+    assert.equal(plan.candidates.length, 1);
+    assert.equal(plan.candidates[0].connector_instance_id, id);
+    assert.ok(
+      !(plan.candidates[0].notes || []).includes('P2b:legacy-default-account-id'),
+      `a current-id candidate must NOT carry a legacy-id note, got ${JSON.stringify(plan.candidates[0].notes)}`,
+    );
+  }),
+);
+
+test(
+  'P4 still fails closed on a legacy id: a legacy default-account row WITH a record is refused',
+  withDb(async () => {
+    await registerConnector(listedManifest);
+    const legacyId = seedLegacyPhantom();
+    getDb()
+      .prepare(
+        `INSERT INTO records(connector_id, connector_instance_id, stream, record_key, record_json, emitted_at)
+         VALUES(?, ?, ?, ?, ?, ?)`,
+      )
+      .run(CONNECTOR_ID, legacyId, STREAM, 'r1', '{"id":"r1"}', '2026-06-02T00:00:00.000Z');
+
+    const plan = planCleanup({ ownerSubjectId: OWNER });
+    assert.equal(plan.candidates.length, 0, 'a data-bearing legacy row is not a candidate');
+    assert.ok(
+      plan.skipped[0].reasons.some((r) => r.startsWith('P4:records=')),
+      `expected a P4 records reason, got ${plan.skipped[0].reasons.join(',')}`,
+    );
+    // The legacy id must NOT silently pass: it is refused by its DATA, not by id.
+    assert.ok(
+      !plan.skipped[0].reasons.some((r) => r.startsWith('P2')),
+      'P2 must not be a refusal reason for a legacy id',
+    );
+  }),
+);
+
+test(
+  'P5a still fails closed on a legacy id: a legacy default-account row pinned by an active grant.streams[].connection_id is refused',
+  withDb(async () => {
+    await registerConnector(listedManifest);
+    const legacyId = seedLegacyPhantom();
+    getDb()
+      .prepare(
+        `INSERT INTO grants(grant_id, subject_id, client_id, storage_binding_json, grant_json, access_mode, status, issued_at)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        'grant_legacy_pin',
+        OWNER,
+        'client_test',
+        JSON.stringify({ connector_id: CONNECTOR_ID }),
+        JSON.stringify({ streams: [{ name: STREAM, connection_id: legacyId }] }),
+        'continuous',
+        'active',
+        '2026-06-02T00:00:00.000Z',
+      );
+
+    const plan = planCleanup({ ownerSubjectId: OWNER });
+    assert.equal(plan.candidates.length, 0, 'a grant-pinned legacy row is not a candidate');
+    assert.ok(
+      plan.skipped[0].reasons.some((r) => r.startsWith('P5:grant-stream-pin=')),
+      `expected a P5 grant-stream-pin reason, got ${plan.skipped[0].reasons.join(',')}`,
+    );
+  }),
+);
+
+test(
+  'P1 still fails closed: a non-deterministic id with a NON-default source binding is refused (zero data does not make it a phantom)',
+  withDb(async () => {
+    await registerConnector(listedManifest);
+    const store = createSqliteConnectorInstanceStore();
+    // A non-deterministic id, zero data, but an explicit (non-default) account
+    // binding — the owner genuinely created this. It must stay out of scope.
+    const real = store.upsert({
+      connectorInstanceId: 'cin_realnondefault00000000',
+      ownerSubjectId: OWNER,
+      connectorId: CONNECTOR_ID,
+      displayName: 'Real account',
+      status: 'active',
+      sourceKind: 'account',
+      sourceBinding: { account: 'real-user@example.com' },
+      createdAt: '2026-06-02T00:00:00.000Z',
+      updatedAt: '2026-06-02T00:00:00.000Z',
+    });
+    const { candidate, reasons } = evaluateInstance(getDb(), real);
+    assert.equal(candidate, false, 'a non-default zero-data row is NOT a candidate');
+    assert.ok(reasons.includes('P1:not-default-account-provenance'));
+
+    const plan = planCleanup({ ownerSubjectId: OWNER });
+    assert.equal(plan.candidates.length, 0);
+  }),
+);
+
+test(
+  'apply-time re-evaluation (SQLite): a legacy candidate that gains a record before apply is skipped-at-apply',
+  withDb(async () => {
+    await registerConnector(listedManifest);
+    const legacyId = seedLegacyPhantom();
+    const plan = planCleanup({ ownerSubjectId: OWNER });
+    assert.equal(plan.candidates.length, 1);
+    assert.equal(plan.candidates[0].connector_instance_id, legacyId);
+
+    // Concurrent write between plan and apply: a record appears. The full
+    // predicate re-evaluation must catch it even for a legacy id.
+    getDb()
+      .prepare(
+        `INSERT INTO records(connector_id, connector_instance_id, stream, record_key, record_json, emitted_at)
+         VALUES(?, ?, ?, ?, ?, ?)`,
+      )
+      .run(CONNECTOR_ID, legacyId, STREAM, 'r-late', '{"id":"r-late"}', '2026-06-02T00:00:01.000Z');
+
+    const { revoked, skippedAtApply } = applyRevoke(plan.candidates);
+    assert.equal(revoked.length, 0, 'the now-data-bearing legacy row is NOT revoked');
+    assert.equal(skippedAtApply.length, 1);
+    assert.ok(
+      skippedAtApply[0].reasons.some((r) => r.startsWith('P4:records=')),
+      `expected a P4 records reason at apply, got ${skippedAtApply[0].reasons.join(',')}`,
+    );
+    assert.equal(getInstance(legacyId).status, 'active', 'left active, untouched');
+  }),
+);
+
 test(
   'P6 fails closed: a default-account row with a schedule is skipped',
   withDb(async () => {
@@ -681,6 +890,14 @@ const DEFAULT_INSTANCE = Object.freeze({
   sourceBinding: { kind: 'default_account' },
 });
 
+// Same default-account markers as DEFAULT_INSTANCE, but a connector_instance_id
+// that does NOT match the current deterministic formula — a legacy
+// materialization (the P2b case).
+const LEGACY_INSTANCE = Object.freeze({
+  ...DEFAULT_INSTANCE,
+  connectorInstanceId: 'cin_legacy0000000000000000',
+});
+
 function cleanEvidence() {
   const zeroData = {};
   for (const t of [
@@ -761,6 +978,47 @@ test('notesFromEvidence: a grant_package_members display reference surfaces as a
 
 test('notesFromEvidence: no member reference => no notes', () => {
   assert.deepEqual(notesFromEvidence(DEFAULT_INSTANCE, cleanEvidence()), []);
+});
+
+// ─── P2 split pure-predicate (backend-agnostic): legacy id is a non-blocking note ─
+
+test('reasonsFromEvidence: a clean LEGACY default-account instance (non-deterministic id) is a candidate (no reasons)', () => {
+  assert.deepEqual(
+    reasonsFromEvidence(LEGACY_INSTANCE, cleanEvidence()),
+    [],
+    'a legacy default-account id must NOT block when all evidence is clean',
+  );
+});
+
+test('notesFromEvidence: a legacy default-account id surfaces as an informational note', () => {
+  assert.deepEqual(notesFromEvidence(LEGACY_INSTANCE, cleanEvidence()), ['P2b:legacy-default-account-id']);
+});
+
+test('notesFromEvidence: a current deterministic id carries NO legacy-id note', () => {
+  assert.deepEqual(notesFromEvidence(DEFAULT_INSTANCE, cleanEvidence()), []);
+});
+
+test('notesFromEvidence: a legacy id AND a member display reference surface BOTH notes', () => {
+  const ev = cleanEvidence();
+  ev.grantPackageMemberRefs = 1;
+  assert.deepEqual(notesFromEvidence(LEGACY_INSTANCE, ev), [
+    'P2b:legacy-default-account-id',
+    'P5b:grant-package-member-display-ref=1',
+  ]);
+});
+
+test('reasonsFromEvidence: a LEGACY id still fails closed on real evidence (P4 records present)', () => {
+  const ev = cleanEvidence();
+  ev.zeroData.records = 2;
+  const reasons = reasonsFromEvidence(LEGACY_INSTANCE, ev);
+  assert.ok(reasons.includes('P4:records=2'), `expected P4 records, got ${reasons.join(',')}`);
+  assert.ok(!reasons.some((r) => r.startsWith('P2')), 'P2 must not be a refusal reason');
+});
+
+test('reasonsFromEvidence: a non-default binding with a non-deterministic id is refused at P1 (zero data does not save it)', () => {
+  const nonDefault = { ...LEGACY_INSTANCE, sourceBinding: { account: 'real@example.com' } };
+  const reasons = reasonsFromEvidence(nonDefault, cleanEvidence());
+  assert.deepEqual(reasons, ['P1:not-default-account-provenance']);
 });
 
 test('reasonsFromEvidence: a load-bearing grant-stream pin (P5a) BLOCKS', () => {
@@ -1111,6 +1369,81 @@ if (!POSTGRES_URL) {
         plan.skipped[0].reasons.some((r) => r.startsWith('P5:grant-stream-pin=')),
         `expected a P5 grant-stream-pin reason, got ${plan.skipped[0].reasons.join(',')}`,
       );
+    });
+  });
+
+  // Seed a LEGACY default-account row directly (non-deterministic id, but the
+  // exact default-account markers) — the Postgres mirror of seedLegacyPhantom.
+  async function seedPgLegacyPhantom(pool, owner, { connectorInstanceId = `cin_pg_legacy_${owner}` } = {}) {
+    assert.notEqual(
+      connectorInstanceId,
+      makeDefaultAccountConnectorInstanceId(owner, PG_CONNECTOR_ID),
+      'seedPgLegacyPhantom id must differ from the current deterministic id',
+    );
+    await pool.query(
+      `INSERT INTO connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at)
+       VALUES($1, $2, $3, $4, 'active', 'account', 'default', $5::jsonb, $6, $6, NULL)`,
+      [
+        connectorInstanceId,
+        owner,
+        PG_CONNECTOR_ID,
+        'PG Legacy Phantom',
+        JSON.stringify({ kind: 'default_account' }),
+        '2026-06-02T00:00:00.000Z',
+      ],
+    );
+    return connectorInstanceId;
+  }
+
+  test('Postgres: P2b does NOT block — a zero-record LEGACY default-account row (non-deterministic id) IS a candidate with a legacy-id note; revoke is durable', async () => {
+    await withPg(async ({ pool, owner }) => {
+      const legacyId = await seedPgLegacyPhantom(pool, owner);
+      assert.notEqual(legacyId, makeDefaultAccountConnectorInstanceId(owner, PG_CONNECTOR_ID));
+
+      const plan = await planCleanupPg({ pool, ownerSubjectId: owner });
+      assert.equal(plan.candidates.length, 1, 'the legacy zero-record row is a candidate');
+      assert.equal(plan.candidates[0].connector_instance_id, legacyId);
+      assert.ok(
+        (plan.candidates[0].notes || []).includes('P2b:legacy-default-account-id'),
+        `expected a P2b legacy-id note, got ${JSON.stringify(plan.candidates[0].notes)}`,
+      );
+
+      const { revoked, skippedAtApply } = await applyRevokePg({ pool, candidates: plan.candidates });
+      assert.equal(revoked.length, 1);
+      assert.equal(revoked[0].status, 'revoked');
+      assert.equal(skippedAtApply.length, 0);
+
+      // Next scan: the revoked legacy row is skipped (P3) and does not
+      // re-materialize, and no new current-id row appeared.
+      const reread = await planCleanupPg({ pool, ownerSubjectId: owner });
+      assert.equal(reread.candidates.length, 0, 'revoke survives the next scan');
+      assert.ok(reread.skipped[0].reasons.includes('P3:status-revoked'));
+      const store = createPostgresConnectorInstanceStore();
+      assert.equal((await store.get(legacyId)).status, 'revoked', 'legacy row stays revoked');
+      assert.equal(
+        await store.get(makeDefaultAccountConnectorInstanceId(owner, PG_CONNECTOR_ID)),
+        null,
+        'no new current-id row was materialized by the scan',
+      );
+    });
+  });
+
+  test('Postgres: P4 still fails closed on a LEGACY id — a legacy row WITH a record is refused (not by P2)', async () => {
+    await withPg(async ({ pool, owner }) => {
+      const legacyId = await seedPgLegacyPhantom(pool, owner);
+      await pool.query(
+        `INSERT INTO records(connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, primary_key_text)
+         VALUES($1, $2, $3, $4, $5::jsonb, $6, $7)`,
+        [PG_CONNECTOR_ID, legacyId, 'messages', 'r1', JSON.stringify({ id: 'r1' }), '2026-06-02T00:00:00.000Z', 'r1'],
+      );
+      const plan = await planCleanupPg({ pool, ownerSubjectId: owner });
+      assert.equal(plan.candidates.length, 0, 'data-bearing legacy row is not a candidate');
+      assert.ok(
+        plan.skipped[0].reasons.some((r) => r.startsWith('P4:records=')),
+        `expected a P4 records reason, got ${plan.skipped[0].reasons.join(',')}`,
+      );
+      assert.ok(!plan.skipped[0].reasons.some((r) => r.startsWith('P2')), 'P2 must not be a refusal reason');
+      await pool.query(`DELETE FROM records WHERE connector_instance_id = $1`, [legacyId]);
     });
   });
 
