@@ -55,6 +55,7 @@ import {
   buildLocalSourceInventory,
   type KnownLocalStore,
   listDirectoryInventory,
+  openInventoryFingerprintCursor,
 } from "../../src/local-source-inventory.ts";
 import { stringifyForJsonl } from "../../src/safe-emit.ts";
 import { resourceSet } from "../../src/scope-filters.ts";
@@ -1540,18 +1541,13 @@ function emitStateCursors({
       emit({ type: "STATE", stream: s, cursor: { fetched_at: nowIso() } });
     }
   }
-  for (const s of [
-    "history",
-    "session_index",
-    "logs",
-    "shell_snapshots",
-    "config_inventory",
-    "cache_inventory",
-    "coverage_diagnostics",
-  ]) {
-    if (requested.has(s)) {
-      emit({ type: "STATE", stream: s, cursor: { fetched_at: nowIso() } });
-    }
+  // Inventory streams (history, session_index, logs, shell_snapshots,
+  // config_inventory, cache_inventory) own their STATE inside the fingerprint
+  // gate (emitLocalInventoryStreams) and must NOT get a bare clobbering STATE
+  // here. coverage_diagnostics is not gated, so it keeps its point-in-time
+  // STATE.
+  if (requested.has("coverage_diagnostics")) {
+    emit({ type: "STATE", stream: "coverage_diagnostics", cursor: { fetched_at: nowIso() } });
   }
 }
 
@@ -1656,41 +1652,81 @@ async function emitCoverageDiagnostics(input: {
   }
 }
 
+/** Emit one inventory stream's records under a fingerprint gate that excludes
+ *  incidental `mtime_epoch`/`size_bytes`, then write a per-stream STATE cursor
+ *  carrying the fingerprints forward. Inventory enumeration is a full scan, so
+ *  stale ids are pruned: a store that disappears drops out and re-appears as a
+ *  fresh emit. */
+async function emitGatedInventoryStream(input: {
+  emitRecord: (stream: string, data: RecordData) => void;
+  nowIso: () => string;
+  priorState: unknown;
+  records: readonly RecordData[];
+  stream: string;
+}): Promise<void> {
+  const cursor = openInventoryFingerprintCursor(input.priorState);
+  for (const record of input.records) {
+    if (cursor.shouldEmit(record)) {
+      input.emitRecord(input.stream, record);
+      await waitForEmitDrain();
+    }
+  }
+  cursor.pruneStale();
+  const inventoryCursor: Record<string, unknown> = { fetched_at: input.nowIso() };
+  if (cursor.size() > 0) {
+    inventoryCursor.fingerprints = cursor.toState();
+  }
+  emit({ type: "STATE", stream: input.stream, cursor: inventoryCursor });
+  await waitForEmitDrain();
+}
+
+/** Inventory streams whose STATE cursor is owned by the fingerprint gate.
+ *  These are the Codex `inventory_only`/`defer` stores plus the directory-
+ *  listed `shell_snapshots`. `emitStateCursors` must NOT also write a bare
+ *  `{ fetched_at }` STATE for these — that trailing write would clobber the
+ *  fingerprint map and re-open the per-run churn the gate exists to close. */
+export const CODEX_GATED_INVENTORY_STREAMS = [
+  "history",
+  "session_index",
+  "shell_snapshots",
+  "config_inventory",
+  "cache_inventory",
+  "logs",
+] as const;
+
 async function emitLocalInventoryStreams(input: {
   codexHome: string;
   emitRecord: (stream: string, data: RecordData) => void;
   inventory: Awaited<ReturnType<typeof buildLocalSourceInventory>>;
+  nowIso: () => string;
   requested: Map<string, StreamScope>;
+  state: Record<string, unknown>;
 }): Promise<void> {
-  for (const [stream, records] of input.inventory.recordsByStream) {
+  // `shell_snapshots` is enumerated via a directory listing rather than the
+  // pre-built store inventory; everything else comes from `recordsByStream`
+  // (empty for an absent store, which still produces a carry-forward STATE).
+  for (const stream of CODEX_GATED_INVENTORY_STREAMS) {
     if (!input.requested.has(stream)) {
       continue;
     }
-    for (const record of records) {
-      input.emitRecord(stream, record);
-      await waitForEmitDrain();
-    }
-  }
-  for (const directoryStream of [
-    {
-      relativeRoot: "shell-snapshots",
-      store: "shell_snapshots",
-      stream: "shell_snapshots",
-      reason: "shell content requires redaction review before payload collection",
-    },
-  ]) {
-    if (!input.requested.has(directoryStream.stream)) {
-      continue;
-    }
-    const records = await listDirectoryInventory({
-      tool: "codex",
-      sourceHome: input.codexHome,
-      ...directoryStream,
+    const records =
+      stream === "shell_snapshots"
+        ? await listDirectoryInventory({
+            tool: "codex",
+            sourceHome: input.codexHome,
+            relativeRoot: "shell-snapshots",
+            store: "shell_snapshots",
+            stream: "shell_snapshots",
+            reason: "shell content requires redaction review before payload collection",
+          })
+        : (input.inventory.recordsByStream.get(stream) ?? []);
+    await emitGatedInventoryStream({
+      emitRecord: input.emitRecord,
+      nowIso: input.nowIso,
+      priorState: input.state[stream],
+      records,
+      stream,
     });
-    for (const record of records) {
-      input.emitRecord(directoryStream.stream, record);
-      await waitForEmitDrain();
-    }
   }
 }
 
@@ -1777,7 +1813,14 @@ async function main(): Promise<void> {
   await emitCoverageDiagnostics({ emitRecord, inventory, requested });
   await assertRequestedCodexSources(dirs, requested);
 
-  await emitLocalInventoryStreams({ codexHome: dirs.codexHome, inventory, requested, emitRecord });
+  await emitLocalInventoryStreams({
+    codexHome: dirs.codexHome,
+    emitRecord,
+    inventory,
+    nowIso,
+    requested,
+    state: startMsg.state || {},
+  });
 
   if (needRollouts) {
     const rolloutScan = await scanRollouts({

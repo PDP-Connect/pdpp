@@ -118,6 +118,21 @@ test('COMPACTION_POLICIES exposes the registered policies (short-name canonical 
     ['claude-code', 'skills'],
     ['claude-code', 'memory_notes'],
     ['claude-code', 'slash_commands'],
+    // inventory churn-gate family — inventory_only/defer metadata records
+    // whose volatile mtime_epoch/size_bytes are excluded so an unchanged
+    // store does not re-version on a file-stat tick. The inventory meaning
+    // (path/type/classification/reason) stays a fingerprint boundary.
+    // (forward gate added 2026-06-03)
+    ['claude-code', 'backup_inventory'],
+    ['claude-code', 'cache_inventory'],
+    ['claude-code', 'config_inventory'],
+    ['claude-code', 'file_history'],
+    ['codex', 'history'],
+    ['codex', 'session_index'],
+    ['codex', 'shell_snapshots'],
+    ['codex', 'config_inventory'],
+    ['codex', 'cache_inventory'],
+    ['codex', 'logs'],
   ];
   const actual = COMPACTION_POLICIES.map((p) => [p.connectorIds[0], p.stream]);
   assert.deepEqual(actual, expected);

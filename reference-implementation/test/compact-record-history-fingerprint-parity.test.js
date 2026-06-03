@@ -807,6 +807,53 @@ if (canonicalRecordFingerprint) {
     );
   });
 
+  test('parity: inventory churn gate excludes mtime_epoch and size_bytes', () => {
+    // The inventory record's meaning is path/type/classification/reason; the
+    // mtime_epoch/size_bytes file-stat fields are incidental. Verify the
+    // script and connector helper agree, that a mtime/size tick does NOT
+    // move the fingerprint, and that a real inventory transition DOES.
+    const dirRecord = (over = {}) => ({
+      id: 'backups:abc123',
+      store: 'backups',
+      relative_path: 'backups',
+      path_hash: 'abc123',
+      type: 'directory',
+      size_bytes: null,
+      mtime_epoch: 1_717_000_000,
+      classification: 'inventory_only',
+      reason: 'backup payloads require owner review before collection',
+      ...over,
+    });
+
+    for (const [connector, stream] of [
+      ['claude-code', 'backup_inventory'],
+      ['codex', 'history'],
+    ]) {
+      const policy = findPolicy(connector, stream);
+      assert.ok(policy, `${connector}/${stream} policy must exist`);
+      assert.deepEqual(policy.excludeKeys, ['mtime_epoch', 'size_bytes'], `${connector}/${stream} exclude keys`);
+
+      expectParity(dirRecord(), policy.excludeKeys, `${connector}/${stream} base`);
+      expectParity(dirRecord({ mtime_epoch: 1_717_009_999 }), policy.excludeKeys, `${connector}/${stream} ticked`);
+
+      // mtime + size delta must NOT move the fingerprint.
+      const h1 = scriptRecordFingerprint(dirRecord(), policy.excludeKeys);
+      const h2 = scriptRecordFingerprint(
+        dirRecord({ mtime_epoch: 1_717_009_999, size_bytes: 4096 }),
+        policy.excludeKeys,
+      );
+      assert.equal(h1, h2, `${connector}/${stream}: mtime/size delta must not change the fingerprint`);
+
+      // A real inventory transition (type change) MUST move the fingerprint.
+      const h3 = scriptRecordFingerprint(dirRecord({ type: 'file' }), policy.excludeKeys);
+      assert.notEqual(h1, h3, `${connector}/${stream}: type change must change the fingerprint`);
+
+      // A classification change MUST move the fingerprint.
+      const h4 = scriptRecordFingerprint(dirRecord({ classification: 'defer' }), policy.excludeKeys);
+      assert.notEqual(h1, h4, `${connector}/${stream}: classification change must change the fingerprint`);
+    }
+  });
+
   test('every registered policy has a parity-checked fixture above', () => {
     // Static guard: if a new policy is added without a parity fixture,
     // this assertion fails and points at the gap.
@@ -846,6 +893,18 @@ if (canonicalRecordFingerprint) {
       'claude-code/skills',
       'claude-code/memory_notes',
       'claude-code/slash_commands',
+      // inventory churn-gate family (claude-code)
+      'claude-code/backup_inventory',
+      'claude-code/cache_inventory',
+      'claude-code/config_inventory',
+      'claude-code/file_history',
+      // inventory churn-gate family (codex)
+      'codex/history',
+      'codex/session_index',
+      'codex/shell_snapshots',
+      'codex/config_inventory',
+      'codex/cache_inventory',
+      'codex/logs',
     ]);
     for (const p of COMPACTION_POLICIES) {
       const pair = `${p.connectorIds[0]}/${p.stream}`;

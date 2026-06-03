@@ -49,6 +49,19 @@
  *        - claude-code / messages, attachments, sessions, skills,
  *                        memory_notes, slash_commands
  *
+ *   3. "Inventory churn gate" — local-device `inventory_only`/`defer`
+ *      stores (codex, claude-code) whose metadata records carry the
+ *      volatile `mtime_epoch`/`size_bytes` file-stat fields. The
+ *      connector gates these streams with an inventory fingerprint
+ *      cursor that excludes exactly those two keys, so an unchanged
+ *      store does not re-version on a pure mtime/size tick. This policy
+ *      excludes the same two keys; the inventory meaning (path, type,
+ *      classification, reason) stays a fingerprint boundary.
+ *        - claude-code / backup_inventory, cache_inventory,
+ *                        config_inventory, file_history
+ *        - codex       / history, session_index, shell_snapshots,
+ *                        config_inventory, cache_inventory, logs
+ *
  * Authorization is by direct database access — possession of
  * `PDPP_DATABASE_URL` (or `PDPP_TEST_POSTGRES_URL`). There is no HTTP
  * route, no scheduler, no automatic background job.
@@ -479,6 +492,37 @@ export const COMPACTION_POLICIES = [
     'memory_notes',
     'slash_commands',
   ], 'claude_code'),
+
+  // ─── Inventory churn-gate family ──────────────────────────────────────
+  //
+  // `inventory_only`/`defer` stores emit a metadata record (path, type,
+  // privacy classification, reason) whose purpose is the local-agent-collector
+  // completeness contract — NOT a freshness time-series. The `mtime_epoch` and
+  // `size_bytes` file-stat fields tick on every normal tool write and would
+  // re-version an otherwise-unchanged inventory record on every run. The
+  // connectors now gate these streams with an `openInventoryFingerprintCursor`
+  // that excludes exactly those two keys
+  // (packages/polyfill-connectors/src/local-source-inventory.ts:
+  //  INVENTORY_FINGERPRINT_EXCLUDE_KEYS). This policy mirrors that exclusion
+  // one-for-one so a "removable historical version" classification here equals
+  // the connector's "no-op emit" classification. Real inventory transitions
+  // (type, path_hash, classification, reason) stay inside the fingerprint and
+  // are preserved as version boundaries. Inventory enumeration is a full scan,
+  // so these are full-scan policies (a disappeared store re-emits on return).
+  ...buildInventoryChurnGatePolicies('claude-code', [
+    'backup_inventory',
+    'cache_inventory',
+    'config_inventory',
+    'file_history',
+  ], 'claude_code'),
+  ...buildInventoryChurnGatePolicies('codex', [
+    'history',
+    'session_index',
+    'shell_snapshots',
+    'config_inventory',
+    'cache_inventory',
+    'logs',
+  ]),
 ];
 
 function buildLocalDeviceExactJsonPolicies(connector, streams, dirName = connector) {
@@ -490,6 +534,18 @@ function buildLocalDeviceExactJsonPolicies(connector, streams, dirName = connect
       `packages/polyfill-connectors/connectors/${dirName}/ — exact stable-JSON identity ` +
       `(no fetched_at in record_json; record payload derived from immutable source events ` +
       `and/or mtime-gated file emits)`,
+  }));
+}
+
+function buildInventoryChurnGatePolicies(connector, streams, dirName = connector) {
+  return streams.map((stream) => ({
+    connectorIds: [connector, `local-device:${connector}`],
+    stream,
+    excludeKeys: ['mtime_epoch', 'size_bytes'],
+    connectorSource:
+      `packages/polyfill-connectors/connectors/${dirName}/ + src/local-source-inventory.ts ` +
+      `— inventory churn gate (openInventoryFingerprintCursor excludes mtime_epoch,size_bytes; ` +
+      `inventory meaning = path/type/classification/reason)`,
   }));
 }
 

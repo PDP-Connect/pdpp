@@ -93,7 +93,18 @@ test('policiesForConnector matches claude-code (hyphen) connector id', () => {
   // silently excluded all claude-code instances from --all scans.
   const cc = policiesForConnector('cin_cc', 'claude-code');
   const streams = cc.map((s) => s.stream).sort();
-  assert.deepEqual(streams, ['attachments', 'memory_notes', 'messages', 'sessions', 'skills', 'slash_commands']);
+  assert.deepEqual(streams, [
+    'attachments',
+    'backup_inventory',
+    'cache_inventory',
+    'config_inventory',
+    'file_history',
+    'memory_notes',
+    'messages',
+    'sessions',
+    'skills',
+    'slash_commands',
+  ]);
   for (const scope of cc) {
     assert.equal(scope.connectorInstanceId, 'cin_cc');
     assert.equal(scope.connectorId, 'claude-code');

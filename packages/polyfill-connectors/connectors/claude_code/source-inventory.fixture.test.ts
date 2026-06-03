@@ -152,6 +152,43 @@ test("claude_code fixture home: undeclared 'unknown' store is never collected", 
   );
 });
 
+function statesFor(messages: EmittedMessage[], stream: string): Extract<EmittedMessage, { type: "STATE" }>[] {
+  return messages.filter(
+    (msg): msg is Extract<EmittedMessage, { type: "STATE" }> => msg.type === "STATE" && msg.stream === stream
+  );
+}
+
+test("claude_code inventory: unchanged store does not re-version across runs", async () => {
+  // Run 1: no prior state — the inventory record emits and STATE carries a
+  // fingerprint for the store.
+  const run1 = await runFixtureConnector({ home: DEVICE_A_HOME, streams: [{ name: "backup_inventory" }] });
+  assert.equal(run1.exitCode, 0);
+  const run1Records = records(run1.messages).filter((r) => r.stream === "backup_inventory");
+  assert(run1Records.length > 0, "first run emits the backup_inventory record");
+
+  const run1States = statesFor(run1.messages, "backup_inventory");
+  assert(run1States.length > 0, "first run writes a backup_inventory STATE");
+  const cursor = run1States.at(-1)?.cursor as { fingerprints?: Record<string, string> } | undefined;
+  assert(cursor?.fingerprints && Object.keys(cursor.fingerprints).length > 0, "STATE carries inventory fingerprints");
+
+  // Run 2: feed run 1's STATE back in. The fixture is byte-identical, so the
+  // gate must suppress the re-emit — this is the no-op churn the gate exists
+  // to stop. (mtime stability is the same direction as a real mtime tick: the
+  // gate excludes mtime/size, so it would suppress either way.)
+  const run2 = await runFixtureConnector({
+    home: DEVICE_A_HOME,
+    state: { backup_inventory: cursor },
+    streams: [{ name: "backup_inventory" }],
+  });
+  assert.equal(run2.exitCode, 0);
+  const run2Records = records(run2.messages).filter((r) => r.stream === "backup_inventory");
+  assert.equal(run2Records.length, 0, "unchanged inventory store does not re-emit on the second run");
+
+  // STATE is still written so the cursor survives forward.
+  const run2States = statesFor(run2.messages, "backup_inventory");
+  assert(run2States.length > 0, "second run still writes the carry-forward STATE");
+});
+
 test("claude_code fixture homes: two device homes inventory independently", async () => {
   const a = await runFixtureConnector({ home: DEVICE_A_HOME, streams: [{ name: "skills" }] });
   const b = await runFixtureConnector({ home: DEVICE_B_HOME, streams: [{ name: "skills" }] });
@@ -170,6 +207,7 @@ test("claude_code fixture homes: two device homes inventory independently", asyn
 
 async function runFixtureConnector(input: {
   home: string;
+  state?: Record<string, unknown>;
   streams: Array<{ name: string }>;
 }): Promise<{ exitCode: number | null; messages: EmittedMessage[] }> {
   const result = await runConnectorProtocolSubprocess({
@@ -180,7 +218,11 @@ async function runFixtureConnector(input: {
       CLAUDE_CODE_HOME: input.home,
       CLAUDE_CODE_PROJECTS_DIR: join(input.home, "projects"),
     },
-    start: { scope: { streams: input.streams }, type: "START" },
+    start: {
+      scope: { streams: input.streams },
+      ...(input.state ? { state: input.state } : {}),
+      type: "START",
+    },
   });
   return { exitCode: result.code, messages: result.messages };
 }

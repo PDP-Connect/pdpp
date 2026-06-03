@@ -147,6 +147,40 @@ test("codex fixture home: undeclared 'unknown' store is never collected", async 
   );
 });
 
+function statesFor(messages: EmittedMessage[], stream: string): Extract<EmittedMessage, { type: "STATE" }>[] {
+  return messages.filter(
+    (msg): msg is Extract<EmittedMessage, { type: "STATE" }> => msg.type === "STATE" && msg.stream === stream
+  );
+}
+
+test("codex inventory: unchanged history store does not re-version across runs", async () => {
+  // Run 1: no prior state — the history inventory record emits and STATE
+  // carries a fingerprint for the store.
+  const run1 = await runFixtureConnector({ home: DEVICE_A_HOME, streams: [{ name: "history" }] });
+  assert.equal(run1.exitCode, 0);
+  const run1Records = records(run1.messages).filter((r) => r.stream === "history");
+  assert(run1Records.length > 0, "first run emits the history inventory record");
+
+  const run1States = statesFor(run1.messages, "history");
+  assert(run1States.length > 0, "first run writes a history STATE");
+  const cursor = run1States.at(-1)?.cursor as { fingerprints?: Record<string, string> } | undefined;
+  assert(cursor?.fingerprints && Object.keys(cursor.fingerprints).length > 0, "STATE carries inventory fingerprints");
+
+  // Run 2: feed run 1's STATE back in. history.jsonl is byte-identical here;
+  // the gate (which excludes mtime_epoch/size_bytes) suppresses the no-op.
+  const run2 = await runFixtureConnector({
+    home: DEVICE_A_HOME,
+    state: { history: cursor },
+    streams: [{ name: "history" }],
+  });
+  assert.equal(run2.exitCode, 0);
+  const run2Records = records(run2.messages).filter((r) => r.stream === "history");
+  assert.equal(run2Records.length, 0, "unchanged history store does not re-emit on the second run");
+
+  const run2States = statesFor(run2.messages, "history");
+  assert(run2States.length > 0, "second run still writes the carry-forward STATE");
+});
+
 test("codex fixture homes: two device homes inventory independently", async () => {
   const a = await runFixtureConnector({ home: DEVICE_A_HOME, streams: [{ name: "prompts" }] });
   const b = await runFixtureConnector({ home: DEVICE_B_HOME, streams: [{ name: "prompts" }] });
@@ -163,6 +197,7 @@ test("codex fixture homes: two device homes inventory independently", async () =
 
 async function runFixtureConnector(input: {
   home: string;
+  state?: Record<string, unknown>;
   streams: Array<{ name: string }>;
 }): Promise<{ exitCode: number | null; messages: EmittedMessage[] }> {
   const result = await runConnectorProtocolSubprocess({
@@ -170,7 +205,11 @@ async function runFixtureConnector(input: {
     cwd: join(import.meta.dirname, "../.."),
     entrypoint: "connectors/codex/index.ts",
     env: { CODEX_HOME: input.home },
-    start: { scope: { streams: input.streams }, type: "START" },
+    start: {
+      scope: { streams: input.streams },
+      ...(input.state ? { state: input.state } : {}),
+      type: "START",
+    },
   });
   return { exitCode: result.code, messages: result.messages };
 }

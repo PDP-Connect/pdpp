@@ -34,6 +34,7 @@ import {
   buildLocalSourceInventory,
   type KnownLocalStore,
   listDirectoryInventory,
+  openInventoryFingerprintCursor,
 } from "../../src/local-source-inventory.ts";
 import { safeTextPreview } from "../../src/safe-text-preview.ts";
 import {
@@ -1024,19 +1025,51 @@ async function emitCoverageDiagnostics(input: {
   }
 }
 
+/** Emit one inventory stream's records under a fingerprint gate that excludes
+ *  incidental `mtime_epoch`/`size_bytes`, then write a per-stream STATE cursor
+ *  carrying the fingerprints forward. Inventory enumeration is a full scan, so
+ *  stale ids are pruned: a store that disappears drops out and re-appears as a
+ *  fresh emit. */
+async function emitGatedInventoryStream(input: {
+  emit: CollectContext["emit"];
+  emitRecord: (stream: string, data: RecordData) => Promise<void>;
+  priorState: unknown;
+  records: readonly RecordData[];
+  stream: string;
+}): Promise<void> {
+  const cursor = openInventoryFingerprintCursor(input.priorState);
+  for (const record of input.records) {
+    if (cursor.shouldEmit(record)) {
+      await input.emitRecord(input.stream, record);
+    }
+  }
+  cursor.pruneStale();
+  const inventoryCursor: Record<string, unknown> = { fetched_at: nowIso() };
+  if (cursor.size() > 0) {
+    inventoryCursor.fingerprints = cursor.toState();
+  }
+  await input.emit({ type: "STATE", stream: input.stream, cursor: inventoryCursor });
+}
+
 async function emitLocalInventoryStreams(input: {
   claudeHome: string;
+  emit: CollectContext["emit"];
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   inventory: Awaited<ReturnType<typeof buildLocalSourceInventory>>;
   requested: Map<string, StreamScope>;
+  state: ClaudeCodeState;
 }): Promise<void> {
   for (const [stream, records] of input.inventory.recordsByStream) {
     if (!input.requested.has(stream)) {
       continue;
     }
-    for (const record of records) {
-      await input.emitRecord(stream, record);
-    }
+    await emitGatedInventoryStream({
+      emit: input.emit,
+      emitRecord: input.emitRecord,
+      priorState: input.state[stream],
+      records,
+      stream,
+    });
   }
   if (input.requested.has("file_history")) {
     const records = await listDirectoryInventory({
@@ -1047,9 +1080,13 @@ async function emitLocalInventoryStreams(input: {
       stream: "file_history",
       reason: "metadata-only until payload contract is approved",
     });
-    for (const record of records) {
-      await input.emitRecord("file_history", record);
-    }
+    await emitGatedInventoryStream({
+      emit: input.emit,
+      emitRecord: input.emitRecord,
+      priorState: input.state.file_history,
+      records,
+      stream: "file_history",
+    });
   }
 }
 
@@ -1151,7 +1188,7 @@ if (isMainModule(import.meta.url)) {
       const newSlashCommandMtimes: Record<string, number> = { ...slashCommandMtimes };
       const newMemoryNoteMtimes: Record<string, number> = { ...memoryNoteMtimes };
 
-      await emitLocalInventoryStreams({ claudeHome, inventory, requested, emitRecord });
+      await emitLocalInventoryStreams({ claudeHome, emit, emitRecord, inventory, requested, state: typedState });
 
       await runSkillsAndCommands(claudeHome, requested, emit, emitRecord, {
         skillsMtimes,
