@@ -76,6 +76,16 @@ export interface LocalDeviceOutboxRequeueDeadLettersResult {
     matched: number;
     requeued: number;
 }
+export interface LocalDeviceOutboxPruneSentInput {
+    dryRun?: boolean;
+    keepCount?: number;
+    olderThanIso?: string;
+    sourceInstanceId?: string;
+}
+export interface LocalDeviceOutboxPruneSentResult {
+    matched: number;
+    pruned: number;
+}
 export interface LocalDeviceOutboxDeadLetterErrorClass {
     count: number;
     error_class: string;
@@ -109,6 +119,7 @@ export declare class LocalDeviceOutbox {
     deleteSucceeded(id: string): boolean;
     backupTo(path: string): void;
     requeueDeadLetters(input?: LocalDeviceOutboxRequeueDeadLettersInput): LocalDeviceOutboxRequeueDeadLettersResult;
+    pruneSent(input?: LocalDeviceOutboxPruneSentInput): LocalDeviceOutboxPruneSentResult;
     hasNonSucceededWork(input: {
         excludeKinds?: readonly LocalDeviceOutboxKind[];
         kinds?: readonly LocalDeviceOutboxKind[];

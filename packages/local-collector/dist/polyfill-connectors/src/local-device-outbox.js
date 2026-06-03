@@ -241,20 +241,90 @@ export class LocalDeviceOutbox {
         }
         this.#db.exec("BEGIN IMMEDIATE");
         try {
-            const result = this.#db
-                .prepare(`UPDATE local_device_outbox
-              SET status = 'ready',
-                  attempt_count = 0,
-                  next_attempt_at = ?,
-                  lease_holder = NULL,
-                  lease_until = NULL,
-                  last_error = NULL,
-                  updated_at = ?
-            WHERE id IN (${ids.map(() => "?").join(", ")})
-              AND status = 'dead_letter'`)
-                .run(now, now, ...ids);
+            let requeued = 0;
+            for (const chunk of chunkArray(ids, SQLITE_IN_CLAUSE_CHUNK)) {
+                const result = this.#db
+                    .prepare(`UPDATE local_device_outbox
+                SET status = 'ready',
+                    attempt_count = 0,
+                    next_attempt_at = ?,
+                    lease_holder = NULL,
+                    lease_until = NULL,
+                    last_error = NULL,
+                    updated_at = ?
+              WHERE id IN (${chunk.map(() => "?").join(", ")})
+                AND status = 'dead_letter'`)
+                    .run(now, now, ...chunk);
+                requeued += Number(result.changes);
+            }
             this.#db.exec("COMMIT");
-            return { matched, requeued: Number(result.changes) };
+            return { matched, requeued };
+        }
+        catch (error) {
+            this.#db.exec("ROLLBACK");
+            throw error;
+        }
+    }
+    pruneSent(input = {}) {
+        if (input.keepCount !== undefined && (!Number.isSafeInteger(input.keepCount) || input.keepCount < 0)) {
+            throw new Error("pruneSent keepCount must be a non-negative safe integer");
+        }
+        const clauses = ["status = 'succeeded'"];
+        const params = [];
+        if (input.sourceInstanceId) {
+            clauses.push("source_instance_id = ?");
+            params.push(input.sourceInstanceId);
+        }
+        if (input.olderThanIso) {
+            clauses.push("COALESCE(acknowledged_at, updated_at) < ?");
+            params.push(input.olderThanIso);
+        }
+        if (input.keepCount !== undefined) {
+            const scopeClause = input.sourceInstanceId
+                ? "source_instance_id = ? AND status = 'succeeded'"
+                : "status = 'succeeded'";
+            const scopeParams = input.sourceInstanceId ? [input.sourceInstanceId] : [];
+            clauses.push(`id NOT IN (
+           SELECT id FROM local_device_outbox
+            WHERE ${scopeClause}
+            ORDER BY rowid DESC
+            LIMIT ?
+         )`);
+            params.push(...scopeParams, input.keepCount);
+        }
+        const whereClause = clauses.join(" AND ");
+        const countRow = this.#db
+            .prepare(`SELECT COUNT(*) AS total FROM local_device_outbox WHERE ${whereClause}`)
+            .get(...params);
+        const matched = isRecord(countRow) ? numberFrom(countRow.total) : 0;
+        if (input.dryRun !== false || matched === 0) {
+            return { matched, pruned: 0 };
+        }
+        const idRows = this.#db
+            .prepare(`SELECT id FROM local_device_outbox WHERE ${whereClause} ORDER BY rowid`)
+            .all(...params);
+        const ids = idRows.map((row) => {
+            if (!isRecord(row) || typeof row.id !== "string") {
+                throw new Error("local outbox prune-sent id query returned an invalid row");
+            }
+            return row.id;
+        });
+        if (ids.length === 0) {
+            return { matched, pruned: 0 };
+        }
+        this.#db.exec("BEGIN IMMEDIATE");
+        try {
+            let pruned = 0;
+            for (const chunk of chunkArray(ids, SQLITE_IN_CLAUSE_CHUNK)) {
+                const placeholders = chunk.map(() => "?").join(", ");
+                this.#db.prepare(`DELETE FROM local_device_observed_stream WHERE outbox_id IN (${placeholders})`).run(...chunk);
+                const result = this.#db
+                    .prepare(`DELETE FROM local_device_outbox WHERE id IN (${placeholders}) AND status = 'succeeded'`)
+                    .run(...chunk);
+                pruned += Number(result.changes);
+            }
+            this.#db.exec("COMMIT");
+            return { matched, pruned };
         }
         catch (error) {
             this.#db.exec("ROLLBACK");
@@ -698,6 +768,14 @@ function normalizeLimit(value) {
 }
 function sqlStringLiteral(value) {
     return `'${value.replaceAll("'", "''")}'`;
+}
+const SQLITE_IN_CLAUSE_CHUNK = 500;
+function chunkArray(items, size) {
+    const chunks = [];
+    for (let i = 0; i < items.length; i += size) {
+        chunks.push(items.slice(i, i + size));
+    }
+    return chunks;
 }
 const DEAD_LETTER_SECRET_RE = /\b(authorization|bearer|token|password|passwd|cookie|secret|otp|api[_-]?key)\b\s*[:=]\s*\S+/gi;
 const DEAD_LETTER_OTP_RE = /\b\d{6}\b/g;

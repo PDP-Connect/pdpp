@@ -105,6 +105,13 @@ Subcommands:
           [--kind record_batch|checkpoint|gap|blob_upload]
           [--limit <n>]
           [--apply]                Dry-run by default; --apply mutates after a DB backup.
+  prune-sent                      Delete sent (succeeded) outbox rows to reclaim disk space.
+          [--queue <path>]
+          [--connection-id <id>]
+          [--older-than-days <n>]  Delete sent rows older than N days (default: 30).
+          [--keep-count <n>]       Keep at most N most-recent sent rows per connection.
+          [--apply]                Dry-run by default; --apply mutates after a DB backup.
+                                   Never touches pending, leased, retrying, or dead-letter rows.
   enroll  --base-url <url>        Exchange a one-time enrollment code for a
           --code <code>             device id + device token.
           [--device-label <label>]
@@ -151,6 +158,11 @@ async function main() {
         process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
         return;
     }
+    if (options.command === "prune-sent") {
+        const result = pruneSentOutboxRows(options);
+        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+        return;
+    }
     if (options.command === "enroll") {
         if (!options.code) {
             throw new CollectorUsageError("enroll requires --code <one-time-code>");
@@ -182,11 +194,58 @@ async function main() {
     process.stdout.write(`${JSON.stringify(summarizeRunResultForCli(result), null, 2)}\n`);
 }
 export function summarizeRunResultForCli(result) {
+    const summary = result.outboxSummary;
+    const lifecycleState = deriveLocalCollectorLifecycleState({
+        coverageObserved: null,
+        recordBatchCount: 0,
+        summary,
+    });
+    const openWork = pendingOpenWork(summary);
+    const drained = openWork === 0;
     return {
         ...result,
+        drain_note: runDrainNote(result, summary, drained),
+        drained,
         flushedState: summarizeCollectorState(result.flushedState),
+        lifecycle_state: lifecycleState,
         priorState: summarizeCollectorState(result.priorState),
+        residual_backlog: {
+            dead_letter: summary.deadLetter,
+            leased: summary.leased,
+            ready: summary.ready,
+            retrying: summary.retrying,
+            total_open: openWork,
+        },
     };
+}
+function runDrainNote(result, summary, drained) {
+    if (result.skippedScanForBacklog) {
+        return (`Scan was skipped: ${pendingOpenWork(summary)} open outbox row(s) from a prior run still need to drain first. ` +
+            "No new source work was collected this pass; re-run to continue draining.");
+    }
+    if (drained) {
+        return "Outbox fully drained — no ready, retrying, leased, or dead-letter work remains.";
+    }
+    const parts = [];
+    if (summary.ready > 0) {
+        parts.push(`${summary.ready} ready (drains on the next scheduled run)`);
+    }
+    if (summary.retrying > 0) {
+        parts.push(`${summary.retrying} retrying (waiting on backoff)`);
+    }
+    if (summary.leased > 0) {
+        parts.push(`${summary.leased} leased (in flight)`);
+    }
+    if (summary.deadLetter > 0) {
+        parts.push(`${summary.deadLetter} dead-letter (run \`retry-dead-letters\` then re-run)`);
+    }
+    const scanNote = result.scanBudgetExceeded
+        ? " The connector was stopped by the per-run enqueue budget, so more source work likely remains; re-run to continue."
+        : "";
+    return `Run succeeded on the source but the outbox is NOT fully drained: ${parts.join(", ")}.${scanNote}`;
+}
+function pendingOpenWork(summary) {
+    return summary.ready + summary.retrying + summary.leased + summary.deadLetter;
 }
 function summarizeCollectorState(state) {
     if (!state || Object.keys(state).length === 0) {
@@ -298,8 +357,9 @@ export function buildLocalOutboxDoctor(status, errorSummary) {
     if (checks.coverage_diagnostics === "warn") {
         remediation.push(`This lane drained ${status.coverage.record_batches} record batch(es) but never carried a ` +
             "`coverage_diagnostics` record, so the dashboard can only show coverage_unknown. " +
-            "Re-run `pdpp-local-collector run …` with the default stream set (no `--streams`); " +
-            "it requests `coverage_diagnostics` and the next pass promotes the coverage axis.");
+            "Re-run with the current `@beta` and the default stream set (no `--streams`): " +
+            "`npx -y @pdpp/local-collector@beta run …` (or `pdpp-local-collector run …` if already on the current build). " +
+            "Older installs may omit `coverage_diagnostics` from bundled defaults — `npx -y` always fetches the latest published build.");
     }
     if (checks.deployment_posture === "warn") {
         remediation.push(deploymentPostureRemediation(posture));
@@ -393,7 +453,7 @@ export function retryLocalOutboxDeadLetters(options) {
         const statusBefore = summaryCounts(outbox.summary(options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {}));
         const errorSummary = outbox.deadLetterErrorSummary(options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {});
         const dryRun = !options.apply;
-        const backupPath = dryRun ? null : backupSqliteDb(outbox, dbPath);
+        const backupPath = dryRun ? null : backupSqliteDb(outbox, dbPath, "retry-dead-letters");
         const result = outbox.requeueDeadLetters({
             dryRun,
             ...(options.deadLetterKind ? { kind: options.deadLetterKind } : {}),
@@ -432,9 +492,97 @@ function summaryCounts(summary) {
         total: summary.total,
     };
 }
-function backupSqliteDb(outbox, dbPath) {
+const DEFAULT_PRUNE_SENT_OLDER_THAN_DAYS = 30;
+export function pruneSentOutboxRows(options) {
+    const olderThanDays = options.olderThanDays ?? (options.keepCount === undefined ? DEFAULT_PRUNE_SENT_OLDER_THAN_DAYS : undefined);
+    const olderThanIso = olderThanDays !== undefined ? daysAgoIso(olderThanDays) : undefined;
+    const dbPath = resolveOutboxPath(options);
+    const exists = existsSync(dbPath);
+    const reportedOlderThanDays = olderThanDays ?? null;
+    const reportedOlderThanIso = olderThanIso ?? null;
+    if (!exists) {
+        return {
+            backup_path: null,
+            db: { exists: false, path: dbPath },
+            dry_run: !options.apply,
+            filter: {
+                keep_count: options.keepCount ?? null,
+                older_than_days: reportedOlderThanDays,
+                older_than_iso: reportedOlderThanIso,
+                source_instance_id: options.sourceInstanceId ?? null,
+            },
+            matched: 0,
+            note: "Outbox DB does not exist; nothing to prune.",
+            pruned: 0,
+            status_after: null,
+            status_before: null,
+        };
+    }
+    const outbox = new LocalDeviceOutbox({ path: dbPath });
+    try {
+        const statusBefore = summaryCounts(outbox.summary(options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {}));
+        const dryRun = !options.apply;
+        const pruneInput = {
+            dryRun,
+            ...(olderThanIso !== undefined ? { olderThanIso } : {}),
+            ...(options.keepCount !== undefined ? { keepCount: options.keepCount } : {}),
+            ...(options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {}),
+        };
+        const backupPath = dryRun ? null : backupSqliteDb(outbox, dbPath, "prune-sent");
+        const result = outbox.pruneSent(pruneInput);
+        const statusAfter = summaryCounts(outbox.summary(options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {}));
+        const note = pruneSentNote(result, dryRun, reportedOlderThanDays, options.keepCount);
+        return {
+            backup_path: backupPath,
+            db: { exists: true, path: dbPath },
+            dry_run: dryRun,
+            filter: {
+                keep_count: options.keepCount ?? null,
+                older_than_days: reportedOlderThanDays,
+                older_than_iso: reportedOlderThanIso,
+                source_instance_id: options.sourceInstanceId ?? null,
+            },
+            matched: result.matched,
+            note,
+            pruned: result.pruned,
+            status_after: statusAfter,
+            status_before: statusBefore,
+        };
+    }
+    finally {
+        outbox.close();
+    }
+}
+function pruneSentNote(result, dryRun, olderThanDays, keepCount) {
+    if (result.matched === 0) {
+        return `No sent rows matched the retention policy (${pruneSentPolicyDescription(olderThanDays, keepCount)}). Nothing to prune.`;
+    }
+    if (dryRun) {
+        return (`${result.matched} sent row(s) would be pruned (dry run). ` +
+            `Re-run with --apply to delete (backs up the DB first). ` +
+            `This only removes sent rows — pending, leased, retrying, and dead-letter rows are never touched.`);
+    }
+    return (`${result.pruned} sent row(s) pruned. ` +
+        `Pending, leased, retrying, and dead-letter rows were not touched. ` +
+        `Run \`pdpp-local-collector status\` to confirm the new outbox size.`);
+}
+function pruneSentPolicyDescription(olderThanDays, keepCount) {
+    const parts = [];
+    if (olderThanDays !== null) {
+        parts.push(`older than ${olderThanDays} days`);
+    }
+    if (keepCount !== undefined) {
+        parts.push(`keep-count ${keepCount}`);
+    }
+    return parts.length > 0 ? parts.join(", ") : "default sent-row retention";
+}
+function daysAgoIso(days) {
+    const ms = days * 24 * 60 * 60 * 1000;
+    return new Date(Date.now() - ms).toISOString();
+}
+function backupSqliteDb(outbox, dbPath, label) {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const backupPath = `${dbPath}.pre-retry-dead-letters-${stamp}.bak`;
+    const backupPath = `${dbPath}.pre-${label}-${stamp}.bak`;
     outbox.backupTo(backupPath);
     return backupPath;
 }
@@ -478,8 +626,9 @@ export function parseArgs(args) {
         command !== "advertise" &&
         command !== "status" &&
         command !== "doctor" &&
-        command !== "retry-dead-letters") {
-        throw new CollectorUsageError(`usage: pdpp-local-collector <enroll|run|advertise|status|doctor|retry-dead-letters> --base-url <url> [options]`);
+        command !== "retry-dead-letters" &&
+        command !== "prune-sent") {
+        throw new CollectorUsageError(`usage: pdpp-local-collector <enroll|run|advertise|status|doctor|retry-dead-letters|prune-sent> --base-url <url> [options]`);
     }
     const options = {
         baseUrl: process.env.PDPP_REFERENCE_BASE_URL ?? "http://127.0.0.1:7662",
@@ -578,6 +727,12 @@ function applyOption(options, arg, value) {
         "--args": (next) => {
             options.args = next.split(" ").filter(Boolean);
         },
+        "--older-than-days": (next) => {
+            options.olderThanDays = parseNonNegativeInteger("--older-than-days", next);
+        },
+        "--keep-count": (next) => {
+            options.keepCount = parseNonNegativeInteger("--keep-count", next);
+        },
     };
     const set = setters[arg];
     if (!set) {
@@ -595,6 +750,13 @@ function parsePositiveInteger(label, value) {
     const parsed = Number(value);
     if (!Number.isSafeInteger(parsed) || parsed <= 0) {
         throw new CollectorUsageError(`${label} must be a positive integer`);
+    }
+    return parsed;
+}
+function parseNonNegativeInteger(label, value) {
+    const parsed = Number(value);
+    if (!Number.isSafeInteger(parsed) || parsed < 0) {
+        throw new CollectorUsageError(`${label} must be a non-negative integer`);
     }
     return parsed;
 }
