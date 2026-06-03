@@ -128,6 +128,12 @@ This is not a license to over-generalize. The bar is construction quality, not a
 
 Advertised capabilities need end-to-end conformance gates, not isolated implementation checks. If metadata says a client can use a feature, the schema, generated docs, agent skill, MCP/tool input shape, request builder, REST route, and runtime enforcement should all agree on the same invocation shape. Acceptance checks should include at least one canonical positive case and at least one plausible noncanonical negative case that proves the system errors instead of silently widening the read or falling back to an unfiltered result. This is part of the SLVP construction bar, not a separate audit project.
 
+## Low-Burn Delegation Discipline
+
+When long-running RI ownership has active Claude workstream lanes, the owner thread should deliberately enter low-burn mode instead of continuously polling or re-deriving context. Low-burn mode means: launch bounded Claude lanes through the durable tmux wrapper, write a checkpoint to `tmp/workstreams/ri-owner-current-state.md`, avoid deployment/restart while live-run constraints exist, and stop active exploration until the next human prompt or a deliberately scheduled checkpoint.
+
+This is a discipline rule, not a pause in ownership. Worker completion is not owner completion: on resume, the owner must run `pnpm workstreams:status`, review reports/diffs/tests, merge only verified tranches, deploy only when live-run constraints are clear, clean up worktrees, and update the checkpoint. The point is to preserve velocity and Codex budget by letting delegated lanes run while avoiding token-expensive micromanagement.
+
 ## Research Corpus Discipline
 
 Prior-art research that informs OpenSpec or implementation work should leave a durable source artifact, not just a chat summary or worker report. Design notes are not that corpus: they are the intake queue for significant design observations and unresolved questions to revisit when the project shifts from execution mode into slower architecture review.
