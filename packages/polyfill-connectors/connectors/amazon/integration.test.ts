@@ -29,7 +29,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
-import { type EmitDeps, emitOrderAndItems } from "./index.ts";
+import { type EmitDeps, emitOrderAndItems, planIncrementalYears } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 import type { DetailItem, ListPageOrder, OrderDetail } from "./types.ts";
 
@@ -246,4 +246,78 @@ test("amazon manifest: successful manual runs have a bounded freshness window", 
   const policy = manifest.capabilities?.refresh_policy;
   assert.equal(policy?.recommended_mode, "manual");
   assert.equal(policy?.maximum_staleness_seconds, 86_400);
+});
+
+// ─── planIncrementalYears ─────────────────────────────────────────────────
+
+test("planIncrementalYears: no prior state → all discovered years planned (initial backfill)", () => {
+  const years = [2026, 2025, 2024, 2023, 2022, 2010, 2005];
+  const { planned, skipped } = planIncrementalYears(years, {}, 2026);
+  assert.deepEqual(planned, years);
+  assert.equal(skipped.length, 0);
+});
+
+test("planIncrementalYears: with prior state, current and previous year always planned", () => {
+  const yearsState = {
+    "2025": { frozen: false, last_scraped: "2026-01-01T00:00:00.000Z", order_count: 5 },
+    "2024": { frozen: false, last_scraped: "2026-01-01T00:00:00.000Z", order_count: 10 },
+    "2020": { frozen: true, last_scraped: "2026-01-01T00:00:00.000Z", order_count: 3 },
+  };
+  const years = [2026, 2025, 2024, 2023, 2020];
+  const { planned } = planIncrementalYears(years, yearsState, 2026);
+  assert.ok(planned.includes(2026), "current year must be planned");
+  assert.ok(planned.includes(2025), "previous year must be planned");
+});
+
+test("planIncrementalYears: historical years with prior last_scraped are skipped", () => {
+  const yearsState = {
+    "2025": { frozen: false, last_scraped: "2026-01-01T00:00:00.000Z", order_count: 5 },
+    "2024": { frozen: false, last_scraped: "2025-06-01T00:00:00.000Z", order_count: 12 },
+    "2023": { frozen: false, last_scraped: "2025-06-01T00:00:00.000Z", order_count: 8 },
+    "2010": { frozen: false, last_scraped: "2025-01-01T00:00:00.000Z", order_count: 2 },
+  };
+  const years = [2026, 2025, 2024, 2023, 2010];
+  const { planned, skipped } = planIncrementalYears(years, yearsState, 2026);
+  // Only current (2026) and previous (2025) should be planned
+  assert.deepEqual(planned, [2026, 2025]);
+  // 2024, 2023, 2010 have prior last_scraped and are ≥2 years old
+  assert.equal(skipped.length, 3);
+  assert.ok(skipped.some((s) => s.year === 2024));
+  assert.ok(skipped.some((s) => s.year === 2023));
+  assert.ok(skipped.some((s) => s.year === 2010));
+});
+
+test("planIncrementalYears: newly-discovered historical year (no prior state) is still planned", () => {
+  // Scenario: user adds a new Amazon account with orders going back to 2015,
+  // but only 2025/2026 have been scraped so far. 2015 has no prior state.
+  const yearsState = {
+    "2025": { frozen: false, last_scraped: "2026-01-01T00:00:00.000Z", order_count: 5 },
+  };
+  const years = [2026, 2025, 2015];
+  const { planned } = planIncrementalYears(years, yearsState, 2026);
+  assert.ok(planned.includes(2015), "newly-discovered year with no prior state must be included");
+});
+
+test("planIncrementalYears: full refresh (no prior state) plans all discovered years", () => {
+  // Simulates a forced full refresh where state is reset/null.
+  const years = [2026, 2025, 2024, 2023, 2015, 2005];
+  const { planned, skipped } = planIncrementalYears(years, {}, 2026);
+  assert.deepEqual(planned, years, "full refresh with empty state must plan all years");
+  assert.equal(skipped.length, 0);
+});
+
+test("planIncrementalYears: legacy state shape (flat years object) treated as prior state", () => {
+  // Legacy state may store years without last_scraped (order_count=0 first-pass).
+  // Only entries WITH last_scraped should trigger skip.
+  const yearsState = {
+    "2024": { frozen: false, last_scraped: "2025-12-01T00:00:00.000Z", order_count: 3 },
+    "2023": { frozen: false, order_count: 0, last_scraped: "" }, // empty last_scraped = no proof of scrape
+  };
+  const years = [2026, 2025, 2024, 2023];
+  const { planned } = planIncrementalYears(years, yearsState, 2026);
+  // 2024 has a real last_scraped → skip it. 2023 has empty string → falsy → treat as not scraped
+  assert.ok(planned.includes(2026));
+  assert.ok(planned.includes(2025));
+  assert.ok(!planned.includes(2024), "2024 with real last_scraped should be skipped");
+  assert.ok(planned.includes(2023), "2023 with empty last_scraped treated as not-yet-scraped");
 });

@@ -410,6 +410,62 @@ async function runYear(page: Page, deps: EmitDeps, flags: RunFlags, year: number
   return yearOrderCount;
 }
 
+// ─── Incremental year planning ───────────────────────────────────────────
+
+/**
+ * Given the full set of discovered years and prior year state, return the
+ * subset that should be scraped on this run.
+ *
+ * Invariants:
+ *   - Current year is always included (orders are ongoing).
+ *   - Previous year is always included (returns / late-arriving shipments
+ *     can post after year-end).
+ *   - Any year ≥2 years ago that already has a `last_scraped` timestamp in
+ *     prior state is skipped — it was captured on a previous run and
+ *     re-scraping it on every incremental run is unbounded behaviour.
+ *   - Any year ≥2 years ago with NO prior `last_scraped` (newly discovered)
+ *     is included so first-time discovery still works.
+ *   - If there is no prior scraped state at all (first run), all years are
+ *     returned so the initial backfill completes normally.
+ *
+ * This function is exported for unit testing. The `currentYear` parameter
+ * is injected to keep the function pure (no `new Date()` at call time).
+ */
+export function planIncrementalYears(
+  years: number[],
+  yearsState: YearsCursor,
+  currentYear: number
+): { planned: number[]; skipped: Array<{ year: number; reason: string }> } {
+  // If there is no prior scraped state at all, treat this as a first run —
+  // return all discovered years so the initial backfill completes normally.
+  const hasAnyScrapeHistory = Object.values(yearsState).some((s) => s?.last_scraped);
+  if (!hasAnyScrapeHistory) {
+    return { planned: [...years], skipped: [] };
+  }
+
+  const planned: number[] = [];
+  const skipped: Array<{ year: number; reason: string }> = [];
+  const prevYear = currentYear - 1;
+
+  for (const year of years) {
+    if (year >= prevYear) {
+      // Current and previous year are always eligible.
+      planned.push(year);
+      continue;
+    }
+    const prior = yearsState[String(year)];
+    if (prior?.last_scraped) {
+      // Historical year with prior state: skip to prevent unbounded re-scrape.
+      skipped.push({ year, reason: `prior state last_scraped=${prior.last_scraped}` });
+    } else {
+      // Newly discovered historical year (no prior state): include once.
+      planned.push(year);
+    }
+  }
+
+  return { planned, skipped };
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────
 
 // Guarded so `import "./index.ts"` in tests doesn't spin up the runtime
@@ -450,11 +506,22 @@ if (isMainModule(import.meta.url)) {
       const yearsState: YearsCursor = ordersState.years ?? legacyYears ?? {};
 
       await progress("Amazon session verified; discovering years");
-      let years = await discoverYears(page);
-      // Targeted-year override for spot checks and incremental backfills.
+      const discoveredYears = await discoverYears(page);
+      let years: number[];
+      // Targeted-year override for spot checks and explicit backfills.
+      // Bypasses incremental planning entirely.
       if (process.env.PDPP_AMAZON_YEARS) {
         const filter = new Set(process.env.PDPP_AMAZON_YEARS.split(",").map((y) => Number(y.trim())));
-        years = years.filter((y) => filter.has(y));
+        years = discoveredYears.filter((y) => filter.has(y));
+      } else {
+        // Incremental planning: bound the year set so historical years with
+        // prior scraped state are not re-scraped on every run.
+        const currentYear = new Date().getFullYear();
+        const { planned, skipped } = planIncrementalYears(discoveredYears, yearsState, currentYear);
+        for (const { year, reason } of skipped) {
+          await progress(`Skipping year ${year} (incremental: ${reason})`);
+        }
+        years = planned;
       }
       await progress(`Years to scrape: ${years.join(", ")}`);
 
