@@ -64,6 +64,7 @@ import {
   buildChannelCanvasIndex,
   buildChannelMembershipRecord,
   buildChannelRecord,
+  buildChannelStatsRecord,
   buildFileRecord,
   buildMessageAttachmentRecords,
   buildMessageRecord,
@@ -521,7 +522,7 @@ export interface StreamDeps {
  * `fetched_at` exclusion. A membership only re-emits when it actually
  * appears or disappears.
  */
-export const FINGERPRINTED_STREAMS = ["workspace", "users", "files", "channel_memberships"] as const;
+export const FINGERPRINTED_STREAMS = ["workspace", "users", "files", "channel_memberships", "channels"] as const;
 type FingerprintedStream = (typeof FINGERPRINTED_STREAMS)[number];
 
 /**
@@ -543,6 +544,7 @@ export const FINGERPRINT_EXCLUDE: Record<FingerprintedStream, readonly string[]>
   users: [],
   files: [],
   channel_memberships: ["fetched_at"],
+  channels: [],
 };
 
 /**
@@ -591,8 +593,15 @@ async function runChannelsStream(deps: StreamDeps): Promise<void> {
       ON m.ID = c.ID AND m.mx = c.CHUNK_ID
   `
   );
+  const observedOn = deps.emittedAt.slice(0, 10);
   for (const r of rows) {
-    await deps.emitRecord("channels", buildChannelRecord(r));
+    // Entity record: fingerprinted so unchanged structural fields don't re-emit.
+    const entityRec = buildChannelRecord(r);
+    await emitWithFingerprint(deps, "channels", entityRec);
+    // Stats record: append-keyed observation (one per channel per day).
+    if (deps.requested.has("channel_stats")) {
+      await deps.emitRecord("channel_stats", buildChannelStatsRecord(r, observedOn));
+    }
   }
 }
 
@@ -809,7 +818,15 @@ function emitStateCheckpoints(deps: StateEmitDeps): void {
       fetched_at: nowIso(),
     },
   });
-  for (const stream of ["channels", "channel_memberships", "users", "files", "canvases", "workspace"]) {
+  for (const stream of [
+    "channels",
+    "channel_stats",
+    "channel_memberships",
+    "users",
+    "files",
+    "canvases",
+    "workspace",
+  ]) {
     if (deps.requested.has(stream)) {
       const cursor: Record<string, unknown> = { synced_at: nowIso() };
       const fingerprintCursor = deps.fingerprintCursors.get(stream);
@@ -903,7 +920,7 @@ async function runRequestedStreams(deps: StreamDeps, state: CollectContext["stat
   if (deps.requested.has("workspace")) {
     await runWorkspaceStream(deps);
   }
-  if (deps.requested.has("channels")) {
+  if (deps.requested.has("channels") || deps.requested.has("channel_stats")) {
     await runChannelsStream(deps);
   }
   if (deps.requested.has("channel_memberships")) {

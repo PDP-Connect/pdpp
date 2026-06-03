@@ -21,6 +21,7 @@
  */
 
 import { nowIso, runConnector } from "../../src/connector-runtime.ts";
+import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import {
   API_BASE as BASE,
   gistRecord,
@@ -34,6 +35,7 @@ import {
   repoRecord,
   starredRecord,
   userRecord,
+  userStatsRecord,
 } from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
 import type {
@@ -112,11 +114,32 @@ interface StreamCtx {
 async function collectUser(ctx: StreamCtx): Promise<void> {
   await ctx.progress("Fetching user profile", { stream: "user" });
   const { data: u } = await gh<GitHubUser>("/user", ctx.token);
-  await ctx.emitRecord("user", userRecord(u));
+
+  // Entity record: stable identity fields only. Gate on fingerprint so
+  // re-fetches that find no profile changes do not create new entity versions.
+  const entityRec = userRecord(u);
+  const userFpCursor = openFingerprintCursor(ctx.state.user, {
+    excludeFromFingerprint: [],
+  });
+  if (userFpCursor.shouldEmit(entityRec)) {
+    await ctx.emitRecord("user", entityRec);
+  }
+
+  // Stats record: sampled metrics keyed by {user_id}:{YYYY-MM-DD}.
+  // Emitted unconditionally when the user stream is requested; the append
+  // key ensures idempotency within a calendar day.
+  if (ctx.requested.has("user_stats") || ctx.requested.has("user")) {
+    const observedOn = nowIso().slice(0, 10);
+    await ctx.emitRecord("user_stats", userStatsRecord(u, observedOn));
+  }
+
   await ctx.emit({
     type: "STATE",
     stream: "user",
-    cursor: { fetched_at: nowIso() },
+    cursor: {
+      fetched_at: nowIso(),
+      fingerprints: userFpCursor.toState(),
+    },
   });
 }
 
@@ -545,7 +568,7 @@ runConnector({
       progress,
     };
 
-    if (requested.has("user")) {
+    if (requested.has("user") || requested.has("user_stats")) {
       await collectUser(ctx);
     }
     if (requested.has("repositories")) {

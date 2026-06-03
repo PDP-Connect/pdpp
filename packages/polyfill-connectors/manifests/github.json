@@ -3,7 +3,7 @@
   "connector_id": "https://registry.pdpp.org/connectors/github",
   "connector_key": "github",
   "manifest_uri": "https://registry.pdpp.org/connectors/github",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "display_name": "GitHub",
   "runtime_requirements": {
     "bindings": {
@@ -33,10 +33,10 @@
   "streams": [
     {
       "name": "user",
-      "description": "The authenticated user's profile.",
+      "description": "The authenticated user's stable profile and identity fields. Sampled metrics (followers, following, public_repos, public_gists) are in the user_stats stream.",
       "display": {
         "label": "Your GitHub profile",
-        "detail": "Username, display name, bio, email if public, counts of followers/following/public repos, created_at and updated_at."
+        "detail": "Username, display name, bio, email if public, company, location, blog, twitter_username, avatar, created_at and updated_at. Follower/following/repo counts are in user_stats."
       },
       "semantics": "mutable_state",
       "schema": {
@@ -87,30 +87,6 @@
           "twitter_username": {
             "type": [
               "string",
-              "null"
-            ]
-          },
-          "public_repos": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "public_gists": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "followers": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "following": {
-            "type": [
-              "integer",
               "null"
             ]
           },
@@ -173,6 +149,80 @@
             "lt"
           ],
           "updated_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        }
+      }
+    },
+    {
+      "name": "user_stats",
+      "description": "Sampled metrics for the authenticated user, keyed by {user_id}:{YYYY-MM-DD}. One record per calendar day (UTC); re-running on the same day is idempotent. Preserves a time series of follower/following/repo counts without creating false entity-version churn on the user stream.",
+      "display": {
+        "label": "Your GitHub profile metrics (daily)",
+        "detail": "Daily snapshot of public_repos, public_gists, followers, following counts. Each record covers one calendar day."
+      },
+      "semantics": "append",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "observed_on": {
+            "type": "string",
+            "format": "date"
+          },
+          "public_repos": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "public_gists": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "followers": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "following": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "observed_on"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "observed_on",
+      "consent_time_field": "observed_on",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {},
+        "range_filters": {
+          "observed_on": [
             "gte",
             "gt",
             "lte",
@@ -1159,6 +1209,9 @@
           "name": "user"
         },
         {
+          "name": "user_stats"
+        },
+        {
           "name": "repositories"
         },
         {
@@ -1172,6 +1225,9 @@
       "streams": [
         {
           "name": "user"
+        },
+        {
+          "name": "user_stats"
         },
         {
           "name": "repositories"

@@ -29,8 +29,11 @@ const numericSchema = z.number().int().nullable();
 const booleanSchema = z.boolean();
 const booleanNullableSchema = z.boolean().nullable();
 
+const ISO_DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
 /**
- * user stream: profile metadata. Cursor: created_at, updated_at.
+ * user stream: stable identity and profile fields only.
+ * Sampled metrics (followers, following, public_repos, public_gists) moved to user_stats.
  */
 export const userSchema = z.object({
   id: idSchema,
@@ -42,13 +45,23 @@ export const userSchema = z.object({
   location: pdppSafeText.max(255).nullable(),
   blog: pdppSafeText.max(1000).nullable(),
   twitter_username: pdppSafeText.max(80).nullable(),
+  created_at: isoDateSchema,
+  updated_at: isoDateSchema,
+  avatar_url: urlSchema,
+});
+
+/**
+ * user_stats stream: sampled metrics keyed by {user_id}:{YYYY-MM-DD}.
+ * One record per user per calendar day (UTC). Cursor: observed_on.
+ */
+export const userStatsSchema = z.object({
+  id: pdppSafeText.max(100), // "{user_id}:{YYYY-MM-DD}"
+  user_id: idSchema,
+  observed_on: z.string().regex(ISO_DATE_ONLY_RE),
   public_repos: numericSchema,
   public_gists: numericSchema,
   followers: numericSchema,
   following: numericSchema,
-  created_at: isoDateSchema,
-  updated_at: isoDateSchema,
-  avatar_url: urlSchema,
 });
 
 /**
@@ -192,6 +205,7 @@ export const gistsSchema = z.object({
  */
 export const SCHEMAS: Record<string, z.ZodTypeAny> = {
   user: userSchema,
+  user_stats: userStatsSchema,
   repositories: repositoriesSchema,
   starred: starredSchema,
   issues: issuesSchema,

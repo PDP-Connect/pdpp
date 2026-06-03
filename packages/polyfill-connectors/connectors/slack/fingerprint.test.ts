@@ -124,6 +124,21 @@ test("wiring: channel_memberships is in the production fingerprinted set with fe
   );
 });
 
+test("wiring: channels is in the production fingerprinted set (no excludes — structural fields gate cleanly)", () => {
+  // pins the point-in-time-streams split: channels entity record no longer
+  // contains num_members, so its fingerprint covers only structural fields.
+  // Dropping channels from FINGERPRINTED_STREAMS re-enables full-resync churn.
+  assert.ok(
+    (FINGERPRINTED_STREAMS as readonly string[]).includes("channels"),
+    "channels must be fingerprinted after the point-in-time-streams split"
+  );
+  assert.deepEqual(
+    FINGERPRINT_EXCLUDE.channels,
+    [],
+    "channels has no run-clock fields — full-record fingerprint is correct"
+  );
+});
+
 test("channel_memberships: fetched_at is excluded — a stable membership does NOT re-emit", async () => {
   // The record body is `{id, channel_id, user_id, fetched_at}` where
   // fetched_at is the run clock. Before this stream was fingerprinted, the

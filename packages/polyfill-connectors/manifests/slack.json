@@ -3,7 +3,7 @@
   "connector_id": "https://registry.pdpp.org/connectors/slack",
   "connector_key": "slack",
   "manifest_uri": "https://registry.pdpp.org/connectors/slack",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "display_name": "Slack",
   "runtime_requirements": {
     "bindings": {
@@ -153,10 +153,10 @@
     },
     {
       "name": "channels",
-      "description": "Public/private channels, DMs, and group DMs visible to the authenticated user.",
+      "description": "Public/private channels, DMs, and group DMs visible to the authenticated user. Structural and identity fields only; member count is in the channel_stats stream.",
       "display": {
         "label": "Your Slack channels",
-        "detail": "Channel name, type flags (is_im/is_mpim/is_private/is_shared/is_archived), creator, topic and purpose (with last-set time), member count, created-at."
+        "detail": "Channel name, type flags (is_im/is_mpim/is_private/is_shared/is_archived), creator, topic and purpose (with last-set time), created-at. Member counts are in channel_stats."
       },
       "semantics": "mutable_state",
       "schema": {
@@ -304,12 +304,6 @@
               "null"
             ]
           },
-          "num_members": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
           "user": {
             "type": [
               "string",
@@ -393,6 +387,70 @@
         },
         "range_filters": {
           "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        }
+      }
+    },
+    {
+      "name": "channel_stats",
+      "description": "Sampled member counts per channel, keyed by {channel_id}:{YYYY-MM-DD}. One record per channel per calendar day (UTC); re-running on the same day is idempotent. Preserves a time series of membership volume without creating false entity-version churn on the channels stream.",
+      "display": {
+        "label": "Slack channel member counts (daily)",
+        "detail": "Daily snapshot of num_members for each channel. Each record covers one calendar day."
+      },
+      "semantics": "append",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "channel_id": {
+            "type": "string"
+          },
+          "observed_on": {
+            "type": "string",
+            "format": "date"
+          },
+          "num_members": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "channel_id",
+          "observed_on"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "observed_on",
+      "consent_time_field": "observed_on",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "relationships": [
+        {
+          "name": "channel",
+          "stream": "channels",
+          "foreign_key": "channel_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {},
+        "range_filters": {
+          "observed_on": [
             "gte",
             "gt",
             "lte",
@@ -2001,6 +2059,9 @@
         },
         {
           "name": "channels"
+        },
+        {
+          "name": "channel_stats"
         },
         {
           "name": "channel_memberships"
