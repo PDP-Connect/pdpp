@@ -9,7 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import { flushAndExitAfterRuntimeAck } from "../../src/connector-exit.js";
 import { openCarryForwardCursor } from "../../src/fingerprint-cursor.js";
 import { isMainModule } from "../../src/is-main-module.js";
-import { buildLocalSourceInventory, listDirectoryInventory, } from "../../src/local-source-inventory.js";
+import { buildLocalSourceInventory, listDirectoryInventory, openInventoryFingerprintCursor, } from "../../src/local-source-inventory.js";
 import { stringifyForJsonl } from "../../src/safe-emit.js";
 import { resourceSet } from "../../src/scope-filters.js";
 import { buildPromptRecord, buildRolloutOnlySessionRecord, buildRuleRecord, buildSkillRecord, buildThreadSessionRecord, extendTimestampRange, extractMessageText, isRolloutFile, isSkippableRulesLine, parseFrontmatter, payloadOutputPreview, RULES_SUFFIX_RE, splitRulesLines, TWO_DIGIT_DIR_RE, textPreview, YEAR_DIR_RE, } from "./parsers.js";
@@ -457,6 +457,10 @@ function applyFunctionCallOutput(state, payload, ts, emitRecord) {
         if (previewResult.binaryReason) {
             existing.output_binary_reason = previewResult.binaryReason;
         }
+        if (callId) {
+            state.pendingCalls.delete(callId);
+        }
+        emitRecord("function_calls", { ...existing });
         return;
     }
     emitRecord("function_calls", {
@@ -527,6 +531,7 @@ export function flushPendingCalls(state, deps) {
     for (const call of state.pendingCalls.values()) {
         deps.emitRecord("function_calls", { ...call });
     }
+    state.pendingCalls.clear();
 }
 export function shouldReemitThreadSession(thread, agg, priorFingerprint) {
     if (!priorFingerprint) {
@@ -918,18 +923,8 @@ function emitStateCursors({ requested, newFileCursors, newMtimes, nowIso, sessio
             emit({ type: "STATE", stream: s, cursor: { fetched_at: nowIso() } });
         }
     }
-    for (const s of [
-        "history",
-        "session_index",
-        "logs",
-        "shell_snapshots",
-        "config_inventory",
-        "cache_inventory",
-        "coverage_diagnostics",
-    ]) {
-        if (requested.has(s)) {
-            emit({ type: "STATE", stream: s, cursor: { fetched_at: nowIso() } });
-        }
+    if (requested.has("coverage_diagnostics")) {
+        emit({ type: "STATE", stream: "coverage_diagnostics", cursor: { fetched_at: nowIso() } });
     }
 }
 function readPriorSessionsSourceMtimeMs(startMsg) {
@@ -1003,36 +998,52 @@ async function emitCoverageDiagnostics(input) {
         await waitForEmitDrain();
     }
 }
-async function emitLocalInventoryStreams(input) {
-    for (const [stream, records] of input.inventory.recordsByStream) {
-        if (!input.requested.has(stream)) {
-            continue;
-        }
-        for (const record of records) {
-            input.emitRecord(stream, record);
+async function emitGatedInventoryStream(input) {
+    const cursor = openInventoryFingerprintCursor(input.priorState);
+    for (const record of input.records) {
+        if (cursor.shouldEmit(record)) {
+            input.emitRecord(input.stream, record);
             await waitForEmitDrain();
         }
     }
-    for (const directoryStream of [
-        {
-            relativeRoot: "shell-snapshots",
-            store: "shell_snapshots",
-            stream: "shell_snapshots",
-            reason: "shell content requires redaction review before payload collection",
-        },
-    ]) {
-        if (!input.requested.has(directoryStream.stream)) {
+    cursor.pruneStale();
+    const inventoryCursor = { fetched_at: input.nowIso() };
+    if (cursor.size() > 0) {
+        inventoryCursor.fingerprints = cursor.toState();
+    }
+    emit({ type: "STATE", stream: input.stream, cursor: inventoryCursor });
+    await waitForEmitDrain();
+}
+export const CODEX_GATED_INVENTORY_STREAMS = [
+    "history",
+    "session_index",
+    "shell_snapshots",
+    "config_inventory",
+    "cache_inventory",
+    "logs",
+];
+async function emitLocalInventoryStreams(input) {
+    for (const stream of CODEX_GATED_INVENTORY_STREAMS) {
+        if (!input.requested.has(stream)) {
             continue;
         }
-        const records = await listDirectoryInventory({
-            tool: "codex",
-            sourceHome: input.codexHome,
-            ...directoryStream,
+        const records = stream === "shell_snapshots"
+            ? await listDirectoryInventory({
+                tool: "codex",
+                sourceHome: input.codexHome,
+                relativeRoot: "shell-snapshots",
+                store: "shell_snapshots",
+                stream: "shell_snapshots",
+                reason: "shell content requires redaction review before payload collection",
+            })
+            : (input.inventory.recordsByStream.get(stream) ?? []);
+        await emitGatedInventoryStream({
+            emitRecord: input.emitRecord,
+            nowIso: input.nowIso,
+            priorState: input.state[stream],
+            records,
+            stream,
         });
-        for (const record of records) {
-            input.emitRecord(directoryStream.stream, record);
-            await waitForEmitDrain();
-        }
     }
 }
 async function main() {
@@ -1090,7 +1101,14 @@ async function main() {
     const inventory = await buildLocalSourceInventory("codex", dirs.codexHome, CODEX_KNOWN_LOCAL_STORES);
     await emitCoverageDiagnostics({ emitRecord, inventory, requested });
     await assertRequestedCodexSources(dirs, requested);
-    await emitLocalInventoryStreams({ codexHome: dirs.codexHome, inventory, requested, emitRecord });
+    await emitLocalInventoryStreams({
+        codexHome: dirs.codexHome,
+        emitRecord,
+        inventory,
+        nowIso,
+        requested,
+        state: startMsg.state || {},
+    });
     if (needRollouts) {
         const rolloutScan = await scanRollouts({
             activeQuietMs: resolveActiveRolloutQuietMs(),

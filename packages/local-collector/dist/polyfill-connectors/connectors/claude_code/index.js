@@ -6,7 +6,7 @@ import { basename, join } from "node:path";
 import { createInterface as createFileReader } from "node:readline";
 import { runConnector } from "../../src/connector-runtime.js";
 import { isMainModule } from "../../src/is-main-module.js";
-import { buildLocalSourceInventory, listDirectoryInventory, } from "../../src/local-source-inventory.js";
+import { buildLocalSourceInventory, listDirectoryInventory, openInventoryFingerprintCursor, } from "../../src/local-source-inventory.js";
 import { safeTextPreview } from "../../src/safe-text-preview.js";
 import { ATTACHMENT_PREVIEW_CHARS, applyProjectDirScope, BYTES_PER_MB, buildMemoryNoteRecord, buildSkillRecord, buildSlashCommandRecord, extractContent, LINE_PROGRESS_INTERVAL, MESSAGE_CONTENT_PREVIEW_CHARS, makeEmptySessionAccumulator, mergeSessionObservations, parseCsvEnv, parseFrontmatter, SESSION_DIR_PREFIX_RE, TOOL_RESULT_PREVIEW_CHARS, textPreview, widenSessionTimeRange, } from "./parsers.js";
 import { validateRecord } from "./schemas.js";
@@ -667,14 +667,32 @@ async function emitCoverageDiagnostics(input) {
         await input.emitRecord("coverage_diagnostics", record);
     }
 }
+async function emitGatedInventoryStream(input) {
+    const cursor = openInventoryFingerprintCursor(input.priorState);
+    for (const record of input.records) {
+        if (cursor.shouldEmit(record)) {
+            await input.emitRecord(input.stream, record);
+        }
+    }
+    cursor.pruneStale();
+    const inventoryCursor = { fetched_at: nowIso() };
+    if (cursor.size() > 0) {
+        inventoryCursor.fingerprints = cursor.toState();
+    }
+    await input.emit({ type: "STATE", stream: input.stream, cursor: inventoryCursor });
+}
 async function emitLocalInventoryStreams(input) {
     for (const [stream, records] of input.inventory.recordsByStream) {
         if (!input.requested.has(stream)) {
             continue;
         }
-        for (const record of records) {
-            await input.emitRecord(stream, record);
-        }
+        await emitGatedInventoryStream({
+            emit: input.emit,
+            emitRecord: input.emitRecord,
+            priorState: input.state[stream],
+            records,
+            stream,
+        });
     }
     if (input.requested.has("file_history")) {
         const records = await listDirectoryInventory({
@@ -685,9 +703,13 @@ async function emitLocalInventoryStreams(input) {
             stream: "file_history",
             reason: "metadata-only until payload contract is approved",
         });
-        for (const record of records) {
-            await input.emitRecord("file_history", record);
-        }
+        await emitGatedInventoryStream({
+            emit: input.emit,
+            emitRecord: input.emitRecord,
+            priorState: input.state.file_history,
+            records,
+            stream: "file_history",
+        });
     }
 }
 async function runSkillsAndCommands(claudeHome, requested, emit, emitRecord, state) {
@@ -755,7 +777,7 @@ if (isMainModule(import.meta.url)) {
             const newSkillsMtimes = { ...skillsMtimes };
             const newSlashCommandMtimes = { ...slashCommandMtimes };
             const newMemoryNoteMtimes = { ...memoryNoteMtimes };
-            await emitLocalInventoryStreams({ claudeHome, inventory, requested, emitRecord });
+            await emitLocalInventoryStreams({ claudeHome, emit, emitRecord, inventory, requested, state: typedState });
             await runSkillsAndCommands(claudeHome, requested, emit, emitRecord, {
                 skillsMtimes,
                 newSkillsMtimes,

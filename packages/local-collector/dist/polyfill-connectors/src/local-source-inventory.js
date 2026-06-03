@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { openFingerprintCursor } from "./fingerprint-cursor.js";
 function pathHash(tool, relativePath) {
     return createHash("sha256").update(`${tool}:${relativePath}`).digest("hex");
 }
@@ -116,4 +117,10 @@ export async function listDirectoryInventory(input) {
         });
     }
     return records;
+}
+export const INVENTORY_FINGERPRINT_EXCLUDE_KEYS = ["mtime_epoch", "size_bytes"];
+export function openInventoryFingerprintCursor(priorState) {
+    return openFingerprintCursor(priorState, {
+        excludeFromFingerprint: INVENTORY_FINGERPRINT_EXCLUDE_KEYS,
+    });
 }
