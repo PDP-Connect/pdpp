@@ -165,8 +165,8 @@ test("runCollectorConnector summarizes coverage completeness distinct from decla
         }) + "\\n");
         for (const c of coverage) {
           process.stdout.write(JSON.stringify({
-            type: "RECORD", stream: "coverage_diagnostics", key: c.store + ":" + c.status,
-            data: { id: c.store + ":" + c.status, ...c }, emitted_at: new Date().toISOString(),
+            type: "RECORD", stream: "coverage_diagnostics", key: "coverage:" + c.store,
+            data: { id: "coverage:" + c.store, ...c }, emitted_at: new Date().toISOString(),
           }) + "\\n");
         }
         process.stdout.write(JSON.stringify({ type: "DONE", status: "succeeded", records_emitted: 5 }) + "\\n");

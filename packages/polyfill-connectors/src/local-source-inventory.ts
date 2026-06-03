@@ -105,7 +105,11 @@ export async function buildLocalSourceInventory(
     const pathMeta = await statKind(fullPath);
     const status = coverageStatus(store.classification, pathMeta.exists);
     coverage.push({
-      id: `${store.store}:${status}`,
+      // Stable key: upsert on re-run replaces the prior record rather than
+      // accumulating one row per distinct status. The server's
+      // listLocalCoverageDiagnostics deduplications by store — a changing
+      // key would let a stale row shadow the current one in alphabetical order.
+      id: `coverage:${store.store}`,
       store: store.store,
       stream: store.stream,
       status,

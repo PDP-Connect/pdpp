@@ -54,7 +54,7 @@ export async function buildLocalSourceInventory(tool, sourceHome, stores) {
         const pathMeta = await statKind(fullPath);
         const status = coverageStatus(store.classification, pathMeta.exists);
         coverage.push({
-            id: `${store.store}:${status}`,
+            id: `coverage:${store.store}`,
             store: store.store,
             stream: store.stream,
             status,
