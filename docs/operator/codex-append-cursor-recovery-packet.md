@@ -9,6 +9,25 @@ so the first run after deploy will reparse that file once.
 
 Read this before restarting `pdpp-codex-collector.timer`.
 
+## Command prerequisite
+
+Every command below uses `pdpp-local-collector`, which already emits JSON for
+`status`, `doctor`, and `run`; do not add `--format json` (the CLI has no such
+flag).
+
+Use a collector binary that contains the append-safe Codex cursor fix:
+
+- after publishing this commit to npm beta, use `npx -y @pdpp/local-collector@beta`;
+- on a repo-dist-override host, use the deployed repo binary instead, for example
+  `node /home/user/code/pdpp/packages/local-collector/dist/local-collector/bin/pdpp-local-collector.js`.
+
+If `doctor` reports a stale published package or a repo checkout that does not
+contain this commit, stop and update the collector before continuing.
+
+In the snippets below, replace `npx -y @pdpp/local-collector@beta` with the
+repo-dist command when the beta package has not yet been published from this
+commit.
+
 ## 0. The one rule
 
 Do not delete unsent outbox rows unless this packet proves they are duplicate
@@ -102,8 +121,7 @@ device outbox. Classify and handle them as follows.
 # On the Peregrine host that owns the Codex outbox. Read-only.
 npx -y @pdpp/local-collector@beta status \
   --connector codex \
-  --base-url "$PDPP_BASE_URL" \
-  --format json > /tmp/codex-outbox-status.json
+  --base-url "$PDPP_BASE_URL" > /tmp/codex-outbox-status.json
 # `status` reports: outbox.counts (ready/pending/retrying/dead_letter/leased/
 # total), lifecycle_state, coverage, and deployment_posture/version. It does
 # NOT include the STATE cursor summary — `file_cursors_count` is surfaced by a
@@ -142,27 +160,27 @@ the burst is observed and bounded.
 # 0. Confirm the deployed package contains the append-safe cursor fix.
 #    `doctor` reports the deployment posture + collector version (not the cursor
 #    summary — that comes from `run` in steps 2-3).
-npx -y @pdpp/local-collector@beta doctor --connector codex --base-url "$PDPP_BASE_URL" --format json \
+npx -y @pdpp/local-collector@beta doctor --connector codex --base-url "$PDPP_BASE_URL" \
   | grep -E '"deployment_posture"|"version"|"is_placeholder_version"'
 
 # 1. Drain-only passes FIRST (timer still stopped). Each `run` drains existing
 #    backlog before it scans; while backlog is over the ceiling the connector is
 #    NOT spawned (skippedScanForBacklog=true), so no fresh re-scan piles on.
 #    Repeat until status shows ready/pending at/near zero.
-npx -y @pdpp/local-collector@beta run --connector codex --base-url "$PDPP_BASE_URL" --format json \
+npx -y @pdpp/local-collector@beta run --connector codex --base-url "$PDPP_BASE_URL" \
   | grep -E '"skippedScanForBacklog"|"sentBatches"|"recordsQueued"|"outboxSummary"'
 
 # 2. Once backlog is drained, the next `run` actually scans with the fixed
 #    connector. THIS is the one-time reparse of the active rollout: expect a
 #    large recordsQueued (up to ~177k) that drains as mostly server noops, then a
 #    rich `file_cursors` entry is written for the active file.
-npx -y @pdpp/local-collector@beta run --connector codex --base-url "$PDPP_BASE_URL" --format json \
+npx -y @pdpp/local-collector@beta run --connector codex --base-url "$PDPP_BASE_URL" \
   | grep -E '"recordsQueued"|"file_cursors|"statePutFailed"'
 
 # 3. Confirm the rich cursor landed and the next run TAILS (no full reparse).
 #    A subsequent run with no new Codex activity must show recordsQueued≈0 and a
 #    file_cursors_count covering the active file.
-npx -y @pdpp/local-collector@beta run --connector codex --base-url "$PDPP_BASE_URL" --format json \
+npx -y @pdpp/local-collector@beta run --connector codex --base-url "$PDPP_BASE_URL" \
   | grep -E '"recordsQueued"|"file_cursors_count"'
 
 # 4. Only after step 3 shows a tailing steady state, restart the timer.
@@ -179,8 +197,9 @@ cursor. This is throughput shaping only — it does not change correctness.
 
 ## 6. Acceptance — what proves the restart succeeded
 
-1. `status` reports a `file_cursors` entry for the active rollout path (rich
-   cursor established), `file_cursors_count >= 1`.
+1. A `run` invocation's cursor summary reports `file_cursors_count >= 1` for the
+   active rollout path's stream (rich cursor established). `status` does not
+   include STATE cursor summaries.
 2. A no-new-activity `run` reports `recordsQueued` ≈ 0 for `messages` /
    `function_calls` (the connector is now tailing, not reparsing).
 3. Server record versions for the replayed session did **not** balloon: the
