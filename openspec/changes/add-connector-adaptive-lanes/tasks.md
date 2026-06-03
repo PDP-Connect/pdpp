@@ -38,6 +38,8 @@
 - [x] Fast-open the source-pressure circuit on a bare 429 (no `Retry-After`) after `CHATGPT_BARE_429_FAST_OPEN_ATTEMPTS` attempts instead of burning the full 12-attempt budget, via a generic `retryHttp` `shouldKeepRetrying` hook and a connector-local predicate (`shouldKeepRetryingChatGptDetail`). Motivated by the 2026-06-02 bare-429 live probe; see `design.md` → Live Evidence.
 - [x] Keep the full retry budget for 429-with-`Retry-After` and `502/503/504` (honest server-bounded waits), and keep successful 200 detail processing unchanged.
 - [x] Gate any raised detail concurrency behind a cold-state preflight (`classifyChatGptSourcePressure` + `applyChatGptColdStatePreflight`): a status-only serial probe of the first few conversations classifies cold vs. pressured; a pressured account forces the run back to serial `1/1`. Skipped entirely when `maxConcurrency === 1`, so production is unchanged. Motivated by the 2026-06-02 evidence that the throttle is per-account and time-varying; see `design.md` → Cold-State Preflight. Fresh cold-window evidence: `tmp/workstreams/ri-chatgpt-throughput-policy-v2-probe-evidence.md`.
+- [x] Strengthen the owner-only preflight with a bounded burst canary when requested detail concurrency is above `1`. Motivated by `run_1780452117753`: serial preflight passed, but concurrency `3` immediately triggered bare-429 pressure.
+- [x] Ensure pressure-deferred ChatGPT gap bookkeeping is not classified as clean detail-fetch success by the adaptive lane, so upstream-pressure recovery cannot train concurrency upward while the circuit is open.
 
 ## 5. Validation
 
@@ -50,6 +52,7 @@
 - [x] Verify lane observability redacts or omits secret-bearing URLs, headers, cookies, and request bodies.
 - [x] Add deterministic tests for the bare-429 fast-open: `retryHttp` `shouldKeepRetrying` early-stop (generic), and `shouldKeepRetryingChatGptDetail` boundary + real-`retryHttp` 3-attempt exhaustion (connector).
 - [x] Add deterministic tests for the cold-state preflight: classifier cold/pressured/stop-at-first-429/retry-exhausted-circuit cases, no-op at serial tuning, cold pass-through, pressured→serial fallback, and an end-to-end `runMessagesAndConversationsWithDetail` test proving a pressured preflight forces serial execution even when raised probe concurrency is requested.
+- [x] Add deterministic tests for burst-sensitive preflight fallback and for pressure-deferred gaps not increasing lane concurrency.
 
 ## 6. Follow-Up Gate
 

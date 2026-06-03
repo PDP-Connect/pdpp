@@ -1235,12 +1235,81 @@ export interface ChatGptSourcePressureClassification {
   rateLimited: number;
 }
 
+function isChatGptPressureStatus(status: number | undefined): boolean {
+  return status === 429 || status === 502 || status === 503 || status === 504;
+}
+
+function rateLimitedCountForPreflightError(error: unknown): number {
+  return error instanceof ChatGptRecoverableRetryExhaustedError ? 1 : 0;
+}
+
+function fetchChatGptPressureProbeStatus(
+  deps: Pick<StreamDeps, "api">,
+  id: string
+): Promise<Pick<ChatGptFetchResult, "headers" | "status">> {
+  if (!deps.api.fetchStatus) {
+    throw new Error("ChatGPT status-only preflight is unavailable");
+  }
+  return deps.api.fetchStatus(`/conversation/${encodeURIComponent(id)}`);
+}
+
+async function classifyChatGptSerialPressure(
+  deps: Pick<StreamDeps, "api">,
+  ids: readonly string[]
+): Promise<ChatGptSourcePressureClassification> {
+  let attempted = 0;
+  let rateLimited = 0;
+  for (const id of ids) {
+    attempted += 1;
+    let status: number;
+    try {
+      const res = await fetchChatGptPressureProbeStatus(deps, id);
+      status = res.status;
+    } catch (err) {
+      rateLimited += rateLimitedCountForPreflightError(err);
+      return { attempted, classification: "pressured", rateLimited };
+    }
+    if (isChatGptPressureStatus(status)) {
+      rateLimited += 1;
+      return { attempted, classification: "pressured", rateLimited };
+    }
+  }
+  return { attempted, classification: "cold", rateLimited };
+}
+
+async function classifyChatGptBurstPressure(
+  deps: Pick<StreamDeps, "api">,
+  probeIds: readonly string[],
+  burstConcurrency: number
+): Promise<ChatGptSourcePressureClassification> {
+  const burstSize = Math.max(0, Math.floor(burstConcurrency));
+  const ids = probeIds.slice(0, Math.min(probeIds.length, burstSize));
+  if (ids.length <= 1) {
+    return { attempted: 0, classification: "cold", rateLimited: 0 };
+  }
+  const results = await Promise.allSettled(ids.map((id) => fetchChatGptPressureProbeStatus(deps, id)));
+  let rateLimited = 0;
+  for (const result of results) {
+    if (result.status === "rejected") {
+      rateLimited += rateLimitedCountForPreflightError(result.reason);
+      return { attempted: results.length, classification: "pressured", rateLimited };
+    }
+    if (isChatGptPressureStatus(result.value.status)) {
+      rateLimited += 1;
+      return { attempted: results.length, classification: "pressured", rateLimited };
+    }
+  }
+  return { attempted: results.length, classification: "cold", rateLimited };
+}
+
 /**
  * Fire up to `probeCount` SERIAL, content-free detail probes and classify the
- * account. Any 429 (or required-detail HTTP failure) marks the account
- * `pressured`; an all-200 sweep marks it `cold`. Stops at the first 429 — one
- * rate-limit signal is enough to force the conservative posture, and continuing
- * would add load to an already-pressured bucket.
+ * account, then optionally replay the same ids as one bounded burst canary that
+ * matches the requested raised concurrency. Any 429 (or required-detail HTTP
+ * failure) marks the account `pressured`; an all-200 sweep marks it `cold`.
+ * Stops at the first serial 429 — one rate-limit signal is enough to force the
+ * conservative posture, and continuing would add load to an already-pressured
+ * bucket.
  *
  * Probes reuse the connector's own `api.fetchStatus` (so they ride the same
  * browser transport, auth, and `retryHttp`/fast-open path the real lane uses).
@@ -1249,34 +1318,26 @@ export interface ChatGptSourcePressureClassification {
 export async function classifyChatGptSourcePressure(
   deps: Pick<StreamDeps, "api">,
   probeIds: readonly string[],
-  probeCount = CHATGPT_PREFLIGHT_PROBE_COUNT
+  probeCount = CHATGPT_PREFLIGHT_PROBE_COUNT,
+  burstConcurrency = 1
 ): Promise<ChatGptSourcePressureClassification> {
   if (!deps.api.fetchStatus) {
     return { attempted: 0, classification: "pressured", rateLimited: 0 };
   }
   const ids = probeIds.slice(0, Math.max(0, probeCount));
-  let attempted = 0;
-  let rateLimited = 0;
-  for (const id of ids) {
-    attempted += 1;
-    let status: number;
-    try {
-      const res = await deps.api.fetchStatus(`/conversation/${encodeURIComponent(id)}`);
-      status = res.status;
-    } catch (err) {
-      // A retry-exhausted bare-429 (source-pressure circuit) or any other
-      // failure during preflight is a pressure signal — fail safe to serial.
-      if (err instanceof ChatGptRecoverableRetryExhaustedError) {
-        rateLimited += 1;
-      }
-      return { attempted, classification: "pressured", rateLimited };
-    }
-    if (status === 429 || status === 502 || status === 503 || status === 504) {
-      rateLimited += 1;
-      return { attempted, classification: "pressured", rateLimited };
-    }
+  const serial = await classifyChatGptSerialPressure(deps, ids);
+  if (serial.classification === "pressured") {
+    return serial;
   }
-  return { attempted, classification: "cold", rateLimited };
+  const burst = await classifyChatGptBurstPressure(deps, probeIds, burstConcurrency);
+  if (burst.classification === "pressured") {
+    return {
+      attempted: serial.attempted + burst.attempted,
+      classification: "pressured",
+      rateLimited: serial.rateLimited + burst.rateLimited,
+    };
+  }
+  return { attempted: serial.attempted + burst.attempted, classification: "cold", rateLimited: 0 };
 }
 
 /** The frozen serial posture a pressured preflight forces a run back to. */
@@ -1312,7 +1373,12 @@ export async function applyChatGptColdStatePreflight(
     stream: "messages",
     message: `ChatGPT cold-state preflight: probing source pressure with ${probeIds.length} serial detail request(s) before raising detail concurrency to ${requestedTuning.maxConcurrency}`,
   });
-  const result = await classifyChatGptSourcePressure(deps, probeIds, CHATGPT_PREFLIGHT_PROBE_COUNT);
+  const result = await classifyChatGptSourcePressure(
+    deps,
+    probeIds,
+    CHATGPT_PREFLIGHT_PROBE_COUNT,
+    requestedTuning.maxConcurrency
+  );
   if (result.classification === "pressured") {
     deps.emit({
       type: "PROGRESS",
@@ -1346,6 +1412,9 @@ function sleepMs(ms: number): Promise<void> {
 
 function shouldEmitConversationDetailLaneProgress(event: AdaptiveLaneEvent): boolean {
   if (event.type === "queued" || event.outcome === "ok") {
+    return false;
+  }
+  if (event.type === "completed" && event.outcome === "terminal" && event.reason === "upstream_pressure_deferred") {
     return false;
   }
   return true;
@@ -1533,6 +1602,9 @@ export async function runMessagesAndConversationsWithDetail(
       if (!result) {
         return { kind: "retryable" };
       }
+      if (result.deferredDueToPressure) {
+        return { kind: "terminal", reason: "upstream_pressure_deferred" };
+      }
       if (result.status === 429 || result.status === 502 || result.status === 503 || result.status === 504) {
         return { kind: "rate_limited" };
       }
@@ -1565,7 +1637,7 @@ export async function runMessagesAndConversationsWithDetail(
     if (observedRecoverablePressure) {
       await deps.emit(makeDeferredConversationDetailGap(c, observedRecoverablePressure));
       coverage.gapKeys.push(c.id);
-      return { status: 200, json: null };
+      return { deferredDueToPressure: true, status: 0, json: null };
     }
     let detail: ChatGptFetchResult;
     try {
@@ -1581,7 +1653,7 @@ export async function runMessagesAndConversationsWithDetail(
         });
         await deps.emit(makeConversationDetailGap(c, err));
         coverage.gapKeys.push(c.id);
-        return { status: 200, json: null };
+        return { deferredDueToPressure: true, status: 0, json: null };
       }
       throw err;
     }

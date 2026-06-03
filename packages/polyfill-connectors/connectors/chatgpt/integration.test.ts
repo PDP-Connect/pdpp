@@ -1592,8 +1592,9 @@ test("runSharedConversationsStream: 404 → SKIP_RESULT('not_available'), no rec
 // has raised detail concurrency above the frozen serial default (a probe env
 // var), and it can only ever make a run MORE conservative. These tests pin:
 //   - production (serial tuning) fires NO probe and is byte-for-byte unchanged,
-//   - a cold account lets the requested faster posture through,
+//   - a cold account that also passes a burst canary lets the requested faster posture through,
 //   - a pressured account forces the run back to serial concurrency=1,
+//   - burst-sensitive pressure forces the run back to serial even after serial probes pass,
 //   - the classifier stops at the first 429 (no extra load on a hot bucket),
 //   - the preflight emits no records and no sensitive strings.
 
@@ -1680,7 +1681,7 @@ test("applyChatGptColdStatePreflight: serial production tuning fires NO probe (b
 });
 
 test("applyChatGptColdStatePreflight: cold account lets the requested faster posture through", async () => {
-  const { api, paths } = makeStatusApi([200, 200, 200]);
+  const { api, paths } = makeStatusApi([200, 200, 200, 200, 200, 200]);
   const harness = makeRecordingEmit(validateRecord);
   const deps: StreamDeps = {
     api,
@@ -1697,7 +1698,51 @@ test("applyChatGptColdStatePreflight: cold account lets the requested faster pos
   ];
   const effective = await applyChatGptColdStatePreflight(deps, convos, FAST_TUNING);
   assert.deepEqual(effective, FAST_TUNING, "cold preflight keeps the requested faster tuning");
-  assert.deepEqual(paths, ["/conversation/c-1", "/conversation/c-2", "/conversation/c-3"], "probed first 3 serially");
+  assert.deepEqual(
+    paths,
+    [
+      "/conversation/c-1",
+      "/conversation/c-2",
+      "/conversation/c-3",
+      "/conversation/c-1",
+      "/conversation/c-2",
+      "/conversation/c-3",
+    ],
+    "probed first 3 serially, then replayed them as a burst canary"
+  );
+});
+
+test("applyChatGptColdStatePreflight: burst-sensitive pressure forces serial despite clean serial probes", async () => {
+  const { api, paths } = makeStatusApi([200, 200, 200, 200, 429, 200]);
+  const harness = makeRecordingEmit(validateRecord);
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["messages"].map((name) => [name, { name }])),
+  };
+  const convos = [
+    makeConvo({ id: "c-1" }),
+    makeConvo({ id: "c-2" }),
+    makeConvo({ id: "c-3" }),
+    makeConvo({ id: "c-4" }),
+  ];
+  const effective = await applyChatGptColdStatePreflight(deps, convos, FAST_TUNING);
+  assert.equal(effective.maxConcurrency, 1, "burst pressure forces serial maxConcurrency");
+  assert.equal(effective.initialConcurrency, 1);
+  assert.deepEqual(
+    paths,
+    [
+      "/conversation/c-1",
+      "/conversation/c-2",
+      "/conversation/c-3",
+      "/conversation/c-1",
+      "/conversation/c-2",
+      "/conversation/c-3",
+    ],
+    "serial probes passed before the burst canary detected pressure"
+  );
 });
 
 test("applyChatGptColdStatePreflight: pressured account forces the run back to serial concurrency=1", async () => {
@@ -1760,6 +1805,54 @@ test("runMessagesAndConversationsWithDetail: hot account at probe-concurrency fa
   );
 
   assert.equal(maxActiveFetches, 1, "pressured preflight forced the detail lane to run serially");
+});
+
+test("runMessagesAndConversationsWithDetail: pressure-deferred gaps do not train the lane upward", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetchStatus: (): Promise<Pick<ChatGptFetchResult, "headers" | "status">> => Promise.resolve({ status: 200 }),
+    fetch: (): Promise<ChatGptFetchResult> =>
+      Promise.reject(
+        new ChatGptRecoverableRetryExhaustedError("apiFetch got 429 after retry budget exhausted", {
+          class: "rate_limited",
+          httpStatus: 429,
+        })
+      ),
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "c-1" }), makeConvo({ id: "c-2" }), makeConvo({ id: "c-3" }), makeConvo({ id: "c-4" })],
+    makeEmitConversation(deps),
+    {
+      random: () => 0,
+      sleep: () => undefined,
+      tuning: { initialConcurrency: 3, maxConcurrency: 3, pauseMinMs: 200, pauseMaxMs: 200 },
+    }
+  );
+
+  assert.equal(coverage.hydratedKeys.length, 0);
+  assert.equal(coverage.gapKeys.length, 4);
+  const progress = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> => m.type === "PROGRESS"
+  );
+  assert.ok(
+    progress.some((m) => m.message.includes("opened upstream-pressure circuit")),
+    "upstream-pressure circuit opened"
+  );
+  assert.equal(
+    progress.filter((m) => m.message.includes("concurrency_increased")).length,
+    0,
+    "deferred gap bookkeeping must not count as clean success"
+  );
 });
 
 test("runMessagesAndConversationsWithDetail: serial tuning fires no preflight and behaves exactly as before", async () => {
