@@ -618,7 +618,11 @@ test("processConversationDetail: detail=200 with at least one message — no emp
   assert.equal(emptySkip, undefined, "a conversation with messages must not emit an empty_detail SKIP");
 });
 
-test("runConversationsAndMessagesStreams: unsafe message content is sanitized to null, message still emits", async () => {
+test("runConversationsAndMessagesStreams: unsafe message content is sanitized to null, message still emits (no shape-skip)", async () => {
+  // SLVP-ideal behavior: a message whose text contains U+0000 or other forbidden
+  // control characters must NOT be dropped or made non-backfillable.
+  // extractContent sanitizes at extraction time: content becomes null and the
+  // record passes the schema. Both messages emit; no SKIP_RESULT is generated.
   const unsafeNodeId = "unsafe-message";
   const safeNodeId = "safe-message";
   const listItem = makeConvo({
@@ -685,15 +689,17 @@ test("runConversationsAndMessagesStreams: unsafe message content is sanitized to
     "/conversations?offset=0&limit=100&order=updated",
     "/conversation/convo-with-binary-text",
   ]);
+  // No SKIP_RESULT: unsafe content is sanitized to null at extraction time.
   assert.equal(harness.skipped.length, 0, "unsafe text is sanitized to null, not shape-skipped");
-  assert.equal(harness.emitted.filter((r) => r.stream === "conversations").length, 1);
+  // Both messages emit: unsafe one with content=null, safe one with text intact.
   const messageRecords = harness.emitted.filter((r) => r.stream === "messages");
-  assert.equal(messageRecords.length, 2, "both messages emit");
+  assert.equal(messageRecords.length, 2, "both messages emit (unsafe with null content, safe with text)");
   const unsafeRecord = messageRecords.find((r) => r.data.id === unsafeNodeId);
   assert.ok(unsafeRecord, "unsafe message record must be present");
   assert.equal(unsafeRecord?.data.content, null, "unsafe content is null after sanitization");
   const safeRecord = messageRecords.find((r) => r.data.id === safeNodeId);
   assert.equal(safeRecord?.data.content, "safe reply", "safe sibling content is preserved");
+  assert.equal(harness.emitted.filter((r) => r.stream === "conversations").length, 1);
 
   const coverage = harness.protocolMessages.find(
     (m): m is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> => m.type === "DETAIL_COVERAGE"

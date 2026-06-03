@@ -174,6 +174,10 @@ test("extractContent: empty / null-shaped content falls back to null", () => {
 });
 
 test("extractContent: content with U+0000 (NUL) returns null, not shape-check-failing string", () => {
+  // Simulates a real ChatGPT message whose text field contains an embedded NUL byte.
+  // Previously this would pass through extractContent as a raw string, reach
+  // pdppSafeText in the schema validator, and cause a shape_check_failed SKIP_RESULT
+  // that made the message non-backfillable. The fix: sanitize at extraction time.
   assert.equal(extractContent({ content_type: "text", parts: ["hello\x00world"] }), null);
 });
 

@@ -280,6 +280,11 @@ const CONTENT_EXTRACTORS: Readonly<Record<string, (c: ChatGptContent) => string 
   user_editable_context: extractUserEditableContext,
 };
 
+/**
+ * Sanitize extracted full text without preview-truncating it. Control-rich
+ * payloads become null so the message record still lands instead of failing
+ * shape validation and becoming non-backfillable.
+ */
 function toSafeFullContent(s: string | null): string | null {
   if (s === null) {
     return null;
