@@ -629,7 +629,7 @@ test('connector summary connection health ignores stale scheduler backoff after 
 
 test('connector outbox rollup: no heartbeats → unknown without unreliable', () => {
   const r = projectConnectorOutboxAxisFromHeartbeats([], { nowIso: NOW });
-  assert.deepEqual(r, { axis: 'unknown', unreliable: false, hasEvidence: false });
+  assert.deepEqual(r, { axis: 'unknown', cause: null, unreliable: false, hasEvidence: false });
 });
 
 test('connector outbox rollup: single trusted healthy idle heartbeat → idle', () => {
