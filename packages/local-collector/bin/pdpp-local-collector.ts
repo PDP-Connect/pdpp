@@ -386,8 +386,43 @@ async function main(): Promise<void> {
 type CollectorRunResult = Awaited<ReturnType<typeof runCollectorConnector>>;
 
 export interface LocalCollectorRunOutput extends Omit<CollectorRunResult, "flushedState" | "priorState"> {
+  /**
+   * One honest, operator-facing line describing the drain outcome of this
+   * invocation. A successful connector pass (`done.status === "succeeded"`)
+   * does NOT imply the outbox is empty: the run can succeed on the source
+   * while leaving ready/retrying/leased rows that drain on the next scheduled
+   * run, or dead-letter rows that need recovery. This note states which.
+   */
+  drain_note: string;
+  /**
+   * True only when this invocation left the lane fully drained — no ready,
+   * retrying, leased, or dead-letter work remains. False whenever any
+   * non-succeeded row is still in the outbox after the drain, so a run that
+   * exits with a ready backlog is never reported as fully drained.
+   */
+  drained: boolean;
   flushedState: LocalCollectorStateSummary | null;
+  /**
+   * Drain-state lifecycle derived from {@link CollectorRunResult.outboxSummary}
+   * using the same taxonomy the `status`/`doctor` surface reports, so the run
+   * path and the inspect path never disagree about whether the lane is idle.
+   * Coverage is intentionally NOT folded in here (the run separately reports
+   * `completeness`); this axis is purely "did the queue drain?".
+   */
+  lifecycle_state: LocalCollectorLifecycleState;
   priorState: LocalCollectorStateSummary | null;
+  /**
+   * What is still in the outbox after this invocation. Surfaced as a named
+   * block (not just buried in `outboxSummary`) precisely so a successful run
+   * that left work behind reads as "still has a backlog", not "done".
+   */
+  residual_backlog: {
+    dead_letter: number;
+    leased: number;
+    ready: number;
+    retrying: number;
+    total_open: number;
+  };
 }
 
 export interface LocalCollectorStateSummary {
@@ -402,11 +437,73 @@ export interface LocalCollectorCursorSummary {
 }
 
 export function summarizeRunResultForCli(result: CollectorRunResult): LocalCollectorRunOutput {
+  const summary = result.outboxSummary;
+  // Derive the drain-state lifecycle from the post-drain outbox summary using
+  // the shared taxonomy. Coverage is a separate axis (reported via
+  // `completeness` and surfaced by `doctor`), so it is suppressed here with a
+  // null observation; this verdict is purely about queue drain state.
+  const lifecycleState = deriveLocalCollectorLifecycleState({
+    coverageObserved: null,
+    recordBatchCount: 0,
+    summary,
+  });
+  const openWork = pendingOpenWork(summary);
+  const drained = openWork === 0;
   return {
     ...result,
+    drain_note: runDrainNote(result, summary, drained),
+    drained,
     flushedState: summarizeCollectorState(result.flushedState),
+    lifecycle_state: lifecycleState,
     priorState: summarizeCollectorState(result.priorState),
+    residual_backlog: {
+      dead_letter: summary.deadLetter,
+      leased: summary.leased,
+      ready: summary.ready,
+      retrying: summary.retrying,
+      total_open: openWork,
+    },
   };
+}
+
+/**
+ * One honest line about the drain outcome. A connector pass can succeed on the
+ * source while leaving a ready backlog (the next scheduled run drains it),
+ * retrying rows (waiting on backoff), or dead-letter rows (need recovery). The
+ * note never says "drained" when work remains — this is the line that keeps a
+ * 177k-record run that exits with `pending=1203` from reading as complete.
+ */
+function runDrainNote(result: CollectorRunResult, summary: LocalDeviceOutboxSummary, drained: boolean): string {
+  if (result.skippedScanForBacklog) {
+    return (
+      `Scan was skipped: ${pendingOpenWork(summary)} open outbox row(s) from a prior run still need to drain first. ` +
+      "No new source work was collected this pass; re-run to continue draining."
+    );
+  }
+  if (drained) {
+    return "Outbox fully drained — no ready, retrying, leased, or dead-letter work remains.";
+  }
+  const parts: string[] = [];
+  if (summary.ready > 0) {
+    parts.push(`${summary.ready} ready (drains on the next scheduled run)`);
+  }
+  if (summary.retrying > 0) {
+    parts.push(`${summary.retrying} retrying (waiting on backoff)`);
+  }
+  if (summary.leased > 0) {
+    parts.push(`${summary.leased} leased (in flight)`);
+  }
+  if (summary.deadLetter > 0) {
+    parts.push(`${summary.deadLetter} dead-letter (run \`retry-dead-letters\` then re-run)`);
+  }
+  const scanNote = result.scanBudgetExceeded
+    ? " The connector was stopped by the per-run enqueue budget, so more source work likely remains; re-run to continue."
+    : "";
+  return `Run succeeded on the source but the outbox is NOT fully drained: ${parts.join(", ")}.${scanNote}`;
+}
+
+function pendingOpenWork(summary: LocalDeviceOutboxSummary): number {
+  return summary.ready + summary.retrying + summary.leased + summary.deadLetter;
 }
 
 function summarizeCollectorState(state: Record<string, unknown> | null): LocalCollectorStateSummary | null {

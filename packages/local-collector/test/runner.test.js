@@ -716,6 +716,129 @@ test('local collector run output summarizes state cursors without dumping payloa
   assert.equal(rendered.includes('b.jsonl'), false);
 });
 
+// --- Run-summary drain honesty (outbox-retention-health-v1) ---
+//
+// A connector pass can succeed on the source (done.status === 'succeeded')
+// while leaving ready/retrying/leased/dead-letter work in the durable outbox.
+// The live incident: records_queued=177387, sent_batches=276, then the queue
+// still held pending=1203. summarizeRunResultForCli must never let such a run
+// read as "fully drained".
+
+/** A baseline succeeded-source run result with a fully drained outbox. */
+function baseRunResult(outboxSummary) {
+  return {
+    completeness: null,
+    done: { records_emitted: 1, status: 'succeeded', type: 'DONE' },
+    enqueuedBatches: 1,
+    flushedState: {},
+    outboxSummary: {
+      deadLetter: 0,
+      leased: 0,
+      oldestReadyAt: null,
+      ready: 0,
+      retrying: 0,
+      staleLeases: 0,
+      succeeded: 1,
+      total: 1,
+      ...outboxSummary,
+    },
+    priorState: {},
+    recordsQueued: 1,
+    recoveredLeases: 0,
+    satisfiedBindings: ['filesystem'],
+    scanBudgetExceeded: false,
+    sentBatches: 1,
+    skippedScanForBacklog: false,
+    statePutFailed: false,
+    streamingBufferHighWaterMark: 1,
+  };
+}
+
+test('run summary reports drained:true and healthy_idle on a fully drained outbox', () => {
+  const output = summarizeRunResultForCli(baseRunResult({ ready: 0, succeeded: 5, total: 5 }));
+  assert.equal(output.drained, true);
+  assert.equal(output.lifecycle_state, 'healthy_idle');
+  assert.equal(output.residual_backlog.total_open, 0);
+  assert.match(output.drain_note, /Outbox fully drained/);
+});
+
+test('a succeeded run that leaves a ready backlog is NOT reported as fully drained', () => {
+  // The live incident shape: source succeeded, but pending work remains.
+  const output = summarizeRunResultForCli(
+    baseRunResult({ ready: 1203, succeeded: 177387, total: 178590 })
+  );
+  assert.equal(output.done.status, 'succeeded');
+  assert.equal(output.drained, false, 'a ready backlog must never read as drained');
+  assert.equal(output.lifecycle_state, 'draining');
+  assert.equal(output.residual_backlog.ready, 1203);
+  assert.equal(output.residual_backlog.total_open, 1203);
+  // The note must assert the negative ("NOT fully drained"); it must never
+  // claim the lane is drained.
+  assert.doesNotMatch(output.drain_note, /Outbox fully drained/);
+  assert.match(output.drain_note, /NOT fully drained/);
+  assert.match(output.drain_note, /1203 ready/);
+});
+
+test('run summary surfaces a retry backlog distinctly from a ready backlog', () => {
+  // All ready rows are waiting on backoff (ready === retrying), nothing
+  // claimable now: lifecycle is retryable_backlog, not draining.
+  const output = summarizeRunResultForCli(
+    baseRunResult({ ready: 4, retrying: 4, succeeded: 10, total: 14 })
+  );
+  assert.equal(output.drained, false);
+  assert.equal(output.lifecycle_state, 'retryable_backlog');
+  assert.equal(output.residual_backlog.retrying, 4);
+  assert.match(output.drain_note, /retrying/);
+});
+
+test('run summary surfaces a dead-letter backlog with a recovery pointer', () => {
+  const output = summarizeRunResultForCli(
+    baseRunResult({ deadLetter: 2, succeeded: 8, total: 10 })
+  );
+  assert.equal(output.drained, false);
+  assert.equal(output.lifecycle_state, 'dead_letter');
+  assert.equal(output.residual_backlog.dead_letter, 2);
+  assert.match(output.drain_note, /retry-dead-letters/);
+});
+
+test('run summary explains a backlog-skipped scan without claiming a fresh drain', () => {
+  const result = baseRunResult({ ready: 50, succeeded: 0, total: 50 });
+  result.skippedScanForBacklog = true;
+  const output = summarizeRunResultForCli(result);
+  assert.equal(output.drained, false);
+  assert.match(output.drain_note, /Scan was skipped/);
+  assert.match(output.drain_note, /50 open/);
+});
+
+test('run summary names the scan-budget cutoff so the backlog is not read as the whole source', () => {
+  const result = baseRunResult({ ready: 500, succeeded: 1000, total: 1500 });
+  result.scanBudgetExceeded = true;
+  const output = summarizeRunResultForCli(result);
+  assert.equal(output.drained, false);
+  assert.match(output.drain_note, /enqueue budget/);
+});
+
+test('run summary drained flag is true iff lifecycle_state is healthy_idle', () => {
+  // Invariant: the boolean honesty flag and the lifecycle taxonomy must never
+  // disagree. Exercise every non-stale open-work shape plus the idle case.
+  const shapes = [
+    { deadLetter: 0, leased: 0, ready: 0, retrying: 0 }, // idle
+    { deadLetter: 0, leased: 0, ready: 5, retrying: 0 }, // draining
+    { deadLetter: 0, leased: 0, ready: 5, retrying: 5 }, // retryable_backlog
+    { deadLetter: 0, leased: 3, ready: 0, retrying: 0 }, // draining (leased)
+    { deadLetter: 2, leased: 0, ready: 0, retrying: 0 }, // dead_letter
+  ];
+  for (const shape of shapes) {
+    const total = shape.deadLetter + shape.leased + shape.ready + 1;
+    const output = summarizeRunResultForCli(baseRunResult({ ...shape, succeeded: 1, total }));
+    assert.equal(
+      output.drained,
+      output.lifecycle_state === 'healthy_idle',
+      `drained/lifecycle mismatch for ${JSON.stringify(shape)} → ${output.lifecycle_state}`
+    );
+  }
+});
+
 // --- Connector adoption (tasks 5.1-5.4) ---
 
 test('pdpp-local-collector run --connector claude_code resolves to the bundled durable-outbox entrypoint', () => {
