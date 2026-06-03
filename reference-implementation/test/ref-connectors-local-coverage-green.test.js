@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import { closeDb, getDb, initDb } from '../server/db.js';
+import { deriveReferenceFreshness } from '../server/freshness.ts';
 import { listConnectorSummaries, projectConnectorSummaryConnectionHealth } from '../server/ref-control.ts';
 import { rebuildRetainedSize } from '../server/retained-size-read-model.js';
 import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
@@ -454,3 +455,120 @@ test('local coverage diagnostics fill the gap only when the run path is unknown'
   });
   assert.equal(unknownHealth.axes.coverage, 'unknown');
 });
+
+// ---------------------------------------------------------------------------
+// Real-manifest regression guard.
+//
+// The tests above synthesize an `ALWAYS_FRESH_REFRESH_POLICY` to prove the
+// `idle → healthy` upgrade mechanism. That proves the projection logic but NOT
+// that the *shipped* local-collector manifests actually declare a staleness
+// window that greens a recently-heartbeating collector. `maximum_staleness_seconds`
+// is optional at the registry validator, so a manifest edit could drop it and
+// silently regress `claude_code`/`codex` from `healthy` back to `idle` with no
+// other test failing. These guards pin the real manifests: they derive freshness
+// from the actual declared policy (no synthetic window) and assert it greens a
+// fresh heartbeat and degrades a stale one, exactly as
+// `openspec/changes/add-local-device-collection-verdict/` requires.
+// ---------------------------------------------------------------------------
+
+const LOCAL_COLLECTOR_MANIFEST_NAMES = ['claude_code', 'codex'];
+
+function readRealRefreshPolicy(name) {
+  const manifest = JSON.parse(
+    readFileSync(new URL(`../../packages/polyfill-connectors/manifests/${name}.json`, import.meta.url), 'utf8'),
+  );
+  return manifest.capabilities?.refresh_policy ?? null;
+}
+
+// Derive freshness the same way the server rollup does: heartbeat timestamp as
+// the freshness anchor, the manifest's declared `maximum_staleness_seconds` as
+// the window, and a fixed `now`. This exercises the REAL policy value with no
+// wall-clock dependency, unlike the rollup path which reads `new Date()`.
+function freshnessFromRealPolicy({ name, heartbeatAt, nowIso }) {
+  const policy = readRealRefreshPolicy(name);
+  return deriveReferenceFreshness({
+    lastAttemptedAt: null,
+    lastAttemptStatus: null,
+    lastSuccessfulRunAt: null,
+    maximumStalenessSeconds: policy?.maximum_staleness_seconds ?? null,
+    recordLastUpdatedAt: heartbeatAt,
+    now: nowIso,
+  });
+}
+
+function projectLocalDeviceHealth({ freshness, outboxAxis = 'idle', coverageAxis = 'complete', nowIso }) {
+  return projectConnectorSummaryConnectionHealth({
+    freshness,
+    lastRun: null,
+    lastSuccessfulRun: null,
+    localCoverage: { axis: coverageAxis, unaccountedStores: [] },
+    localDeviceBacked: true,
+    manifestStreams: [{ name: 'messages' }],
+    outbox: { axis: outboxAxis },
+    pendingDetailGaps: [],
+    schedule: { enabled: true },
+    nowIso,
+  });
+}
+
+for (const name of LOCAL_COLLECTOR_MANIFEST_NAMES) {
+  test(`${name}: shipped manifest declares a refresh policy with a positive maximum_staleness_seconds`, () => {
+    const policy = readRealRefreshPolicy(name);
+    assert.ok(policy, `${name} manifest must declare capabilities.refresh_policy`);
+    assert.equal(policy.recommended_mode, 'automatic', `${name} is a local collector and should refresh automatically`);
+    assert.equal(
+      typeof policy.maximum_staleness_seconds,
+      'number',
+      `${name} must declare maximum_staleness_seconds so a fresh heartbeat can green the collector`,
+    );
+    assert.ok(
+      Number.isFinite(policy.maximum_staleness_seconds) && policy.maximum_staleness_seconds > 0,
+      `${name}: maximum_staleness_seconds must be positive (got ${policy.maximum_staleness_seconds})`,
+    );
+  });
+
+  test(`${name}: drained + complete + heartbeat inside the real staleness window projects healthy`, () => {
+    const policy = readRealRefreshPolicy(name);
+    const nowIso = '2026-06-03T12:00:00.000Z';
+    // One second inside the declared window: still fresh.
+    const heartbeatAt = new Date(
+      Date.parse(nowIso) - (policy.maximum_staleness_seconds - 1) * 1000,
+    ).toISOString();
+
+    const freshness = freshnessFromRealPolicy({ name, heartbeatAt, nowIso });
+    assert.equal(freshness.status, 'current', `${name}: a heartbeat inside the window must read current`);
+
+    const health = projectLocalDeviceHealth({ freshness, nowIso });
+    assert.equal(health.axes.freshness, 'fresh');
+    assert.equal(health.axes.outbox, 'idle');
+    assert.equal(health.axes.coverage, 'complete');
+    assert.equal(health.state, 'healthy');
+
+    const collection = health.conditions.find((c) => c.type === 'CollectionSucceeded');
+    assert.ok(collection, `${name}: expected a CollectionSucceeded condition`);
+    assert.equal(collection.status, 'true');
+    assert.equal(collection.origin, 'local_device');
+  });
+
+  test(`${name}: heartbeat past the real staleness window goes stale and is never healthy`, () => {
+    const policy = readRealRefreshPolicy(name);
+    const nowIso = '2026-06-03T12:00:00.000Z';
+    // One second past the declared window: stale.
+    const heartbeatAt = new Date(
+      Date.parse(nowIso) - (policy.maximum_staleness_seconds + 1) * 1000,
+    ).toISOString();
+
+    const freshness = freshnessFromRealPolicy({ name, heartbeatAt, nowIso });
+    assert.equal(freshness.status, 'stale', `${name}: a heartbeat past the window must read stale`);
+
+    const health = projectLocalDeviceHealth({ freshness, nowIso });
+    assert.equal(health.axes.freshness, 'stale');
+    // A stale collector with otherwise-green axes must NOT be greened by the
+    // verdict — the freshness gate is load-bearing.
+    assert.notEqual(health.state, 'healthy');
+
+    const collection = health.conditions.find((c) => c.type === 'CollectionSucceeded');
+    assert.ok(collection);
+    assert.notEqual(collection.status, 'true');
+  });
+}
