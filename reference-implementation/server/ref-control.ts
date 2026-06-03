@@ -31,6 +31,7 @@ import {
 import { getConnectorManifest } from "./auth.js";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
+import { listLocalCoverageDiagnostics } from "./records.js";
 import {
   chooseDisplayTimestamp,
   compareTimestampValues,
@@ -1119,11 +1120,112 @@ function isRequiredStream(stream: ManifestStream | undefined): boolean {
 function buildCoverageEvidence(
   lastRun: ConnectorRunSummary | null,
   pendingDetailGaps: readonly PendingDetailGapSummary[],
-  manifestStreams: readonly ManifestStream[]
+  manifestStreams: readonly ManifestStream[],
+  localCoverage: LocalCoverageDiagnosticAxis | null = null
 ): { axis: CoverageAxis; requiredButAccepted: boolean } {
-  const axis = mapCoverageAxis(lastRun, pendingDetailGaps, manifestStreams);
   const requiredButAccepted = pickRequiredAcceptedCoverage(manifestStreams) !== null;
-  return { axis, requiredButAccepted };
+  // Run-derived coverage is authoritative whenever a terminal spine run exists
+  // (scheduler-managed connections) or any gap/contradiction evidence is
+  // present. Local-device collectors push records from a device outbox and
+  // never write spine run history, so `mapCoverageAxis` can only ever return
+  // `unknown` for them — there is no run to anchor "complete" on. When the run
+  // path yields `unknown` AND durable local coverage diagnostics exist, prefer
+  // the diagnostic-derived axis. This is the only honest signal of local
+  // collector completeness: an empty/drained outbox is NOT proof of coverage.
+  const runAxis = mapCoverageAxis(lastRun, pendingDetailGaps, manifestStreams);
+  if (runAxis === "unknown" && localCoverage !== null && localCoverage.axis !== "unknown") {
+    return { axis: localCoverage.axis, requiredButAccepted };
+  }
+  return { axis: runAxis, requiredButAccepted };
+}
+
+/** Safe per-store coverage triple read from `coverage_diagnostics` records. */
+interface LocalCoverageDiagnosticRow {
+  readonly status?: unknown;
+  readonly store?: unknown;
+  readonly stream?: unknown;
+}
+
+interface LocalCoverageDiagnosticAxis {
+  readonly axis: CoverageAxis;
+  /** Stores the collector discovered but could not account for. */
+  readonly unaccountedStores: readonly string[];
+}
+
+const LOCAL_COVERAGE_ACCOUNTED_STATUSES = new Set([
+  "collected",
+  "inventory_only",
+  "excluded",
+  "deferred",
+  "missing",
+  "unsupported",
+]);
+
+/**
+ * Derive a connection coverage axis from durable local-collector
+ * `coverage_diagnostics` records.
+ *
+ * Mirrors the honest classification `summarizeLocalCoverage` uses for the
+ * device-exporter diagnostics surface (Section 5.3 / the
+ * `local-agent-collector-completeness` spec): a store is accounted for when
+ * its status is any recognized safe status other than `unaccounted`. The axis:
+ *
+ *   - no rows observed              -> `unknown` (a run never proved coverage;
+ *                                      an empty/drained outbox is NOT complete)
+ *   - every observed store accounted -> `complete`
+ *   - any unaccounted store          -> `gaps` (degrading; names the shortfall)
+ *
+ * This refuses to project `complete` from an absence of evidence, which is the
+ * load-bearing honesty guarantee: the spec forbids treating declared-stream
+ * success (or a quiet outbox) as complete local collection.
+ */
+function deriveLocalCoverageAxis(rows: readonly LocalCoverageDiagnosticRow[]): LocalCoverageDiagnosticAxis {
+  if (rows.length === 0) {
+    return { axis: "unknown", unaccountedStores: [] };
+  }
+  const unaccountedStores: string[] = [];
+  for (const row of rows) {
+    const store = typeof row.store === "string" && row.store ? row.store : "unknown_store";
+    const status =
+      typeof row.status === "string" && LOCAL_COVERAGE_ACCOUNTED_STATUSES.has(row.status)
+        ? row.status
+        : "unaccounted";
+    if (status === "unaccounted") {
+      unaccountedStores.push(store);
+    }
+  }
+  if (unaccountedStores.length > 0) {
+    return { axis: "gaps", unaccountedStores: unaccountedStores.sort() };
+  }
+  return { axis: "complete", unaccountedStores: [] };
+}
+
+/**
+ * Read durable local coverage diagnostics for one connection and project the
+ * coverage axis. Returns `null` (axis derivation skipped) when the read throws —
+ * a read failure must not turn an otherwise-fine connection into a fabricated
+ * `complete`, and absence of evidence already maps to `unknown` inside the
+ * projection.
+ *
+ * When `connectorInstanceId` is provided, coverage is scoped to exactly that
+ * connection so one device's diagnostics cannot color another device's pill.
+ * When it is absent (the connector-keyed detail surface), the read falls back to
+ * the default-account instance the same way `listLocalCoverageDiagnostics` does.
+ */
+async function getConnectorLocalCoverageAxis(
+  connectorId: string,
+  connectorInstanceId: string | null | undefined
+): Promise<LocalCoverageDiagnosticAxis | null> {
+  const storageTarget: { connector_id: string; connector_instance_id?: string } = { connector_id: connectorId };
+  if (connectorInstanceId) {
+    storageTarget.connector_instance_id = connectorInstanceId;
+  }
+  try {
+    const rows = (await listLocalCoverageDiagnostics(storageTarget)) as readonly LocalCoverageDiagnosticRow[];
+    return deriveLocalCoverageAxis(rows);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1890,6 +1992,15 @@ export function projectConnectorSummaryConnectionHealth(input: {
   readonly lastRun: ConnectorRunSummary | null;
   readonly lastSuccessfulRun: ConnectorRunSummary | null;
   /**
+   * Coverage axis derived from durable local-collector `coverage_diagnostics`
+   * records, used only as a fallback when no spine run exists to anchor
+   * run-derived coverage (local-device collectors push from a device outbox and
+   * write no run history). `null` means "no local coverage evidence read", which
+   * preserves the prior behavior (run-derived axis, typically `unknown` for
+   * local collectors). Never lets an empty/drained outbox imply `complete`.
+   */
+  readonly localCoverage?: LocalCoverageDiagnosticAxis | null;
+  /**
    * Manifest-declared streams. The projection reads each stream's
    * `required` flag and `coverage_policy` to roll up accepted-coverage
    * labels (`unsupported`, `unavailable`, `deferred`, `inventory_only`)
@@ -1947,7 +2058,12 @@ export function projectConnectorSummaryConnectionHealth(input: {
     activity: { active: activeRunId !== null },
     attention,
     backoff: backoffEvidence.backoff,
-    coverage: buildCoverageEvidence(input.lastRun, pendingDetailGaps, input.manifestStreams ?? []),
+    coverage: buildCoverageEvidence(
+      input.lastRun,
+      pendingDetailGaps,
+      input.manifestStreams ?? [],
+      input.localCoverage ?? null
+    ),
     freshness: { axis: mapFreshnessAxis(input.freshness) },
     outbox: input.outbox ?? { axis: "unknown" },
     projection: { unreliableSources: input.unreliableSources ?? [] },
@@ -2140,17 +2256,19 @@ export async function listConnectorSummaries(
         recordStorageConnectorIdForConnection(instance),
         connectorInstanceId
       );
-      const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox, attention, remoteSurface] = await Promise.all([
-        getScheduleFrom(controller, connectorId, { connectorInstanceId }),
-        getLatestRunSummary(connectorId),
-        getLatestRunSummary(connectorId, "succeeded"),
-        getConnectorDetailGapProjection(connectorId, connectorInstanceId),
-        getConnectorOutboxAxis(connectorId, { connectorInstanceId }),
-        getConnectorAttentionProjection(connectorId, { connectorInstanceId }),
-        getConnectorBrowserSurfaceProjection(connectorId, {
-          profileKey: readBrowserSurfaceProfileKey(connectorId, connectorInstanceId, manifest),
-        }),
-      ]);
+      const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox, attention, remoteSurface, localCoverage] =
+        await Promise.all([
+          getScheduleFrom(controller, connectorId, { connectorInstanceId }),
+          getLatestRunSummary(connectorId),
+          getLatestRunSummary(connectorId, "succeeded"),
+          getConnectorDetailGapProjection(connectorId, connectorInstanceId),
+          getConnectorOutboxAxis(connectorId, { connectorInstanceId }),
+          getConnectorAttentionProjection(connectorId, { connectorInstanceId }),
+          getConnectorBrowserSurfaceProjection(connectorId, {
+            profileKey: readBrowserSurfaceProfileKey(connectorId, connectorInstanceId, manifest),
+          }),
+          getConnectorLocalCoverageAxis(connectorId, connectorInstanceId),
+        ]);
       const refreshPolicy = extractRefreshPolicy(manifest);
       const localDeviceProgress =
         instance.sourceKind === "local_device" ? projectLocalDeviceProgress(outbox.heartbeats) : null;
@@ -2173,6 +2291,7 @@ export async function listConnectorSummaries(
         freshness,
         lastRun,
         lastSuccessfulRun,
+        localCoverage,
         manifestStreams: manifest.streams ?? [],
         outbox: { axis: outbox.axis, cause: outbox.cause },
         pendingDetailGaps: detailGaps.gaps,
@@ -2222,15 +2341,17 @@ export async function getConnectorDetail(
     throw new RefControlError(`Unknown connector: ${connectorId}`, "not_found");
   }
   const live = await getConnectorRecordProjection(connectorId);
-  const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox, attention, remoteSurface] = await Promise.all([
-    getScheduleFrom(controller, connectorId),
-    getLatestRunSummary(connectorId),
-    getLatestRunSummary(connectorId, "succeeded"),
-    getConnectorDetailGapProjection(connectorId),
-    getConnectorOutboxAxis(connectorId),
-    getConnectorAttentionProjection(connectorId),
-    getConnectorBrowserSurfaceProjection(connectorId),
-  ]);
+  const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox, attention, remoteSurface, localCoverage] =
+    await Promise.all([
+      getScheduleFrom(controller, connectorId),
+      getLatestRunSummary(connectorId),
+      getLatestRunSummary(connectorId, "succeeded"),
+      getConnectorDetailGapProjection(connectorId),
+      getConnectorOutboxAxis(connectorId),
+      getConnectorAttentionProjection(connectorId),
+      getConnectorBrowserSurfaceProjection(connectorId),
+      getConnectorLocalCoverageAxis(connectorId, null),
+    ]);
   const refreshPolicy = extractRefreshPolicy(manifest);
   const freshness = buildConnectorFreshness({
     lastRun,
@@ -2243,6 +2364,7 @@ export async function getConnectorDetail(
     freshness,
     lastRun,
     lastSuccessfulRun,
+    localCoverage,
     manifestStreams: manifest.streams ?? [],
     outbox: { axis: outbox.axis, cause: outbox.cause },
     pendingDetailGaps: detailGaps.gaps,
