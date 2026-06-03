@@ -67,8 +67,8 @@ test('parseArgs parses flags and key=value', () => {
 test('policiesForConnector returns every registered policy for a connector_id', () => {
   const usaa = policiesForConnector('cin_usaa', 'usaa');
   const streams = usaa.map((s) => s.stream).sort();
-  // From the registry: statements, accounts, credit_card_billing.
-  assert.deepEqual(streams, ['accounts', 'credit_card_billing', 'statements']);
+  // From the registry: accounts, credit_card_billing, inbox_messages, statements, transactions.
+  assert.deepEqual(streams, ['accounts', 'credit_card_billing', 'inbox_messages', 'statements', 'transactions']);
   for (const scope of usaa) {
     assert.equal(scope.connectorInstanceId, 'cin_usaa');
     assert.equal(scope.connectorId, 'usaa');
@@ -144,8 +144,9 @@ test('runDryRuns calls the injected plan fn once per scope and never mutates', a
   const scopes = policiesForConnector('cin_usaa', 'usaa');
   const rows = await runDryRuns({ pool, scopes, planFn });
 
-  assert.equal(rows.length, 3);
-  assert.equal(planCalls.length, 3);
+  // usaa now has 5 registered policies: accounts, credit_card_billing, inbox_messages, statements, transactions.
+  assert.equal(rows.length, 5);
+  assert.equal(planCalls.length, 5);
   assert.equal(totalRemovableVersions(rows), 27);
   // No SQL issued through the pool by runDryRuns itself.
   assert.equal(pool.queries.length, 0);
@@ -162,8 +163,8 @@ test('runDryRuns records a per-scope error instead of throwing', async () => {
   assert.ok(errored, 'an errored scope is present');
   assert.equal(errored.stream, 'accounts');
   assert.match(errored.error, /record_changes missing/);
-  // Other scopes still planned.
-  assert.equal(rows.filter((r) => !r.error).length, 2);
+  // Other 4 scopes (credit_card_billing, inbox_messages, statements, transactions) still planned.
+  assert.equal(rows.filter((r) => !r.error).length, 4);
 });
 
 // ─── formatDryRunTable / totalRemovableVersions ────────────────────────────
