@@ -1,6 +1,7 @@
 import { PageHeader, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { type ListWithPeekParams, ListWithPeekView } from "@pdpp/operator-ui/components/views/list-with-peek";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
+import { traceRowLabel } from "@pdpp/operator-ui/lib/summary-row-label";
 import Link from "next/link";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
@@ -107,6 +108,7 @@ export default async function TracesPage({ searchParams }: { searchParams: Promi
 }
 
 function TraceRow({ trace, peeked, href }: { trace: TraceSummary; peeked: boolean; href: string }) {
+  const kinds = trace.kinds.slice(0, 4).join(", ");
   return (
     <Link
       aria-current={peeked ? "true" : undefined}
@@ -114,21 +116,28 @@ function TraceRow({ trace, peeked, href }: { trace: TraceSummary; peeked: boolea
       href={href}
       scroll={false}
     >
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <code className="pdpp-caption break-all font-medium font-mono text-foreground">{trace.trace_id}</code>
-        <div className="flex items-center gap-2">
+      {/* Lead with the source/client + outcome; the raw trace id is demoted to
+          a monospace lookup key on the detail line. */}
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <span className="truncate font-medium text-foreground">{traceRowLabel(trace)}</span>
           <StatusBadge status={trace.status} />
-          <span className="pdpp-caption text-muted-foreground">
-            <Timestamp value={trace.last_at} />
-          </span>
+          {kinds ? <span className="pdpp-caption truncate text-muted-foreground">{kinds}</span> : null}
         </div>
+        <span className="pdpp-caption shrink-0 text-muted-foreground tabular-nums">
+          <Timestamp value={trace.last_at} />
+        </span>
       </div>
-      <div className="pdpp-caption mt-1 text-muted-foreground">
-        {trace.event_count} events
-        {trace.client_id ? ` · client ${trace.client_id}` : ""}
-        {trace.provider_id ? ` · ${trace.provider_id}` : ""}
-        {" · "}
-        {trace.kinds.slice(0, 4).join(", ")}
+      <div className="pdpp-caption mt-0.5 flex flex-wrap items-center gap-x-2 text-muted-foreground">
+        <code className="break-all font-mono">{trace.trace_id}</code>
+        <span className="text-muted-foreground/50">·</span>
+        <span className="tabular-nums">{trace.event_count} events</span>
+        {trace.client_id ? (
+          <>
+            <span className="text-muted-foreground/50">·</span>
+            <span>client {trace.client_id}</span>
+          </>
+        ) : null}
       </div>
     </Link>
   );

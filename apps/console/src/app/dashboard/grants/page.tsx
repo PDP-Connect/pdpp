@@ -3,6 +3,7 @@ import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/co
 import { type ListWithPeekParams, ListWithPeekView } from "@pdpp/operator-ui/components/views/list-with-peek";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { formatSourceForDisplay } from "@pdpp/operator-ui/lib/connector-display";
+import { grantRowLabel } from "@pdpp/operator-ui/lib/summary-row-label";
 import Link from "next/link";
 import { Button, buttonVariants } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
@@ -210,19 +211,30 @@ function GrantRow({ grant, href, peeked }: { grant: GrantSummary; href: string; 
       className={`block px-3 py-2.5 transition-colors ${peeked ? "bg-muted" : "hover:bg-muted/40"}`}
     >
       <Link className="block" href={href} scroll={false}>
-        <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <code className="pdpp-caption break-all font-medium font-mono text-foreground">{grant.grant_id}</code>
-          <div className="flex items-center gap-2">
+        {/* Lead with the source/client + decision; the raw grant id is demoted
+            to a monospace lookup key on the detail line. */}
+        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="truncate font-medium text-foreground">{grantRowLabel(grant)}</span>
             <StatusBadge status={grant.status} />
-            <span className="pdpp-caption text-muted-foreground">
-              <Timestamp value={grant.last_at} />
-            </span>
+            {grant.client_id ? (
+              <span className="pdpp-caption truncate text-muted-foreground">client {grant.client_id}</span>
+            ) : null}
           </div>
+          <span className="pdpp-caption shrink-0 text-muted-foreground tabular-nums">
+            <Timestamp value={grant.last_at} />
+          </span>
         </div>
-        <div className="pdpp-caption mt-1 text-muted-foreground">
-          {grant.event_count} events
-          {grant.client_id ? ` · client ${grant.client_id}` : ""}
-          {grant.source ? ` · source ${formatSourceForDisplay(grant.source)}` : ""}
+        <div className="pdpp-caption mt-0.5 flex flex-wrap items-center gap-x-2 text-muted-foreground">
+          <code className="break-all font-mono">{grant.grant_id}</code>
+          <span className="text-muted-foreground/50">·</span>
+          <span className="tabular-nums">{grant.event_count} events</span>
+          {grant.source ? (
+            <>
+              <span className="text-muted-foreground/50">·</span>
+              <span>source {formatSourceForDisplay(grant.source)}</span>
+            </>
+          ) : null}
         </div>
       </Link>
       {packageHref ? (

@@ -1,6 +1,7 @@
 import { PageHeader, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { type ListWithPeekParams, ListWithPeekView } from "@pdpp/operator-ui/components/views/list-with-peek";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
+import { runRowLabel } from "@pdpp/operator-ui/lib/summary-row-label";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
@@ -121,22 +122,35 @@ function RunRow({ run, peeked, href }: { run: RunSummary; peeked: boolean; href:
       href={href}
       scroll={false}
     >
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <code className="pdpp-caption break-all font-medium font-mono text-foreground">{run.run_id}</code>
-        <div className="flex items-center gap-2">
+      {/* Lead with the connector + outcome (what an operator scans for); the
+          raw run id is demoted to a monospace lookup key on the detail line. */}
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <span className="truncate font-medium text-foreground">{runRowLabel(run)}</span>
+          <StatusBadge status={run.status} />
           {awaitingInput ? <AwaitingInputChip /> : null}
           {browserSurfaceCopy ? <BrowserSurfaceChip label={browserSurfaceCopy.label} /> : null}
-          <StatusBadge status={run.status} />
-          <span className="pdpp-caption text-muted-foreground">
-            <Timestamp value={run.last_at} />
-          </span>
         </div>
+        <span className="pdpp-caption shrink-0 text-muted-foreground tabular-nums">
+          <Timestamp value={run.last_at} />
+        </span>
       </div>
-      <div className="pdpp-caption mt-1 text-muted-foreground">
-        {run.event_count} events
-        {run.connector_id ? ` · ${run.connector_id}` : ""}
-        {run.provider_id ? ` · provider ${run.provider_id}` : ""}
-        {run.failure_reason ? ` · ${run.failure_reason}` : ""}
+      <div className="pdpp-caption mt-0.5 flex flex-wrap items-center gap-x-2 text-muted-foreground">
+        <code className="break-all font-mono">{run.run_id}</code>
+        <span className="text-muted-foreground/50">·</span>
+        <span className="tabular-nums">{run.event_count} events</span>
+        {run.provider_id ? (
+          <>
+            <span className="text-muted-foreground/50">·</span>
+            <span>provider {run.provider_id}</span>
+          </>
+        ) : null}
+        {run.failure_reason ? (
+          <>
+            <span className="text-muted-foreground/50">·</span>
+            <span className="text-destructive/90">{run.failure_reason}</span>
+          </>
+        ) : null}
       </div>
       {browserSurfaceCopy ? (
         <div className="pdpp-caption mt-1 text-muted-foreground">{browserSurfaceCopy.detail}</div>

@@ -6,17 +6,24 @@ import { Timestamp } from "../ui/timestamp.tsx";
 /**
  * Overview-page credibility hero.
  *
- * Three-band composition (per
- * `openspec/changes/reference-implementation-program/design-notes/dashboard-hero-compositions-2026-04-22.md`,
- * Composition A):
+ * Operator metric summary (Stripe/Linear/Vercel idiom), replacing the prior
+ * run-on headline sentence:
  *
- *   1. Integrated headline — retained bytes, records, connectors, timespan
- *   2. Quiet breadth row — top connectors by record count, identity dots
- *   3. Anatomy callout — generic explanatory sentence about the protocol flow
+ *   1. Metric strip — a small set of KPI figures (records, size, connectors,
+ *      streams). One-word eyebrow labels; the figure carries the weight (strong
+ *      reserved for the records KPI); secondary context muted; tabular-nums so
+ *      the numbers align. Elevation = surface-card fill + hairline border
+ *      (no drop shadow), radius-md, spacing from the named scale.
+ *   2. Distribution — top connectors ranked by share of records, each a labelled
+ *      mini-bar with a right-aligned tabular count. Reads as an intentional
+ *      distribution, not a comma list.
+ *   3. Freshness line — projection status + "last computed N ago" (preserved).
+ *   4. Anatomy callout — generic explanatory sentence about the protocol flow.
  *
- * No tiles, no cards, no sparklines, no deltas. Every number is live from
- * `GET /_ref/dataset/summary`. Degrades to an honest empty state when the
- * substrate holds no records yet.
+ * Every number is live from `GET /_ref/dataset/summary`. No data is dropped
+ * relative to the prior composition (bytes, records, connectors, timespan,
+ * per-connector counts, freshness all survive). Degrades to an honest empty
+ * state when the substrate holds no records yet.
  */
 export function OverviewHero({
   summary,
@@ -41,31 +48,23 @@ export function OverviewHero({
 
   return (
     <section aria-label="Dataset overview" className="mb-8">
-      <p className="pdpp-heading font-semibold text-foreground tabular-nums">
-        <span>{formatBytes(summary.total_retained_bytes)}</span>
-        <span className="font-normal text-muted-foreground"> across </span>
-        <span>{formatInteger(summary.record_count)}</span>
-        <span className="font-normal text-muted-foreground"> records from </span>
-        <span>{formatInteger(summary.connector_count)}</span>
-        <span className="font-normal text-muted-foreground">
-          {summary.connector_count === 1 ? " connector" : " connectors"}
-        </span>
-        {summary.earliest_record_time ? (
-          <>
-            <span className="font-normal text-muted-foreground"> · since </span>
-            <Timestamp className="font-medium" mode="absolute" precision="date" value={summary.earliest_record_time} />
-          </>
-        ) : null}
-      </p>
+      <MetricStrip summary={summary} />
 
-      <BreadthRow
+      <DistributionRow
         connectors={summary.top_connectors}
         recordsHref={recordsHref}
         totalConnectors={summary.connector_count}
+        totalRecords={summary.record_count}
       />
-      {status ? <ProjectionStatusLine projection={projection} status={status} /> : null}
+      {status ? (
+        <ProjectionStatusLine
+          earliestRecordTime={summary.earliest_record_time}
+          projection={projection}
+          status={status}
+        />
+      ) : null}
 
-      <p className="pdpp-body mt-3 text-muted-foreground">
+      <p className="pdpp-body mt-4 text-muted-foreground">
         Each approved grant issues runs that write records into streams.{" "}
         {exploreHref ? (
           <>
@@ -87,6 +86,134 @@ export function OverviewHero({
         or <code className="pdpp-caption font-mono">/v1/streams</code>.
       </p>
     </section>
+  );
+}
+
+/**
+ * The KPI figures as a Stripe/Vercel-style metric strip: a small set of cards,
+ * each = one-word label + prominent figure + muted context. Records lead
+ * (strong display weight — the headline metric); retained size, connectors, and
+ * streams are siblings at heading weight. Every figure is tabular-nums so the
+ * numbers align. Elevation is the surface ladder — `bg-card` + a hairline
+ * `border`, radius-md, no drop shadow; spacing from the named 4px scale.
+ */
+function MetricStrip({ summary }: { summary: DatasetSummary }) {
+  const bytes = splitBytes(summary.total_retained_bytes);
+  return (
+    <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <Metric label="Records" emphasis value={formatInteger(summary.record_count)} context="retained" />
+      <Metric label="Retained" value={bytes.value} context={bytes.unit} />
+      <Metric
+        label="Connectors"
+        value={formatInteger(summary.connector_count)}
+        context={summary.connector_count === 1 ? "source" : "sources"}
+      />
+      <Metric
+        label="Streams"
+        value={formatInteger(summary.stream_count)}
+        context={summary.stream_count === 1 ? "stream" : "streams"}
+      />
+    </dl>
+  );
+}
+
+function Metric({
+  label,
+  value,
+  context,
+  emphasis = false,
+}: {
+  label: string;
+  value: string;
+  context: string;
+  emphasis?: boolean;
+}) {
+  return (
+    <div className="rounded-md border border-border bg-card px-4 py-3">
+      <dt className="pdpp-eyebrow">{label}</dt>
+      <dd className="mt-1.5 flex items-baseline gap-1.5">
+        <span
+          className={`tabular-nums text-foreground ${
+            emphasis ? "pdpp-display font-semibold" : "pdpp-heading font-medium"
+          }`}
+        >
+          {value}
+        </span>
+        <span className="pdpp-caption text-muted-foreground">{context}</span>
+      </dd>
+    </div>
+  );
+}
+
+/**
+ * Top connectors as a ranked distribution: each row is a labelled mini-bar
+ * sized to its share of total records, with a right-aligned tabular count and
+ * percentage. Dense but legible; reads as a distribution, not a comma list.
+ */
+function DistributionRow({
+  connectors,
+  totalConnectors,
+  totalRecords,
+  recordsHref,
+}: {
+  connectors: DatasetSummary["top_connectors"];
+  totalConnectors: number;
+  totalRecords: number;
+  recordsHref: string;
+}) {
+  if (connectors.length === 0) {
+    return null;
+  }
+  const extra = Math.max(totalConnectors - connectors.length, 0);
+  const top = connectors[0]?.record_count ?? 0;
+  return (
+    <div className="mt-4">
+      <div className="mb-2 flex items-baseline justify-between gap-3">
+        <h3 className="pdpp-eyebrow">Top connectors by records</h3>
+        {extra > 0 ? (
+          <Link
+            className="pdpp-caption text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+            href={recordsHref}
+          >
+            +{extra} more →
+          </Link>
+        ) : null}
+      </div>
+      <ul className="flex flex-col gap-2">
+        {connectors.map((c, i) => {
+          const connectorKey = formatConnectorKeyForDisplay(c.connector_id);
+          // Bar width is share of the leading connector (relative bar) so the
+          // distribution shape is legible even when the long tail is small.
+          const relative = top > 0 ? Math.max((c.record_count / top) * 100, 2) : 0;
+          const share = totalRecords > 0 ? (c.record_count / totalRecords) * 100 : 0;
+          return (
+            <li className="flex items-center gap-3" key={c.connector_id}>
+              <code
+                className="pdpp-caption shrink-0 truncate font-mono text-foreground"
+                style={{ width: "10.5rem" }}
+                title={connectorKey}
+              >
+                {connectorKey}
+              </code>
+              <span aria-hidden className="hidden h-1.5 flex-1 overflow-hidden rounded-full bg-muted sm:block">
+                <span
+                  className="block h-full rounded-full"
+                  style={{ width: `${relative}%`, backgroundColor: identityColor(i) }}
+                />
+              </span>
+              <span className="pdpp-caption ml-auto flex shrink-0 items-baseline justify-end gap-2 tabular-nums">
+                <span className="font-medium text-foreground" style={{ minWidth: "4.5rem", textAlign: "right" }}>
+                  {formatInteger(c.record_count)}
+                </span>
+                <span className="text-muted-foreground" style={{ width: "2.5rem", textAlign: "right" }}>
+                  {formatShare(share)}
+                </span>
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 
@@ -176,21 +303,29 @@ function getProjectionStatus(projection: DatasetSummary["projection"]): Projecti
 function ProjectionStatusLine({
   projection,
   status,
+  earliestRecordTime,
 }: {
   projection: DatasetSummary["projection"];
   status: ProjectionStatus;
+  earliestRecordTime?: string | null;
 }) {
   const computedAt = projection?.computed_at;
   const staleSince = projection?.stale_since;
   const error = projection?.last_error;
   const label = projectionStatusLabel(status);
   return (
-    <p className="pdpp-caption mt-2 text-muted-foreground">
+    <p className="pdpp-caption mt-3 text-muted-foreground">
       <span className="font-medium text-foreground">{label}</span>
       {computedAt ? (
         <>
           <span> · last computed </span>
           <Timestamp value={computedAt} />
+        </>
+      ) : null}
+      {earliestRecordTime ? (
+        <>
+          <span> · spanning since </span>
+          <Timestamp className="font-medium" mode="absolute" precision="date" value={earliestRecordTime} />
         </>
       ) : null}
       {staleSince ? (
@@ -220,49 +355,6 @@ function projectionStatusLabel(status: ProjectionStatus): string {
   return "Summary updated";
 }
 
-function BreadthRow({
-  connectors,
-  totalConnectors,
-  recordsHref,
-}: {
-  connectors: DatasetSummary["top_connectors"];
-  totalConnectors: number;
-  recordsHref: string;
-}) {
-  if (connectors.length === 0) {
-    return null;
-  }
-  const extra = Math.max(totalConnectors - connectors.length, 0);
-  return (
-    <p className="pdpp-body mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-muted-foreground">
-      {connectors.map((c, i) => {
-        const connectorKey = formatConnectorKeyForDisplay(c.connector_id);
-        return (
-          <span className="inline-flex items-baseline gap-1.5" key={c.connector_id}>
-            <span
-              aria-hidden
-              className="inline-block h-1.5 w-1.5 rounded-full"
-              style={{ backgroundColor: identityColor(i) }}
-            />
-            <code className="pdpp-caption font-mono text-foreground" title={connectorKey}>
-              {connectorKey}
-            </code>
-            <span className="tabular-nums">{formatInteger(c.record_count)}</span>
-          </span>
-        );
-      })}
-      {extra > 0 ? (
-        <Link
-          className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-          href={recordsHref}
-        >
-          +{extra} more
-        </Link>
-      ) : null}
-    </p>
-  );
-}
-
 // Deterministic low-saturation identity colors for the top-connectors row.
 // These are small decorative dots only; no meaning is carried by specific hue.
 const IDENTITY_PALETTE = [
@@ -286,10 +378,12 @@ function formatInteger(n: number): string {
 /**
  * Decimal byte formatter (MB = 1,000,000 bytes) matching Stripe/Vercel/Plaid
  * conventions and consumer intuition about "184 MB". Scales up through GB, TB.
+ * Returns the magnitude and the unit separately so the metric strip can render
+ * the figure in tabular-nums and the unit as a muted context line.
  */
-function formatBytes(bytes: number): string {
+function splitBytes(bytes: number): { value: string; unit: string } {
   if (!Number.isFinite(bytes) || bytes <= 0) {
-    return "0 B";
+    return { value: "0", unit: "B" };
   }
   const units = ["B", "KB", "MB", "GB", "TB"];
   let value = bytes;
@@ -304,5 +398,19 @@ function formatBytes(bytes: number): string {
   } else if (value >= 10) {
     rounded = value.toFixed(1);
   }
-  return `${rounded} ${units[unitIndex]}`;
+  return { value: String(rounded), unit: units[unitIndex] ?? "B" };
+}
+
+/**
+ * Share-of-total percentage for the distribution rows. Sub-1% shares round to
+ * "<1%" rather than "0%" so a small-but-present connector never reads as empty.
+ */
+function formatShare(percent: number): string {
+  if (!Number.isFinite(percent) || percent <= 0) {
+    return "0%";
+  }
+  if (percent < 1) {
+    return "<1%";
+  }
+  return `${Math.round(percent)}%`;
 }
