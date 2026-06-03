@@ -1254,13 +1254,40 @@ function fileMtimeMs(path: string): number {
   }
 }
 
+/**
+ * Emit the per-store `coverage_diagnostics` rows from a pre-built
+ * inventory. Kept separate from inventory-record emission so the durable
+ * coverage signal can be flushed BEFORE {@link assertRequestedCodexSources}
+ * runs: a missing requested content source must still surface honest
+ * `missing` coverage rows rather than abort the run with zero coverage
+ * evidence. The connection-health rollup derives a local collector's
+ * coverage axis from these records, and an omitted coverage stream
+ * collapses to `coverage_unknown` forever (the local run path writes no
+ * spine run). The inventory walk reads only path metadata, never payload,
+ * so it is safe on a partial/empty home. No-op when `coverage_diagnostics`
+ * was not requested.
+ */
+async function emitCoverageDiagnostics(input: {
+  emitRecord: (stream: string, data: RecordData) => void;
+  inventory: Awaited<ReturnType<typeof buildLocalSourceInventory>>;
+  requested: Map<string, StreamScope>;
+}): Promise<void> {
+  if (!input.requested.has("coverage_diagnostics")) {
+    return;
+  }
+  for (const record of input.inventory.coverage) {
+    input.emitRecord("coverage_diagnostics", record);
+    await waitForEmitDrain();
+  }
+}
+
 async function emitLocalInventoryStreams(input: {
   codexHome: string;
   emitRecord: (stream: string, data: RecordData) => void;
+  inventory: Awaited<ReturnType<typeof buildLocalSourceInventory>>;
   requested: Map<string, StreamScope>;
 }): Promise<void> {
-  const inventory = await buildLocalSourceInventory("codex", input.codexHome, CODEX_KNOWN_LOCAL_STORES);
-  for (const [stream, records] of inventory.recordsByStream) {
+  for (const [stream, records] of input.inventory.recordsByStream) {
     if (!input.requested.has(stream)) {
       continue;
     }
@@ -1290,12 +1317,6 @@ async function emitLocalInventoryStreams(input: {
       await waitForEmitDrain();
     }
   }
-  if (input.requested.has("coverage_diagnostics")) {
-    for (const record of inventory.coverage) {
-      input.emitRecord("coverage_diagnostics", record);
-      await waitForEmitDrain();
-    }
-  }
 }
 
 // ─── main ───────────────────────────────────────────────────────────────
@@ -1313,7 +1334,6 @@ async function main(): Promise<void> {
 
   const resFilters = buildResourceFilters(requested);
   const dirs = resolveCodexDirs();
-  await assertRequestedCodexSources(dirs, requested);
   const fileMtimes = readFileMtimes(startMsg);
 
   let total = 0;
@@ -1367,7 +1387,16 @@ async function main(): Promise<void> {
   // the structured `ThreadFingerprint` shape stays in readPriorThreadFingerprints.
   const threadFingerprints = openCarryForwardCursor<ThreadFingerprint>(readPriorThreadFingerprints(startMsg));
 
-  await emitLocalInventoryStreams({ codexHome: dirs.codexHome, requested, emitRecord });
+  // Build the source inventory and flush durable coverage diagnostics BEFORE
+  // asserting requested content sources exist. A missing content store should
+  // surface an honest `missing` coverage row, not abort the run with zero
+  // coverage evidence — see emitCoverageDiagnostics. The inventory walk reads
+  // only path metadata, never payload, so it is safe on a partial/empty home.
+  const inventory = await buildLocalSourceInventory("codex", dirs.codexHome, CODEX_KNOWN_LOCAL_STORES);
+  await emitCoverageDiagnostics({ emitRecord, inventory, requested });
+  await assertRequestedCodexSources(dirs, requested);
+
+  await emitLocalInventoryStreams({ codexHome: dirs.codexHome, inventory, requested, emitRecord });
 
   if (needRollouts) {
     const rolloutScan = await scanRollouts({

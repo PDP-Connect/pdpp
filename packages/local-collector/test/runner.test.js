@@ -63,6 +63,44 @@ test('bundled connector entries declare filesystem binding as required', () => {
   }
 });
 
+test('bundled connector defaults request coverage_diagnostics so a drained run is never coverage_unknown', () => {
+  // Local-device collectors push records from a device outbox and write no
+  // spine run, so the connection-health rollup can only project a non-`unknown`
+  // coverage axis from durable `coverage_diagnostics` records. If the published
+  // default stream set omits that stream, every `pdpp-local-collector run`
+  // emits zero coverage evidence and the dashboard is stuck at
+  // `coverage_unknown` even after a healthy drain. See
+  // openspec/changes/derive-local-collector-coverage-from-diagnostics.
+  for (const id of BUNDLED_CONNECTOR_IDS) {
+    const entry = getBundledConnector(id);
+    assert.ok(entry, `entry for ${id}`);
+    assert.ok(
+      entry.streams.includes('coverage_diagnostics'),
+      `${id} default streams must include coverage_diagnostics; got ${entry.streams.join(', ')}`
+    );
+  }
+});
+
+test('bundled connector default streams are all manifest-declared (no undeclared stream requested)', async () => {
+  for (const id of BUNDLED_CONNECTOR_IDS) {
+    const entry = getBundledConnector(id);
+    assert.ok(entry, `entry for ${id}`);
+    const manifestPath = join(
+      import.meta.dirname,
+      '..',
+      '..',
+      'polyfill-connectors',
+      'manifests',
+      `${id}.json`
+    );
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    const declared = new Set(manifest.streams.map((stream) => stream.name));
+    for (const stream of entry.streams) {
+      assert.ok(declared.has(stream), `${id} default stream '${stream}' is not declared in the manifest`);
+    }
+  }
+});
+
 test('bundled connector versions map covers every bundled id', () => {
   for (const id of BUNDLED_CONNECTOR_IDS) {
     assert.equal(typeof BUNDLED_CONNECTOR_VERSIONS[id], 'string');

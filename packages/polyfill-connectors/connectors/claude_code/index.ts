@@ -1000,13 +1000,37 @@ async function assertRequestedClaudeSources(input: {
   }
 }
 
+/**
+ * Emit the per-store `coverage_diagnostics` rows from a pre-built
+ * inventory. Kept separate from the inventory-record emission so the
+ * durable coverage signal can be flushed BEFORE
+ * {@link assertRequestedClaudeSources} runs: a missing requested content
+ * source must still produce honest `missing` coverage rows rather than
+ * omit the coverage stream entirely. `buildLocalSourceInventory` already
+ * classifies every known store (including absent ones) without reading
+ * payload, so this is safe to run even when the source home is partial or
+ * empty. No-op when `coverage_diagnostics` was not requested.
+ */
+async function emitCoverageDiagnostics(input: {
+  emitRecord: (stream: string, data: RecordData) => Promise<void>;
+  inventory: Awaited<ReturnType<typeof buildLocalSourceInventory>>;
+  requested: Map<string, StreamScope>;
+}): Promise<void> {
+  if (!input.requested.has("coverage_diagnostics")) {
+    return;
+  }
+  for (const record of input.inventory.coverage) {
+    await input.emitRecord("coverage_diagnostics", record);
+  }
+}
+
 async function emitLocalInventoryStreams(input: {
   claudeHome: string;
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
+  inventory: Awaited<ReturnType<typeof buildLocalSourceInventory>>;
   requested: Map<string, StreamScope>;
 }): Promise<void> {
-  const inventory = await buildLocalSourceInventory("claude_code", input.claudeHome, CLAUDE_CODE_KNOWN_LOCAL_STORES);
-  for (const [stream, records] of inventory.recordsByStream) {
+  for (const [stream, records] of input.inventory.recordsByStream) {
     if (!input.requested.has(stream)) {
       continue;
     }
@@ -1025,11 +1049,6 @@ async function emitLocalInventoryStreams(input: {
     });
     for (const record of records) {
       await input.emitRecord("file_history", record);
-    }
-  }
-  if (input.requested.has("coverage_diagnostics")) {
-    for (const record of inventory.coverage) {
-      await input.emitRecord("coverage_diagnostics", record);
     }
   }
 }
@@ -1106,6 +1125,16 @@ if (isMainModule(import.meta.url)) {
     async collect({ state, requested, emit, emitRecord }) {
       const claudeHome = process.env.CLAUDE_CODE_HOME || join(homedir(), ".claude");
       const baseDir = process.env.CLAUDE_CODE_PROJECTS_DIR || join(claudeHome, "projects");
+      // Build the source inventory and flush durable coverage diagnostics
+      // BEFORE asserting requested content sources exist. A missing content
+      // store should surface an honest `missing` coverage row, not abort the
+      // run with zero coverage evidence — the connection-health rollup
+      // derives a local collector's coverage axis from these records, and an
+      // omitted coverage stream collapses to `coverage_unknown` forever (the
+      // local run path writes no spine run). The inventory walk reads only
+      // path metadata, never payload, so it is safe on a partial/empty home.
+      const inventory = await buildLocalSourceInventory("claude_code", claudeHome, CLAUDE_CODE_KNOWN_LOCAL_STORES);
+      await emitCoverageDiagnostics({ emitRecord, inventory, requested });
       await assertRequestedClaudeSources({ baseDir, claudeHome, requested });
       const typedState = state as ClaudeCodeState;
       // STATE is stream-keyed per Collection Profile. JSONL child emits and
@@ -1122,7 +1151,7 @@ if (isMainModule(import.meta.url)) {
       const newSlashCommandMtimes: Record<string, number> = { ...slashCommandMtimes };
       const newMemoryNoteMtimes: Record<string, number> = { ...memoryNoteMtimes };
 
-      await emitLocalInventoryStreams({ claudeHome, requested, emitRecord });
+      await emitLocalInventoryStreams({ claudeHome, inventory, requested, emitRecord });
 
       await runSkillsAndCommands(claudeHome, requested, emit, emitRecord, {
         skillsMtimes,

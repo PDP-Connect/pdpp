@@ -171,14 +171,28 @@ there, we have not yet decided how to surface it safely" signal &mdash; not a
 bug. The current deferred set is documented in
 `openspec/changes/complete-local-agent-collectors/design-notes/stream-contracts.md`.
 
-**Requesting the coverage diagnostic.** Coverage is opt-in per run via the
-`coverage_diagnostics` stream in `START.scope.streams`. The scheduler-driven
-flows enroll this stream alongside the declared content streams; ad-hoc
-`@pdpp/local-collector@beta run` invocations that pass an explicit `--streams`
-list need to include `coverage_diagnostics` to see the per-store status. See
-`docs/operator/local-collector-runbook.md`§"Step 4" above for the standard
-invocation, which is unscoped and therefore exercises everything declared in
-the manifest.
+**Requesting the coverage diagnostic.** Coverage rides on the
+`coverage_diagnostics` stream in `START.scope.streams`. The standard Step 4
+invocation (`@pdpp/local-collector@beta run --connector claude_code|codex`
+with no `--streams`) now requests `coverage_diagnostics` by default, so a
+plain run emits the per-store status without any extra flag. Only an ad-hoc
+invocation that passes an explicit `--streams` list opts *out* of coverage —
+re-add `coverage_diagnostics` to that list to keep the per-store status. The
+connector emits the coverage rows even when a requested content source is
+missing (each absent store is reported `missing`), so a partial source home
+still produces an honest, non-empty coverage signal rather than failing with
+zero coverage evidence.
+
+> **Upgrading from an older collector.** A host enrolled before this default
+> shipped may have run a `@pdpp/local-collector` build whose bundled stream
+> set did not include `coverage_diagnostics`. Such a host shows
+> `SourceCoverageComplete: coverage_unknown` on `/_ref/connectors` even after
+> a clean drain, because it never emitted the durable coverage signal the
+> rollup derives that axis from. Re-run the standard Step 4 command with the
+> current `@pdpp/local-collector@beta` (no `--streams`) once; the next pass
+> emits the full coverage diagnostic and the axis promotes to `complete`
+> (or names the unaccounted store as a gap). No re-enrollment is needed —
+> connection ids are stable per `(connector_id, local_binding_name)`.
 
 ## Completeness sanity check
 
