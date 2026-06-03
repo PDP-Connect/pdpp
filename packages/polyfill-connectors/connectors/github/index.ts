@@ -22,6 +22,7 @@
 
 import { nowIso, runConnector } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
+import { isMainModule } from "../../src/is-main-module.ts";
 import {
   API_BASE as BASE,
   gistRecord,
@@ -102,7 +103,7 @@ async function gh<T>(
 
 // ─── Stream collectors ──────────────────────────────────────────────────
 
-interface StreamCtx {
+export interface StreamCtx {
   emit: (msg: { type: "STATE"; stream: string; cursor: unknown }) => Promise<void>;
   emitRecord: (stream: string, data: Record<string, unknown>) => Promise<void>;
   progress: (message: string, extra?: ProgressExtra) => Promise<void>;
@@ -111,36 +112,41 @@ interface StreamCtx {
   token: string;
 }
 
-async function collectUser(ctx: StreamCtx): Promise<void> {
+export async function collectUser(ctx: StreamCtx): Promise<void> {
   await ctx.progress("Fetching user profile", { stream: "user" });
   const { data: u } = await gh<GitHubUser>("/user", ctx.token);
 
-  // Entity record: stable identity fields only. Gate on fingerprint so
-  // re-fetches that find no profile changes do not create new entity versions.
-  const entityRec = userRecord(u);
-  const userFpCursor = openFingerprintCursor(ctx.state.user, {
-    excludeFromFingerprint: [],
-  });
-  if (userFpCursor.shouldEmit(entityRec)) {
-    await ctx.emitRecord("user", entityRec);
+  if (ctx.requested.has("user")) {
+    // Entity record: stable identity fields only. Gate on fingerprint so
+    // re-fetches that find no profile changes do not create new entity versions.
+    const entityRec = userRecord(u);
+    const userFpCursor = openFingerprintCursor(ctx.state.user, {
+      excludeFromFingerprint: [],
+    });
+    if (userFpCursor.shouldEmit(entityRec)) {
+      await ctx.emitRecord("user", entityRec);
+    }
+    await ctx.emit({
+      type: "STATE",
+      stream: "user",
+      cursor: {
+        fetched_at: nowIso(),
+        fingerprints: userFpCursor.toState(),
+      },
+    });
   }
 
   // Stats record: sampled metrics keyed by {user_id}:{YYYY-MM-DD}.
-  // Emitted unconditionally when the user stream is requested; the append
-  // key ensures idempotency within a calendar day.
-  if (ctx.requested.has("user_stats") || ctx.requested.has("user")) {
+  // The append key ensures idempotency within a calendar day.
+  if (ctx.requested.has("user_stats")) {
     const observedOn = nowIso().slice(0, 10);
     await ctx.emitRecord("user_stats", userStatsRecord(u, observedOn));
+    await ctx.emit({
+      type: "STATE",
+      stream: "user_stats",
+      cursor: { observed_on: observedOn, fetched_at: nowIso() },
+    });
   }
-
-  await ctx.emit({
-    type: "STATE",
-    stream: "user",
-    cursor: {
-      fetched_at: nowIso(),
-      fingerprints: userFpCursor.toState(),
-    },
-  });
 }
 
 interface ReposPageResult {
@@ -545,46 +551,48 @@ async function collectGists(ctx: StreamCtx): Promise<void> {
   });
 }
 
-runConnector({
-  name: "github",
-  retryablePattern: /rate_limited|ECONN|fetch failed/,
-  validateRecord,
-  // GITHUB_TOKEN is the universal GitHub-CI env var; accept it as a fallback.
-  auth: {
-    kind: "env",
-    required: [["GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_TOKEN"]],
-  },
-  async collect({ state, requested, credentials, emit, emitRecord, progress }) {
-    const token = credentials.GITHUB_PERSONAL_ACCESS_TOKEN || credentials.GITHUB_TOKEN;
-    if (!token) {
-      throw new Error("github_auth_failed");
-    }
-    const ctx: StreamCtx = {
-      token,
-      state,
-      requested,
-      emit,
-      emitRecord,
-      progress,
-    };
+if (isMainModule(import.meta.url)) {
+  runConnector({
+    name: "github",
+    retryablePattern: /rate_limited|ECONN|fetch failed/,
+    validateRecord,
+    // GITHUB_TOKEN is the universal GitHub-CI env var; accept it as a fallback.
+    auth: {
+      kind: "env",
+      required: [["GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_TOKEN"]],
+    },
+    async collect({ state, requested, credentials, emit, emitRecord, progress }) {
+      const token = credentials.GITHUB_PERSONAL_ACCESS_TOKEN || credentials.GITHUB_TOKEN;
+      if (!token) {
+        throw new Error("github_auth_failed");
+      }
+      const ctx: StreamCtx = {
+        token,
+        state,
+        requested,
+        emit,
+        emitRecord,
+        progress,
+      };
 
-    if (requested.has("user") || requested.has("user_stats")) {
-      await collectUser(ctx);
-    }
-    if (requested.has("repositories")) {
-      await collectRepositories(ctx);
-    }
-    if (requested.has("starred")) {
-      await collectStarred(ctx);
-    }
-    if (requested.has("issues")) {
-      await collectIssues(ctx);
-    }
-    if (requested.has("pull_requests")) {
-      await collectPullRequests(ctx);
-    }
-    if (requested.has("gists")) {
-      await collectGists(ctx);
-    }
-  },
-});
+      if (requested.has("user") || requested.has("user_stats")) {
+        await collectUser(ctx);
+      }
+      if (requested.has("repositories")) {
+        await collectRepositories(ctx);
+      }
+      if (requested.has("starred")) {
+        await collectStarred(ctx);
+      }
+      if (requested.has("issues")) {
+        await collectIssues(ctx);
+      }
+      if (requested.has("pull_requests")) {
+        await collectPullRequests(ctx);
+      }
+      if (requested.has("gists")) {
+        await collectGists(ctx);
+      }
+    },
+  });
+}

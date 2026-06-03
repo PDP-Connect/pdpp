@@ -34,10 +34,12 @@
  */
 
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import type { StreamScope } from "../../src/connector-runtime.ts";
+import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
-import { emitMessagesPass, type MessagesPassDeps } from "./index.ts";
+import { emitMessagesPass, type MessagesPassDeps, runChannelsStream, type StreamDeps } from "./index.ts";
 import type { MessageRow, SlackDataBlob } from "./types.ts";
 
 interface RecordingHarness {
@@ -94,6 +96,78 @@ function makeRow(overrides: Partial<MessageRow> = {}, blob: SlackDataBlob = {}):
     ...overrides,
   };
 }
+
+function makeChannelDb(): DatabaseSync {
+  const db = new DatabaseSync(":memory:");
+  db.exec("CREATE TABLE CHANNEL (ID TEXT, NAME TEXT, DATA TEXT, CHUNK_ID INTEGER)");
+  db.prepare("INSERT INTO CHANNEL (ID, NAME, DATA, CHUNK_ID) VALUES (?, ?, ?, ?)").run(
+    "C0001",
+    "general",
+    JSON.stringify({
+      created: 1_700_000_000,
+      is_channel: true,
+      name: "general",
+      name_normalized: "general",
+      num_members: 12,
+    }),
+    1
+  );
+  return db;
+}
+
+function makeChannelDeps(requestedStreams: readonly string[]): {
+  close: () => void;
+  deps: StreamDeps;
+  emitted: EmittedRecord[];
+} {
+  const db = makeChannelDb();
+  const harness = makeRecordingEmit();
+  const requested = new Map<string, StreamScope>(requestedStreams.map((name) => [name, { name }]));
+  return {
+    close: () => db.close(),
+    deps: {
+      db,
+      emitRecord: harness.emitRecord,
+      emittedAt: "2026-06-03T12:00:00.000Z",
+      fingerprintCursors: new Map([["channels", openFingerprintCursor({}, { excludeFromFingerprint: [] })]]),
+      progress: () => Promise.resolve(),
+      requested,
+    },
+    emitted: harness.emitted,
+  };
+}
+
+test("runChannelsStream: channel_stats-only scope emits no channels entity records", async () => {
+  const { close, deps, emitted } = makeChannelDeps(["channel_stats"]);
+  try {
+    await runChannelsStream(deps);
+  } finally {
+    close();
+  }
+
+  assert.deepEqual(
+    emitted.map((r) => r.stream),
+    ["channel_stats"]
+  );
+  assert.equal(emitted[0]?.data.channel_id, "C0001");
+  assert.equal(emitted[0]?.data.num_members, 12);
+});
+
+test("runChannelsStream: channels-only scope emits no channel_stats observations", async () => {
+  const { close, deps, emitted } = makeChannelDeps(["channels"]);
+  try {
+    await runChannelsStream(deps);
+  } finally {
+    close();
+  }
+
+  assert.deepEqual(
+    emitted.map((r) => r.stream),
+    ["channels"]
+  );
+  assert.equal(emitted[0]?.data.id, "C0001");
+  assert.equal("num_members" in (emitted[0]?.data ?? {}), false);
+});
 
 // ─── Invariant 7a: parent-before-child within a single row ───────────────
 // (The task brief's workspace → channels → messages ordering lives in

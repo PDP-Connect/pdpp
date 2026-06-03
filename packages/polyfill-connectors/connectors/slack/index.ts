@@ -582,7 +582,7 @@ async function runWorkspaceStream(deps: StreamDeps): Promise<void> {
   }
 }
 
-async function runChannelsStream(deps: StreamDeps): Promise<void> {
+export async function runChannelsStream(deps: StreamDeps): Promise<void> {
   // Dedupe across chunks; keep the latest (max CHUNK_ID) snapshot per ID.
   const rows = safeAll<ChannelRow>(
     deps.db,
@@ -595,9 +595,11 @@ async function runChannelsStream(deps: StreamDeps): Promise<void> {
   );
   const observedOn = deps.emittedAt.slice(0, 10);
   for (const r of rows) {
-    // Entity record: fingerprinted so unchanged structural fields don't re-emit.
-    const entityRec = buildChannelRecord(r);
-    await emitWithFingerprint(deps, "channels", entityRec);
+    if (deps.requested.has("channels")) {
+      // Entity record: fingerprinted so unchanged structural fields don't re-emit.
+      const entityRec = buildChannelRecord(r);
+      await emitWithFingerprint(deps, "channels", entityRec);
+    }
     // Stats record: append-keyed observation (one per channel per day).
     if (deps.requested.has("channel_stats")) {
       await deps.emitRecord("channel_stats", buildChannelStatsRecord(r, observedOn));
