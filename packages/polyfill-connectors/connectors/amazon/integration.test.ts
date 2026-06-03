@@ -371,3 +371,30 @@ test("planIncrementalYears: legacy state shape (flat years object) treated as pr
   assert.ok(!planned.includes(2024), "2024 with real last_scraped should be skipped");
   assert.ok(planned.includes(2023), "2023 with empty last_scraped treated as not-yet-scraped");
 });
+
+// ─── Progress signal invariants ───────────────────────────────────────────
+
+test("auth-challenge PROGRESS signal: emitted with stream=orders tag on sign-in/CAPTCHA detection", () => {
+  const src = readFileSync(AMAZON_INDEX_PATH, "utf8");
+  // The PROGRESS emit must exist and reference stream: "orders" so the dashboard
+  // can route the signal to the right stream column.
+  assert.match(
+    src,
+    /type:\s*"PROGRESS"[\s\S]{0,200}stream:\s*"orders"[\s\S]{0,200}sign-in or CAPTCHA challenge detected/
+  );
+  // The challenge message must not interpolate any order ID or user-identifying field.
+  assert.doesNotMatch(src, /sign-in or CAPTCHA.*\$\{.*orderId/);
+  assert.doesNotMatch(src, /sign-in or CAPTCHA.*\$\{.*recipient_name/);
+});
+
+test("PROGRESS messages do not interpolate Amazon order PII (recipient name, address, payment)", () => {
+  const src = readFileSync(AMAZON_INDEX_PATH, "utf8");
+  // Scan all PROGRESS message template literals for banned field references.
+  // SKIP_RESULT messages may carry opaque IDs (order numbers) for diagnostics,
+  // but PROGRESS messages are operator-visible and must stay PII-free.
+  const progressBlocks = src.matchAll(/type:\s*"PROGRESS"[\s\S]{0,500}?(?=type:|$)/g);
+  const banned = /\b(?:recipient_name|shipping_address|payment_method|detail\.gift_order|r\.name|order\.name)\b/;
+  for (const block of progressBlocks) {
+    assert.doesNotMatch(block[0], banned, `PROGRESS block leaks PII: ${block[0].slice(0, 120)}`);
+  }
+});
