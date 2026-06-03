@@ -213,6 +213,42 @@ export const COMPACTION_POLICIES = [
       'packages/polyfill-connectors/connectors/chase/index.ts:emitAccountsStream → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
   },
   {
+    // `statements` (Chase) carried a run-clock `fetched_at`. A statement's
+    // identity (id = shortHash(account_reference|date_delivered|title)) is
+    // immutable and its hydrated fields (document_url/pdf_path/pdf_sha256)
+    // are content-addressed (the path embeds the sha256), so the only field
+    // that moved between runs was `fetched_at` (~10 versions/record of pure
+    // run-clock churn). The connector now gates emit through a
+    // per-statement fingerprint cursor with excludeFromFingerprint
+    // ["fetched_at"]; this policy mirrors that exclusion one-for-one. This
+    // is the exact shape of the already-registered usaa/statements policy.
+    connectorIds: ['chase', 'https://registry.pdpp.org/connectors/chase'],
+    stream: 'statements',
+    excludeKeys: ['fetched_at'],
+    connectorSource:
+      'packages/polyfill-connectors/connectors/chase/index.ts:processStatementRow+emitStatementIndexOnly → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
+  },
+  {
+    // `transactions` (Chase) carried a run-clock `fetched_at`. A posted
+    // transaction's identity (id = account_id|fitid) and its fields (date,
+    // amount, name, memo, type, …) are immutable; the only field that moved
+    // between runs was `fetched_at`. Because the connector re-downloads an
+    // overlapping incremental QFX window every run, every already-seen
+    // transaction was re-emitted with a fresh `fetched_at` (~308
+    // versions/record — the worst churn stream by ratio). The connector now
+    // gates emit through a per-transaction fingerprint cursor with
+    // excludeFromFingerprint ["fetched_at"]; this policy mirrors that
+    // exclusion one-for-one. Excluding ONLY `fetched_at` is lossless: a new
+    // transaction (new id) or a real field move is always a fingerprint
+    // boundary that survives; only a re-downloaded byte-identical
+    // transaction (modulo the run clock) collapses.
+    connectorIds: ['chase', 'https://registry.pdpp.org/connectors/chase'],
+    stream: 'transactions',
+    excludeKeys: ['fetched_at'],
+    connectorSource:
+      'packages/polyfill-connectors/connectors/chase/index.ts:emitTransactionsForAccount → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
+  },
+  {
     // `accounts` (USAA) carried a run-clock `fetched_at` alongside a REAL
     // point-in-time `balance_cents` scraped from the dashboard. Unlike
     // chase/accounts (all balances null), USAA's balance is real and

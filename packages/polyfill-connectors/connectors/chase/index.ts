@@ -912,6 +912,11 @@ export interface EmitDeps {
   requested: RequestedScopes;
   resFilters: Map<string, ReadonlySet<string> | null>;
   tmpDir: string;
+  /** Per-transaction fingerprint cursor (excludes the run-clock
+   *  `fetched_at`). Shared across all accounts for the whole transactions
+   *  stream because record ids (`account_id|fitid`) are globally unique.
+   *  Optional so legacy callers/tests emit unconditionally. */
+  transactionsFingerprintCursor?: FingerprintCursor | undefined;
   txState: TransactionsStateShape;
   wantsAccounts: boolean;
   wantsBalances: boolean;
@@ -1024,6 +1029,52 @@ export function readPriorAccountFingerprints(state: Record<string, unknown>): Ma
 }
 
 /**
+ * Parse the prior `statements` STATE cursor's `fingerprints` map. Keyed
+ * by statement `id` (hash of account_reference|date|title). Legacy
+ * cursors (only `{ fetched_at }`) decode to an empty map, so the first
+ * post-deploy run rebuilds the map and re-emits every statement exactly
+ * once.
+ */
+export function readPriorStatementFingerprints(state: Record<string, unknown>): Map<string, string> {
+  const streamState = (state.statements ?? {}) as Record<string, unknown>;
+  const raw = streamState.fingerprints;
+  const out = new Map<string, string>();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return out;
+  }
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > 0) {
+      out.set(id, value);
+    }
+  }
+  return out;
+}
+
+/**
+ * Parse the prior `transactions` STATE cursor's `fingerprints` map. Keyed
+ * by transaction `id` (`account_id|fitid`). The cursor shape is
+ * `{ per_account, fingerprints }`; `collect()` may also see the bare
+ * inner shape (legacy state), so both `state.transactions.fingerprints`
+ * and `state.fingerprints` are tolerated. Legacy cursors (only
+ * `per_account`) decode to an empty map, so the first post-deploy run
+ * rebuilds the map and re-emits every in-window transaction exactly once.
+ */
+export function readPriorTransactionFingerprints(state: Record<string, unknown>): Map<string, string> {
+  const streamState = (state.transactions ?? state ?? {}) as Record<string, unknown>;
+  const raw = streamState.fingerprints;
+  const out = new Map<string, string>();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return out;
+  }
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > 0) {
+      out.set(id, value);
+    }
+  }
+  return out;
+}
+
+/**
  * Emit one `transactions` record per QFX tx, maintain the per-account
  * max_seen_date cursor, and skip rows with no date.
  *
@@ -1039,7 +1090,8 @@ export async function emitTransactionsForAccount(
   deps: EmitDeps,
   account: ChaseAccount,
   activity: ActivityKind,
-  transactions: ReturnType<typeof extractFromQfx>["transactions"]
+  transactions: ReturnType<typeof extractFromQfx>["transactions"],
+  fingerprintCursor?: FingerprintCursor
 ): Promise<void> {
   const prior = deps.maxSeenByAccount[account.internal_id];
   let maxDate: string | null = prior?.max_seen_date ?? null;
@@ -1047,7 +1099,7 @@ export async function emitTransactionsForAccount(
     if (!t.date) {
       continue;
     }
-    await deps.emitRecord("transactions", {
+    const record = {
       id: `${account.internal_id}|${t.fitid}`,
       account_id: account.internal_id,
       account_name: account.name,
@@ -1062,7 +1114,24 @@ export async function emitTransactionsForAccount(
       reference_number: t.reference_number,
       source: `qfx_download_${activity}_${t.date}`,
       fetched_at: deps.emittedAt,
-    });
+    };
+    // Gate on a per-transaction fingerprint that excludes the run-clock
+    // `fetched_at`. A posted transaction's identity (id = account_id|fitid)
+    // and its fields (date, amount, name, memo, …) are immutable, but the
+    // incremental window re-downloads an overlapping date range every run
+    // and re-emits each transaction with a fresh `fetched_at` — ~308
+    // versions/record of pure run-clock churn. With this gate an
+    // already-seen transaction whose body is byte-identical modulo
+    // `fetched_at` is suppressed; a genuinely-new transaction (new id) or a
+    // real field move is a fingerprint boundary and still emits.
+    //
+    // NOTE: transactions is a PARTIAL scan (per-account incremental
+    // windows), so this cursor is never `pruneStale()`d — pruning ids the
+    // run did not look at would drop their fingerprints and re-churn them
+    // on the next overlapping window.
+    if (!fingerprintCursor || fingerprintCursor.shouldEmit(record)) {
+      await deps.emitRecord("transactions", record);
+    }
     if (!maxDate || t.date > maxDate) {
       maxDate = t.date;
     }
@@ -1126,15 +1195,20 @@ export function statementRowOutsideTimeRange(deps: EmitDeps, dateIso: string | n
  * download click fails — the caller still wants a record that the
  * statement exists so the owner can see it in the archive, even if the
  * bytes aren't available this run.
+ *
+ * Gated on the per-statement fingerprint cursor (excludes `fetched_at`)
+ * so a re-listed index-only statement that is byte-identical modulo the
+ * run clock does not append a fresh version every run.
  */
 export async function emitStatementIndexOnly(
   deps: EmitDeps,
   id: string,
   row: StatementRow,
   accountId: string | null,
-  dateIso: string | null
+  dateIso: string | null,
+  fingerprintCursor?: FingerprintCursor
 ): Promise<void> {
-  await deps.emitRecord("statements", {
+  const record = {
     id,
     account_id: accountId,
     title: row.title,
@@ -1144,7 +1218,10 @@ export async function emitStatementIndexOnly(
     pdf_path: null,
     pdf_sha256: null,
     fetched_at: deps.emittedAt,
-  });
+  };
+  if (!fingerprintCursor || fingerprintCursor.shouldEmit(record)) {
+    await deps.emitRecord("statements", record);
+  }
 }
 
 /**
@@ -1157,10 +1234,18 @@ export async function emitTransactionsStateIfAny(deps: EmitDeps): Promise<void> 
   if (!(deps.wantsTransactions && Object.keys(deps.maxSeenByAccount).length > 0)) {
     return;
   }
+  const cursor: Record<string, unknown> = { per_account: deps.maxSeenByAccount };
+  // Carry the per-transaction fingerprint map forward so the next run can
+  // suppress re-downloaded transactions whose body is unchanged modulo the
+  // run clock. NOT pruned: transactions is a partial incremental scan.
+  const fp = deps.transactionsFingerprintCursor;
+  if (fp && fp.size() > 0) {
+    cursor.fingerprints = fp.toState();
+  }
   const stateMsg: StateMessage = {
     type: "STATE",
     stream: "transactions",
-    cursor: { per_account: deps.maxSeenByAccount },
+    cursor,
   };
   await deps.emit(stateMsg);
 }
@@ -1275,7 +1360,13 @@ async function processAccountDownload(
   const { transactions, balance } = extractFromQfx(parsed);
 
   if (deps.wantsTransactions) {
-    await emitTransactionsForAccount(deps, account, activityChoice.activity, transactions);
+    await emitTransactionsForAccount(
+      deps,
+      account,
+      activityChoice.activity,
+      transactions,
+      deps.transactionsFingerprintCursor
+    );
   }
 
   if (deps.wantsBalances && balance) {
@@ -1413,7 +1504,8 @@ async function processStatementRow(
   row: StatementRow,
   filteredAccounts: readonly ChaseAccount[],
   accounts: readonly ChaseAccount[],
-  accountsResFilter: ReadonlySet<string> | null
+  accountsResFilter: ReadonlySet<string> | null,
+  fingerprintCursor?: FingerprintCursor
 ): Promise<void> {
   try {
     const dateIso = parseDateDelivered(row.date_delivered_raw);
@@ -1447,11 +1539,11 @@ async function processStatementRow(
       });
       // Still emit the index row so the owner has a record the statement
       // exists, just without hydrated bytes.
-      await emitStatementIndexOnly(deps, id, row, accountId, dateIso);
+      await emitStatementIndexOnly(deps, id, row, accountId, dateIso, fingerprintCursor);
       return;
     }
 
-    await deps.emitRecord("statements", {
+    const record = {
       id,
       account_id: accountId,
       title: row.title,
@@ -1461,7 +1553,17 @@ async function processStatementRow(
       pdf_path: dlResult.pdfPath,
       pdf_sha256: dlResult.pdfSha256,
       fetched_at: deps.emittedAt,
-    });
+    };
+    // Gate on a per-statement fingerprint that excludes the run-clock
+    // `fetched_at`. A statement's identity (id = hash(account_reference|
+    // date|title)) is immutable and pdf_path/pdf_sha256/document_url are
+    // content-addressed (the path embeds the sha256), so a re-downloaded
+    // identical statement is byte-identical modulo `fetched_at`. Without
+    // this gate every run appended a fresh version of every statement
+    // (~10 versions/record of pure run-clock churn).
+    if (!fingerprintCursor || fingerprintCursor.shouldEmit(record)) {
+      await deps.emitRecord("statements", record);
+    }
   } catch (rowErr) {
     await deps.emit({
       type: "SKIP_RESULT",
@@ -1481,7 +1583,8 @@ async function runStatements(
   page: Page,
   filteredAccounts: readonly ChaseAccount[],
   accounts: readonly ChaseAccount[],
-  accountsResFilter: ReadonlySet<string> | null
+  accountsResFilter: ReadonlySet<string> | null,
+  fingerprintCursor?: FingerprintCursor
 ): Promise<void> {
   try {
     await deps.emit({
@@ -1511,13 +1614,20 @@ async function runStatements(
         total: rows.length,
       } as const;
       await deps.emit(progressMsg);
-      await processStatementRow(deps, page, row, filteredAccounts, accounts, accountsResFilter);
+      await processStatementRow(deps, page, row, filteredAccounts, accounts, accountsResFilter, fingerprintCursor);
     }
 
+    // Statements is a full scan of the documents index: prune fingerprints
+    // for statements no longer listed so a re-appearance re-emits.
+    fingerprintCursor?.pruneStale();
+    const cursor: Record<string, unknown> = { fetched_at: deps.emittedAt };
+    if (fingerprintCursor && fingerprintCursor.size() > 0) {
+      cursor.fingerprints = fingerprintCursor.toState();
+    }
     const stateMsg: Extract<EmittedMessage, { type: "STATE" }> = {
       type: "STATE",
       stream: "statements",
-      cursor: { fetched_at: deps.emittedAt },
+      cursor,
     };
     await deps.emit(stateMsg);
   } catch (err) {
@@ -1582,6 +1692,19 @@ if (isMainModule(import.meta.url)) {
 
       const tmpDir = await mkdtemp(join(tmpdir(), "pdpp-chase-"));
 
+      // Per-transaction fingerprint cursor (excludes the run-clock
+      // `fetched_at`). One cursor for the whole transactions stream —
+      // record ids (`account_id|fitid`) are globally unique across
+      // accounts. Only opened when transactions are requested. NOT pruned:
+      // transactions is a partial incremental scan (see
+      // emitTransactionsForAccount).
+      const transactionsFingerprintCursor = requested.has("transactions")
+        ? openFingerprintCursor(startState.transactions, {
+            excludeFromFingerprint: ["fetched_at"],
+            priorFingerprints: readPriorTransactionFingerprints(startState),
+          })
+        : undefined;
+
       const deps: EmitDeps = {
         capture,
         emit,
@@ -1593,6 +1716,7 @@ if (isMainModule(import.meta.url)) {
         resFilters,
         tmpDir,
         txState,
+        transactionsFingerprintCursor,
         wantsAccounts: requested.has("accounts"),
         wantsBalances: requested.has("balances"),
         wantsCurrentActivity: requested.has("current_activity"),
@@ -1649,9 +1773,15 @@ if (isMainModule(import.meta.url)) {
 
         // Statements: navigate to Statements & Documents, enumerate rows,
         // download each PDF, emit one record per statement with
-        // content-addressed path.
+        // content-addressed path. Per-statement fingerprint cursor
+        // (excludes the run-clock `fetched_at`) so an unchanged statement
+        // stops appending a new version every run.
         if (deps.wantsStatements) {
-          await runStatements(deps, page, filteredAccounts, accounts, accountsResFilter);
+          const statementsFingerprintCursor = openFingerprintCursor(startState.statements, {
+            excludeFromFingerprint: ["fetched_at"],
+            priorFingerprints: readPriorStatementFingerprints(startState),
+          });
+          await runStatements(deps, page, filteredAccounts, accounts, accountsResFilter, statementsFingerprintCursor);
         }
       } finally {
         await rm(tmpDir, { recursive: true, force: true }).catch((): undefined => undefined);

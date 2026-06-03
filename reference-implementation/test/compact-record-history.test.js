@@ -74,6 +74,11 @@ test('COMPACTION_POLICIES exposes the registered policies (short-name canonical 
     ['gmail', 'labels'],
     ['usaa', 'statements'],
     ['chase', 'accounts'],
+    // chase/statements + chase/transactions carry only the run-clock
+    // `fetched_at` over content-addressed / immutable bodies; only
+    // `fetched_at` is excluded (forward gate added 2026-06-03)
+    ['chase', 'statements'],
+    ['chase', 'transactions'],
     // usaa/accounts + usaa/credit_card_billing carry REAL balances; only
     // the run-clock `fetched_at` is excluded (incidental fix added 2026-06-02)
     ['usaa', 'accounts'],

@@ -292,6 +292,63 @@ if (canonicalRecordFingerprint) {
     assert.equal(h1, h2, 'fetched_at delta must not change the accounts fingerprint');
   });
 
+  test('parity: chase statements excludes fetched_at', () => {
+    const policy = findPolicy('chase', 'statements');
+    const base = {
+      id: 'a1b2c3d4',
+      account_id: 'INTACC123',
+      title: 'April 2026 Statement',
+      date_delivered: '2026-04-13',
+      account_reference: 'Sapphire Preferred *9241',
+      document_url: 'file:///tmp/chase/2026-04-aaaa.pdf',
+      pdf_path: '/tmp/chase/2026-04-aaaa.pdf',
+      pdf_sha256: 'a'.repeat(64),
+    };
+    expectParity({ ...base, fetched_at: '2026-04-22T12:00:00.000Z' }, policy.excludeKeys, 'chase/statements t1');
+    expectParity({ ...base, fetched_at: '2026-05-22T12:00:00.000Z' }, policy.excludeKeys, 'chase/statements t2');
+    const h1 = scriptRecordFingerprint({ ...base, fetched_at: '2026-04-22T12:00:00.000Z' }, policy.excludeKeys);
+    const h2 = scriptRecordFingerprint({ ...base, fetched_at: '2026-05-22T12:00:00.000Z' }, policy.excludeKeys);
+    assert.equal(h1, h2, 'fetched_at delta must not change the statements fingerprint');
+  });
+
+  test('parity: chase transactions excludes fetched_at but a REAL field move is a boundary', () => {
+    const policy = findPolicy('chase', 'transactions');
+    // A posted transaction's identity (id = account_id|fitid) and fields
+    // are immutable; only `fetched_at` moves when the incremental window
+    // re-downloads it. Excluding ONLY fetched_at is lossless: a no-op
+    // re-download collapses, a real field move does not.
+    const base = {
+      id: 'INTACC123|FITID-0001',
+      account_id: 'INTACC123',
+      account_name: 'Sapphire Preferred',
+      fitid: 'FITID-0001',
+      date: '2026-04-10',
+      amount: -4599,
+      currency: 'USD',
+      type: 'DEBIT',
+      name: 'COFFEE SHOP',
+      memo: null,
+      check_number: null,
+      reference_number: null,
+      source: 'qfx_download_since_last_statement_2026-04-10',
+    };
+    expectParity({ ...base, fetched_at: '2026-06-01T10:00:00.000Z' }, policy.excludeKeys, 'chase/transactions t1');
+    expectParity({ ...base, fetched_at: '2026-06-02T10:00:00.000Z' }, policy.excludeKeys, 'chase/transactions t2');
+    const noop1 = scriptRecordFingerprint({ ...base, fetched_at: '2026-06-01T10:00:00.000Z' }, policy.excludeKeys);
+    const noop2 = scriptRecordFingerprint({ ...base, fetched_at: '2026-06-02T10:00:00.000Z' }, policy.excludeKeys);
+    assert.equal(noop1, noop2, 'fetched_at delta must not change the transactions fingerprint (re-download collapses)');
+    const amountMoved = scriptRecordFingerprint(
+      { ...base, amount: -5000, fetched_at: '2026-06-02T10:00:00.000Z' },
+      policy.excludeKeys,
+    );
+    const nameMoved = scriptRecordFingerprint(
+      { ...base, name: 'CORRECTED MERCHANT', fetched_at: '2026-06-02T10:00:00.000Z' },
+      policy.excludeKeys,
+    );
+    assert.notEqual(noop1, amountMoved, 'an amount move MUST change the fingerprint — real transaction data is never hidden');
+    assert.notEqual(noop1, nameMoved, 'a name move MUST change the fingerprint');
+  });
+
   test('parity: usaa accounts excludes fetched_at but a REAL balance move is a boundary', () => {
     const policy = findPolicy('usaa', 'accounts');
     // Unlike chase/accounts (all balances null), USAA's account body carries
@@ -614,6 +671,8 @@ if (canonicalRecordFingerprint) {
       'gmail/labels',
       'usaa/statements',
       'chase/accounts',
+      'chase/statements',
+      'chase/transactions',
       'usaa/accounts',
       'usaa/credit_card_billing',
       // exact stable-JSON identity family (codex)
