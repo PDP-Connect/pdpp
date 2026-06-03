@@ -8,7 +8,7 @@ const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const CONNECTORS_DIR = join(PACKAGE_ROOT, "connectors");
 const MANIFESTS_DIR = join(PACKAGE_ROOT, "manifests");
 
-const KNOWN_EXTERNAL_TOOLS = ["slackdump"] as const;
+const KNOWN_EXTERNAL_TOOLS = ["slackdump", "hpi"] as const;
 
 test("connectors that reference known external tools declare them in manifests", () => {
   const missing: string[] = [];

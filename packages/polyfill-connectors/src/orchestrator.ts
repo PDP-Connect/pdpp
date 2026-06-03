@@ -78,6 +78,7 @@ const KNOWN_CONNECTORS: Record<string, ConnectorPaths> = {
   },
   ical: c("ical"),
   chase: c("chase"),
+  hpi: c("hpi"),
 };
 
 export function getConnectorPaths(name: string): ConnectorPaths {
