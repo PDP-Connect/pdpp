@@ -4,12 +4,14 @@
  * Today: options come from `process.env` under a connector-specific prefix.
  * Tomorrow (pending): options come from `START.connector_options`.
  *
- * Migration when the spec lands: replace the env read here with a
- * `startMsg.connector_options`-based read; every connector that calls
- * `readOptions(...)` gets the upgrade for free.
+ * Status: `START.connector_options` now flows on the wire (it is a declared,
+ * optional field on the canonical `StartMessage`). `readOptions()` prefers it
+ * and still falls back to the env-var prefix, so connectors work in both the
+ * orchestrator (env) and a future grant-driven (START) world without changes.
  *
- * See openspec/changes/add-polyfill-connector-system/design-notes/
- *     connector-configuration-open-question.md
+ * See openspec/changes/promote-connector-config-schema/ (proposal + design).
+ * The manifest `options_schema` / `credentials_schema` fields proposed there are
+ * pending close RI-owner + PDPP-owner review.
  *
  * Credentials vs. options:
  *   - Credentials (tokens, passwords, cookies) belong in the credential vault

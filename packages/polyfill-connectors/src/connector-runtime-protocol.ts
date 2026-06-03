@@ -36,6 +36,19 @@ export interface StreamScope {
 }
 
 export interface StartMessage {
+  /**
+   * Operator tuning knobs for this run, validated by the runtime against the
+   * manifest's `options_schema` before the connector is spawned. Distinct from
+   * `scope` (which governs *what data* comes back) and from credentials (which
+   * are secrets injected via the credential path, never here). See the
+   * `promote-connector-config-schema` change and `connector-options.ts`.
+   *
+   * NOTE (pending owner review): this field is additive and optional; connectors
+   * read it through `readOptions()` which still falls back to env vars, so the
+   * wire surface is backward compatible until the manifest `options_schema`
+   * field is ratified.
+   */
+  connector_options?: Record<string, unknown>;
   detail_gaps?: readonly DetailGapStartEntry[];
   scope: { streams: readonly StreamScope[] };
   state?: Record<string, unknown>;
