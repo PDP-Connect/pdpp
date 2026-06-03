@@ -12,6 +12,11 @@
  * to cover the remaining server-read segments (grants, traces,
  * event-subscriptions, schedules, device-exporters, deployment) that previously
  * painted a blank frame while their reference reads resolved.
+ *
+ * Widened again in ri-dashboard-health-resilience-v1 to cover the last
+ * force-dynamic, data-heavy segments that still painted a blank frame: the
+ * Records Explorer (`explore`), global `search`, single-record detail, single
+ * stream coverage/health, and single-trace detail.
  */
 
 import assert from "node:assert/strict";
@@ -33,10 +38,17 @@ const LOADING_FILES = [
   "schedules/loading.tsx",
   "device-exporters/loading.tsx",
   "deployment/loading.tsx",
+  "explore/loading.tsx",
+  "search/loading.tsx",
+  "records/[connector]/[stream]/[recordKey]/loading.tsx",
+  "records/[connector]/[stream]/health/loading.tsx",
+  "traces/[traceId]/loading.tsx",
 ] as const;
 
 const DASHBOARD_SHELL_RE = /DashboardShell/;
-const SHARED_SKELETON_IMPORT_RE = /from "\.\.?(\/\.\.)?\/components\/route-loading\.ts/;
+// Any relative depth up to the dashboard `components/` directory (one to four
+// `../` hops, since the deepest covered segment is records/[connector]/[stream]/…).
+const SHARED_SKELETON_IMPORT_RE = /from "(?:\.\.\/)+components\/route-loading\.ts/;
 const ROLE_STATUS_RE = /role="status"/;
 const ARIA_BUSY_RE = /aria-busy="true"/;
 const ARIA_HIDDEN_RE = /aria-hidden/;
