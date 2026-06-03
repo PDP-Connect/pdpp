@@ -131,6 +131,44 @@ export interface LocalDeviceOutboxRequeueDeadLettersResult {
   requeued: number;
 }
 
+/**
+ * Input for {@link LocalDeviceOutbox.pruneSent}.
+ *
+ * At least one of `olderThanIso` or `keepCount` must be supplied so the
+ * prune is always bounded. Supplying both is valid: rows must satisfy
+ * BOTH predicates to be pruned (i.e. they are ANDed).
+ */
+export interface LocalDeviceOutboxPruneSentInput {
+  /**
+   * Dry-run by default: compute and return the match count without deleting.
+   * Pass `false` to actually delete (caller must backup the DB first).
+   */
+  dryRun?: boolean;
+  /**
+   * Keep only the most-recent `keepCount` succeeded rows per
+   * `source_instance_id`, deleting all older ones. This bounds the
+   * maximum retained-sent row count regardless of run history length.
+   *
+   * Must be a positive integer.
+   */
+  keepCount?: number;
+  /**
+   * Delete succeeded rows whose `acknowledged_at` (falling back to
+   * `updated_at`) is strictly before this ISO timestamp. A value of
+   * `now - 30 days` implements a 30-day retention window.
+   */
+  olderThanIso?: string;
+  /** When supplied, scope the prune to this source instance only. */
+  sourceInstanceId?: string;
+}
+
+export interface LocalDeviceOutboxPruneSentResult {
+  /** Number of succeeded rows that matched the prune predicate. */
+  matched: number;
+  /** Number of rows actually deleted (0 when `dryRun` is true). */
+  pruned: number;
+}
+
 export interface LocalDeviceOutboxDeadLetterErrorClass {
   /** Count of dead-letter rows whose `last_error` collapses to this class. */
   count: number;
@@ -481,6 +519,105 @@ export class LocalDeviceOutbox {
         .run(now, now, ...ids);
       this.#db.exec("COMMIT");
       return { matched, requeued: Number(result.changes) };
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /**
+   * Delete succeeded (sent) rows that are older than a retention boundary
+   * or exceed a per-source count cap. Never touches `pending`, `leased`,
+   * `retrying`, or `dead_letter` rows.
+   *
+   * Safety invariants:
+   * - Only rows with `status = 'succeeded'` are ever considered.
+   * - `olderThanIso` uses `COALESCE(acknowledged_at, updated_at)` so rows
+   *   without an explicit acknowledged timestamp still age out correctly.
+   * - `keepCount` uses a `NOT IN (SELECT id … ORDER BY rowid DESC LIMIT n)`
+   *   sub-select scoped per source instance to retain the newest N rows.
+   * - Both predicates are ANDed when both are supplied.
+   * - When `dryRun` is true (the default) the matched count is returned
+   *   without any DELETE — no write lock is acquired.
+   * - Deleting a succeeded row also deletes its observed-stream index
+   *   entries (`local_device_observed_stream`) so the coverage index stays
+   *   consistent. Uses a single transaction so neither table is partially
+   *   updated on error.
+   */
+  pruneSent(input: LocalDeviceOutboxPruneSentInput = {}): LocalDeviceOutboxPruneSentResult {
+    if (input.keepCount !== undefined && (!Number.isSafeInteger(input.keepCount) || input.keepCount < 0)) {
+      throw new Error("pruneSent keepCount must be a non-negative safe integer");
+    }
+
+    const clauses: string[] = ["status = 'succeeded'"];
+    const params: (string | number)[] = [];
+
+    if (input.sourceInstanceId) {
+      clauses.push("source_instance_id = ?");
+      params.push(input.sourceInstanceId);
+    }
+
+    if (input.olderThanIso) {
+      clauses.push("COALESCE(acknowledged_at, updated_at) < ?");
+      params.push(input.olderThanIso);
+    }
+
+    if (input.keepCount !== undefined) {
+      // Retain the most-recent `keepCount` succeeded rows per source instance.
+      // Rows NOT in that retained set (ordered by insertion rowid descending)
+      // are candidates for pruning. Scoped per-source when sourceInstanceId is
+      // set, otherwise applied across all source instances.
+      const scopeClause = input.sourceInstanceId
+        ? "source_instance_id = ? AND status = 'succeeded'"
+        : "status = 'succeeded'";
+      const scopeParams = input.sourceInstanceId ? [input.sourceInstanceId] : [];
+      clauses.push(
+        `id NOT IN (
+           SELECT id FROM local_device_outbox
+            WHERE ${scopeClause}
+            ORDER BY rowid DESC
+            LIMIT ?
+         )`
+      );
+      params.push(...scopeParams, input.keepCount);
+    }
+
+    const whereClause = clauses.join(" AND ");
+
+    const countRow = this.#db
+      .prepare(`SELECT COUNT(*) AS total FROM local_device_outbox WHERE ${whereClause}`)
+      .get(...params);
+    const matched = isRecord(countRow) ? numberFrom(countRow.total) : 0;
+
+    if (input.dryRun !== false || matched === 0) {
+      return { matched, pruned: 0 };
+    }
+
+    // Collect the ids to delete so we can cascade to the observed-stream
+    // index in the same transaction without a declared foreign key.
+    const idRows = this.#db
+      .prepare(`SELECT id FROM local_device_outbox WHERE ${whereClause} ORDER BY rowid`)
+      .all(...params);
+    const ids = idRows.map((row) => {
+      if (!isRecord(row) || typeof row.id !== "string") {
+        throw new Error("local outbox prune-sent id query returned an invalid row");
+      }
+      return row.id;
+    });
+
+    if (ids.length === 0) {
+      return { matched, pruned: 0 };
+    }
+
+    const placeholders = ids.map(() => "?").join(", ");
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      this.#db.prepare(`DELETE FROM local_device_observed_stream WHERE outbox_id IN (${placeholders})`).run(...ids);
+      const result = this.#db
+        .prepare(`DELETE FROM local_device_outbox WHERE id IN (${placeholders}) AND status = 'succeeded'`)
+        .run(...ids);
+      this.#db.exec("COMMIT");
+      return { matched, pruned: Number(result.changes) };
     } catch (error) {
       this.#db.exec("ROLLBACK");
       throw error;
