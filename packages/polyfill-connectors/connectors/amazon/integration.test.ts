@@ -29,9 +29,9 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
-import { type EmitDeps, emitOrderAndItems, planIncrementalYears } from "./index.ts";
+import { classifyEmptyListPageDiagnostics, type EmitDeps, emitOrderAndItems, planIncrementalYears } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
-import type { DetailItem, ListPageOrder, OrderDetail } from "./types.ts";
+import type { DetailItem, ListPageDiagnostics, ListPageOrder, OrderDetail } from "./types.ts";
 
 const AMAZON_MANIFEST_PATH = new URL("../../manifests/amazon.json", import.meta.url);
 const AMAZON_INDEX_PATH = fileURLToPath(new URL("./index.ts", import.meta.url));
@@ -246,6 +246,56 @@ test("amazon manifest: successful manual runs have a bounded freshness window", 
   const policy = manifest.capabilities?.refresh_policy;
   assert.equal(policy?.recommended_mode, "manual");
   assert.equal(policy?.maximum_staleness_seconds, 86_400);
+});
+
+// ─── Empty list-page classification ──────────────────────────────────────
+
+function makeEmptyPageDiagnostics(overrides: Partial<ListPageDiagnostics> = {}): ListPageDiagnostics {
+  return {
+    any_card: 0,
+    any_order_header: 0,
+    body_preview: "",
+    captcha: "false",
+    no_orders_text: "false",
+    order_cards: 0,
+    sign_in_form: false,
+    title: "Your Orders",
+    url: "https://www.amazon.com/your-orders/orders?timeFilter=year-2024&startIndex=0",
+    ...overrides,
+  };
+}
+
+test("classifyEmptyListPageDiagnostics: captcha/sign-in pages abort cursor advancement", () => {
+  assert.deepEqual(classifyEmptyListPageDiagnostics(makeEmptyPageDiagnostics({ captcha: "true" }), 0), {
+    action: "abort",
+    reason: "source_auth_or_challenge",
+  });
+  assert.deepEqual(classifyEmptyListPageDiagnostics(makeEmptyPageDiagnostics({ sign_in_form: true }), 0), {
+    action: "abort",
+    reason: "source_auth_or_challenge",
+  });
+});
+
+test("classifyEmptyListPageDiagnostics: selector drift aborts cursor advancement", () => {
+  assert.deepEqual(classifyEmptyListPageDiagnostics(makeEmptyPageDiagnostics({ any_order_header: 2 }), 0), {
+    action: "abort",
+    reason: "selector_drift",
+  });
+});
+
+test("classifyEmptyListPageDiagnostics: only proven terminal empty pages advance the cursor", () => {
+  assert.deepEqual(classifyEmptyListPageDiagnostics(makeEmptyPageDiagnostics({ no_orders_text: "true" }), 0), {
+    action: "terminal",
+    reason: "no_orders_text",
+  });
+  assert.deepEqual(classifyEmptyListPageDiagnostics(makeEmptyPageDiagnostics(), 10), {
+    action: "terminal",
+    reason: "pagination_exhausted",
+  });
+  assert.deepEqual(classifyEmptyListPageDiagnostics(makeEmptyPageDiagnostics(), 0), {
+    action: "abort",
+    reason: "empty_first_page_without_terminal_signal",
+  });
 });
 
 // ─── planIncrementalYears ─────────────────────────────────────────────────

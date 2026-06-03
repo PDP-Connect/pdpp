@@ -46,6 +46,13 @@ interface OrdersStateShape {
   years?: YearsCursor;
 }
 
+type EmptyListPageAction = "abort" | "terminal";
+
+interface EmptyListPageClassification {
+  action: EmptyListPageAction;
+  reason: string;
+}
+
 // Navigation timeouts + pacing knobs
 const NAV_TIMEOUT_MS = 30_000;
 const DEEP_PROBE_WAIT_MS = 15_000;
@@ -309,7 +316,11 @@ async function reportEmptyPageDiagnostics(page: Page, year: number, startIndex: 
       };
     })
     .catch((): ListPageDiagnostics | null => null);
-  if (diag && (diag.any_card > 0 || diag.any_order_header > 0) && diag.order_cards === 0) {
+  const classification = classifyEmptyListPageDiagnostics(diag, startIndex);
+  if (classification.action === "terminal") {
+    return;
+  }
+  if (diag && classification.reason === "selector_drift") {
     const shotPath = `/tmp/amazon-drift-${year}-${startIndex}.png`;
     await page.screenshot({ path: shotPath, fullPage: true }).catch((): undefined => undefined);
     await emit({
@@ -319,7 +330,41 @@ async function reportEmptyPageDiagnostics(page: Page, year: number, startIndex: 
       message: `Year ${year} startIndex=${startIndex}: order containers visible on page but .order-card/.js-order-card selector matched 0. Screenshot=${shotPath}`,
       diagnostics: diag,
     });
+  } else {
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "orders",
+      reason: classification.reason,
+      message: `Year ${year} startIndex=${startIndex}: empty Amazon list page is not a proven terminal page; refusing to advance the cursor.`,
+      diagnostics: diag ?? { missing_diagnostics: true },
+    });
   }
+  throw new Error(`amazon_empty_list_page_${classification.reason}`);
+}
+
+export function classifyEmptyListPageDiagnostics(
+  diag: ListPageDiagnostics | null,
+  startIndex: number
+): EmptyListPageClassification {
+  if (!diag) {
+    return startIndex > 0
+      ? { action: "terminal", reason: "pagination_exhausted" }
+      : { action: "abort", reason: "empty_first_page_without_diagnostics" };
+  }
+  const captcha = diag.captcha === "true";
+  if (diag.sign_in_form || captcha || SIGNIN_URL_RE.test(diag.url)) {
+    return { action: "abort", reason: "source_auth_or_challenge" };
+  }
+  if ((diag.any_card > 0 || diag.any_order_header > 0) && diag.order_cards === 0) {
+    return { action: "abort", reason: "selector_drift" };
+  }
+  if (diag.no_orders_text === "true") {
+    return { action: "terminal", reason: "no_orders_text" };
+  }
+  if (startIndex > 0) {
+    return { action: "terminal", reason: "pagination_exhausted" };
+  }
+  return { action: "abort", reason: "empty_first_page_without_terminal_signal" };
 }
 
 /**
