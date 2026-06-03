@@ -720,6 +720,74 @@ test('local-collector-gaps route rejects unaccepted collector protocol version',
   });
 });
 
+test('healthy drained heartbeat recovers stale local policy-budget gaps for the same connector instance', async () => {
+  await withServer(async ({ asUrl }) => {
+    const first = await enrollDevice(asUrl, 'laptop-gap-drain-1');
+    const second = await enrollDevice(asUrl, 'laptop-gap-drain-2');
+
+    const parentGap = await postLocalCollectorGap(asUrl, first, localCollectorGapBody(first));
+    assert.equal(parentGap.status, 201, JSON.stringify(parentGap.body));
+    assert.equal(parentGap.body.stream, 'local-collector/policy_budget');
+
+    const childGap = await postLocalCollectorGap(
+      asUrl,
+      first,
+      localCollectorGapBody(first, { stream: 'messages' }),
+    );
+    assert.equal(childGap.status, 201, JSON.stringify(childGap.body));
+    assert.equal(childGap.body.stream, 'local-collector/policy_budget/messages');
+
+    const childFailure = await postLocalCollectorGap(
+      asUrl,
+      first,
+      localCollectorGapBody(first, { reason: 'connector_child_failure', stream: 'messages' }),
+    );
+    assert.equal(childFailure.status, 201, JSON.stringify(childFailure.body));
+
+    const otherDeviceGap = await postLocalCollectorGap(asUrl, second, localCollectorGapBody(second));
+    assert.equal(otherDeviceGap.status, 201, JSON.stringify(otherDeviceGap.body));
+
+    const heartbeat = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(first.device_id)}/heartbeat`,
+      {
+        source_instances: [
+          {
+            source_instance_id: first.source_instance_id,
+            status: 'healthy',
+            records_pending: 0,
+            outbox: {
+              backlog_open: 0,
+              dead_letter: 0,
+              leased: 0,
+              pending: 0,
+              retrying: 0,
+              stale_leases: 0,
+              succeeded: 10,
+              total: 10,
+            },
+          },
+        ],
+      },
+      authHeaders(first.device_token),
+    );
+    assert.equal(heartbeat.status, 200, JSON.stringify(heartbeat.body));
+
+    const rows = getDb()
+      .prepare(
+        `SELECT gap_id, status
+           FROM connector_detail_gaps
+          WHERE gap_id IN (?, ?, ?, ?)
+          ORDER BY gap_id`,
+      )
+      .all(parentGap.body.gap_id, childGap.body.gap_id, childFailure.body.gap_id, otherDeviceGap.body.gap_id);
+    const statusByGap = new Map(rows.map((row) => [row.gap_id, row.status]));
+    assert.equal(statusByGap.get(parentGap.body.gap_id), 'recovered');
+    assert.equal(statusByGap.get(childGap.body.gap_id), 'recovered');
+    assert.equal(statusByGap.get(childFailure.body.gap_id), 'pending');
+    assert.equal(statusByGap.get(otherDeviceGap.body.gap_id), 'pending');
+  });
+});
+
 test('device-exporter diagnostics scope heartbeat, ingest, and local-collector gaps to the source instance', async () => {
   await withServer(async ({ asUrl }) => {
     const first = await enrollDevice(asUrl, 'laptop-diag-1');

@@ -115,6 +115,7 @@ interface GapRow {
   readonly reason?: string;
   readonly source?: unknown;
   readonly status: string;
+  readonly stream: string;
   readonly updated_at: string;
 }
 
@@ -240,6 +241,13 @@ interface ConnectorInstanceStore {
 }
 
 interface ConnectorDetailGapStore {
+  listPendingGaps?(options: {
+    connectorId: string;
+    connectorInstanceId: string;
+    grantId?: string | null;
+    limit?: number;
+    streams?: readonly string[] | null;
+  }): Promise<GapRow[]>;
   listPendingGapsForConnector?(connectorId: string, options: { limit: number }): Promise<GapRow[]>;
   markGapStatus(gapId: string, status: string, options: { runId?: string }): Promise<GapRow>;
   upsertPendingGap(params: {
@@ -409,6 +417,36 @@ function deriveSourceInstanceOutboxState(diagnostics: unknown): string {
     return "backlog";
   }
   return "drained";
+}
+
+function isDrainedHealthyLocalHeartbeat(status: string | null, recordsPending: number | null, outbox: unknown): boolean {
+  return status === "healthy" && (recordsPending == null || recordsPending === 0) && deriveSourceInstanceOutboxState(outbox) === "drained";
+}
+
+function isLocalCollectorPolicyBudgetStream(stream: string): boolean {
+  return stream === "local-collector/policy_budget" || stream.startsWith("local-collector/policy_budget/");
+}
+
+async function recoverDrainedPolicyBudgetGaps(
+  ctx: MountRefDeviceExportersContext,
+  connectorId: string,
+  connectorInstanceId: string
+): Promise<void> {
+  const detailGapStore = ctx.getDefaultConnectorDetailGapStore();
+  if (typeof detailGapStore.listPendingGaps !== "function") {
+    return;
+  }
+  const gaps = await detailGapStore.listPendingGaps({
+    connectorId,
+    connectorInstanceId,
+    grantId: null,
+    limit: 500,
+  });
+  for (const gap of gaps) {
+    if (gap.reason === "policy_budget" && isLocalCollectorPolicyBudgetStream(gap.stream)) {
+      await detailGapStore.markGapStatus(gap.gap_id, "recovered", {});
+    }
+  }
 }
 
 function normalizeHeartbeatSourceInstances(body: Record<string, unknown>): unknown[] {
@@ -1197,13 +1235,26 @@ export function mountRefDeviceExporterHeartbeat(app: AppLike, ctx: MountRefDevic
           if (!authorized) {
             return;
           }
+          const status = typeof s.status === "string" ? s.status : null;
+          const recordsPending = typeof s.records_pending === "number" ? s.records_pending : null;
+          const outboxDiagnostics = (s.outbox as unknown) ?? null;
           await ctx.deviceExporterStore.markSourceInstanceHeartbeat(deviceId, sourceInstanceId, {
             receivedAt,
             lastError: ctx.sanitizeDeviceExporterDiagnostic(s.last_error),
-            status: typeof s.status === "string" ? s.status : null,
-            recordsPending: typeof s.records_pending === "number" ? s.records_pending : null,
-            outboxDiagnostics: (s.outbox as unknown) ?? null,
+            status,
+            recordsPending,
+            outboxDiagnostics,
           });
+          if (
+            isDrainedHealthyLocalHeartbeat(status, recordsPending, outboxDiagnostics)
+            && authorized.connectorInstance.connectorInstanceId
+          ) {
+            await recoverDrainedPolicyBudgetGaps(
+              ctx,
+              authorized.sourceInstance.connectorId,
+              authorized.connectorInstance.connectorInstanceId
+            );
+          }
         }
         res.json({
           object: "device_exporter_heartbeat",
