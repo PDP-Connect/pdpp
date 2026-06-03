@@ -90,55 +90,68 @@ export function OverviewHero({
 }
 
 /**
- * The KPI figures as a Stripe/Vercel-style metric strip: a small set of cards,
- * each = one-word label + prominent figure + muted context. Records lead
- * (strong display weight — the headline metric); retained size, connectors, and
- * streams are siblings at heading weight. Every figure is tabular-nums so the
- * numbers align. Elevation is the surface ladder — `bg-card` + a hairline
- * `border`, radius-md, no drop shadow; spacing from the named 4px scale.
+ * The KPI figures with ONE clear focal point. Records is the north-star metric,
+ * so it is promoted to a primary hero tile: a wider card carrying the
+ * display-scale figure, a protocol-primary tint + accent border, and a left
+ * primary marker — the eye lands here first. Retained size, connectors, and
+ * streams are demoted to a clearly secondary tier: a tighter row of plain cards
+ * with smaller figures and a muted label, read as supporting facts to the
+ * headline rather than four equal-weight peers. Every figure is tabular-nums so
+ * the numbers align. Elevation is the surface ladder — `bg-card`/tint fill + a
+ * hairline border, radius-md, no drop shadow; spacing from the named 4px scale.
  */
 function MetricStrip({ summary }: { summary: DatasetSummary }) {
   const bytes = splitBytes(summary.total_retained_bytes);
   return (
-    <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-      <Metric label="Records" emphasis value={formatInteger(summary.record_count)} context="retained" />
-      <Metric label="Retained" value={bytes.value} context={bytes.unit} />
-      <Metric
-        label="Connectors"
-        value={formatInteger(summary.connector_count)}
-        context={summary.connector_count === 1 ? "source" : "sources"}
-      />
-      <Metric
-        label="Streams"
-        value={formatInteger(summary.stream_count)}
-        context={summary.stream_count === 1 ? "stream" : "streams"}
-      />
+    <div className="grid gap-3 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1.9fr)]">
+      <PrimaryMetric context="retained" label="Records" value={formatInteger(summary.record_count)} />
+      <dl className="grid grid-cols-3 gap-3">
+        <SecondaryMetric context={bytes.unit} label="Retained" value={bytes.value} />
+        <SecondaryMetric
+          context={summary.connector_count === 1 ? "source" : "sources"}
+          label="Connectors"
+          value={formatInteger(summary.connector_count)}
+        />
+        <SecondaryMetric
+          context={summary.stream_count === 1 ? "stream" : "streams"}
+          label="Streams"
+          value={formatInteger(summary.stream_count)}
+        />
+      </dl>
+    </div>
+  );
+}
+
+/**
+ * The single dominant KPI. Primary tint + accent border + left marker and the
+ * display-scale figure make it the page's one focal point. Rendered as its own
+ * <dl> so the primary/secondary split doesn't break the description-list
+ * semantics.
+ */
+function PrimaryMetric({ label, value, context }: { label: string; value: string; context: string }) {
+  return (
+    <dl className="rounded-md border border-primary/30 border-l-2 border-l-primary bg-[color:var(--primary-wash)] px-4 py-3">
+      <dt className="pdpp-eyebrow text-primary/90">{label}</dt>
+      <dd className="mt-1 flex items-baseline gap-2">
+        <span className="pdpp-display font-semibold text-foreground tabular-nums">{value}</span>
+        <span className="pdpp-caption text-muted-foreground">{context}</span>
+      </dd>
     </dl>
   );
 }
 
-function Metric({
-  label,
-  value,
-  context,
-  emphasis = false,
-}: {
-  label: string;
-  value: string;
-  context: string;
-  emphasis?: boolean;
-}) {
+/**
+ * A supporting KPI: plain card, heading-scale figure at medium (not semibold)
+ * weight so it reads as clearly subordinate to the 40px semibold Records hero
+ * while staying a legible number — not a caption. `pdpp-heading` is the figure
+ * scale; we deliberately avoid stacking a second font-size utility on top of it.
+ */
+function SecondaryMetric({ label, value, context }: { label: string; value: string; context: string }) {
   return (
-    <div className="rounded-md border border-border bg-card px-4 py-3">
+    <div className="rounded-md border border-border bg-card px-3 py-3">
       <dt className="pdpp-eyebrow">{label}</dt>
-      <dd className="mt-1.5 flex items-baseline gap-1.5">
-        <span
-          className={`tabular-nums text-foreground ${
-            emphasis ? "pdpp-display font-semibold" : "pdpp-heading font-medium"
-          }`}
-        >
-          {value}
-        </span>
+      <dd className="mt-1.5 flex flex-wrap items-baseline gap-x-1.5">
+        <span className="pdpp-heading font-medium text-foreground tabular-nums">{value}</span>
         <span className="pdpp-caption text-muted-foreground">{context}</span>
       </dd>
     </div>
@@ -180,7 +193,7 @@ function DistributionRow({
         ) : null}
       </div>
       <ul className="flex flex-col gap-2">
-        {connectors.map((c, i) => {
+        {connectors.map((c) => {
           const connectorKey = formatConnectorKeyForDisplay(c.connector_id);
           // Bar width is share of the leading connector (relative bar) so the
           // distribution shape is legible even when the long tail is small.
@@ -198,7 +211,7 @@ function DistributionRow({
               <span aria-hidden className="hidden h-1.5 flex-1 overflow-hidden rounded-full bg-muted sm:block">
                 <span
                   className="block h-full rounded-full"
-                  style={{ width: `${relative}%`, backgroundColor: identityColor(i) }}
+                  style={{ width: `${relative}%`, backgroundColor: distributionBarColor(c.record_count, top) }}
                 />
               </span>
               <span className="pdpp-caption ml-auto flex shrink-0 items-baseline justify-end gap-2 tabular-nums">
@@ -355,20 +368,28 @@ function projectionStatusLabel(status: ProjectionStatus): string {
   return "Summary updated";
 }
 
-// Deterministic low-saturation identity colors for the top-connectors row.
-// These are small decorative dots only; no meaning is carried by specific hue.
-const IDENTITY_PALETTE = [
-  "oklch(0.72 0.12 65)",
-  "oklch(0.70 0.11 155)",
-  "oklch(0.68 0.13 240)",
-  "oklch(0.70 0.11 320)",
-  "oklch(0.72 0.10 25)",
-] as const;
-
-function identityColor(index: number): string {
-  // Modulo keeps the lookup in-bounds; the fallback is a defensive no-op
-  // that also satisfies `noUncheckedIndexedAccess` without a non-null assertion.
-  return IDENTITY_PALETTE[index % IDENTITY_PALETTE.length] ?? IDENTITY_PALETTE[0];
+/**
+ * Single-hue intensity ramp for the top-connectors distribution bars.
+ *
+ * The bars are ranked by record share, so color should encode *magnitude*, not
+ * arbitrary category. Each bar is the protocol-primary blue at an opacity scaled
+ * to that connector's share of the leading connector: the largest connector is
+ * the most saturated, the long tail fades toward the muted track. This retires
+ * the prior decorative rainbow palette the token foundation was meant to remove.
+ *
+ * The opacity floor (0.5) keeps even the smallest bar legible against the muted
+ * track in BOTH themes — `--primary` is a bright blue on the dark charcoal track
+ * and a saturated blue on the light track, so the floored ramp holds contrast
+ * either way. The square-root curve keeps mid-tail bars from collapsing to the
+ * floor so the gradient stays readable as a distribution.
+ */
+function distributionBarColor(recordCount: number, leadCount: number): string {
+  const OPACITY_FLOOR = 0.5;
+  const ratio = leadCount > 0 ? Math.min(Math.max(recordCount / leadCount, 0), 1) : 0;
+  // sqrt softens the falloff so a connector with a small share still reads as a
+  // distinct, slightly-lighter blue rather than snapping to the floor.
+  const opacity = OPACITY_FLOOR + (1 - OPACITY_FLOOR) * Math.sqrt(ratio);
+  return `color-mix(in oklab, var(--primary) ${Math.round(opacity * 100)}%, transparent)`;
 }
 
 function formatInteger(n: number): string {

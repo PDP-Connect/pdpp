@@ -8,12 +8,13 @@
 
 import Link from "next/link";
 import { formatSourceForDisplay } from "../../lib/connector-display.ts";
-import { grantRowLabel, runRowLabel, traceRowLabel } from "../../lib/summary-row-label.ts";
 import type { DatasetSummary, GrantSummary, RunSummary, TraceSummary } from "../../lib/ref-client.ts";
+import { grantRowLabel, traceRowLabel } from "../../lib/summary-row-label.ts";
 import { Timestamp } from "../../ui/timestamp.tsx";
 import { EmptyState } from "../empty-state.tsx";
 import { OverviewHero } from "../overview-hero.tsx";
 import { DataList, PageHeader, Section, StatusBadge } from "../primitives.tsx";
+import { RunRow } from "../run-row.tsx";
 import type { Routes } from "./routes.ts";
 
 export interface OverviewViewData {
@@ -155,7 +156,7 @@ function FailedOverviewLists({
                   </div>
                   <div className="pdpp-caption mt-0.5 flex flex-wrap items-center gap-x-2 text-muted-foreground">
                     <code className="break-all font-mono">{t.trace_id}</code>
-                    {t.failure?.reason ?? t.kinds.slice(0, 3).join(", ") ? (
+                    {(t.failure?.reason ?? t.kinds.slice(0, 3).join(", ")) ? (
                       <>
                         <span className="text-muted-foreground/50">·</span>
                         <span className="text-destructive/90">
@@ -188,29 +189,7 @@ function FailedOverviewLists({
           <DataList>
             {failedRuns.map((r) => (
               <li key={r.run_id}>
-                <Link
-                  className="block px-3 py-2.5 transition-colors hover:bg-muted/40"
-                  href={routes.peek(routes.section.runs, r.run_id)}
-                >
-                  <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-                    <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      <span className="truncate font-medium text-foreground">{runRowLabel(r)}</span>
-                      <StatusBadge status={r.status} />
-                    </div>
-                    <span className="pdpp-caption shrink-0 text-muted-foreground tabular-nums">
-                      <Timestamp value={r.last_at} />
-                    </span>
-                  </div>
-                  <div className="pdpp-caption mt-0.5 flex flex-wrap items-center gap-x-2 text-muted-foreground">
-                    <code className="break-all font-mono">{r.run_id}</code>
-                    {r.failure_reason ? (
-                      <>
-                        <span className="text-muted-foreground/50">·</span>
-                        <span className="text-destructive/90">{r.failure_reason}</span>
-                      </>
-                    ) : null}
-                  </div>
-                </Link>
+                <RunRow href={routes.peek(routes.section.runs, r.run_id)} run={r} />
               </li>
             ))}
           </DataList>
@@ -291,22 +270,7 @@ export function RecentActivityOverview({ data, routes }: { data: RecentActivityO
           <DataList>
             {data.recentRuns.map((r) => (
               <li key={r.run_id}>
-                <Link
-                  className="pdpp-caption grid gap-1 px-3 py-2.5 transition-colors hover:bg-muted/40 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_9rem]"
-                  href={routes.peek(routes.section.runs, r.run_id)}
-                >
-                  <code className="break-all font-medium font-mono text-foreground">{r.run_id}</code>
-                  <span className="min-w-0 truncate text-muted-foreground">
-                    {r.source ? formatSourceForDisplay(r.source) : "—"}
-                    {r.failure_reason ? ` · ${r.failure_reason}` : ""}
-                  </span>
-                  <span className="pdpp-caption flex items-center gap-2 justify-self-end">
-                    <StatusBadge status={r.status} />
-                    <span className="text-muted-foreground">
-                      <Timestamp value={r.last_at} />
-                    </span>
-                  </span>
-                </Link>
+                <RunRow href={routes.peek(routes.section.runs, r.run_id)} run={r} />
               </li>
             ))}
           </DataList>

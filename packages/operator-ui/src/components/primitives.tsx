@@ -167,7 +167,15 @@ export function DataList({
   return (
     <ul
       aria-label={ariaLabel}
-      className={`divide-y divide-border/70 border-border/70 border-y ${dense ? "" : ""} ${className}`.trim()}
+      // `pdpp-data-list` is a brand-stylesheet hook (base.css) that owns the
+      // row-separator + outer-rule contrast. It lives in real CSS rather than
+      // dark: utility classes because the console's Tailwind content scan only
+      // covers apps/console/src — utility classes that appear *only* in
+      // operator-ui (e.g. a dark: divider token) never get generated. The CSS
+      // hook also lets the dark surface step the separators up to
+      // --border-strong (charcoal needs the extra contrast) while light keeps
+      // the gentle hairline, in one place.
+      className={`pdpp-data-list divide-y divide-border/70 border-border/70 border-y ${dense ? "" : ""} ${className}`.trim()}
     >
       {children}
     </ul>
@@ -243,11 +251,24 @@ interface StatusVocabularyEntry {
 
 export type StatusVocabulary = Record<string, StatusVocabularyEntry>;
 
+// The badge fill rides on a base (light) wash class; the dark-mode fill + ring
+// strengthening and the semantic label COLOR are owned by the brand stylesheet
+// (base.css, keyed off the `data-status-tone` attribute below). Two reasons it
+// is NOT done with `dark:` utility classes here:
+//   1. The console's Tailwind content scan only covers apps/console/src, so a
+//      `dark:` token that appears only in operator-ui never gets generated.
+//   2. The label needs to escape `.pdpp-eyebrow { color: var(--muted-foreground) }`,
+//      which is *unlayered* and so beats any Tailwind `text-*` utility (utilities
+//      live in `@layer utilities`; unlayered rules win the cascade over layered
+//      ones). A real CSS rule of equal-or-greater specificity is the clean fix.
+// On the charcoal dark surface the prior wash-only fills (8–16% alpha) read
+// nearly flat — base.css steps each tone's fill up and adds a same-hue inset
+// ring so a failure is easy to spot in a scannable list.
 const STATUS_BADGE_TONE_CLASSES: Record<StatusTone, string> = {
-  danger: "bg-destructive/10 text-destructive",
-  success: "bg-[color:var(--success-wash)] text-[color:var(--success)]",
-  warning: "bg-[color:var(--warning-wash)] text-[color:var(--warning)]",
-  neutral: "bg-muted text-muted-foreground",
+  danger: "bg-destructive/10",
+  success: "bg-[color:var(--success-wash)]",
+  warning: "bg-[color:var(--warning-wash)]",
+  neutral: "bg-muted",
 };
 
 // Run/grant lifecycle: event states of transient operations.
@@ -288,7 +309,12 @@ export function StatusBadge({
   const toneClass = STATUS_BADGE_TONE_CLASSES[entry.tone];
   return (
     <span
-      className={`pdpp-eyebrow ${inline ? "" : "inline-flex"} rounded-[3px] px-1.5 py-0.5 font-medium tabular-nums ${toneClass}`}
+      // `data-status-tone` lets the brand stylesheet (base.css) own the semantic
+      // label color and the dark-mode fill/ring strengthening — see the
+      // STATUS_BADGE_TONE_CLASSES note for why this can't be `dark:`/`text-*`
+      // utilities here.
+      className={`pdpp-status-badge pdpp-eyebrow ${inline ? "" : "inline-flex"} rounded-[3px] px-1.5 py-0.5 font-medium tabular-nums ${toneClass}`}
+      data-status-tone={entry.tone}
     >
       {entry.label}
     </span>

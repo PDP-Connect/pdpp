@@ -108,7 +108,7 @@ function setupStepToneClass(state: DiagnosticState) {
   if (state === "warn") {
     return "border-[color:var(--warning)]/30 bg-[color:var(--warning-wash)] text-foreground";
   }
-  return "border-border/70 bg-background/70 text-foreground";
+  return "border-border bg-muted/40 text-foreground";
 }
 
 function secureContextRow(): DiagnosticRow {
@@ -647,7 +647,7 @@ export function WebPushSettings({
       description="Optional browser-native alerts for pending connector interactions."
       title="Browser notifications"
     >
-      <div className="rounded-lg border border-border/80 bg-card/60 p-4">
+      <div className="rounded-md border border-border bg-card p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="pdpp-body font-medium">{currentDeviceStatus.title}</p>

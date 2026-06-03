@@ -493,3 +493,82 @@ samp {
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
 }
+
+/* ─── Data list separators ──────────────────────────────────────────────────
+   The shared DataList row separators + outer rules. Defined here (not as
+   Tailwind dark: utilities) because the operator console's Tailwind content
+   scan only covers apps/console/src, so a dark: divider token used only in
+   @pdpp/operator-ui never gets generated. Light keeps the gentle hairline; the
+   charcoal dark surface steps the rules up to --border-strong so the list scans
+   as a dense table instead of reading nearly flat. */
+:is(html.dark, html[data-theme="dark"]) .pdpp-data-list {
+  border-top-color: var(--border-strong);
+  border-bottom-color: var(--border-strong);
+}
+:is(html.dark, html[data-theme="dark"]) .pdpp-data-list > :where(:not(:last-child)) {
+  border-color: var(--border-strong);
+}
+@media (prefers-color-scheme: dark) {
+  html[data-theme="system"] .pdpp-data-list {
+    border-top-color: var(--border-strong);
+    border-bottom-color: var(--border-strong);
+  }
+  html[data-theme="system"] .pdpp-data-list > :where(:not(:last-child)) {
+    border-color: var(--border-strong);
+  }
+}
+
+/* ─── Status badge tone ──────────────────────────────────────────────────────
+   The badge wears `.pdpp-eyebrow` for its mono/uppercase/tracking identity, but
+   `.pdpp-eyebrow { color: var(--muted-foreground) }` is unlayered and so beats
+   any Tailwind `text-*` utility (utilities live in @layer utilities; unlayered
+   rules win the cascade). These class+attribute selectors have higher
+   specificity than the lone `.pdpp-eyebrow` class, so the label finally carries
+   its semantic color. The fill + ring strengthening for the dark charcoal
+   surface lives here too (same content-scan reason as the data list). */
+.pdpp-status-badge[data-status-tone="success"] {
+  color: var(--success);
+}
+.pdpp-status-badge[data-status-tone="danger"] {
+  color: var(--destructive);
+}
+.pdpp-status-badge[data-status-tone="warning"] {
+  color: var(--warning);
+}
+.pdpp-status-badge[data-status-tone="neutral"] {
+  color: var(--muted-foreground);
+}
+
+:is(html.dark, html[data-theme="dark"]) .pdpp-status-badge[data-status-tone="success"] {
+  background-color: var(--success-wash-strong);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--success) 30%, transparent);
+}
+:is(html.dark, html[data-theme="dark"]) .pdpp-status-badge[data-status-tone="danger"] {
+  background-color: color-mix(in oklab, var(--destructive) 20%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--destructive) 32%, transparent);
+}
+:is(html.dark, html[data-theme="dark"]) .pdpp-status-badge[data-status-tone="warning"] {
+  background-color: color-mix(in oklab, var(--warning) 22%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--warning) 30%, transparent);
+}
+:is(html.dark, html[data-theme="dark"]) .pdpp-status-badge[data-status-tone="neutral"] {
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+@media (prefers-color-scheme: dark) {
+  html[data-theme="system"] .pdpp-status-badge[data-status-tone="success"] {
+    background-color: var(--success-wash-strong);
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--success) 30%, transparent);
+  }
+  html[data-theme="system"] .pdpp-status-badge[data-status-tone="danger"] {
+    background-color: color-mix(in oklab, var(--destructive) 20%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--destructive) 32%, transparent);
+  }
+  html[data-theme="system"] .pdpp-status-badge[data-status-tone="warning"] {
+    background-color: color-mix(in oklab, var(--warning) 22%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--warning) 30%, transparent);
+  }
+  html[data-theme="system"] .pdpp-status-badge[data-status-tone="neutral"] {
+    box-shadow: inset 0 0 0 1px var(--border-strong);
+  }
+}
