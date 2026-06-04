@@ -144,12 +144,21 @@ async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageMod
       name: summary.connector_display_name ?? summary.display_name,
       streams: summary.streams.map((name) => ({ name })),
     } satisfies ConnectorManifest);
-  const streams = await listStreams(connectorId, { connectorInstanceId });
+  // `streams`, `recentRuns`, and `diagnostics` each depend only on the
+  // connector/instance ids resolved above — never on each other. Awaiting them
+  // in series turned the detail page into a 3-deep request waterfall against the
+  // reference deployment (the index page already avoids this shape). Race them
+  // so the second phase costs one round trip, not three. `loadConnectorDiagnostics`
+  // never rejects (it settles each branch internally); `listStreams`/`listRuns`
+  // may throw and are caught by `ConnectorPage` exactly as before, so the
+  // ServerUnreachable / error-boundary behavior is unchanged.
+  const [streams, runsResp, diagnostics] = await Promise.all([
+    listStreams(connectorId, { connectorInstanceId }),
+    listRuns({ connector_id: connectorId, limit: RECENT_RUNS_LIMIT }),
+    loadConnectorDiagnostics(connectorId, connectorInstanceId),
+  ]);
   const overview = toConnectorOverview(summary, streams);
-  const runsResp = await listRuns({ connector_id: connectorId, limit: RECENT_RUNS_LIMIT });
   const recentRuns = runsResp.data ?? [];
-
-  const diagnostics = await loadConnectorDiagnostics(connectorId, connectorInstanceId);
   const totalRecords = streams.reduce((sum, s) => sum + s.record_count, 0);
   const displayName = formatConnectorNameForDisplay({
     connectorId,
