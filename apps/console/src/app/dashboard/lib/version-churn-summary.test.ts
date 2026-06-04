@@ -18,6 +18,7 @@ import {
   needsReview,
   POINT_IN_TIME_REAL_FIELD_STREAMS,
   pointInTimeGuidance,
+  REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT,
   REVIEWED_COMPACTION_RESIDUE_STREAMS,
   summarizeVersionChurn,
 } from "./version-churn-summary.ts";
@@ -501,4 +502,99 @@ test("REVIEWED_COMPACTION_RESIDUE_STREAMS is a subset of LOSSLESS_COMPACTION_POL
       `${pair} is in reviewed-residue set but NOT in compaction-policy set — every reviewed stream must have a registered policy`
     );
   }
+});
+
+test("REVIEWED_COMPACTION_RESIDUE_STREAMS keys match REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT keys", () => {
+  // The set is derived from the map; this guards that the derivation is correct.
+  assert.deepEqual(
+    new Set(REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT.keys()),
+    REVIEWED_COMPACTION_RESIDUE_STREAMS
+  );
+});
+
+// ─── Recurrence guard: timestamp-gated reviewed-residue classification ───
+//
+// A stream stays classified as reviewed_compaction_residue ONLY when its
+// last_history_at is at or before the review timestamp. If new history has
+// been written after the review, the stream re-alarms as a
+// lossless_compaction_candidate so the dashboard surfaces growing churn.
+
+test("classifyChurnRow returns reviewed_compaction_residue when last_history_at is before reviewedAt", () => {
+  // Review timestamp for usaa/accounts is 2026-06-04T23:59:59.999Z.
+  // last_history_at is one day earlier → within review window → classified.
+  assert.equal(
+    classifyChurnRow(row({ connector_id: "usaa", stream: "accounts", last_history_at: "2026-06-03T12:00:00.000Z" })),
+    "reviewed_compaction_residue"
+  );
+});
+
+test("classifyChurnRow returns reviewed_compaction_residue when last_history_at equals reviewedAt exactly", () => {
+  const reviewedAt = REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT.get("usaa/accounts");
+  assert.ok(reviewedAt, "usaa/accounts must have a review timestamp");
+  assert.equal(
+    classifyChurnRow(row({ connector_id: "usaa", stream: "accounts", last_history_at: reviewedAt })),
+    "reviewed_compaction_residue"
+  );
+});
+
+test("classifyChurnRow re-alarms as lossless_compaction_candidate when last_history_at is after reviewedAt", () => {
+  // A history write one second after the review timestamp means new churn
+  // has accumulated since the review — should re-alarm, not stay suppressed.
+  assert.equal(
+    classifyChurnRow(row({ connector_id: "usaa", stream: "accounts", last_history_at: "2026-06-05T00:00:00.000Z" })),
+    "lossless_compaction_candidate"
+  );
+  assert.equal(
+    classifyChurnRow(row({ connector_id: "chase", stream: "statements", last_history_at: "2026-06-05T00:00:00.000Z" })),
+    "lossless_compaction_candidate"
+  );
+  assert.equal(
+    classifyChurnRow(row({ connector_id: "claude-code", stream: "sessions", last_history_at: "2026-06-10T00:00:00.000Z" })),
+    "lossless_compaction_candidate"
+  );
+});
+
+test("classifyChurnRow re-alarms as lossless_compaction_candidate when last_history_at is null (ground-truth unavailable)", () => {
+  // When last_history_at is null the guard is unverifiable. Conservative
+  // choice: demote to lossless_compaction_candidate rather than silently
+  // suppressing what might be growing churn.
+  assert.equal(
+    classifyChurnRow(row({ connector_id: "usaa", stream: "accounts", last_history_at: null })),
+    "lossless_compaction_candidate"
+  );
+  assert.equal(
+    classifyChurnRow(row({ connector_id: "usaa", stream: "statements", last_history_at: null })),
+    "lossless_compaction_candidate"
+  );
+});
+
+test("isExpectedRetainedHistory returns true for reviewed_compaction_residue within review window", () => {
+  assert.equal(
+    isExpectedRetainedHistory(row({ connector_id: "usaa", stream: "accounts", last_history_at: "2026-06-03T12:00:00.000Z" })),
+    true
+  );
+});
+
+test("isExpectedRetainedHistory returns false for reviewed_compaction_residue with post-review last_history_at", () => {
+  assert.equal(
+    isExpectedRetainedHistory(row({ connector_id: "usaa", stream: "accounts", last_history_at: "2026-06-05T00:00:00.000Z" })),
+    false
+  );
+});
+
+test("needsReview returns false for reviewed_compaction_residue within review window", () => {
+  assert.equal(
+    needsReview(row({ connector_id: "chase", stream: "statements", last_history_at: "2026-06-04T00:00:00.000Z" })),
+    false
+  );
+});
+
+test("needsReview returns false even for reviewed_compaction_residue with post-review last_history_at (re-alarms as candidate, not unclassified)", () => {
+  // A re-alarmed stream is a lossless_compaction_candidate, not unclassified —
+  // it still has a registered policy. needsReview only returns true for
+  // unclassified rows with no known policy at all.
+  assert.equal(
+    needsReview(row({ connector_id: "usaa", stream: "accounts", last_history_at: "2026-06-05T00:00:00.000Z" })),
+    false
+  );
 });

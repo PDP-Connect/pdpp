@@ -132,6 +132,35 @@ export const LOSSLESS_COMPACTION_POLICY_STREAMS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Per-stream review evidence: the ISO 8601 timestamp at which the owner
+ * inspected a stream and confirmed it was expected residue. A row can only
+ * be classified as `reviewed_compaction_residue` when its `last_history_at`
+ * is at or before this timestamp — if new history has been written since the
+ * review, the stream re-alarms as a `lossless_compaction_candidate`.
+ *
+ * Keys are `"connector/stream"` in bare-id form (same normalization as
+ * `LOSSLESS_COMPACTION_POLICY_STREAMS`). Values are ISO 8601 UTC strings.
+ *
+ * Adding an entry here is an explicit owner acknowledgement that:
+ *   1. The connector is now fingerprint-correct (no new no-op versions).
+ *   2. The dry-run at review time showed `removableVersions=0`.
+ *   3. Any `last_history_at` after this timestamp is fresh churn that
+ *      post-dates the review and must re-alarm.
+ *
+ * All keys here MUST also be in `LOSSLESS_COMPACTION_POLICY_STREAMS`; the
+ * console test `version-churn-summary.test.ts` guards this invariant.
+ */
+export const REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT: ReadonlyMap<string, string> = new Map([
+  // These four streams accumulated no-op/run-clock history before the
+  // fingerprint fix deployed. The dry-run confirmed removableVersions=0 (no
+  // adjacent identical versions remain to compact). Reviewed 2026-06-04.
+  ["usaa/accounts", "2026-06-04T23:59:59.999Z"],
+  ["usaa/statements", "2026-06-04T23:59:59.999Z"],
+  ["chase/statements", "2026-06-04T23:59:59.999Z"],
+  ["claude-code/sessions", "2026-06-04T23:59:59.999Z"],
+]);
+
+/**
  * (connector, stream) pairs that have a registered lossless compaction policy
  * AND have been owner-reviewed as "expected residue" — history that accumulated
  * before the fingerprint fix was deployed. The fingerprint-correct connector
@@ -154,16 +183,14 @@ export const LOSSLESS_COMPACTION_POLICY_STREAMS: ReadonlySet<string> = new Set([
  *
  * All pairs here MUST also be in `LOSSLESS_COMPACTION_POLICY_STREAMS`; the
  * console test `version-churn-summary.test.ts` guards this invariant.
+ *
+ * This set is derived from `REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT`'s keys.
+ * `classifyChurnRow` uses the map directly (for timestamp comparison); this
+ * export exists for the subset invariant test and backwards-compat imports.
  */
-export const REVIEWED_COMPACTION_RESIDUE_STREAMS: ReadonlySet<string> = new Set([
-  // These four streams accumulated no-op/run-clock history before the
-  // fingerprint fix deployed. The dry-run confirms removableVersions=0 (no
-  // adjacent identical versions remain to compact). Reviewed 2026-06-04.
-  "usaa/accounts",
-  "usaa/statements",
-  "chase/statements",
-  "claude-code/sessions",
-]);
+export const REVIEWED_COMPACTION_RESIDUE_STREAMS: ReadonlySet<string> = new Set(
+  REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT.keys()
+);
 
 /**
  * Classification of a churn row's remediation path. There are four, mapping
@@ -239,17 +266,23 @@ function normalizeConnectorId(connectorId: string | null): string | null {
  *
  *   1. in the real-field known-list → `point_in_time_real_field`
  *      (expected retained history; never compacted);
- *   2. else if it is in the reviewed-residue set →
- *      `reviewed_compaction_residue` (policy exists, dry-run shows 0
- *      removable, owner has reviewed as expected pre-fix accumulation);
+ *   2. else if it is in the reviewed-residue map AND `last_history_at` is at
+ *      or before the review timestamp → `reviewed_compaction_residue` (policy
+ *      exists, dry-run shows 0 removable, owner has reviewed as expected
+ *      pre-fix accumulation, and no new history has been written since);
  *   3. else if it has a registered lossless compaction policy →
- *      `lossless_compaction_candidate` (dry-run command is a real fix);
+ *      `lossless_compaction_candidate` (dry-run command is a real fix; this
+ *      also catches reviewed-residue streams where new history appeared after
+ *      the review, re-alarming them as actionable);
  *   4. else → `unclassified` (genuinely needs review).
  *
  * The real-field list takes precedence over both compaction sets: those pairs
  * intentionally have NO compaction policy, so the ordering is defensive.
- * Reviewed residue is checked before general compaction candidates so that an
- * owner-acknowledged stream is not re-promoted to "actionable candidate."
+ * Reviewed residue requires both list membership AND timestamp evidence: if
+ * `last_history_at` is after `reviewed_at`, or if the row has no
+ * `last_history_at` (ground-truth unavailable), the guard is treated as
+ * unverifiable and the row is demoted to `lossless_compaction_candidate` so
+ * the dashboard re-alarms rather than silently suppressing growing churn.
  */
 export function classifyChurnRow(row: RefRecordVersionStatsRow): ChurnRemediation {
   const connector = normalizeConnectorId(row.connector_id);
@@ -259,11 +292,23 @@ export function classifyChurnRow(row: RefRecordVersionStatsRow): ChurnRemediatio
   if (isRealField) {
     return "point_in_time_real_field";
   }
-  if (connector && REVIEWED_COMPACTION_RESIDUE_STREAMS.has(`${connector}/${row.stream}`)) {
-    return "reviewed_compaction_residue";
-  }
-  if (connector && LOSSLESS_COMPACTION_POLICY_STREAMS.has(`${connector}/${row.stream}`)) {
-    return "lossless_compaction_candidate";
+  if (connector) {
+    const key = `${connector}/${row.stream}`;
+    const reviewedAt = REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT.get(key);
+    if (reviewedAt !== undefined) {
+      // Only suppress re-alarm when we have ground-truth evidence that no new
+      // history has been written since the review. If last_history_at is null
+      // (ground-truth unavailable), we cannot verify the guard — treat as
+      // lossless_compaction_candidate so the dashboard re-alarms.
+      if (row.last_history_at !== null && row.last_history_at <= reviewedAt) {
+        return "reviewed_compaction_residue";
+      }
+      // last_history_at is absent or after the review timestamp: new churn has
+      // appeared since the review. Fall through to lossless_compaction_candidate.
+    }
+    if (LOSSLESS_COMPACTION_POLICY_STREAMS.has(key)) {
+      return "lossless_compaction_candidate";
+    }
   }
   return "unclassified";
 }
