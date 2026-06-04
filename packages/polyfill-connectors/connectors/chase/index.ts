@@ -60,6 +60,7 @@ import {
   fileUrl,
   isOfxRecord,
   isoToPacked,
+  isUsablePdfBuffer,
   parseCurrentActivityDom,
   parseDashboardAccountsDom,
   parseDateDelivered,
@@ -744,6 +745,17 @@ async function downloadStatementPdf(
     downloadQueue.detach();
     pdfResponseQueue.detach();
   }
+  // Reject an empty / non-PDF download instead of recording it as a
+  // successful hydration. A 0-byte body otherwise hashes to the empty-string
+  // sha256 and is stored as a "captured" statement, which (a) points the
+  // owner at a 0-byte file and (b) churns the statement's version every time
+  // the real PDF flips back in. Falling through to ok:false routes the row to
+  // the same index-only fallback a download failure already uses.
+  if (!isUsablePdfBuffer(buffer)) {
+    await capturePageCheckpoint(capture, page, `statement-${row.rowAnchorId}-download-empty-pdf`);
+    return { ok: false, error: `download_empty_pdf: ${buffer.length}b` };
+  }
+
   const pdfSha256 = sha256Hex(buffer);
 
   const isoDate = parseDateDelivered(row.date_delivered_raw);

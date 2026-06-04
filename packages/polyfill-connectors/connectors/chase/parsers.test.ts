@@ -11,6 +11,7 @@ import {
   fileUrl,
   isOfxRecord,
   isoToPacked,
+  isUsablePdfBuffer,
   ofxDateToFullIso,
   ofxDateToIso,
   ofxGet,
@@ -108,6 +109,28 @@ test("shortHash: deterministic, 32-char slice of sha256", () => {
   const h = shortHash("abc");
   assert.equal(h.length, 32);
   assert.equal(h, "ba7816bf8f01cfea414140de5dae2223");
+});
+
+// ─── isUsablePdfBuffer ───────────────────────────────────────────────────
+
+test("isUsablePdfBuffer: a real PDF (with %PDF magic) is usable", () => {
+  assert.equal(isUsablePdfBuffer(Buffer.from("%PDF-1.7\n%âãÏÓ\n1 0 obj", "latin1")), true);
+});
+
+test("isUsablePdfBuffer: an empty buffer is NOT usable (the empty-sha256 churn bug)", () => {
+  // The empty buffer otherwise hashes to the empty-string sha256, which is
+  // the exact value observed flapping in live chase/statements history.
+  const empty = Buffer.alloc(0);
+  assert.equal(isUsablePdfBuffer(empty), false);
+  assert.equal(sha256Hex(empty), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+});
+
+test("isUsablePdfBuffer: an HTML error page served as 200 is NOT usable", () => {
+  assert.equal(isUsablePdfBuffer(Buffer.from("<!DOCTYPE html><html>Error</html>")), false);
+});
+
+test("isUsablePdfBuffer: a sub-magic-length buffer is NOT usable", () => {
+  assert.equal(isUsablePdfBuffer(Buffer.from("%PD")), false);
 });
 
 // ─── fileUrl ─────────────────────────────────────────────────────────────
