@@ -23,18 +23,15 @@
 - [x] 3.1 Add `validateConnectorOptions(manifest, startMsg)` — shape-validate
   `START.connector_options` against `options_schema` before spawn; fail fast with
   a named error on mismatch.
-  — `src/validate-connector-options.ts` exported; 13 unit tests green.
-- [ ] 3.2 Capture `connector_options` into the run spine; assert credentials are
+  — `src/validate-connector-options.ts` exported; runtime/controller paths now
+  validate before run resources are acquired, with runtime validation retained as
+  defense-in-depth.
+- [x] 3.2 Capture `connector_options` into the run spine; assert credentials are
   never captured there.
-  — DEFERRED: spine writes live in `reference-implementation/lib/controller-boot.ts`
-  and `reference-implementation/runtime/`. Adding `connector_options` to the
-  `run.started` `data_json` payload requires a reference-implementation change
-  outside this lane's scope (would touch the server's INSERT path, migration, and
-  the run-timeline read path). Documenting the gap per R.2: no safe spine field
-  exists in polyfill-connectors today; the credential-never-in-spine invariant is
-  structurally guaranteed because `validateConnectorOptions` is the only path where
-  `connector_options` is examined and credentials are never written there by
-  contract. Owner should schedule as a separate reference-implementation lane.
+  — `reference-implementation/runtime/index.js` records non-empty
+  `connector_options` in `run.started.data_json` after stripping any key declared
+  in `credentials_schema`; `reference-implementation/test/connector-options-validation.test.js`
+  covers pre-spawn rejection, pass-through, and credential-name filtering.
 
 ## 4. Honesty + tests
 

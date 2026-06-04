@@ -62,7 +62,7 @@ export function validateConnectorOptions(
     if (!typeMatches(value, types, prop)) {
       issues.push({
         field,
-        reason: `expected type ${types.join("|")} but got ${valueTypeName(value)}`,
+        reason: `expected type ${expectedTypeLabel(types, prop)} but got ${valueTypeName(value)}`,
       });
     }
   }
@@ -107,6 +107,10 @@ function typeMatches(value: unknown, types: string[], prop: OptionsSchemaPropert
     }
   }
   return false;
+}
+
+function expectedTypeLabel(types: string[], prop: OptionsSchemaProperty): string {
+  return types.map((t) => (t === "array" && prop.items?.type ? `array<${prop.items.type}>` : t)).join("|");
 }
 
 function valueTypeName(value: unknown): string {
