@@ -1,9 +1,10 @@
 import { PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Fragment } from "react";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { DashboardShell, ServerUnreachable } from "../../../../components/shell.tsx";
-import { ReferenceServerUnreachableError } from "../../../../lib/owner-token.ts";
+import { ReferenceServerUnreachableError, ResourceServerHttpError } from "../../../../lib/owner-token.ts";
 import { type FieldHealth, type StreamHealth, streamHealth } from "../../../../lib/rs-client.ts";
 import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } from "../../../connection-route.ts";
 
@@ -54,9 +55,33 @@ export default async function StreamHealthPage({
         </DashboardShell>
       );
     }
+    if (err instanceof ResourceServerHttpError && (err.status === 404 || err.status === 410)) {
+      // The stream's records read returned 404/410 — the connector no longer
+      // advertises this stream (renamed/retired in a newer manifest, or a stale
+      // entry not yet reconciled). The sibling records list and record-detail
+      // pages already handle this; the health view is reachable from the list
+      // page's "Stream health →" link, so it must degrade the same calm way
+      // instead of crashing to the records segment error boundary.
+      return <StreamHealthUnavailable connectionId={connectionId} streamName={streamName} />;
+    }
     throw err;
   }
 
+  return <StreamHealthReport connectionId={connectionId} health={health} streamName={streamName} />;
+}
+
+// Success render for the health view. Extracted from the page loader so the
+// loader stays a thin data-fetch + error-handler; all the per-field/summary
+// render branches live here, in a presentational component.
+function StreamHealthReport({
+  connectionId,
+  health,
+  streamName,
+}: {
+  connectionId: string;
+  health: StreamHealth;
+  streamName: string;
+}) {
   const { fields, summary, emittedAt, cursorField, cursorRange } = health;
   const streamPath = `/dashboard/records/${encodeURIComponent(connectionId)}/${encodeURIComponent(streamName)}`;
 
@@ -199,6 +224,48 @@ export default async function StreamHealthPage({
           </>
         )}
       </Section>
+    </DashboardShell>
+  );
+}
+
+// Bounded "this stream is gone" state for the health view. Mirrors the
+// stream-list page's `not available` surface so a retired/renamed stream
+// reached via the "Stream health →" link degrades calmly instead of crashing
+// to the records segment error boundary.
+function StreamHealthUnavailable({ connectionId, streamName }: { connectionId: string; streamName: string }) {
+  return (
+    <DashboardShell active="records">
+      <PageHeader
+        breadcrumbs={[
+          { label: "Connections", href: "/dashboard/records" },
+          { label: connectionId, href: `/dashboard/records/${encodeURIComponent(connectionId)}` },
+          { label: streamName },
+          { label: "health" },
+        ]}
+        title={
+          <>
+            <code className="font-mono">{streamName}</code>{" "}
+            <span className="font-normal text-muted-foreground">· health</span>
+          </>
+        }
+      />
+      <div className="rounded-md border border-border/70 bg-muted/30 p-4">
+        <p className="pdpp-caption text-foreground">
+          Stream health is not available for <code className="font-mono">{streamName}</code>.
+        </p>
+        <p className="pdpp-caption mt-2 text-muted-foreground">
+          The connector no longer advertises a stream named <code className="font-mono">{streamName}</code>. It may have
+          been renamed or retired in a newer manifest, or the stream list is showing a stale entry that has not yet been
+          reconciled. Return to{" "}
+          <Link
+            className="underline underline-offset-2"
+            href={`/dashboard/records/${encodeURIComponent(connectionId)}`}
+          >
+            the connection page
+          </Link>{" "}
+          to see currently available streams.
+        </p>
+      </div>
     </DashboardShell>
   );
 }
