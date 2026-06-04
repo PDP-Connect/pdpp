@@ -1,6 +1,6 @@
 "use client";
 
-import { formatConnectorNameForDisplay, isFallbackConnectionLabel } from "@pdpp/operator-ui/lib/connector-display";
+import { formatConnectorNameForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
@@ -32,6 +32,15 @@ import { type RunNowResult, runConnectorNowAction } from "./actions.ts";
 const ELAPSED_TICK_MS = 1000;
 
 interface RowProps {
+  /**
+   * Whether to surface the "Label needed — rename" hint. Decided by the list,
+   * not the row, because it depends on sibling connections: a fallback label
+   * ("Amazon") is only ambiguous — and thus worth renaming — when two or more
+   * unnamed connections of the same connector type exist. A lone connection of
+   * a type keeps its honest type name with no nag. See
+   * `ambiguousFallbackLabelKeys` in lib/connection-label-ambiguity.ts.
+   */
+  labelNeeded: boolean;
   overview: ConnectorOverview;
   /** Relative href to the runs page, used for failure drill-in. */
   runsHref: string;
@@ -113,7 +122,7 @@ function useConnectorSyncState({
   };
 }
 
-export function ConnectorRow({ overview, runsHref }: RowProps) {
+export function ConnectorRow({ labelNeeded, overview, runsHref }: RowProps) {
   const {
     connectionHealth,
     connectionId,
@@ -156,15 +165,12 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
     displayName: connectorDisplayName,
     name: connector.name,
   });
-  // A connection whose stored label degrades to the bare connector type or a
-  // registry URL is "label needed" — surface a gentle prompt linking to the
+  // `labelNeeded` is decided by the list (it depends on sibling connections):
+  // a fallback label is only "needed" when the bare connector type is ambiguous
+  // — two or more unnamed connections of the same type. A lone connection keeps
+  // its honest type name. When true, surface a gentle prompt linking to the
   // detail page where the rename control lives. The stable `connection_id`
   // stays the routing key; the label is a human alias only.
-  const labelNeeded = isFallbackConnectionLabel({
-    connectorId: connector.connector_id,
-    displayName: connector.display_name,
-    name: connector.name,
-  });
   const displayedStreamCount = streamCount ?? streams.length;
   const nextAction = formatNextAction(connectionHealth?.next_action ?? null);
   const recordCount = resolveRecordCountDisplay(overview);

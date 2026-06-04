@@ -34,6 +34,7 @@ import {
   STATIC_SECRET_ADD_MODALITY,
   UNSUPPORTED_ADD_MODALITIES,
 } from "../../lib/connection-modality.ts";
+import { ambiguousFallbackLabelKeys } from "../../lib/connection-label-ambiguity.ts";
 import { summarizeConnectionHealth } from "../../lib/connection-summary-stats.ts";
 import { shouldShowInPrimaryConnections } from "../../lib/records-list-classification.ts";
 import type { RefRecordVersionStatsRow } from "../../lib/ref-client.ts";
@@ -232,6 +233,13 @@ export function RecordsListView({
   now?: number;
 }) {
   const labeled = labelConnections(overviews);
+  // "Label needed — rename" is honest only when a connection's bare type label
+  // is ambiguous — two or more unnamed connections of the same connector type.
+  // A lone "Amazon" is correctly named; nagging it is noise. This is the same
+  // ambiguity that drives the `· connection N` ordinal above, so both surfaces
+  // agree. Computed across the full set (not per-row) so a single connection of
+  // a type is never told to rename.
+  const labelNeededKeys = ambiguousFallbackLabelKeys(labeled);
   const primaryConnections = labeled.filter(shouldShowInPrimaryConnections);
   const empty = labeled.filter((o) => !shouldShowInPrimaryConnections(o));
   const sorted = [...primaryConnections].sort((a, b) => {
@@ -342,7 +350,12 @@ export function RecordsListView({
           <DataList>
             {sorted.map((o) =>
               interactive ? (
-                <ConnectorRow key={overviewRouteId(o)} overview={o} runsHref={routes.section.runs} />
+                <ConnectorRow
+                  key={overviewRouteId(o)}
+                  labelNeeded={labelNeededKeys.has(overviewRouteId(o))}
+                  overview={o}
+                  runsHref={routes.section.runs}
+                />
               ) : (
                 <ReadOnlyConnectorRow key={overviewRouteId(o)} overview={o} routes={routes} />
               )
@@ -363,7 +376,12 @@ export function RecordsListView({
           <DataList>
             {empty.map((o) =>
               interactive ? (
-                <ConnectorRow key={overviewRouteId(o)} overview={o} runsHref={routes.section.runs} />
+                <ConnectorRow
+                  key={overviewRouteId(o)}
+                  labelNeeded={labelNeededKeys.has(overviewRouteId(o))}
+                  overview={o}
+                  runsHref={routes.section.runs}
+                />
               ) : (
                 <ReadOnlyConnectorRow key={overviewRouteId(o)} overview={o} routes={routes} />
               )

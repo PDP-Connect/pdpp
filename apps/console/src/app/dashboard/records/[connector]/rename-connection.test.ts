@@ -9,9 +9,11 @@
  *  - the action validates a non-empty, length-bounded label and returns a
  *    discriminated result (no redirect that would drop the message);
  *  - the inline island re-seeds from server-confirmed state and refreshes;
- *  - the row surfaces a "label needed" hint only behind the shared
- *    `isFallbackConnectionLabel` guard so loading/empty states cannot invent
- *    a false prompt.
+ *  - the row surfaces a "label needed" hint only behind the list-supplied
+ *    `labelNeeded` prop (decided by the cross-row ambiguity rule in
+ *    `lib/connection-label-ambiguity.ts`, not the row itself) so a lone
+ *    connection of a type is never nagged and loading/empty states cannot
+ *    invent a false prompt.
  */
 
 import assert from "node:assert/strict";
@@ -41,10 +43,19 @@ const ISLAND_REFRESHES_RE = /router\.refresh\(\)/;
 const ISLAND_DISABLES_EMPTY_RE = /disabled=\{isPending \|\| !value\.trim\(\)\}/;
 const ISLAND_HIDES_WHEN_NULL_RE = /if \(connectionId === null\) \{\s*return null;\s*\}/;
 
-const ROW_FALLBACK_GUARD_RE = /isFallbackConnectionLabel\(\{/;
-const ROW_LABEL_NEEDED_CONST_RE = /const labelNeeded = isFallbackConnectionLabel/;
+// The row no longer decides "label needed" in isolation. The hint depends on
+// SIBLING connections — a fallback label ("Amazon") is only ambiguous, and thus
+// worth renaming, when two or more unnamed connections of the same connector
+// type exist. That cross-row decision is computed once by the list and passed
+// in as the `labelNeeded` prop, so a lone connection of a type is never nagged.
+const ROW_LABEL_NEEDED_PROP_RE = /labelNeeded: boolean;/;
+const ROW_LABEL_NEEDED_DESTRUCTURED_RE = /function ConnectorRow\(\{ labelNeeded, overview, runsHref \}: RowProps\)/;
 const ROW_LABEL_NEEDED_CONDITIONAL_RE = /\{labelNeeded \? \(/;
 const ROW_LABEL_NEEDED_TESTID_RE = /data-testid="label-needed-hint"/;
+// Guard against regressing to the per-row isolation bug: the row must NOT
+// recompute fallback status itself (which fired on every never-renamed
+// connection regardless of ambiguity).
+const ROW_NO_ISOLATED_FALLBACK_RE = /isFallbackConnectionLabel/;
 
 const PAGE_SEED_RE = /isFallbackConnectionLabel\(\{[\s\S]*?\}\)\s*\?\s*""\s*:\s*\(summary\.display_name \?\? ""\)/;
 const PAGE_RENDERS_ISLAND_RE = /<RenameConnection/;
@@ -101,12 +112,20 @@ test("rename island hides itself when there is no addressable connection", async
   assert.match(src, ISLAND_HIDES_WHEN_NULL_RE);
 });
 
-test("connector-row renders the label-needed hint only behind the fallback guard", async () => {
+test("connector-row renders the label-needed hint only behind the list-supplied prop", async () => {
   const src = await readFile(ROW_FILE, "utf8");
-  assert.match(src, ROW_FALLBACK_GUARD_RE);
-  assert.match(src, ROW_LABEL_NEEDED_CONST_RE);
+  assert.match(src, ROW_LABEL_NEEDED_PROP_RE);
+  assert.match(src, ROW_LABEL_NEEDED_DESTRUCTURED_RE);
   assert.match(src, ROW_LABEL_NEEDED_CONDITIONAL_RE);
   assert.match(src, ROW_LABEL_NEEDED_TESTID_RE);
+});
+
+test("connector-row does not decide label-needed in isolation (ambiguity is a cross-row concern)", async () => {
+  // The previous per-row `isFallbackConnectionLabel` call nagged every
+  // never-renamed connection (single Amazon/USAA/GitHub/YNAB included). The
+  // honest signal lives in the list's ambiguity computation, not the row.
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.equal(ROW_NO_ISOLATED_FALLBACK_RE.test(src), false);
 });
 
 test("detail page seeds the rename field blank for fallback labels", async () => {
