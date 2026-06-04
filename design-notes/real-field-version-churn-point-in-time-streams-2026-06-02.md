@@ -1,10 +1,10 @@
 # Real-Field Version Churn As Point-In-Time Streams
 
-Status: captured
+Status: decided/implemented — the append-keyed point-in-time split shipped for all four streams (see Decision log 2026-06-04). Owner questions 1, 2, 4, 5 are answered by the shipped code; question 3 (`version_disposition` manifest field + dashboard surfacing) was NOT taken and remains an open, optional refinement.
 Owner: reference implementation owner
 Created: 2026-06-02
-Updated: 2026-06-02
-Related: design-notes/record-version-churn-and-noop-semantics-2026-05-26.md, design-notes/record-version-semantics-prior-art-2026-05-26.md, openspec/changes/register-current-churn-compaction-policies, openspec/changes/extend-usaa-real-field-churn-incidental-gates, tmp/workstreams/ri-real-field-churn-point-in-time-design-v1-report.md
+Updated: 2026-06-04
+Related: design-notes/record-version-churn-and-noop-semantics-2026-05-26.md, design-notes/record-version-semantics-prior-art-2026-05-26.md, openspec/changes/register-current-churn-compaction-policies, openspec/changes/extend-usaa-real-field-churn-incidental-gates, openspec/changes/archive/2026-06-04-split-point-in-time-observation-streams, openspec/changes/archive/2026-06-04-split-ynab-account-balance-observation-stream, openspec/changes/archive/2026-06-04-split-usaa-account-balance-observation-streams, tmp/workstreams/ri-real-field-churn-point-in-time-design-v1-report.md, tmp/workstreams/ri-version-churn-residual-current-v1-report.md
 
 ## One-screen summary (for the owner)
 
@@ -264,3 +264,39 @@ Each connector is its own narrow lane with AC-1…AC-6 as its validation contrac
   proposed: append-keyed point-in-time split, thresholds frozen, no real-field
   exclusion or compaction. Awaiting owner decisions 1–5. Not promoted to
   OpenSpec yet.
+- 2026-06-04 — Decided/implemented. The append-keyed split (decision rule case
+  2) shipped for all four streams and is live on the instance. The entity
+  records are now structural-identity-only (the volatile metric was removed),
+  fingerprint-gated, and the observations accumulate in the new append-keyed
+  stat streams:
+    - `github/user` → `github/user_stats` (followers/following/public_repos/
+      public_gists moved; `parsers.test.ts` asserts the entity record lacks
+      them, the stats record carries them).
+    - `slack/channels` → `slack/channel_stats` (`num_members` moved; the entity
+      `buildChannelRecord` carries identity/structure only).
+    - `ynab/accounts` → `ynab/account_stats` (balance/cleared/uncleared moved;
+      `accountRecord` carries no balance).
+    - `usaa/accounts`/`usaa/credit_card_billing` → `usaa/account_stats` (and the
+      run-clock `fetched_at` exclusion policy stays; these two are the policied
+      run-clock case, not the no-policy real-field case — see the script's
+      guardrail test pinning `excludeKeys: ['fetched_at']`).
+  Verified live (served revision `72b23624`, DB `pdpp_proof`, owner-cookie probe
+  on 2026-06-04): the four/five stat streams report `versions_per_record = 1.00`
+  (clean append keying, no churn); the entity streams only re-version on a real
+  structural change. The three identity streams that still show as `high`/`watch`
+  on the dashboard (`github/user` vpr=101, `slack/channels` vpr=31.58,
+  `ynab/accounts` vpr=13.39) carry **pre-split residue**: byte-identical no-op
+  re-emits from before the split, dominated by adjacent duplicates
+  (github/user 101→2 distinct bodies, slack/channels 30,728→1,106,
+  ynab/accounts 415→90 under adjacent-identical run-length collapse). This
+  residue is the genuine pre-split point-in-time observation series and, per
+  decision rule cases 2/3, is **retained, never compacted** — it is correctly
+  classified `point_in_time_real_field` (expected retained history, no
+  compaction policy), not "needs review." The console banner therefore reads
+  "Version churn is classified — no review needed" with 0 unclassified rows.
+  Owner decision 3 (the `version_disposition` manifest/envelope field that would
+  let the dashboard label these "expected: semantic-state / time-series history"
+  with a dedicated chip instead of the generic `high`/`watch` ratio chip)
+  was NOT implemented and remains the only open, optional refinement from this
+  note. It is dashboard honesty polish, not a churn defect — the rows are
+  already classified correctly; the field would only change their visual label.
