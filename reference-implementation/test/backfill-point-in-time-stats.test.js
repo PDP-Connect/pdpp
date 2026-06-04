@@ -6,8 +6,9 @@
  *      detection, per-day dedup (last-write-wins), prunable-version
  *      selection across the rule matrix, registry shape, argv parsing.
  *   2. Postgres-backed integration tests (gated on PDPP_TEST_POSTGRES_URL):
- *      seeded pre-split history → backfill → idempotent re-backfill →
- *      prune, asserting losslessness end to end.
+ *      seeded pre-split history under unique connector_instance_id values →
+ *      backfill → idempotent re-backfill → prune, asserting losslessness
+ *      end to end without truncating the shared test database.
  */
 
 import assert from 'node:assert/strict';
@@ -211,7 +212,16 @@ async function setupSchema(pool) {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS connector_instances (
       connector_instance_id TEXT PRIMARY KEY,
-      connector_id TEXT NOT NULL
+      owner_subject_id TEXT NOT NULL DEFAULT 'test-owner',
+      connector_id TEXT NOT NULL,
+      display_name TEXT NOT NULL DEFAULT 'test connection',
+      status TEXT NOT NULL DEFAULT 'active',
+      source_kind TEXT NOT NULL DEFAULT 'account',
+      source_binding_key TEXT NOT NULL DEFAULT 'test-binding',
+      source_binding_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TEXT NOT NULL DEFAULT '2026-06-04T00:00:00.000Z',
+      updated_at TEXT NOT NULL DEFAULT '2026-06-04T00:00:00.000Z',
+      revoked_at TEXT
     );
     CREATE TABLE IF NOT EXISTS records (
       id BIGSERIAL PRIMARY KEY,
@@ -259,18 +269,32 @@ async function setupSchema(pool) {
   `);
 }
 
-async function resetTables(pool) {
-  await pool.query(`
-    TRUNCATE records, record_changes, version_counter, connector_instances,
-             retained_size_stream, retained_size_connection, retained_size_global;
-  `);
-  // Drop any leftover backup tables from prior runs.
-  const tabs = await pool.query(
-    `SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename LIKE 'backfill_point_in_time_stats_backup_%'`,
-  );
-  for (const { tablename } of tabs.rows) {
-    await pool.query(`DROP TABLE IF EXISTS "${tablename}"`);
+function testSuffix() {
+  return `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+}
+
+async function cleanupTestData(pool, connectorInstanceId, backupTables = []) {
+  await pool.query(`DELETE FROM record_changes WHERE connector_instance_id = $1`, [connectorInstanceId]);
+  await pool.query(`DELETE FROM records WHERE connector_instance_id = $1`, [connectorInstanceId]);
+  await pool.query(`DELETE FROM version_counter WHERE connector_instance_id = $1`, [connectorInstanceId]);
+  await pool.query(`DELETE FROM retained_size_stream WHERE connector_instance_id = $1`, [connectorInstanceId]);
+  await pool.query(`DELETE FROM retained_size_connection WHERE connector_instance_id = $1`, [connectorInstanceId]);
+  await pool.query(`DELETE FROM connector_instances WHERE connector_instance_id = $1`, [connectorInstanceId]);
+  for (const backupTable of backupTables) {
+    await pool.query(`DROP TABLE IF EXISTS "${String(backupTable).replaceAll('"', '""')}"`);
   }
+}
+
+async function insertConnectorInstance(pool, connectorInstanceId, connectorId) {
+  await pool.query(
+    `INSERT INTO connector_instances
+       (connector_instance_id, owner_subject_id, connector_id, display_name, status,
+        source_kind, source_binding_key, source_binding_json, created_at, updated_at)
+     VALUES ($1, 'test-owner', $2, $3, 'active', 'account', $1, '{}'::jsonb,
+             '2026-06-04T00:00:00.000Z', '2026-06-04T00:00:00.000Z')
+     ON CONFLICT (connector_instance_id) DO NOTHING`,
+    [connectorInstanceId, connectorId, `${connectorId} test connection`],
+  );
 }
 
 /**
@@ -281,10 +305,7 @@ async function resetTables(pool) {
  */
 async function seedGithubUser(pool, cin) {
   const cid = 'github';
-  await pool.query(
-    `INSERT INTO connector_instances(connector_instance_id, connector_id) VALUES ($1,$2)`,
-    [cin, cid],
-  );
+  await insertConnectorInstance(pool, cin, cid);
   const history = [
     { v: 1, day: '2026-05-25', followers: 30 },
     { v: 2, day: '2026-05-25', followers: 31 }, // same-day later → wins for the 25th
@@ -332,10 +353,12 @@ async function seedGithubUser(pool, cin) {
 
 itPg('integration: backfill is lossless, idempotent, and enables a safe prune', async () => {
   const pool = new Pool({ connectionString: POSTGRES_URL });
-  const cin = 'cin_test_backfill';
+  const suffix = testSuffix();
+  const cin = `cin_test_backfill_${suffix}`;
+  const backupTables = [];
   try {
     await setupSchema(pool);
-    await resetTables(pool);
+    await cleanupTestData(pool, cin);
     await seedGithubUser(pool, cin);
     const policy = findPolicy('github', 'user');
 
@@ -377,7 +400,8 @@ itPg('integration: backfill is lossless, idempotent, and enables a safe prune', 
     // older than current (5), not first (1), not tombstone. Days 25(v2),
     // 26(v3), 27(v4) are represented. v1 is first → kept. So removable = v2,v3,v4.
     assert.equal(prunePlan.removableVersions, 3);
-    const pruneResult = await applyPrune({ pool, plan: prunePlan, runId: 'testrun' });
+    const pruneResult = await applyPrune({ pool, plan: prunePlan, runId: `test_${suffix}` });
+    backupTables.push(pruneResult.backupTable);
     assert.equal(pruneResult.deleted, 3);
     assert.ok(pruneResult.backupTable);
 
@@ -415,23 +439,19 @@ itPg('integration: backfill is lossless, idempotent, and enables a safe prune', 
     const prunePlan2 = await planPrune({ pool, connectorId: 'github', connectorInstanceId: cin, policy });
     assert.equal(prunePlan2.removableVersions, 0);
 
-    // cleanup backup table
-    await pool.query(`DROP TABLE IF EXISTS "${pruneResult.backupTable}"`);
   } finally {
+    await cleanupTestData(pool, cin, backupTables);
     await pool.end();
   }
 });
 
 itPg('integration: prune uses exact stat-key membership (no prefix over-match)', async () => {
   const pool = new Pool({ connectionString: POSTGRES_URL });
-  const cin = 'cin_test_exact';
+  const cin = `cin_test_exact_${testSuffix()}`;
   try {
     await setupSchema(pool);
-    await resetTables(pool);
-    await pool.query(
-      `INSERT INTO connector_instances(connector_instance_id, connector_id) VALUES ($1,'github')`,
-      [cin],
-    );
+    await cleanupTestData(pool, cin);
+    await insertConnectorInstance(pool, cin, 'github');
     // Entity "1" with two pre-split history versions on 05-25 / 05-26 and a
     // current identity-only version. NO stats backfilled for entity "1".
     const mkBody = (f) => ({ id: '1', login: 'x', followers: f, following: 1, public_repos: 5, public_gists: 0 });
@@ -468,16 +488,17 @@ itPg('integration: prune uses exact stat-key membership (no prefix over-match)',
     // despite entity "12"'s stat key sharing the "1" prefix.
     assert.equal(prunePlan.removableVersions, 0);
   } finally {
+    await cleanupTestData(pool, cin);
     await pool.end();
   }
 });
 
 itPg('integration: prune refuses when the observation was never backfilled', async () => {
   const pool = new Pool({ connectionString: POSTGRES_URL });
-  const cin = 'cin_test_no_backfill';
+  const cin = `cin_test_no_backfill_${testSuffix()}`;
   try {
     await setupSchema(pool);
-    await resetTables(pool);
+    await cleanupTestData(pool, cin);
     await seedGithubUser(pool, cin);
     const policy = findPolicy('github', 'user');
     // Skip backfill entirely. Only the forward 06-03 obs exists in stats.
@@ -485,6 +506,7 @@ itPg('integration: prune refuses when the observation was never backfilled', asy
     // No pre-split day is represented → nothing prunable.
     assert.equal(prunePlan.removableVersions, 0);
   } finally {
+    await cleanupTestData(pool, cin);
     await pool.end();
   }
 });

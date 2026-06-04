@@ -77,8 +77,8 @@
  * Losslessness (the central safety property).
  *   A source history version is eligible for prune iff:
  *     1. its reconstructed observation exists in the target stats stream
- *        with byte-identical real-field values (verified by re-reading the
- *        stats row inside the prune transaction), AND
+ *        with byte-identical real-field values (verified by exact stat-key
+ *        membership during the prune planning phase), AND
  *     2. it is not the current version of its key, AND
  *     3. it is not the first version of its key, AND
  *     4. it is not a tombstone (deleted=TRUE), AND
@@ -343,12 +343,15 @@ async function ingestStatRecord(client, connectorId, connectorInstanceId, target
 
   const recordJson = JSON.stringify(statBody);
   const nextVersion = await allocateNextVersion(client, connectorId, connectorInstanceId, targetStream);
-  await client.query(
+  const inserted = await client.query(
     `INSERT INTO records
        (connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version, deleted, deleted_at, cursor_value, primary_key_text)
-     VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, FALSE, NULL, $8, $9)`,
+     VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, FALSE, NULL, $8, $9)
+     ON CONFLICT (connector_instance_id, stream, record_key) DO NOTHING
+     RETURNING 1`,
     [connectorId, connectorInstanceId, targetStream, recordKey, recordJson, emittedAt, nextVersion, null, recordKey],
   );
+  if (!inserted.rowCount) return 'exists';
   await client.query(
     `INSERT INTO record_changes
        (connector_id, connector_instance_id, stream, record_key, version, record_json, emitted_at, deleted, deleted_at)
