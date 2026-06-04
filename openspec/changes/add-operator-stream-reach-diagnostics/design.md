@@ -68,6 +68,27 @@ The probe is therefore strictly a read of an already-failing path. It does not
 widen authority: it uses the token the client already holds, against the route
 the client already targets.
 
+### Cross-origin degrades honestly
+
+The streaming routes set no CORS headers; the standard deployment serves the
+console and the reference behind the same public origin, which is why the
+existing `EventSource` works at all. If a deployment is genuinely cross-origin,
+the `EventSource` would already be failing — and the probe `fetch` would be
+blocked by CORS and throw, which the classifier maps to `unreachable_origin`.
+That is the correct, honest classification for an origin/proxy misconfiguration,
+not a bug to special-case. The status server emits `run.stream_reach_failed`
+with `reason: unreachable_origin` and no HTTP status, which is exactly what
+happened.
+
+### Diagnostic status is not a run failure
+
+The beacon emits `run.stream_reach_failed` with `status: 'stream_reach_failed'`,
+a descriptive sub-resource status — never `failed`/`rejected`. A connector run
+can succeed even when the operator's stream viewer gave up reaching the surface,
+and `summarizeEvents` flags any `failed`/`rejected` event as a terminal run
+failure. Using a non-failure status keeps the give-up out of run-summary status,
+mirroring `run.browser_surface_probe_failed` (`status: 'surface_failed'`).
+
 ## Closed reason set
 
 | reason | probe result | operator message |

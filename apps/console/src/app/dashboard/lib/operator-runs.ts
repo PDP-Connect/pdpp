@@ -299,6 +299,33 @@ export async function mintRunInteractionStream(
   return body as StreamingSessionMintResponse;
 }
 
+/**
+ * Report a stream-reach give-up so the reference can record a
+ * `run.stream_reach_failed` spine event. The payload carries only the typed
+ * reason (the server clamps it to a closed set) and the HTTP status the client's
+ * give-up probe observed — never the stream token, proxy cookie, or raw viewer
+ * URL. This is a best-effort diagnostic beacon: the caller surfaces the operator
+ * message from its own local classification regardless of whether this succeeds.
+ */
+export async function reportRunInteractionStreamReachFailure(
+  runId: string,
+  input: { interactionId: string; reason: string; httpStatus: number | null }
+): Promise<void> {
+  const response = await fetchAs(`/_ref/runs/${encodeURIComponent(runId)}/run-interaction-stream/reach-failure`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: asJson({
+      interaction_id: input.interactionId,
+      reason: input.reason,
+      http_status: input.httpStatus,
+    }),
+  });
+  if (!response.ok) {
+    const body = await readBody(response);
+    throw new Error(describeError(body, `report stream reach failure failed (${response.status})`));
+  }
+}
+
 export async function deleteConnectorSchedule(connectorId: string) {
   const response = await fetchAs(connectorControlPath(connectorId, "/schedule"), {
     method: "DELETE",
