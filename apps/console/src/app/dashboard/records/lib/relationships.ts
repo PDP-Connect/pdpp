@@ -49,8 +49,42 @@ export interface ParentBackLink {
   parentStream: string;
 }
 
+/**
+ * A reverse link from a PARENT record's detail page down to one of its child
+ * streams' filtered record lists, derived from a child-declared `has_one`.
+ */
+export interface ReverseChildListLink {
+  /** The child stream this link targets. */
+  childStream: string;
+  /** The child field (declared `foreign_key`) holding the parent's key. */
+  foreignKey: string;
+  /** Filtered child-list href: `…/<child>?filter[<fk>]=<parentKey>`. */
+  href: string;
+}
+
 function recordsBasePath(connectionId: string): string {
   return `/dashboard/records/${encodeURIComponent(connectionId)}`;
+}
+
+/**
+ * Build the bounded, server-filterable child-**list** href for a parent →
+ * children navigation: `…/<child>?filter[<fk>]=<parentKey>`. Each path segment
+ * and the filter value are percent-encoded; this is the only correct target for
+ * a parent key (it is the filter value, never a child record-detail segment).
+ *
+ * Shared by the forward `has_many` path (`buildRelatedLinks`) and the reverse
+ * child-declared `has_one` path (`reverseChildListLinksFromManifest`) so both
+ * directions resolve to the identical location and encoding.
+ */
+function filteredChildListHref(args: {
+  connectionId: string;
+  childStream: string;
+  foreignKey: string;
+  parentKey: string;
+}): string {
+  const base = recordsBasePath(args.connectionId);
+  const filterQuery = `filter[${encodeURIComponent(args.foreignKey)}]=${encodeURIComponent(args.parentKey)}`;
+  return `${base}/${encodeURIComponent(args.childStream)}?${filterQuery}`;
 }
 
 /**
@@ -191,7 +225,6 @@ export function buildRelatedLinks(
   if (!Array.isArray(expandCapabilities)) {
     return [];
   }
-  const base = recordsBasePath(args.connectionId);
 
   return expandCapabilities.map((cap): RelatedLink => {
     const targetStream = cap.target_stream ?? cap.stream ?? "";
@@ -221,8 +254,12 @@ export function buildRelatedLinks(
     if (cardinality === "has_many") {
       // Child list filtered by the parent's key. The parent key is NOT a child
       // record key, so this is the only correct target.
-      const filterQuery = `filter[${encodeURIComponent(childParentKeyField)}]=${encodeURIComponent(args.parentRecordKey)}`;
-      link.href = `${base}/${encodeURIComponent(targetStream)}?${filterQuery}`;
+      link.href = filteredChildListHref({
+        connectionId: args.connectionId,
+        childStream: targetStream,
+        foreignKey: childParentKeyField,
+        parentKey: args.parentRecordKey,
+      });
       link.navigable = true;
       return link;
     }
@@ -273,6 +310,74 @@ export function childHasOneBackLinksFromManifest(
       parentStream: rel.stream,
       href: `${base}/${encodeURIComponent(rel.stream)}/${encodeURIComponent(value)}`,
     });
+  }
+  return out;
+}
+
+/**
+ * Stable key identifying a filtered child-list target as `(child stream, filter
+ * field)`. The parent key is constant for a given parent detail page, so it is
+ * not part of the key. Used to deduplicate a reverse child-declared `has_one`
+ * link against a forward parent-declared `has_many` link that resolves to the
+ * same filtered list. The parts are JSON-encoded as a 2-tuple, so the key is
+ * collision-free even when a stream or field name contains separators.
+ */
+export function reverseChildListDedupKey(childStream: string, foreignKey: string): string {
+  return JSON.stringify([childStream, foreignKey]);
+}
+
+/**
+ * Inverse of `childHasOneBackLinksFromManifest`: from a displayed PARENT record,
+ * build one link per child stream that declares a `has_one` back to the parent,
+ * pointing at the child stream's bounded, server-filtered record **list**
+ * (`…/<child>?filter[<fk>]=<parentKey>`).
+ *
+ * The relationship structure is read from each child stream's own declared
+ * `relationships[]` (a manifest declaration) — the same `has_one` the forward
+ * child → parent back-link reads, just traversed in the opposite direction. No
+ * child records are loaded and no child record-**detail** URL is built: the
+ * parent key is only ever the filter value, since it is the parent's key and not
+ * a child record key.
+ *
+ * `alreadyLinked` carries the dedup keys (see `reverseChildListDedupKey`) of any
+ * forward `has_many` links already rendered for this parent, so a stream that is
+ * reachable both as a parent-declared `has_many` and a child-declared `has_one`
+ * renders a single link, not two.
+ */
+export function reverseChildListLinksFromManifest(
+  connectorStreams: ManifestStreamShape[] | undefined,
+  args: { connectionId: string; parentStream: string; parentRecordKey: string },
+  alreadyLinked?: ReadonlySet<string>
+): ReverseChildListLink[] {
+  if (!Array.isArray(connectorStreams) || !args.parentStream || !args.parentRecordKey) {
+    return [];
+  }
+  const seen = new Set<string>(alreadyLinked ?? []);
+  const out: ReverseChildListLink[] = [];
+  for (const childStream of connectorStreams) {
+    if (!childStream?.name) {
+      continue;
+    }
+    for (const rel of childStream.relationships ?? []) {
+      if (rel.cardinality !== "has_one" || rel.stream !== args.parentStream || !rel.foreign_key) {
+        continue;
+      }
+      const dedupKey = reverseChildListDedupKey(childStream.name, rel.foreign_key);
+      if (seen.has(dedupKey)) {
+        continue;
+      }
+      seen.add(dedupKey);
+      out.push({
+        childStream: childStream.name,
+        foreignKey: rel.foreign_key,
+        href: filteredChildListHref({
+          connectionId: args.connectionId,
+          childStream: childStream.name,
+          foreignKey: rel.foreign_key,
+          parentKey: args.parentRecordKey,
+        }),
+      });
+    }
   }
   return out;
 }

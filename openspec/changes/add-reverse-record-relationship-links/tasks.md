@@ -39,7 +39,7 @@ is acceptance.
 
 ## 2. Implementation (deferred — owner-approved lane only)
 
-- [ ] 2.1 Add a pure helper to
+- [x] 2.1 Add a pure helper to
   `apps/console/src/app/dashboard/records/lib/relationships.ts` that, given the
   connector manifest's streams and the displayed parent stream + parent record
   key, returns one filtered-child-list link per child stream that declares a
@@ -47,19 +47,24 @@ is acceptance.
   SHALL be `/dashboard/records/<conn>/<child>?filter[<fk>]=<parentKey>`, with each
   segment and the filter value percent-encoded. The helper SHALL NOT build a child
   record-detail URL and SHALL NOT load any child records.
-- [ ] 2.2 Wire the helper into the parent record detail page
+  (`reverseChildListLinksFromManifest`, sharing `filteredChildListHref` with the
+  forward `buildRelatedLinks` path so both directions encode identically.)
+- [x] 2.2 Wire the helper into the parent record detail page
   `apps/console/src/app/dashboard/records/[connector]/[stream]/[recordKey]/page.tsx`,
   resolving the manifest via `findManifestForConnectorId` (URL-form `connector_id`
   + short `connector_key`), and render the reverse links in the existing "Related"
   section. Deduplicate against any forward `has_many` `buildRelatedLinks` target
   resolving to the same `(child stream, filter field, parent key)`.
-- [ ] 2.3 Keep the server, manifests, `expand[]` grammar, and `filter[…]` grammar
+  (Dedup keys built via `reverseChildListDedupKey` from the navigable forward
+  `has_many` links and seeded into the reverse helper.)
+- [x] 2.3 Keep the server, manifests, `expand[]` grammar, and `filter[…]` grammar
   unchanged. No new endpoint, query parameter, manifest field, or
-  `expand_capabilities` entry.
+  `expand_capabilities` entry. (Console-only diff; the reverse link reuses the
+  existing `filter[<field>]=<value>` list query already applied server-side.)
 
 ## 3. Verification (deferred — with the implementation lane)
 
-- [ ] 3.1 Add focused unit tests in
+- [x] 3.1 Add focused unit tests in
   `apps/console/src/app/dashboard/records/lib/relationships.test.ts`:
   Chase-shaped `accounts` parent yields a `transactions?filter[account_id]=<key>`
   list link; the link is a list URL with a `filter[…]` query, never a
@@ -67,8 +72,11 @@ is acceptance.
   no reverse link; a parent field not covered by any child-declared `has_one`
   produces no link; percent-encoding of connection/stream/filter value; URL-form
   vs short connector key both resolve; dedup against a forward `has_many` target.
-- [ ] 3.2 Run `node --test --import tsx apps/console/src/app/dashboard/records/lib/relationships.test.ts`
+  (12 new tests; also covers missing `foreign_key`, self-dedup of a duplicate
+  `has_one`, and empty-arg guards.)
+- [x] 3.2 Run `node --test --import tsx apps/console/src/app/dashboard/records/lib/relationships.test.ts`
   and `pnpm --filter pdpp-console run types:check`; confirm green.
+  (32/32 tests pass; `types:check` clean.)
 - [ ] 3.3 (Owner, optional) Live-verify on a deployed Chase-bearing instance that an
   `accounts` detail page renders a working "transactions" filtered-list link.
   Bundled-manifest-derived and deploy-revision-independent, so the unit tests are

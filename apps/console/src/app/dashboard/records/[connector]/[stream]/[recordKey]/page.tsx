@@ -21,6 +21,8 @@ import {
   findParentBackLink,
   parentRelationsForChild,
   type RelatedLink,
+  reverseChildListDedupKey,
+  reverseChildListLinksFromManifest,
 } from "../../../lib/relationships.ts";
 
 export const dynamic = "force-dynamic";
@@ -39,12 +41,16 @@ export default async function RecordDetailPage({
   let connectionId = routeId;
   let expandCapabilities: ExpandCapability[] = [];
   let parentRelations: Array<{ parentStream: string; capability: ExpandCapability }> = [];
-  let childManifestStream:
-    | {
-        name: string;
-        relationships?: Array<{ name: string; stream?: string; foreign_key?: string; cardinality?: string }>;
-      }
-    | undefined;
+  type ManifestStream = {
+    name: string;
+    query?: { expand?: Array<{ name: string }> };
+    relationships?: Array<{ name: string; stream?: string; foreign_key?: string; cardinality?: string }>;
+  };
+  let childManifestStream: ManifestStream | undefined;
+  // All streams in this connector's manifest — used to enumerate child streams
+  // whose declared `has_one` points back at the displayed (parent) stream, for
+  // reverse parent → filtered-child-list links.
+  let connectorStreams: ManifestStream[] = [];
   try {
     const connection = await resolveConnectionForRecordsRoute(routeId);
     if (!connection) {
@@ -64,7 +70,8 @@ export default async function RecordDetailPage({
     record = recordResult;
     expandCapabilities = Array.isArray(metadataResult?.expand_capabilities) ? metadataResult.expand_capabilities : [];
     const connectorManifest = findManifestForConnectorId(manifests, connection.connector_id);
-    childManifestStream = connectorManifest?.streams?.find((s) => s.name === streamName) as typeof childManifestStream;
+    connectorStreams = (connectorManifest?.streams ?? []) as ManifestStream[];
+    childManifestStream = connectorStreams.find((s) => s.name === streamName);
     const parentMetadata = await Promise.all(
       candidateParentStreamsForChild(connectorManifest?.streams, streamName).map(async (parentStream) => {
         const metadata = await getStreamMetadata(connection.connector_id, parentStream, { connectorInstanceId }).catch(
@@ -112,6 +119,21 @@ export default async function RecordDetailPage({
 
   // Parent → child relations declared on THIS (parent) stream.
   const relatedLinks = buildRelatedLinks(expandCapabilities, { connectionId, parentRecordKey: record.id });
+  // Reverse parent → filtered-child-list links: for each child stream that
+  // declares a `has_one` back to THIS (parent) stream, link to that child's
+  // list filtered by the parent key. Deduplicated against any forward
+  // `has_many` link that already resolves to the same `(child stream, filter
+  // field)` filtered list (D6 in the OpenSpec design).
+  const forwardChildListKeys = new Set(
+    relatedLinks
+      .filter((link) => link.navigable && link.cardinality === "has_many" && link.childParentKeyField)
+      .map((link) => reverseChildListDedupKey(link.targetStream, link.childParentKeyField as string))
+  );
+  const reverseChildListLinks = reverseChildListLinksFromManifest(
+    connectorStreams,
+    { connectionId, parentStream: streamName, parentRecordKey: record.id },
+    forwardChildListKeys
+  );
   // Child → parent back-links from two sources:
   //   1. Parent streams' expand_capabilities (server metadata, covers parent-declared has_many/has_one)
   //   2. Child's own manifest has_one relationships (covers child-declared has_one like Chase transactions→account)
@@ -154,7 +176,7 @@ export default async function RecordDetailPage({
         </pre>
       </Section>
 
-      {(relatedLinks.length > 0 || allParentBackLinks.length > 0) && (
+      {(relatedLinks.length > 0 || allParentBackLinks.length > 0 || reverseChildListLinks.length > 0) && (
         <Section title="Related">
           <ul className="space-y-2">
             {allParentBackLinks.map((backLink) => (
@@ -170,6 +192,16 @@ export default async function RecordDetailPage({
             ))}
             {relatedLinks.map((link) => (
               <RelatedRow key={link.relation} link={link} />
+            ))}
+            {reverseChildListLinks.map((link) => (
+              <li className="pdpp-caption" key={`reverse:${link.childStream}:${link.foreignKey}`}>
+                <Link
+                  className="font-mono text-foreground underline underline-offset-2 hover:no-underline"
+                  href={link.href}
+                >
+                  {link.childStream} (has_many) →
+                </Link>
+              </li>
             ))}
           </ul>
         </Section>
