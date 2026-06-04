@@ -223,9 +223,9 @@ for (const lane of wrapperLanes) {
       && lane.startedAt
       && lane.endedAt
       && normalizeTs(lane.startedAt) === normalizeTs(lane.endedAt);
-    if (stale) {
+    if (stale && !parkedWrapperLane) {
       risks.push(`WRAPPER-LANE stale-running (SIGKILL?) lane=${lane.lane} started=${lane.startedAt} — relaunch or mark superseded`);
-    } else if (!processRunning) {
+    } else if (!processRunning && !parkedWrapperLane) {
       risks.push(`WRAPPER-LANE running-without-process lane=${lane.lane} started=${lane.startedAt} — inspect wrapper status and relaunch or mark superseded`);
     }
   }
