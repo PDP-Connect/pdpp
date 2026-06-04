@@ -715,12 +715,63 @@ async function hydratePostgresExpandedRelations({
   }
 }
 
+/**
+ * Atomically allocate the next stream version for a
+ * `(connector_instance_id, stream)` pair, strictly above every durable
+ * floor: the `version_counter` row, the max retained `record_changes`
+ * version, and the max current `records` version.
+ *
+ * The plain `max_version + 1` counter bump is unsafe whenever the counter
+ * has fallen *behind* the durable history/current state — observed live as
+ * GitHub current-projection drift where `records.version` and
+ * `record_changes.version` were already ahead of `version_counter.max_version`
+ * (counter lagging by one). An unanchored-row self-heal then re-allocated an
+ * already-used stream version, and the subsequent `record_changes` insert
+ * collided on `PRIMARY KEY(connector_instance_id, stream, version)`, rejecting
+ * the row inside an otherwise-"succeeded" batch.
+ *
+ * Construction (single statement, concurrency-safe):
+ *   - `GREATEST(counter, max(record_changes.version), max(records.version))+1`
+ *     is computed in one INSERT…ON CONFLICT…RETURNING. The two `MAX`
+ *     subqueries are correlated to the scoped pair and `COALESCE`d to 0 so an
+ *     empty history/current set degrades to the pure counter behavior.
+ *   - On first allocation (no conflicting row) the floor is taken in the
+ *     `VALUES` subselects; on conflict the `ON CONFLICT DO UPDATE` re-reads
+ *     `version_counter.max_version` (now row-locked) and folds the same two
+ *     floors back in.
+ *   - Two concurrent allocators serialize on the `version_counter` row lock
+ *     the upsert takes, and `version_counter.max_version` is always part of
+ *     the `GREATEST`, so the second allocator observes the first's committed
+ *     increment and cannot return the same version. The history/current
+ *     floors only ever raise the result; they never let it repeat.
+ *
+ * Mirrors the SQLite reference allocator's intent (single durable
+ * statement, no read-then-write window); the floor folding is Postgres-only
+ * because the live drift was Postgres-only.
+ */
 async function allocateNextVersion(client, connectorId, connectorInstanceId, stream) {
   const result = await client.query(
     `INSERT INTO version_counter (connector_id, connector_instance_id, stream, max_version)
-     VALUES ($1, $2, $3, 1)
+     VALUES (
+       $1, $2, $3,
+       GREATEST(
+         1,
+         COALESCE((SELECT MAX(version) FROM record_changes
+                    WHERE connector_instance_id = $2 AND stream = $3), 0) + 1,
+         COALESCE((SELECT MAX(version) FROM records
+                    WHERE connector_instance_id = $2 AND stream = $3), 0) + 1
+       )
+     )
      ON CONFLICT (connector_instance_id, stream) DO UPDATE
-       SET max_version = version_counter.max_version + 1
+       SET max_version = GREATEST(
+             version_counter.max_version,
+             COALESCE((SELECT MAX(version) FROM record_changes
+                        WHERE connector_instance_id = version_counter.connector_instance_id
+                          AND stream = version_counter.stream), 0),
+             COALESCE((SELECT MAX(version) FROM records
+                        WHERE connector_instance_id = version_counter.connector_instance_id
+                          AND stream = version_counter.stream), 0)
+           ) + 1
      RETURNING max_version`,
     [connectorId, connectorInstanceId, stream],
   );
