@@ -15,10 +15,8 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-
-const { ambiguousFallbackLabelKeys, hasFallbackLabel, isLabelNeeded } = await import(
-  new URL("./connection-label-ambiguity.ts", import.meta.url).href
-);
+import type { ConnectorOverview } from "./rs-client.ts";
+import { ambiguousFallbackLabelKeys, hasFallbackLabel, isLabelNeeded } from "./connection-label-ambiguity.ts";
 
 /** Minimal ConnectorOverview-shaped fixture. */
 function overview({
@@ -27,12 +25,12 @@ function overview({
   connectionId,
 }: {
   connectorId: string;
-  displayName: string | null;
+  displayName?: string;
   connectionId: string;
-}) {
+}): ConnectorOverview {
   return {
     connectionId,
-    connector: { connector_id: connectorId, display_name: displayName, name: null, streams: [] },
+    connector: { connector_id: connectorId, ...(displayName === undefined ? {} : { display_name: displayName }), streams: [] },
     connectorDisplayName: connectorId,
     isRunning: false,
     lastRun: null,
@@ -45,7 +43,7 @@ function overview({
 test("a single unnamed connection of a type is NOT label-needed", () => {
   const overviews = [
     overview({ connectorId: "amazon", displayName: "Amazon", connectionId: "cin_amazon" }),
-    overview({ connectorId: "usaa", displayName: null, connectionId: "cin_usaa" }),
+    overview({ connectorId: "usaa", connectionId: "cin_usaa" }),
     overview({ connectorId: "github", displayName: "GitHub", connectionId: "cin_github" }),
     overview({ connectorId: "ynab", displayName: "YNAB", connectionId: "cin_ynab" }),
   ];
@@ -59,13 +57,13 @@ test("a single unnamed connection of a type is NOT label-needed", () => {
 test("two unnamed connections of the SAME type are both label-needed", () => {
   const overviews = [
     overview({ connectorId: "gmail", displayName: "Gmail", connectionId: "cin_gmail_a" }),
-    overview({ connectorId: "gmail", displayName: null, connectionId: "cin_gmail_b" }),
+    overview({ connectorId: "gmail", connectionId: "cin_gmail_b" }),
     overview({ connectorId: "amazon", displayName: "Amazon", connectionId: "cin_amazon" }),
   ];
   const keys = ambiguousFallbackLabelKeys(overviews);
   assert.deepEqual(new Set(keys), new Set(["cin_gmail_a", "cin_gmail_b"]));
   // The lone Amazon is never nagged even when another type is ambiguous.
-  assert.equal(isLabelNeeded(overviews[2], keys), false);
+  assert.equal(isLabelNeeded(overviews[2]!, keys), false);
 });
 
 test("a renamed connection is never label-needed, and disambiguates its siblings", () => {
@@ -74,27 +72,27 @@ test("a renamed connection is never label-needed, and disambiguates its siblings
   // ambiguous, so nothing is flagged.
   const overviews = [
     overview({ connectorId: "gmail", displayName: "Personal Gmail", connectionId: "cin_gmail_a" }),
-    overview({ connectorId: "gmail", displayName: null, connectionId: "cin_gmail_b" }),
+    overview({ connectorId: "gmail", connectionId: "cin_gmail_b" }),
   ];
   const keys = ambiguousFallbackLabelKeys(overviews);
   assert.equal(keys.size, 0);
-  assert.equal(hasFallbackLabel(overviews[0]), false);
-  assert.equal(hasFallbackLabel(overviews[1]), true);
+  assert.equal(hasFallbackLabel(overviews[0]!), false);
+  assert.equal(hasFallbackLabel(overviews[1]!), true);
 });
 
 test("three unnamed of a type are all label-needed", () => {
   const overviews = [
-    overview({ connectorId: "claude-code", displayName: null, connectionId: "cin_cc_1" }),
-    overview({ connectorId: "claude-code", displayName: null, connectionId: "cin_cc_2" }),
-    overview({ connectorId: "claude-code", displayName: null, connectionId: "cin_cc_3" }),
+    overview({ connectorId: "claude-code", connectionId: "cin_cc_1" }),
+    overview({ connectorId: "claude-code", connectionId: "cin_cc_2" }),
+    overview({ connectorId: "claude-code", connectionId: "cin_cc_3" }),
   ];
   const keys = ambiguousFallbackLabelKeys(overviews);
   assert.equal(keys.size, 3);
 });
 
 test("ambiguity is order-independent", () => {
-  const a = overview({ connectorId: "slack", displayName: null, connectionId: "cin_s1" });
-  const b = overview({ connectorId: "slack", displayName: null, connectionId: "cin_s2" });
+  const a = overview({ connectorId: "slack", connectionId: "cin_s1" });
+  const b = overview({ connectorId: "slack", connectionId: "cin_s2" });
   const forward = ambiguousFallbackLabelKeys([a, b]);
   const reverse = ambiguousFallbackLabelKeys([b, a]);
   assert.deepEqual(new Set(forward), new Set(reverse));
