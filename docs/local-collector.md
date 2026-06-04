@@ -340,6 +340,14 @@ ExecStart=/usr/bin/pdpp-local-collector run --connector %i
 MemoryMax=2G
 MemorySwapMax=0
 OOMPolicy=kill
+# Make this background collector the kernel's preferred victim if the WHOLE HOST
+# (not just this cgroup) runs out of memory. A positive OOMScoreAdjust raises the
+# run's badness score so an unrelated host-wide memory spike sacrifices the
+# collector — which is durable and resumes on the next run — before it reaps an
+# interactive app. This is host-wide victim selection ONLY; the cgroup's own cap
+# above (MemoryMax + MemorySwapMax=0 + OOMPolicy=kill) already self-kills this
+# run if IT is the one over budget, independent of this score. See the note
+# below for why a collector killed under host pressure is expected, not a fault.
 OOMScoreAdjust=500
 # Bound the oneshot start operation so a hung connector child cannot run
 # forever. RuntimeMaxSec is ignored for Type=oneshot services, so the effective
@@ -363,6 +371,24 @@ scheduled run resumes draining the durable outbox. Lower `MemoryMax` for a small
 host or raise it for a host that legitimately collects very large sources, but
 do not remove it. Use `systemd-run --scope -p MemoryMax=2G -p MemorySwapMax=0`
 with the same values when proving a run by hand before installing the unit.
+
+`OOMScoreAdjust=500` is a **separate, deliberate** policy and is easy to confuse
+with the cgroup cap above. It does **not** affect what happens when this run
+exceeds its own `MemoryMax` — that case is handled entirely by `OOMPolicy=kill`
+on the cgroup, regardless of the score. The score only changes **host-wide**
+victim selection: when some *other* process (a model server, a browser, an
+editor) drives the **whole machine** out of memory, the positive score makes the
+kernel pick this collector first. That is intended — a background data collector
+should yield to the user's foreground work, and it loses nothing by being killed:
+its undelivered work is already durable in the outbox and the next scheduled run
+resumes the drain. The practical consequence to remember when reading health
+signals: **a collector terminated under host-wide memory pressure is expected
+behavior, not a collector fault.** Its tiny resident size means it is almost
+never the cause of the pressure; it is the cheapest thing to sacrifice. If you
+would rather the collector compete on equal footing with other processes during
+a host-wide OOM, set `OOMScoreAdjust=0`; raise it toward `1000` to make the
+collector even more strongly preferred as the victim. Leaving it at `500` keeps
+the collector a willing-but-not-absolute sacrifice.
 
 If Node is installed under a user-managed prefix such as `nvm`, do not rely on
 systemd's minimal default `PATH`. Either point `ExecStart` at a wrapper that

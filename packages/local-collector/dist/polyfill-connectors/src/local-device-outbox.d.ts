@@ -86,6 +86,17 @@ export interface LocalDeviceOutboxPruneSentResult {
     matched: number;
     pruned: number;
 }
+export interface LocalDeviceOutboxPageStats {
+    freelistPages: number;
+    pageCount: number;
+    pageSizeBytes: number;
+    reclaimableBytes: number;
+}
+export interface LocalDeviceOutboxCompactResult {
+    after: LocalDeviceOutboxPageStats;
+    before: LocalDeviceOutboxPageStats;
+    reclaimedBytes: number;
+}
 export interface LocalDeviceOutboxDeadLetterErrorClass {
     count: number;
     error_class: string;
@@ -120,6 +131,9 @@ export declare class LocalDeviceOutbox {
     backupTo(path: string): void;
     requeueDeadLetters(input?: LocalDeviceOutboxRequeueDeadLettersInput): LocalDeviceOutboxRequeueDeadLettersResult;
     pruneSent(input?: LocalDeviceOutboxPruneSentInput): LocalDeviceOutboxPruneSentResult;
+    countNonSucceeded(): number;
+    pageStats(): LocalDeviceOutboxPageStats;
+    compact(): LocalDeviceOutboxCompactResult;
     hasNonSucceededWork(input: {
         excludeKinds?: readonly LocalDeviceOutboxKind[];
         kinds?: readonly LocalDeviceOutboxKind[];

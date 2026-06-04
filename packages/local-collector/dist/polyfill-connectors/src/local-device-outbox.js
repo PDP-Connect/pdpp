@@ -331,6 +331,39 @@ export class LocalDeviceOutbox {
             throw error;
         }
     }
+    countNonSucceeded() {
+        const row = this.#db.prepare("SELECT COUNT(*) AS total FROM local_device_outbox WHERE status != 'succeeded'").get();
+        return isRecord(row) ? numberFrom(row.total) : 0;
+    }
+    pageStats() {
+        return this.#readPageStats();
+    }
+    compact() {
+        const before = this.#readPageStats();
+        this.#db.exec("VACUUM");
+        this.#db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+        const after = this.#readPageStats();
+        const reclaimedPages = Math.max(0, before.pageCount - after.pageCount);
+        return { after, before, reclaimedBytes: reclaimedPages * before.pageSizeBytes };
+    }
+    #readPageStats() {
+        const pageSizeBytes = this.#pragmaInt("page_size");
+        const pageCount = this.#pragmaInt("page_count");
+        const freelistPages = this.#pragmaInt("freelist_count");
+        return {
+            freelistPages,
+            pageCount,
+            pageSizeBytes,
+            reclaimableBytes: freelistPages * pageSizeBytes,
+        };
+    }
+    #pragmaInt(pragma) {
+        const row = this.#db.prepare(`PRAGMA ${pragma}`).get();
+        if (!isRecord(row)) {
+            return 0;
+        }
+        return numberFrom(row[pragma]);
+    }
     hasNonSucceededWork(input) {
         const clauses = ["source_instance_id = ?", "status != 'succeeded'"];
         const params = [input.sourceInstanceId];

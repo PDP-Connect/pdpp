@@ -112,6 +112,12 @@ Subcommands:
           [--keep-count <n>]       Keep at most N most-recent sent rows per connection.
           [--apply]                Dry-run by default; --apply mutates after a DB backup.
                                    Never touches pending, leased, retrying, or dead-letter rows.
+  compact                         Rebuild the outbox SQLite file to return freed pages to disk.
+          [--queue <path>]         prune-sent deletes rows but the file never shrinks on its own
+          [--connection-id <id>]   (auto_vacuum=NONE); compact runs VACUUM to reclaim the freelist.
+          [--apply]                Dry-run by default; --apply rebuilds after a DB backup.
+          [--force]                Apply is refused while unsent (ready/leased/dead-letter) rows
+                                   exist; --force compacts anyway (VACUUM is lossless either way).
   enroll  --base-url <url>        Exchange a one-time enrollment code for a
           --code <code>             device id + device token.
           [--device-label <label>]
@@ -161,6 +167,14 @@ async function main() {
     if (options.command === "prune-sent") {
         const result = pruneSentOutboxRows(options);
         process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+        return;
+    }
+    if (options.command === "compact") {
+        const result = compactOutbox(options);
+        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+        if (result.refused) {
+            process.exitCode = 1;
+        }
         return;
     }
     if (options.command === "enroll") {
@@ -589,6 +603,96 @@ function daysAgoIso(days) {
     const ms = days * 24 * 60 * 60 * 1000;
     return new Date(Date.now() - ms).toISOString();
 }
+export function compactOutbox(options) {
+    const dbPath = resolveOutboxPath(options);
+    const exists = existsSync(dbPath);
+    const dryRun = !options.apply;
+    if (!exists) {
+        return {
+            backup_path: null,
+            compacted: null,
+            db: { exists: false, path: dbPath },
+            dry_run: dryRun,
+            note: "Outbox DB does not exist; nothing to compact.",
+            non_succeeded_rows: 0,
+            page_stats: null,
+            reclaimed_bytes: 0,
+            refused: false,
+        };
+    }
+    const outbox = new LocalDeviceOutbox({ path: dbPath });
+    try {
+        const pageStats = outbox.pageStats();
+        const nonSucceeded = outbox.countNonSucceeded();
+        if (dryRun) {
+            return {
+                backup_path: null,
+                compacted: null,
+                db: { exists: true, path: dbPath },
+                dry_run: true,
+                note: compactDryRunNote(pageStats, nonSucceeded, Boolean(options.force)),
+                non_succeeded_rows: nonSucceeded,
+                page_stats: pageStats,
+                reclaimed_bytes: 0,
+                refused: false,
+            };
+        }
+        if (nonSucceeded > 0 && !options.force) {
+            return {
+                backup_path: null,
+                compacted: null,
+                db: { exists: true, path: dbPath },
+                dry_run: false,
+                note: `Refusing to compact: ${nonSucceeded} non-succeeded (ready/leased/dead-letter) row(s) are still in the outbox. ` +
+                    "Drain the lane first (`pdpp-local-collector run …`, then `retry-dead-letters --apply` for any dead-letter rows), " +
+                    "or pass --force to compact anyway. VACUUM is lossless — unsent rows are copied, never dropped — but compacting a " +
+                    "live lane is refused by default so the reclaim runs on a quiet outbox.",
+                non_succeeded_rows: nonSucceeded,
+                page_stats: pageStats,
+                reclaimed_bytes: 0,
+                refused: true,
+            };
+        }
+        const backupPath = backupSqliteDb(outbox, dbPath, "compact");
+        const result = outbox.compact();
+        return {
+            backup_path: backupPath,
+            compacted: result.after,
+            db: { exists: true, path: dbPath },
+            dry_run: false,
+            note: compactAppliedNote(result, nonSucceeded, Boolean(options.force)),
+            non_succeeded_rows: nonSucceeded,
+            page_stats: result.before,
+            reclaimed_bytes: result.reclaimedBytes,
+            refused: false,
+        };
+    }
+    finally {
+        outbox.close();
+    }
+}
+function compactDryRunNote(stats, nonSucceeded, force) {
+    const reclaimMb = (stats.reclaimableBytes / (1024 * 1024)).toFixed(1);
+    if (stats.reclaimableBytes === 0) {
+        return "The outbox has no reclaimable free pages; a compact would return ~0 bytes. Nothing to do.";
+    }
+    const base = `~${reclaimMb} MiB of free pages can be returned to the filesystem (${stats.freelistPages} of ${stats.pageCount} pages). ` +
+        "Re-run with --apply to rebuild the DB in place (backs up the DB first).";
+    if (nonSucceeded > 0 && !force) {
+        return (`${base} NOTE: ${nonSucceeded} non-succeeded (unsent) row(s) are present, so --apply will be refused unless you ` +
+            "drain the lane first or pass --force. VACUUM never drops unsent rows; the refusal just keeps the reclaim on a quiet outbox.");
+    }
+    return base;
+}
+function compactAppliedNote(result, nonSucceeded, force) {
+    const reclaimedMb = (result.reclaimedBytes / (1024 * 1024)).toFixed(1);
+    const forcedNote = nonSucceeded > 0 && force
+        ? ` Compacted with --force while ${nonSucceeded} non-succeeded row(s) were present; VACUUM copied them losslessly.`
+        : "";
+    return (`Compacted: ~${reclaimedMb} MiB returned to the filesystem ` +
+        `(${result.before.pageCount} → ${result.after.pageCount} pages).${forcedNote} ` +
+        "Run `pdpp-local-collector status` to confirm the new outbox size.");
+}
 function backupSqliteDb(outbox, dbPath, label) {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const backupPath = `${dbPath}.pre-${label}-${stamp}.bak`;
@@ -636,8 +740,9 @@ export function parseArgs(args) {
         command !== "status" &&
         command !== "doctor" &&
         command !== "retry-dead-letters" &&
-        command !== "prune-sent") {
-        throw new CollectorUsageError(`usage: pdpp-local-collector <enroll|run|advertise|status|doctor|retry-dead-letters|prune-sent> --base-url <url> [options]`);
+        command !== "prune-sent" &&
+        command !== "compact") {
+        throw new CollectorUsageError(`usage: pdpp-local-collector <enroll|run|advertise|status|doctor|retry-dead-letters|prune-sent|compact> --base-url <url> [options]`);
     }
     const options = {
         baseUrl: process.env.PDPP_REFERENCE_BASE_URL ?? "http://127.0.0.1:7662",
@@ -679,6 +784,10 @@ export function parseArgs(args) {
 function applyFlagOption(options, arg) {
     if (arg === "--apply") {
         options.apply = true;
+        return true;
+    }
+    if (arg === "--force") {
+        options.force = true;
         return true;
     }
     return false;

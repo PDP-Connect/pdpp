@@ -40,8 +40,10 @@ import {
   deriveLocalCollectorLifecycleState,
   LocalDeviceOutbox,
   type LocalCollectorLifecycleState,
+  type LocalDeviceOutboxCompactResult,
   type LocalDeviceOutboxDeadLetterErrorSummary,
   type LocalDeviceOutboxKind,
+  type LocalDeviceOutboxPageStats,
   type LocalDeviceOutboxPruneSentInput,
   type LocalDeviceOutboxPruneSentResult,
   type LocalDeviceOutboxSummary,
@@ -240,13 +242,22 @@ export interface CliOptions {
   args?: string[];
   baseUrl: string;
   code?: string;
-  command: "enroll" | "run" | "advertise" | "status" | "doctor" | "retry-dead-letters" | "prune-sent";
+  command:
+    | "enroll"
+    | "run"
+    | "advertise"
+    | "status"
+    | "doctor"
+    | "retry-dead-letters"
+    | "prune-sent"
+    | "compact";
   connector?: string;
   deadLetterKind?: LocalDeviceOutboxKind;
   deviceId?: string;
   deviceLabel?: string;
   deviceToken?: string;
   entrypointCommand?: string;
+  force?: boolean;
   keepCount?: number;
   limit?: number;
   olderThanDays?: number;
@@ -285,6 +296,12 @@ Subcommands:
           [--keep-count <n>]       Keep at most N most-recent sent rows per connection.
           [--apply]                Dry-run by default; --apply mutates after a DB backup.
                                    Never touches pending, leased, retrying, or dead-letter rows.
+  compact                         Rebuild the outbox SQLite file to return freed pages to disk.
+          [--queue <path>]         prune-sent deletes rows but the file never shrinks on its own
+          [--connection-id <id>]   (auto_vacuum=NONE); compact runs VACUUM to reclaim the freelist.
+          [--apply]                Dry-run by default; --apply rebuilds after a DB backup.
+          [--force]                Apply is refused while unsent (ready/leased/dead-letter) rows
+                                   exist; --force compacts anyway (VACUUM is lossless either way).
   enroll  --base-url <url>        Exchange a one-time enrollment code for a
           --code <code>             device id + device token.
           [--device-label <label>]
@@ -345,6 +362,18 @@ async function main(): Promise<void> {
   if (options.command === "prune-sent") {
     const result = pruneSentOutboxRows(options);
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
+  if (options.command === "compact") {
+    const result = compactOutbox(options);
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    // A refused apply is an operator error (unsent work present); exit non-zero
+    // so a supervising script does not mistake the refusal for a successful
+    // reclaim. Dry-run and successful apply exit 0.
+    if (result.refused) {
+      process.exitCode = 1;
+    }
     return;
   }
 
@@ -1119,6 +1148,159 @@ function daysAgoIso(days: number): string {
   return new Date(Date.now() - ms).toISOString();
 }
 
+export interface CompactOutput {
+  backup_path: string | null;
+  /** Page accounting after a successful apply; null on dry-run or refusal. */
+  compacted: LocalDeviceOutboxPageStats | null;
+  db: {
+    exists: boolean;
+    path: string;
+  };
+  dry_run: boolean;
+  note: string;
+  /**
+   * Count of rows that are NOT `succeeded` (ready/leased/dead-letter) across
+   * the whole file. A non-zero value blocks an apply unless `--force` is set.
+   */
+  non_succeeded_rows: number;
+  /** Reclaimable disk before this command ran (`freelist * page_size`). */
+  page_stats: LocalDeviceOutboxPageStats | null;
+  /** Bytes actually returned to the filesystem (0 on dry-run or refusal). */
+  reclaimed_bytes: number;
+  /**
+   * True when an `--apply` was refused because unsent rows exist and `--force`
+   * was not supplied. The DB is never mutated on a refusal.
+   */
+  refused: boolean;
+}
+
+/**
+ * Reclaim disk from a large local outbox SQLite file by rebuilding it in place
+ * with `VACUUM`. `prune-sent` (and the run-time auto-prune) delete acknowledged
+ * rows, but with `auto_vacuum = NONE` the freed pages stay in the file as
+ * freelist and never return to the filesystem — so a 35 GB outbox whose rows
+ * were all pruned stays a 35 GB file. This command drops that freelist.
+ *
+ * Safety:
+ * - Dry-run by default: reports the reclaimable bytes and the non-succeeded
+ *   row count without touching the DB.
+ * - `--apply` REFUSES when any non-`succeeded` (ready/leased/dead-letter) row
+ *   exists, unless `--force` is supplied. `VACUUM` itself is lossless — it
+ *   copies every row including unsent work — so this guard is a quiet-state
+ *   policy (compact a drained lane, not one mid-drain), not a data-safety
+ *   requirement. The refusal exits non-zero and never mutates the file.
+ * - `--apply` backs up the DB (`VACUUM INTO` a `.bak`) before rebuilding, like
+ *   `prune-sent` and `retry-dead-letters`.
+ */
+export function compactOutbox(options: CliOptions): CompactOutput {
+  const dbPath = resolveOutboxPath(options);
+  const exists = existsSync(dbPath);
+  const dryRun = !options.apply;
+
+  if (!exists) {
+    return {
+      backup_path: null,
+      compacted: null,
+      db: { exists: false, path: dbPath },
+      dry_run: dryRun,
+      note: "Outbox DB does not exist; nothing to compact.",
+      non_succeeded_rows: 0,
+      page_stats: null,
+      reclaimed_bytes: 0,
+      refused: false,
+    };
+  }
+
+  const outbox = new LocalDeviceOutbox({ path: dbPath });
+  try {
+    const pageStats = outbox.pageStats();
+    const nonSucceeded = outbox.countNonSucceeded();
+
+    if (dryRun) {
+      return {
+        backup_path: null,
+        compacted: null,
+        db: { exists: true, path: dbPath },
+        dry_run: true,
+        note: compactDryRunNote(pageStats, nonSucceeded, Boolean(options.force)),
+        non_succeeded_rows: nonSucceeded,
+        page_stats: pageStats,
+        reclaimed_bytes: 0,
+        refused: false,
+      };
+    }
+
+    // Apply path. Refuse if unsent work exists and --force was not supplied.
+    if (nonSucceeded > 0 && !options.force) {
+      return {
+        backup_path: null,
+        compacted: null,
+        db: { exists: true, path: dbPath },
+        dry_run: false,
+        note:
+          `Refusing to compact: ${nonSucceeded} non-succeeded (ready/leased/dead-letter) row(s) are still in the outbox. ` +
+          "Drain the lane first (`pdpp-local-collector run …`, then `retry-dead-letters --apply` for any dead-letter rows), " +
+          "or pass --force to compact anyway. VACUUM is lossless — unsent rows are copied, never dropped — but compacting a " +
+          "live lane is refused by default so the reclaim runs on a quiet outbox.",
+        non_succeeded_rows: nonSucceeded,
+        page_stats: pageStats,
+        reclaimed_bytes: 0,
+        refused: true,
+      };
+    }
+
+    const backupPath = backupSqliteDb(outbox, dbPath, "compact");
+    const result = outbox.compact();
+    return {
+      backup_path: backupPath,
+      compacted: result.after,
+      db: { exists: true, path: dbPath },
+      dry_run: false,
+      note: compactAppliedNote(result, nonSucceeded, Boolean(options.force)),
+      non_succeeded_rows: nonSucceeded,
+      page_stats: result.before,
+      reclaimed_bytes: result.reclaimedBytes,
+      refused: false,
+    };
+  } finally {
+    outbox.close();
+  }
+}
+
+function compactDryRunNote(stats: LocalDeviceOutboxPageStats, nonSucceeded: number, force: boolean): string {
+  const reclaimMb = (stats.reclaimableBytes / (1024 * 1024)).toFixed(1);
+  if (stats.reclaimableBytes === 0) {
+    return "The outbox has no reclaimable free pages; a compact would return ~0 bytes. Nothing to do.";
+  }
+  const base =
+    `~${reclaimMb} MiB of free pages can be returned to the filesystem (${stats.freelistPages} of ${stats.pageCount} pages). ` +
+    "Re-run with --apply to rebuild the DB in place (backs up the DB first).";
+  if (nonSucceeded > 0 && !force) {
+    return (
+      `${base} NOTE: ${nonSucceeded} non-succeeded (unsent) row(s) are present, so --apply will be refused unless you ` +
+      "drain the lane first or pass --force. VACUUM never drops unsent rows; the refusal just keeps the reclaim on a quiet outbox."
+    );
+  }
+  return base;
+}
+
+function compactAppliedNote(
+  result: LocalDeviceOutboxCompactResult,
+  nonSucceeded: number,
+  force: boolean
+): string {
+  const reclaimedMb = (result.reclaimedBytes / (1024 * 1024)).toFixed(1);
+  const forcedNote =
+    nonSucceeded > 0 && force
+      ? ` Compacted with --force while ${nonSucceeded} non-succeeded row(s) were present; VACUUM copied them losslessly.`
+      : "";
+  return (
+    `Compacted: ~${reclaimedMb} MiB returned to the filesystem ` +
+    `(${result.before.pageCount} → ${result.after.pageCount} pages).${forcedNote} ` +
+    "Run `pdpp-local-collector status` to confirm the new outbox size."
+  );
+}
+
 function backupSqliteDb(outbox: Pick<LocalDeviceOutbox, "backupTo">, dbPath: string, label: string): string {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const backupPath = `${dbPath}.pre-${label}-${stamp}.bak`;
@@ -1175,10 +1357,11 @@ export function parseArgs(args: string[]): CliOptions {
     command !== "status" &&
     command !== "doctor" &&
     command !== "retry-dead-letters" &&
-    command !== "prune-sent"
+    command !== "prune-sent" &&
+    command !== "compact"
   ) {
     throw new CollectorUsageError(
-      `usage: pdpp-local-collector <enroll|run|advertise|status|doctor|retry-dead-letters|prune-sent> --base-url <url> [options]`
+      `usage: pdpp-local-collector <enroll|run|advertise|status|doctor|retry-dead-letters|prune-sent|compact> --base-url <url> [options]`
     );
   }
   const options: CliOptions = {
@@ -1224,6 +1407,10 @@ export function parseArgs(args: string[]): CliOptions {
 function applyFlagOption(options: CliOptions, arg: string): boolean {
   if (arg === "--apply") {
     options.apply = true;
+    return true;
+  }
+  if (arg === "--force") {
+    options.force = true;
     return true;
   }
   return false;

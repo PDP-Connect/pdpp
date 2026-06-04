@@ -24,6 +24,7 @@ import {
   buildConnectorSpec,
   buildLocalOutboxDoctor,
   classifyLocalCollectorDeploymentPosture,
+  compactOutbox,
   inspectLocalOutboxStatus,
   parseArgs,
   pruneSentOutboxRows,
@@ -1602,6 +1603,145 @@ test('prune-sent CLI keep-count-only no-op reports the actual policy', async () 
   assert.equal(result.filter.older_than_iso, null);
   assert.match(result.note, /keep-count 2/);
   assert.doesNotMatch(result.note, /older than 30 days/);
+});
+
+// --- compact / disk reclaim CLI (local-collector-memory-slvp-v1) ---
+//
+// compact rebuilds the SQLite file with VACUUM to return the freelist a prune
+// leaves behind. Dry-run by default; --apply refuses while unsent rows exist
+// unless --force; --apply backs up the DB first. VACUUM is lossless.
+
+/**
+ * Seed `count` ~2 KiB succeeded rows then prune them, leaving a large freelist
+ * on the file so a compact has something real to reclaim. Returns once the
+ * outbox is closed.
+ */
+function seedAndPruneForCompact(path, count, keepCount = 0) {
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    const blob = 'z'.repeat(2000);
+    for (let i = 0; i < count; i++) {
+      outbox.enqueue({
+        id: `c:${i}`,
+        kind: 'record_batch',
+        payload: { records: [{ data: { blob, i }, stream: 'messages' }] },
+        sourceInstanceId: 'src-1',
+      });
+      const [claim] = outbox.claimReady({ holder: 'd', leaseMs: 60_000, sourceInstanceId: 'src-1' });
+      outbox.acknowledge({ holder: 'd', id: claim.id, leaseEpoch: claim.lease_epoch });
+    }
+    outbox.pruneSent({ dryRun: false, keepCount, sourceInstanceId: 'src-1' });
+  } finally {
+    outbox.close();
+  }
+}
+
+test('compact CLI parses the command and --force flag', () => {
+  const opts = parseArgs(['compact', '--queue', '/tmp/x.sqlite', '--connection-id', 'src-1', '--apply', '--force']);
+  assert.equal(opts.command, 'compact');
+  assert.equal(opts.apply, true);
+  assert.equal(opts.force, true);
+});
+
+test('compact CLI dry-run reports reclaimable bytes without mutating the file', async () => {
+  const path = await tempOutboxPath();
+  seedAndPruneForCompact(path, 1000);
+  const sizeBefore = (await import('node:fs')).statSync(path).size;
+
+  const opts = parseArgs(['compact', '--queue', path, '--connection-id', 'src-1']);
+  const result = compactOutbox(opts);
+  assert.equal(result.dry_run, true);
+  assert.equal(result.refused, false);
+  assert.equal(result.reclaimed_bytes, 0, 'dry-run never reclaims');
+  assert.ok(result.page_stats.reclaimableBytes > 0, 'dry-run reports a reclaimable freelist');
+  assert.equal(result.backup_path, null);
+  assert.match(result.note, /--apply/);
+
+  const sizeAfter = (await import('node:fs')).statSync(path).size;
+  assert.equal(sizeAfter, sizeBefore, 'dry-run must not change the file');
+});
+
+test('compact CLI --apply on a drained outbox backs up then shrinks the file', async () => {
+  const path = await tempOutboxPath();
+  seedAndPruneForCompact(path, 1500);
+  const { statSync } = await import('node:fs');
+  const sizeBefore = statSync(path).size;
+
+  const opts = parseArgs(['compact', '--queue', path, '--connection-id', 'src-1', '--apply']);
+  const result = compactOutbox(opts);
+  assert.equal(result.dry_run, false);
+  assert.equal(result.refused, false);
+  assert.ok(result.reclaimed_bytes > 0, 'apply returns bytes to the filesystem');
+  assert.ok(result.backup_path, 'apply must produce a backup path');
+  assert.equal(existsSync(result.backup_path), true);
+  assert.equal(result.compacted.freelistPages, 0, 'freelist emptied after rebuild');
+
+  const sizeAfter = statSync(path).size;
+  assert.ok(sizeAfter < sizeBefore, 'apply shrinks the on-disk file');
+  assert.match(result.note, /Compacted/);
+});
+
+test('compact CLI --apply REFUSES when unsent rows exist and no --force, leaving the file untouched', async () => {
+  const path = await tempOutboxPath();
+  seedAndPruneForCompact(path, 800);
+  // Add an unsent (ready) row so the lane is no longer quiet.
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    enqueueRecordBatch(outbox, { id: 'unsent-ready', streams: ['messages'] });
+  } finally {
+    outbox.close();
+  }
+  const { statSync } = await import('node:fs');
+  const sizeBefore = statSync(path).size;
+
+  const opts = parseArgs(['compact', '--queue', path, '--connection-id', 'src-1', '--apply']);
+  const result = compactOutbox(opts);
+  assert.equal(result.refused, true, 'apply with unsent rows must be refused');
+  assert.equal(result.reclaimed_bytes, 0, 'a refusal reclaims nothing');
+  assert.equal(result.backup_path, null, 'a refusal makes no backup');
+  assert.ok(result.non_succeeded_rows >= 1);
+  assert.match(result.note, /Refusing to compact/);
+  assert.match(result.note, /--force/);
+
+  const sizeAfter = statSync(path).size;
+  assert.equal(sizeAfter, sizeBefore, 'a refused compact must not mutate the file');
+  // The unsent row is still there.
+  assert.equal(statusFor(path).outbox.counts.pending, 1);
+});
+
+test('compact CLI --apply --force compacts even with unsent rows, preserving them', async () => {
+  const path = await tempOutboxPath();
+  seedAndPruneForCompact(path, 800);
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    enqueueRecordBatch(outbox, { id: 'unsent-ready', streams: ['messages'] });
+  } finally {
+    outbox.close();
+  }
+  const { statSync } = await import('node:fs');
+  const sizeBefore = statSync(path).size;
+
+  const opts = parseArgs(['compact', '--queue', path, '--connection-id', 'src-1', '--apply', '--force']);
+  const result = compactOutbox(opts);
+  assert.equal(result.refused, false, '--force overrides the unsent-rows guard');
+  assert.ok(result.reclaimed_bytes > 0);
+  assert.ok(result.backup_path && existsSync(result.backup_path));
+  assert.match(result.note, /--force/);
+
+  const sizeAfter = statSync(path).size;
+  assert.ok(sizeAfter < sizeBefore, 'force compact still shrinks the file');
+  // The unsent row survived the lossless rebuild.
+  assert.equal(statusFor(path).outbox.counts.pending, 1);
+});
+
+test('compact CLI on a missing DB reports nothing to do, never refuses', async () => {
+  const path = join(await tempDir(), 'does-not-exist.sqlite');
+  const opts = parseArgs(['compact', '--queue', path, '--connection-id', 'src-1', '--apply']);
+  const result = compactOutbox(opts);
+  assert.equal(result.db.exists, false);
+  assert.equal(result.refused, false);
+  assert.equal(result.reclaimed_bytes, 0);
+  assert.match(result.note, /does not exist/);
 });
 
 test('active draining without retry/dead-letter shows draining lifecycle_state, not stalled', async () => {

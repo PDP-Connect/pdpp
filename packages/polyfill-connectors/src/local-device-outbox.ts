@@ -169,6 +169,44 @@ export interface LocalDeviceOutboxPruneSentResult {
   pruned: number;
 }
 
+/**
+ * On-disk page accounting for {@link LocalDeviceOutbox.compact}.
+ *
+ * `pruneSent` deletes rows but the SQLite file never shrinks on its own —
+ * the database is created with `auto_vacuum = NONE` (the default), so deleted
+ * rows leave free pages on the freelist that are reused for future inserts but
+ * never returned to the filesystem. A 35 GB outbox whose rows were all pruned
+ * stays a 35 GB file of mostly-free pages. These numbers let an operator (or a
+ * dry-run) see exactly how much disk a `VACUUM` would return before running it.
+ */
+export interface LocalDeviceOutboxPageStats {
+  /** Pages currently on the freelist (reusable but not returned to the OS). */
+  freelistPages: number;
+  /** Total pages allocated to the database file. */
+  pageCount: number;
+  /** Bytes per page (the `page_size` pragma). */
+  pageSizeBytes: number;
+  /**
+   * Bytes a `VACUUM` would return to the filesystem, estimated as
+   * `freelistPages * pageSizeBytes`. This is the freelist a rebuild drops; the
+   * post-`VACUUM` file is bounded below by the live (non-free) pages.
+   */
+  reclaimableBytes: number;
+}
+
+export interface LocalDeviceOutboxCompactResult {
+  /** Page accounting after the rebuild (freelist is ~0 on success). */
+  after: LocalDeviceOutboxPageStats;
+  /** Page accounting before the rebuild. */
+  before: LocalDeviceOutboxPageStats;
+  /**
+   * Bytes actually returned to the filesystem, measured as the drop in
+   * allocated file pages: `(before.pageCount - after.pageCount) *
+   * pageSizeBytes`. Never negative.
+   */
+  reclaimedBytes: number;
+}
+
 export interface LocalDeviceOutboxDeadLetterErrorClass {
   /** Count of dead-letter rows whose `last_error` collapses to this class. */
   count: number;
@@ -640,6 +678,86 @@ export class LocalDeviceOutbox {
       this.#db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  /**
+   * Count of rows that are NOT `succeeded` (i.e. unsent or undelivered work):
+   * `ready`, `leased`, and `dead_letter`. Whole-file, across every source
+   * instance — `compact` rebuilds the entire database, so the safety guard it
+   * backs must consider all sources, not just one lane.
+   *
+   * This is the load-bearing predicate behind a refuse-to-compact-with-unsent
+   * guard: a `VACUUM` is lossless (it copies every row, succeeded or not), so it
+   * can never drop unsent work, but refusing while any non-`succeeded` row
+   * exists keeps the reclaim a quiet-state operation an operator runs on a
+   * drained lane rather than racing a live drain.
+   */
+  countNonSucceeded(): number {
+    const row = this.#db.prepare("SELECT COUNT(*) AS total FROM local_device_outbox WHERE status != 'succeeded'").get();
+    return isRecord(row) ? numberFrom(row.total) : 0;
+  }
+
+  /**
+   * Current on-disk page accounting (page size, total pages, freelist) and the
+   * bytes a `VACUUM` would return. Reads only `PRAGMA` counters — never row
+   * payloads — so it is cheap even on a multi-gigabyte outbox.
+   */
+  pageStats(): LocalDeviceOutboxPageStats {
+    return this.#readPageStats();
+  }
+
+  /**
+   * Reclaim disk by rebuilding the database in place with `VACUUM`, returning
+   * the freelist to the filesystem.
+   *
+   * `pruneSent` (and the run-time auto-prune) delete acknowledged rows, but with
+   * `auto_vacuum = NONE` the freed pages stay in the file forever as freelist —
+   * the exact reason the incident's 35 GB outbox never shrank after its rows
+   * were pruned. `VACUUM` is the in-place rebuild that drops that freelist.
+   *
+   * Safety:
+   * - `VACUUM` is lossless: it copies **every** row (succeeded, ready, leased,
+   *   dead-letter) into the rebuilt file, so it can never drop unsent work. The
+   *   refuse-when-unsent guard ({@link countNonSucceeded}) is a quiet-state
+   *   policy enforced by the caller, not a data-safety requirement of `VACUUM`.
+   * - A `wal_checkpoint(TRUNCATE)` after the rebuild folds the WAL back into the
+   *   main file and truncates it, so the reported file-size drop reflects the
+   *   reclaimed bytes rather than leaving them in a still-large `-wal` sidecar.
+   * - `VACUUM` preserves `journal_mode = WAL`, so the outbox keeps its
+   *   concurrency posture afterward.
+   *
+   * Returns before/after page accounting and the bytes returned to the OS.
+   */
+  compact(): LocalDeviceOutboxCompactResult {
+    const before = this.#readPageStats();
+    this.#db.exec("VACUUM");
+    // Fold the WAL produced by the rebuild back into the main file and truncate
+    // it, so the file-size drop the caller measures reflects the reclaim rather
+    // than bytes parked in a large `-wal` sidecar.
+    this.#db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    const after = this.#readPageStats();
+    const reclaimedPages = Math.max(0, before.pageCount - after.pageCount);
+    return { after, before, reclaimedBytes: reclaimedPages * before.pageSizeBytes };
+  }
+
+  #readPageStats(): LocalDeviceOutboxPageStats {
+    const pageSizeBytes = this.#pragmaInt("page_size");
+    const pageCount = this.#pragmaInt("page_count");
+    const freelistPages = this.#pragmaInt("freelist_count");
+    return {
+      freelistPages,
+      pageCount,
+      pageSizeBytes,
+      reclaimableBytes: freelistPages * pageSizeBytes,
+    };
+  }
+
+  #pragmaInt(pragma: string): number {
+    const row = this.#db.prepare(`PRAGMA ${pragma}`).get();
+    if (!isRecord(row)) {
+      return 0;
+    }
+    return numberFrom(row[pragma]);
   }
 
   hasNonSucceededWork(input: {

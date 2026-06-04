@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { statSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -920,6 +921,157 @@ test("countRecordBatches reads indexed status/kind columns only and ignores dead
     outbox.deadLetter({ error: "terminal", holder: "w", id: claim.id, leaseEpoch: claim.lease_epoch });
     // One of the two record batches dead-lettered; the checkpoint never counts.
     assert.equal(outbox.countRecordBatches({ sourceInstanceId: "src-1" }), 1);
+  } finally {
+    outbox.close();
+  }
+});
+
+// --- compact / disk reclaim (local-collector-memory-slvp-v1) ---
+//
+// Invariant: prune deletes rows but the file never shrinks on its own
+// (auto_vacuum=NONE); compact() runs VACUUM to return the freelist to disk
+// without dropping any row — succeeded or unsent.
+
+/**
+ * Seed `count` succeeded record_batch rows carrying a ~2 KiB payload each so a
+ * later prune leaves a large freelist the compact can reclaim. Returns once the
+ * rows are committed.
+ */
+function seedFatSucceededRows(path: string, sourceInstanceId: string, count: number): void {
+  new LocalDeviceOutbox({ path }).close();
+  const db = new DatabaseSync(path);
+  try {
+    const blob = "x".repeat(2000);
+    const stamp = "2026-06-04T00:00:00.000Z";
+    const insert = db.prepare(
+      `INSERT INTO local_device_outbox (
+         id, source_instance_id, kind, status, payload_json, body_hash,
+         attempt_count, next_attempt_at, acknowledged_at, created_at, updated_at
+       ) VALUES (?, ?, 'record_batch', 'succeeded', ?, 'hash', 0, ?, ?, ?, ?)`
+    );
+    db.exec("BEGIN");
+    for (let index = 0; index < count; index++) {
+      insert.run(
+        `${sourceInstanceId}:fat:${index}`,
+        sourceInstanceId,
+        JSON.stringify({ blob, index }),
+        stamp,
+        stamp,
+        stamp,
+        stamp
+      );
+    }
+    db.exec("COMMIT");
+  } finally {
+    db.close();
+  }
+}
+
+test("compact reclaims the freelist a prune leaves behind (file shrinks) and preserves all rows", async () => {
+  const path = await tempOutboxPath();
+  const sourceInstanceId = "src-compact";
+  // 4,000 fat succeeded rows (~8 MiB of payload) so the freelist after prune is
+  // unmistakably large.
+  seedFatSucceededRows(path, sourceInstanceId, 4000);
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    const sizeFull = statSync(path).size;
+
+    // Prune all but the most-recent 100. The file does NOT shrink: deleted rows
+    // become freelist pages (auto_vacuum=NONE), which is the whole motivation.
+    const pruned = outbox.pruneSent({ dryRun: false, keepCount: 100, sourceInstanceId });
+    assert.equal(pruned.pruned, 3900);
+    const sizeAfterPrune = statSync(path).size;
+    assert.equal(sizeAfterPrune, sizeFull, "prune alone must NOT shrink the file (auto_vacuum=NONE)");
+
+    const before = outbox.pageStats();
+    assert.ok(before.freelistPages > 0, "prune must leave reclaimable free pages");
+    assert.equal(before.reclaimableBytes, before.freelistPages * before.pageSizeBytes);
+
+    const result = outbox.compact();
+    assert.ok(result.reclaimedBytes > 0, "compact must return bytes to the filesystem");
+    assert.ok(result.after.pageCount < result.before.pageCount, "page count must drop");
+    assert.equal(result.after.freelistPages, 0, "freelist is emptied by the rebuild");
+
+    const sizeAfterCompact = statSync(path).size;
+    assert.ok(sizeAfterCompact < sizeAfterPrune, "compact must shrink the on-disk file");
+
+    // Every retained row survived the rebuild.
+    assert.equal(outbox.summary({ sourceInstanceId }).succeeded, 100);
+  } finally {
+    outbox.close();
+  }
+});
+
+test("compact preserves unsent (ready/leased/dead-letter) rows — VACUUM is lossless", async () => {
+  const path = await tempOutboxPath();
+  const sourceInstanceId = "src-compact-unsent";
+  const holder = "holder-compact";
+  const outbox = new LocalDeviceOutbox({ clock: () => new Date("2026-06-04T00:00:00.000Z"), path });
+  try {
+    // Fat succeeded rows to create a freelist, then prune them.
+    seedFatSucceededRows(path, sourceInstanceId, 1000);
+    const reopened = new LocalDeviceOutbox({ path });
+    reopened.pruneSent({ dryRun: false, keepCount: 0, sourceInstanceId });
+    reopened.close();
+
+    // Live unsent work that must survive the rebuild.
+    outbox.enqueue({ id: "u:ready", kind: "record_batch", payload: { records: [] }, sourceInstanceId });
+    outbox.enqueue({ id: "u:dead", kind: "record_batch", payload: { records: [] }, sourceInstanceId });
+    const claimed = outbox.claimReady({ holder, leaseMs: 600_000, limit: 2, sourceInstanceId });
+    const dead = claimed.find((item) => item.id === "u:dead");
+    const ready = claimed.find((item) => item.id === "u:ready");
+    assert.ok(dead && ready);
+    outbox.deadLetter({ error: "terminal", holder, id: dead.id, leaseEpoch: dead.lease_epoch });
+    // Leave u:ready leased (in flight) so a leased row is present at compact time.
+
+    assert.ok(outbox.countNonSucceeded() >= 2, "ready/leased/dead-letter rows are counted as non-succeeded");
+
+    outbox.compact();
+
+    const after = outbox.summary({ sourceInstanceId });
+    assert.equal(after.deadLetter, 1, "dead-letter row survives the rebuild");
+    assert.equal(after.leased, 1, "leased row survives the rebuild");
+    // The leased row's payload is intact and re-readable.
+    const readyRow = outbox.get("u:ready");
+    assert.ok(readyRow, "leased row is still present by id after compact");
+    assert.equal(readyRow.status, "leased");
+  } finally {
+    outbox.close();
+  }
+});
+
+test("countNonSucceeded counts ready/leased/dead-letter across all sources, ignoring succeeded", async () => {
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ clock: () => new Date("2026-06-04T00:00:00.000Z"), path });
+  try {
+    // One succeeded row on src-a (does not count).
+    outbox.enqueue({ id: "a:sent", kind: "record_batch", payload: { records: [] }, sourceInstanceId: "src-a" });
+    const [sent] = outbox.claimReady({ holder: "w", leaseMs: 600_000, sourceInstanceId: "src-a" });
+    assert.ok(sent);
+    outbox.acknowledge({ holder: "w", id: sent.id, leaseEpoch: sent.lease_epoch });
+    // Ready rows on two different sources (both count).
+    outbox.enqueue({ id: "a:ready", kind: "record_batch", payload: { records: [] }, sourceInstanceId: "src-a" });
+    outbox.enqueue({ id: "b:ready", kind: "record_batch", payload: { records: [] }, sourceInstanceId: "src-b" });
+
+    assert.equal(outbox.countNonSucceeded(), 2, "both ready rows count; the succeeded row does not");
+  } finally {
+    outbox.close();
+  }
+});
+
+test("compact on an already-tight file reclaims ~nothing and keeps every row", async () => {
+  const path = await tempOutboxPath();
+  const sourceInstanceId = "src-tight";
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    outbox.enqueue({ id: "keep-1", kind: "record_batch", payload: { records: [] }, sourceInstanceId });
+    const before = outbox.pageStats();
+    const result = outbox.compact();
+    // Nothing was deleted, so there is no meaningful freelist to reclaim.
+    assert.equal(result.reclaimedBytes >= 0, true);
+    assert.ok(result.after.pageCount <= before.pageCount + 1, "tight file does not grow materially");
+    assert.equal(outbox.summary({ sourceInstanceId }).ready, 1, "the one row survives");
   } finally {
     outbox.close();
   }

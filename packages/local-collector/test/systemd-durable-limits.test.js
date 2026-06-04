@@ -89,6 +89,36 @@ test('documented systemd [Service] forbids swap so the cgroup OOM-kills instead 
   );
 });
 
+test('documented systemd [Service] makes the collector a willing host-wide OOM victim, documented as deliberate', async () => {
+  // OOMScoreAdjust raises this run's host-wide OOM "badness" so an unrelated
+  // host-wide memory spike sacrifices the durable collector before an
+  // interactive app. This is SEPARATE from the cgroup cap (OOMPolicy=kill +
+  // MemoryMax + MemorySwapMax handle the run exceeding its OWN budget). It is
+  // the line behind "collectors killed under host pressure despite a tiny RSS"
+  // looking like a fault when it is expected, durable-by-design behavior — so it
+  // must stay positive AND stay documented next to the unit.
+  const serviceBlock = await loadSystemdServiceBlock();
+  const directives = parseServiceDirectives(serviceBlock);
+
+  const score = directives.get('OOMScoreAdjust');
+  assert.ok(score !== undefined, 'systemd [Service] must declare OOMScoreAdjust so victim selection is explicit, not default');
+  const parsed = Number(score);
+  assert.ok(
+    Number.isInteger(parsed) && parsed > 0 && parsed <= 1000,
+    `OOMScoreAdjust must be a positive integer (1..1000) so the collector is a preferred host-wide victim, got: ${score}`
+  );
+
+  // The line is subtle enough to be mistaken for the cgroup cap, so the unit
+  // must carry a comment explaining the host-wide victim semantics. Without
+  // this, a future edit could drop or invert it and silently turn an expected
+  // sacrifice into an apparent collector failure.
+  assert.match(
+    serviceBlock,
+    /OOMScoreAdjust[\s\S]*?host[\s-]?wide|host[\s-]?wide[\s\S]*?OOMScoreAdjust|#[^\n]*(?:host-wide|preferred[\s-]?victim)[\s\S]*?OOMScoreAdjust/i,
+    'the OOMScoreAdjust line must be accompanied by a comment explaining host-wide victim selection'
+  );
+});
+
 test('documented systemd [Service] bounds oneshot start time and reaps the whole control group on stop', async () => {
   const directives = parseServiceDirectives(await loadSystemdServiceBlock());
 
