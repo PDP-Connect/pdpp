@@ -211,13 +211,23 @@ export function resolveChatGptRateLimitDensityStop(env: NodeJS.ProcessEnv = proc
  * stop decision is unit-testable without standing up the adaptive lane: feed it
  * the lane's `rate_limited` cooldown events, ask `shouldStop()` before each
  * launch. `threshold` of Infinity (the disable sentinel) never trips.
+ *
+ * `initialCount` seeds the accumulator with served 429s the run already absorbed
+ * BEFORE the detail lane started — list pagination and the other streams run
+ * their fetches OUTSIDE any adaptive lane, so their served 429s never reach the
+ * lane's cooldown event. Carrying that pre-detail pressure into the tracker lets
+ * the detail phase defer the tail earlier on an account the run has already
+ * shown to be hot, instead of resetting to zero and grinding up to `threshold`
+ * more served 429s. Strictly safer: a higher starting count can only ever make
+ * the lane defer sooner, never launch more requests.
  */
 export class ChatGptRateLimitDensityTracker {
-  private rateLimitedCount = 0;
+  private rateLimitedCount: number;
   readonly threshold: number;
 
-  constructor(threshold: number) {
+  constructor(threshold: number, initialCount = 0) {
     this.threshold = threshold;
+    this.rateLimitedCount = Math.max(0, Math.trunc(initialCount));
   }
 
   /** Record one served 429 (a `rate_limited` cooldown reported by the lane). */
@@ -454,13 +464,51 @@ function makeChatGptNetworkPressureDiagnostic({
   };
 }
 
+/**
+ * Route one retry's source pressure. retryHttp already slept `delayMs` inside
+ * the request, so the lane report is marked `absorbedByRequestWait` to avoid
+ * double-paying the backoff on the next launch. In-lane 429s are counted by the
+ * lane's cooldown event; 429s OUTSIDE any lane (list pagination, non-detail
+ * streams) are surfaced to the run-scoped accumulator so the detail phase can
+ * inherit pressure the run already absorbed. Extracted to keep `onRetry` simple.
+ */
+async function reportChatGptRetryPressure({
+  delayMs,
+  onUnlanedRateLimited,
+  response,
+  retryAfterMs,
+}: {
+  delayMs: number;
+  onUnlanedRateLimited?: (() => void) | undefined;
+  response?: { status?: number } | undefined;
+  retryAfterMs?: number | undefined;
+}): Promise<void> {
+  const laneContext = currentAdaptiveLaneRunContext();
+  await laneContext?.reportPressure({
+    absorbedByRequestWait: true,
+    delayMs,
+    kind: response?.status === 429 ? "rate_limited" : "transient_error",
+    ...(retryAfterMs == null ? {} : { retryAfterMs }),
+  });
+  if (laneContext == null && response?.status === 429) {
+    onUnlanedRateLimited?.();
+  }
+}
+
 function createChatGptApi({
   capture,
   emit,
+  onUnlanedRateLimited,
   page,
 }: {
   capture: CaptureSession | null;
   emit?: CollectContext["emit"];
+  // Invoked once per served 429 that happens OUTSIDE an adaptive lane run
+  // context (list pagination, memories, custom_gpts, shared_conversations).
+  // In-lane 429s are already counted by the detail lane's cooldown event, so
+  // they intentionally do NOT call this — avoiding a double count. Lets the run
+  // carry pre-detail source pressure into the detail-phase density stop.
+  onUnlanedRateLimited?: () => void;
   page: Page;
 }): ChatGptApi {
   let authCache: ChatGptAuth | null = null;
@@ -510,16 +558,10 @@ function createChatGptApi({
       shouldKeepRetrying: shouldKeepRetryingChatGptDetail,
       onRetry: async ({ attempt, delayMs, maxAttempts, response, retryAfterMs }) => {
         // retryHttp sleeps `delayMs` itself immediately after this callback,
-        // inside the same (serialized) detail attempt. Report the pressure so
-        // the lane reduces concurrency and surfaces a cooldown event, but mark
-        // it absorbed so the lane does not *also* delay the next launch by the
-        // same amount — that double-paid the backoff the request already slept.
-        await currentAdaptiveLaneRunContext()?.reportPressure({
-          absorbedByRequestWait: true,
-          delayMs,
-          kind: response?.status === 429 ? "rate_limited" : "transient_error",
-          ...(retryAfterMs == null ? {} : { retryAfterMs }),
-        });
+        // inside the same (serialized) detail attempt. Route the pressure to
+        // either the active detail lane or the run-scoped accumulator (extracted
+        // so this callback stays simple); see reportChatGptRetryPressure.
+        await reportChatGptRetryPressure({ delayMs, onUnlanedRateLimited, response, retryAfterMs });
         if (delayMs < CHATGPT_LONG_SLEEP_PROGRESS_THRESHOLD_MS) {
           return;
         }
@@ -849,8 +891,19 @@ export interface StreamDeps {
   detailGaps?: CollectContext["detailGaps"];
   emit: CollectContext["emit"];
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
+  // Run-scoped accumulator for served 429s seen OUTSIDE the detail lane (list
+  // pagination + the non-detail streams). Read once when the detail phase starts
+  // to seed its density tracker, so the run carries pre-detail source pressure
+  // forward instead of resetting the budget to zero. A holder object (not a bare
+  // number) so the count `createChatGptApi` increments is visible by reference.
+  preDetailPressure?: ChatGptPreDetailPressure;
   progress: CollectContext["progress"];
   requested: CollectContext["requested"];
+}
+
+/** Mutable holder for the run-scoped pre-detail served-429 count. */
+export interface ChatGptPreDetailPressure {
+  rateLimited: number;
 }
 
 const MEMORIES_PATH = "/memories?include_memory_entries=true";
@@ -1507,6 +1560,11 @@ interface ConversationDetailPacingOptions {
   // resolveChatGptRateLimitDensityStop(); tests inject a small value to exercise
   // the trip without standing up real backoff.
   densityStopThreshold?: number;
+  // Served 429s the run absorbed before this detail pass (list pagination + the
+  // non-detail streams). Seeds the density tracker so pre-detail source pressure
+  // carries forward. Defaults to the run-scoped accumulator on `deps`; tests
+  // inject a fixed value to exercise the seed without a real list phase.
+  preDetailRateLimited?: number;
   random?: () => number;
   sleep?: (ms: number) => Promise<void> | void;
   tuning?: ChatGptDetailLaneTuning;
@@ -1724,8 +1782,15 @@ export async function runMessagesAndConversationsWithDetail(
   // tracker; once it crosses threshold we open the same upstream-pressure
   // circuit the per-conversation exhaustion path uses. Strictly safer: it can
   // only defer the tail earlier, never add requests.
+  //
+  // Seed the tracker with served 429s the run already absorbed BEFORE this
+  // detail pass — list pagination and the non-detail streams fetch outside any
+  // lane, so their 429s never reached the lane's cooldown counter. `pacing`
+  // wins for tests; production reads the run-scoped accumulator on `deps`.
+  const seededRateLimited = pacing.preDetailRateLimited ?? deps.preDetailPressure?.rateLimited ?? 0;
   const densityTracker = new ChatGptRateLimitDensityTracker(
-    pacing.densityStopThreshold ?? resolveChatGptRateLimitDensityStop()
+    pacing.densityStopThreshold ?? resolveChatGptRateLimitDensityStop(),
+    seededRateLimited
   );
   let emittedConversationDetailLaneStart = false;
   const lane = createAdaptiveLane<ChatGptFetchResult>({
@@ -2018,16 +2083,37 @@ if (isMainModule(import.meta.url)) {
       const { state, requested, emit, emitRecord: baseEmitRecord, progress, capture } = ctx;
       const { page } = ctx as BrowserCollectContext;
 
+      // Run-scoped accumulator for served 429s seen outside the detail lane
+      // (list pagination + the non-detail streams). createChatGptApi bumps it
+      // via onUnlanedRateLimited; the detail phase reads it to seed its density
+      // stop so pre-detail source pressure defers the tail earlier.
+      const preDetailPressure: ChatGptPreDetailPressure = { rateLimited: 0 };
+
       // API client closes over page + capture — no module-level mutable state,
       // auth cached inside the closure for the run's lifetime.
-      const api = createChatGptApi({ page, capture, emit });
+      const api = createChatGptApi({
+        page,
+        capture,
+        emit,
+        onUnlanedRateLimited: () => {
+          preDetailPressure.rateLimited += 1;
+        },
+      });
       const emitRecord = makeEmitRecord(baseEmitRecord);
 
       // Verify session (extract bearer token for /backend-api calls)
       const auth = await api.auth();
       progress(`Authenticated to ChatGPT (device_id=${auth.deviceId ? `${auth.deviceId.slice(0, 8)}…` : "unknown"})`);
 
-      const deps: StreamDeps = { api, detailGaps: ctx.detailGaps, emit, emitRecord, progress, requested };
+      const deps: StreamDeps = {
+        api,
+        detailGaps: ctx.detailGaps,
+        emit,
+        emitRecord,
+        preDetailPressure,
+        progress,
+        requested,
+      };
 
       if (isChatGptSideEffectProbeEnabled()) {
         await runChatGptSideEffectProbe({ api, emit, page });

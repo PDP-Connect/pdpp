@@ -262,6 +262,32 @@ test("ChatGptRateLimitDensityTracker with an Infinity threshold never trips (dis
   assert.equal(tracker.shouldStop(), false);
 });
 
+test("ChatGptRateLimitDensityTracker seeds with pre-detail served 429s and trips sooner", () => {
+  // Two served 429s already absorbed before the detail lane (list pagination):
+  // the tracker starts at 2 of 3 and trips on a single in-lane 429.
+  const tracker = new ChatGptRateLimitDensityTracker(3, 2);
+  assert.equal(tracker.count, 2, "seed carries the pre-detail count forward");
+  assert.equal(tracker.shouldStop(), false, "still one short of the threshold");
+  tracker.recordRateLimited();
+  assert.equal(tracker.count, 3);
+  assert.equal(tracker.shouldStop(), true, "one in-lane 429 trips after the seed");
+});
+
+test("ChatGptRateLimitDensityTracker seed at/over threshold trips before any in-lane 429", () => {
+  // Pre-detail pressure already at the threshold: the detail phase must defer
+  // its whole tail immediately rather than launch even one fetch.
+  const tracker = new ChatGptRateLimitDensityTracker(3, 3);
+  assert.equal(tracker.shouldStop(), true, "seed at threshold trips with zero in-lane 429s");
+});
+
+test("ChatGptRateLimitDensityTracker seed is sanitized (negatives floored, floats truncated)", () => {
+  // The seed comes from a run-scoped counter; defend the invariant that it is a
+  // non-negative integer so a stray value can never make the stop go backwards.
+  assert.equal(new ChatGptRateLimitDensityTracker(5, -4).count, 0, "negative seed floors to 0");
+  assert.equal(new ChatGptRateLimitDensityTracker(5, 2.9).count, 2, "fractional seed truncates");
+  assert.equal(new ChatGptRateLimitDensityTracker(5).count, 0, "default seed is 0 (unchanged behavior)");
+});
+
 test("chatGptBackendFetchInBrowser aborts a never-resolving backend fetch promptly", async () => {
   const originalFetch = globalThis.fetch;
   let observedSignal: AbortSignal | undefined;
@@ -1052,6 +1078,124 @@ test("runMessagesAndConversationsWithDetail: served 429s below the density thres
     false,
     "no gap should be emitted while served 429s stay below the density threshold"
   );
+});
+
+test("runMessagesAndConversationsWithDetail: pre-detail 429s seed the density stop and defer the tail sooner", async () => {
+  // The run already absorbed two served 429s outside the detail lane (list
+  // pagination on a hot account). With a threshold of 3, ONE in-lane served 429
+  // now trips the stop — the seeded pre-detail pressure carries forward instead
+  // of resetting to zero, so the lane defers the tail an account-pressure cycle
+  // earlier than it would on a fresh budget.
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      fetchedIds.push(path);
+      await currentAdaptiveLaneRunContext()?.reportPressure({
+        absorbedByRequestWait: true,
+        delayMs: 30_000,
+        kind: "rate_limited",
+        retryAfterMs: 30_000,
+      });
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [
+      makeConvo({ id: "convo-1" }),
+      makeConvo({ id: "convo-2" }),
+      makeConvo({ id: "convo-3" }),
+      makeConvo({ id: "convo-4" }),
+    ],
+    makeEmitConversation(deps),
+    { random: () => 0, sleep: () => undefined, densityStopThreshold: 3, preDetailRateLimited: 2 }
+  );
+
+  // Only convo-1 fetches (its served 429 brings the seeded 2 to 3 = threshold);
+  // convo-2..4 see the tracker tripped and defer without a fetch. Without the
+  // seed this same shape would have hydrated three before tripping.
+  assert.deepEqual(
+    fetchedIds,
+    ["/conversation/convo-1"],
+    "the pre-detail seed makes a single in-lane 429 trip the stop"
+  );
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1"]);
+  assert.deepEqual(coverage.gapKeys, ["convo-2", "convo-3", "convo-4"]);
+
+  const gaps = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP"
+  );
+  assert.equal(
+    gaps.every((g) => g.reason === "upstream_pressure" && g.retryable === true && g.status === "pending"),
+    true,
+    "seeded-defer gaps reuse the same resumable upstream_pressure contract"
+  );
+
+  // The trip message reports the FULL count (seed + in-lane), so the operator
+  // sees the run-level pressure, not just the detail-phase slice.
+  const densityProgress = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> =>
+      m.type === "PROGRESS" && m.stream === "messages" && m.message.includes("opened upstream-pressure circuit after")
+  );
+  assert.equal(densityProgress.length, 1);
+  assert.equal(
+    densityProgress[0]?.message.includes("after 3 served 429s"),
+    true,
+    "the trip names the cumulative seed+in-lane count"
+  );
+});
+
+test("runMessagesAndConversationsWithDetail: a zero pre-detail seed preserves the unseeded behavior", async () => {
+  // Regression guard: preDetailRateLimited:0 must behave EXACTLY like no seed —
+  // the seed is purely additive and the default (no pre-detail pressure) is the
+  // frozen, byte-for-byte path.
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      fetchedIds.push(path);
+      await currentAdaptiveLaneRunContext()?.reportPressure({
+        absorbedByRequestWait: true,
+        delayMs: 30_000,
+        kind: "rate_limited",
+        retryAfterMs: 30_000,
+      });
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "convo-1" }), makeConvo({ id: "convo-2" }), makeConvo({ id: "convo-3" })],
+    makeEmitConversation(deps),
+    { random: () => 0, sleep: () => undefined, densityStopThreshold: 3, preDetailRateLimited: 0 }
+  );
+
+  // Threshold 3, no seed: convo-1 and convo-2 each pay a served 429 (count 1, 2),
+  // convo-3's launch sees count 2 < 3 so it fetches too and brings count to 3.
+  // All three hydrate; the stop only trips for a hypothetical convo-4. Identical
+  // to the unseeded "below threshold" path.
+  assert.deepEqual(fetchedIds, ["/conversation/convo-1", "/conversation/convo-2", "/conversation/convo-3"]);
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2", "convo-3"]);
+  assert.deepEqual(coverage.gapKeys, []);
 });
 
 test("runConversationsAndMessagesStreams: detail failure rejects before conversations STATE", async () => {
