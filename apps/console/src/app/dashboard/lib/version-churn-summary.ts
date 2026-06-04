@@ -297,14 +297,14 @@ export function classifyChurnRow(row: RefRecordVersionStatsRow): ChurnRemediatio
   if (connector) {
     const key = `${connector}/${row.stream}`;
     const reviewedAt = REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT.get(key);
-    if (reviewedAt !== undefined) {
+    if (reviewedAt !== undefined && row.last_history_at !== null && row.last_history_at <= reviewedAt) {
       // Only suppress re-alarm when we have ground-truth evidence that no new
       // history has been written since the review. If last_history_at is null
       // (ground-truth unavailable), we cannot verify the guard — treat as
       // lossless_compaction_candidate so the dashboard re-alarms.
-      if (row.last_history_at !== null && row.last_history_at <= reviewedAt) {
-        return "reviewed_compaction_residue";
-      }
+      return "reviewed_compaction_residue";
+    }
+    if (reviewedAt !== undefined) {
       // last_history_at is absent or after the review timestamp: new churn has
       // appeared since the review. Fall through to lossless_compaction_candidate.
     }

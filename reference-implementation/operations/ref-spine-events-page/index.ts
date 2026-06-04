@@ -40,6 +40,15 @@
 
 export type RefSpineEventsKind = "trace" | "grant" | "run";
 
+/**
+ * Window-independent terminal status for the run kind. Derived by the
+ * host from the run's most-recent terminal spine event (the bounded
+ * `LIMIT 1` terminal-event query), NOT from the paginated event window.
+ * `null` when the run has no terminal event yet, or for the trace/grant
+ * kinds (terminal status applies to runs only).
+ */
+export type RefSpineRunTerminalStatus = "completed" | "failed" | "cancelled" | "abandoned";
+
 export interface RefSpineEventInput {
   readonly token_id?: string | null;
   readonly object_type: string;
@@ -61,6 +70,14 @@ export interface RefSpineEventsPageInput {
   readonly id: string;
   readonly cursor: string | null;
   readonly page: RefSpineEventsPageInputPagination;
+  /**
+   * Run-kind only: the run's window-independent terminal status, resolved
+   * host-side from the most-recent terminal spine event. Omitted/`null`
+   * means "no terminal event" (the run is still active). The host MUST NOT
+   * supply a value for the trace/grant kinds; this operation ignores it
+   * there (terminal status is a run concept) and emits `null` instead.
+   */
+  readonly terminalStatus?: RefSpineRunTerminalStatus | null;
 }
 
 export interface RefSpineEventsPageDependencies {
@@ -81,6 +98,13 @@ export interface RefSpineEventsPageEnvelope {
   readonly truncated: boolean;
   readonly next_cursor: string | null;
   readonly limit: number;
+  /**
+   * Run-kind only: the run's window-independent terminal status. Present on
+   * the run-timeline envelope (value or `null`); always `null` for the
+   * trace/grant envelopes. A consumer reading ANY single page receives the
+   * same value — it does not depend on `limit`/`cursor`.
+   */
+  readonly terminal_status: RefSpineRunTerminalStatus | null;
   readonly [identifierKey: string]: unknown;
 }
 
@@ -168,6 +192,9 @@ export function executeRefSpineEventsPage(
   const idKey = KIND_TO_ID_KEY[input.kind];
   const objectKind = KIND_TO_ENVELOPE_OBJECT[input.kind];
   const data = events.map((event) => redactSpineEventForPublic(event));
+  // Terminal status is a run concept; for trace/grant the field is always
+  // null regardless of any value the host may pass.
+  const terminalStatus = input.kind === "run" ? (input.terminalStatus ?? null) : null;
   return {
     object: objectKind,
     [idKey]: input.id,
@@ -177,5 +204,6 @@ export function executeRefSpineEventsPage(
     truncated: input.page.truncated,
     next_cursor: input.page.next_cursor,
     limit: input.page.limit,
+    terminal_status: terminalStatus,
   } as RefSpineEventsPageEnvelope;
 }

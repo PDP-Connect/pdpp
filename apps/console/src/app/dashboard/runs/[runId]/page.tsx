@@ -20,12 +20,13 @@ import {
   type KnownGap,
   type KnownGapSummary,
 } from "../../lib/run-gaps.ts";
+import { CancelRunControl } from "./cancel-run-control.tsx";
 import { RunInteractionForm } from "./interaction-form.tsx";
 import { RunDetailPoller } from "./run-detail-poller.tsx";
+import { isRunActive, resolveDisplayTerminalStatus, type TerminalRunStatus } from "./run-terminal-status.ts";
 
 export const dynamic = "force-dynamic";
 
-type TerminalRunStatus = "succeeded" | "succeeded_with_gaps" | "failed" | "cancelled" | null;
 type RunStateTone = "protocol" | "human" | "success" | "danger";
 
 interface LatestProgress {
@@ -82,17 +83,33 @@ export default async function RunDetailPage({
   const checkpoints = summarizeCheckpoints(events);
   const progress = summarizeProgress(events);
   const interactions = summarizeInteractions(events);
-  const terminalStatus = getTerminalRunStatus(events);
-  const active = terminalStatus == null;
+  // Authoritative liveness comes from the window-independent envelope
+  // `terminal_status`, NOT from scanning a single page of events. The
+  // terminal event is emitted last, so for a run longer than the page the
+  // page-only scan never sees it and would treat the run as active forever
+  // (wrong badge, never-disabled poller, wrongly-rendered Cancel control).
+  const envelopeTerminal = envelope.terminal_status ?? null;
+  const active = isRunActive(envelopeTerminal);
+  // In-page scan retained ONLY for the detail nuances it can read off the
+  // event object (failed-vs-cancelled reason, succeeded-with-gaps). It is
+  // never the source of the active/terminal decision and may be null when
+  // the terminal event is not on this page.
+  const inPageTerminalStatus = getTerminalRunStatus(events);
   const currentAssistance = active ? getCurrentRunAssistance(events) : null;
   const latestProgress = getLatestProgress(events);
   const failure = events.find((e) => e.event_type === "run.failed");
   const terminalKnownGaps = extractTerminalKnownGaps(events);
   const gapClassification = classifyKnownGaps(terminalKnownGaps.gaps);
-  const displayTerminalStatus =
-    terminalStatus === "succeeded" && gapClassification.coverageGaps.length > 0
-      ? "succeeded_with_gaps"
-      : terminalStatus;
+  // The displayed terminal class is anchored to the envelope. Where the
+  // terminal event IS on this page, prefer the in-page scan's more-specific
+  // reading (it distinguishes owner-cancelled crashes via the failure
+  // reason and succeeded-with-gaps); otherwise fall back to the envelope's
+  // raw class mapped to the page's display type.
+  const displayTerminalStatus = resolveDisplayTerminalStatus({
+    coverageGapCount: gapClassification.coverageGaps.length,
+    envelopeTerminal,
+    inPageTerminalStatus,
+  });
   const stateTone = getRunStateTone({ active, currentAssistance, terminalStatus: displayTerminalStatus });
   const stateValue = getRunStateValue({ active, currentAssistance, terminalStatus: displayTerminalStatus });
   const failureRows = summarizeFailure(failure);
@@ -104,6 +121,7 @@ export default async function RunDetailPage({
         beforeTimeline={
           <>
             <CurrentAssistanceSection active={active} currentAssistance={currentAssistance} runId={runId} />
+            {active ? <CancelRunControl runId={runId} /> : null}
             <LatestProgressSection
               active={active}
               latestProgress={latestProgress}

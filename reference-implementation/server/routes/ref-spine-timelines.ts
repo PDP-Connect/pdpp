@@ -20,6 +20,7 @@ import {
   executeRefSpineEventsPage,
   type RefSpineEventsKind,
   type RefSpineEventsPageInputPagination,
+  type RefSpineRunTerminalStatus,
 } from "../../operations/ref-spine-events-page/index.ts";
 import type { MiddlewareHandler, PdppErrorFn } from "./_route-contract.ts";
 
@@ -48,6 +49,13 @@ interface TimelinePageOptions {
 }
 
 export interface MountRefSpineTimelinesContext {
+  /**
+   * Window-independent terminal-status lookup for the run kind. Resolves
+   * the run's most-recent terminal event via the bounded `LIMIT 1` query;
+   * returns `null` when the run has no terminal event. Only invoked for
+   * `kind === "run"` (trace/grant timelines have no terminal status).
+   */
+  getRunTerminalStatus(runId: string): Promise<RefSpineRunTerminalStatus | null> | RefSpineRunTerminalStatus | null;
   handleError(res: unknown, err: unknown): void;
   listSpineEventsPage(
     kind: RefSpineEventsKind,
@@ -118,11 +126,16 @@ function mountTimeline(
         ctx.pdppError(res, 404, "not_found", notFoundMessage);
         return;
       }
+      // Window-independent run terminal status: resolved from the run's
+      // most-recent terminal event (bounded `LIMIT 1`), NOT from this page.
+      // Run kind only — trace/grant timelines have no terminal status.
+      const terminalStatus = kind === "run" ? await ctx.getRunTerminalStatus(id) : null;
       const envelope = executeRefSpineEventsPage({
         kind,
         id,
         cursor: opts.cursor,
         page,
+        terminalStatus,
       });
       res.json(envelope);
     } catch (err) {

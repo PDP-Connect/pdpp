@@ -49,6 +49,15 @@ export interface TimelineEnvelope {
   events: SpineEvent[];
   next_cursor?: string;
   object: string;
+  /**
+   * Run-timeline only: the run's window-independent terminal status,
+   * resolved server-side from the most-recent terminal spine event. The
+   * authoritative active/terminal signal for the run detail surface —
+   * unlike scanning `events` (a single page), this is the same value on
+   * any page. `null` means the run has no terminal event (still active);
+   * absent for trace/grant timelines.
+   */
+  terminal_status?: "completed" | "failed" | "cancelled" | "abandoned" | null;
   trace_id: string | null;
   truncated?: boolean;
 }
@@ -72,6 +81,7 @@ function normalizeTimeline(raw: unknown): TimelineEnvelope {
     data?: SpineEvent[];
     events?: SpineEvent[];
     next_cursor?: unknown;
+    terminal_status?: unknown;
     truncated?: unknown;
   };
   let events: SpineEvent[] = [];
@@ -80,12 +90,20 @@ function normalizeTimeline(raw: unknown): TimelineEnvelope {
   } else if (Array.isArray(r.data)) {
     events = r.data;
   }
+  const terminalStatus =
+    r.terminal_status === "completed" ||
+    r.terminal_status === "failed" ||
+    r.terminal_status === "cancelled" ||
+    r.terminal_status === "abandoned"
+      ? r.terminal_status
+      : null;
   return {
     object: r.object ?? "timeline",
     trace_id: r.trace_id ?? null,
     event_count: typeof r.event_count === "number" ? r.event_count : events.length,
     events,
     next_cursor: typeof r.next_cursor === "string" && r.next_cursor.length > 0 ? r.next_cursor : undefined,
+    terminal_status: terminalStatus,
     truncated: r.truncated === true,
   };
 }

@@ -194,9 +194,7 @@ test("child back-link is absent when the child field value is missing or empty",
 
 const CHASE_TRANSACTIONS_MANIFEST_STREAM = {
   name: "transactions",
-  relationships: [
-    { name: "account", stream: "accounts", foreign_key: "account_id", cardinality: "has_one" },
-  ],
+  relationships: [{ name: "account", stream: "accounts", foreign_key: "account_id", cardinality: "has_one" }],
 };
 
 test("child-declared has_one links to the parent record detail page", () => {
@@ -210,15 +208,15 @@ test("child-declared has_one links to the parent record detail page", () => {
   assert.ok(link);
   assert.equal(link.parentStream, "accounts");
   assert.equal(link.childParentKeyField, "account_id");
-  assert.equal(
-    link.href,
-    "/dashboard/records/cin_029a67a16d8a252f6e3eb896/accounts/1212486749"
-  );
+  assert.equal(link.href, "/dashboard/records/cin_029a67a16d8a252f6e3eb896/accounts/1212486749");
 });
 
 test("child-declared has_one percent-encodes connection, stream, and key value", () => {
   const links = childHasOneBackLinksFromManifest(
-    { name: "items", relationships: [{ name: "order", stream: "open orders", foreign_key: "order id", cardinality: "has_one" }] },
+    {
+      name: "items",
+      relationships: [{ name: "order", stream: "open orders", foreign_key: "order id", cardinality: "has_one" }],
+    },
     { "order id": "ref/42" },
     { connectionId: "my conn" }
   );
@@ -231,9 +229,7 @@ test("child-declared has_many relationships are ignored by childHasOneBackLinksF
   const links = childHasOneBackLinksFromManifest(
     {
       name: "transactions",
-      relationships: [
-        { name: "tags", stream: "tags", foreign_key: "transaction_id", cardinality: "has_many" },
-      ],
+      relationships: [{ name: "tags", stream: "tags", foreign_key: "transaction_id", cardinality: "has_many" }],
     },
     { id: "tx1", transaction_id: "tx1" },
     { connectionId: "conn" }
@@ -271,5 +267,8 @@ test("child-declared has_one yields no link when foreign_key value is empty", ()
 
 test("childHasOneBackLinksFromManifest returns empty for undefined manifest stream or record", () => {
   assert.deepEqual(childHasOneBackLinksFromManifest(undefined, { id: "x" }, { connectionId: "c" }), []);
-  assert.deepEqual(childHasOneBackLinksFromManifest(CHASE_TRANSACTIONS_MANIFEST_STREAM, undefined, { connectionId: "c" }), []);
+  assert.deepEqual(
+    childHasOneBackLinksFromManifest(CHASE_TRANSACTIONS_MANIFEST_STREAM, undefined, { connectionId: "c" }),
+    []
+  );
 });

@@ -33,7 +33,7 @@ import {
   stripTrailingSlash,
 } from './metadata.ts';
 import { deriveReferenceFreshness } from './freshness.ts';
-import { createTraceContext, emitSpineEvent, generateSpineId, listSpineCorrelations, listSpineEventsPage, searchSpine } from '../lib/spine.ts';
+import { createTraceContext, emitSpineEvent, generateSpineId, getRunTerminalStatus, listSpineCorrelations, listSpineEventsPage, searchSpine } from '../lib/spine.ts';
 import { exec, getOne, referenceQueries, transaction } from '../lib/db.ts';
 import {
   registerConnector, getConnectorManifest, getConfiguredNativeManifest, getManifestForStorageBinding,
@@ -3023,6 +3023,7 @@ function buildAsApp(opts = {}) {
   const refSpineTimelinesContext = {
     requireOwnerSession: ownerAuth.requireOwnerSession,
     listSpineEventsPage: (kind, id, opts) => listSpineEventsPage(kind, id, opts),
+    getRunTerminalStatus: (runId) => getRunTerminalStatus(runId),
     handleError,
     pdppError,
   };

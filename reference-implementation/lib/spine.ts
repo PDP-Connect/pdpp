@@ -12,6 +12,7 @@ import {
 } from "./db.ts";
 import {
   postgresEmitSpineEvent,
+  postgresGetRunTerminalEvent,
   postgresListSpineCorrelations,
   postgresListSpineEventsPage,
   postgresSearchSpine,
@@ -643,6 +644,46 @@ export function listSpineEventsPage(
     next_cursor: page.nextCursor,
     limit: opts.limit,
   };
+}
+
+/**
+ * Window-independent terminal status for a run. One of `completed`,
+ * `failed`, `cancelled`, `abandoned`, or `null` when the run has no
+ * terminal event yet.
+ */
+export type RunTerminalStatus = "completed" | "failed" | "cancelled" | "abandoned";
+
+interface RunTerminalEventRow {
+  readonly event_type: string;
+}
+
+const RUN_TERMINAL_EVENT_TYPE_TO_STATUS: Record<string, RunTerminalStatus> = {
+  "run.completed": "completed",
+  "run.failed": "failed",
+  "run.cancelled": "cancelled",
+  "run.abandoned": "abandoned",
+};
+
+/**
+ * Resolve a run's terminal status from its most-recent terminal spine
+ * event, independent of any paginated timeline window. Uses the bounded
+ * `ORDER BY event_seq DESC LIMIT 1` terminal-event query
+ * (`queries/spine/get-run-terminal-event.sql` for SQLite,
+ * `postgresGetRunTerminalEvent` for Postgres) — it never scans the run's
+ * full event list and never depends on `limit`/`cursor`. Returns `null`
+ * when the run has no terminal event (still active / in progress).
+ */
+export async function getRunTerminalStatus(runId: string): Promise<RunTerminalStatus | null> {
+  if (!runId) {
+    return null;
+  }
+  const row = isPostgresStorageBackend()
+    ? ((await postgresGetRunTerminalEvent(runId)) as RunTerminalEventRow | null | undefined)
+    : getOne<RunTerminalEventRow>(referenceQueries.spineGetRunTerminalEvent, [runId]);
+  if (!row || typeof row.event_type !== "string") {
+    return null;
+  }
+  return RUN_TERMINAL_EVENT_TYPE_TO_STATUS[row.event_type] ?? null;
 }
 
 /**
