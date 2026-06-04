@@ -5203,6 +5203,10 @@
                                           "has_many"
                                         ]
                                       },
+                                      "child_parent_key_field": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
                                       "foreign_key": {
                                         "type": "string",
                                         "minLength": 1
@@ -5222,13 +5226,20 @@
                                         "type": "boolean"
                                       },
                                       "reason": {
-                                        "type": "string"
+                                        "type": "string",
+                                        "enum": [
+                                          "related_stream_not_granted",
+                                          "related_stream_unknown",
+                                          "related_stream_not_loaded"
+                                        ]
                                       }
                                     },
                                     "required": [
                                       "name",
                                       "stream",
+                                      "target_stream",
                                       "cardinality",
+                                      "child_parent_key_field",
                                       "granted",
                                       "usable"
                                     ]
@@ -6592,6 +6603,10 @@
                               "has_many"
                             ]
                           },
+                          "child_parent_key_field": {
+                            "type": "string",
+                            "minLength": 1
+                          },
                           "foreign_key": {
                             "type": "string",
                             "minLength": 1
@@ -6611,13 +6626,20 @@
                             "type": "boolean"
                           },
                           "reason": {
-                            "type": "string"
+                            "type": "string",
+                            "enum": [
+                              "related_stream_not_granted",
+                              "related_stream_unknown",
+                              "related_stream_not_loaded"
+                            ]
                           }
                         },
                         "required": [
                           "name",
                           "stream",
+                          "target_stream",
                           "cardinality",
+                          "child_parent_key_field",
                           "granted",
                           "usable"
                         ]

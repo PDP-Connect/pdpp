@@ -10,6 +10,7 @@ import { ReferenceServerUnreachableError, ResourceServerHttpError } from "../../
 import {
   computeDefaultColumns,
   deriveAllColumns,
+  type ExpandCapability,
   listConnectorManifests,
   queryRecords,
   type RecordsPage,
@@ -20,6 +21,7 @@ import {
   truncate,
 } from "../../../lib/rs-client.ts";
 import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } from "../../connection-route.ts";
+import { findParentBackLink, parentRelationsForChild } from "../../lib/relationships.ts";
 import { ColumnsMenu } from "./columns-menu.tsx";
 
 export const dynamic = "force-dynamic";
@@ -28,15 +30,38 @@ const PAGE_SIZE = 50;
 const TH = "pdpp-eyebrow border-border/70 border-b px-3 py-2 text-left text-muted-foreground";
 const TD = "pdpp-caption border-border/70 border-b px-3 py-2";
 
+const FILTER_PARAM_RE = /^filter\[(.+)\]$/;
+
+// Extract `filter[field]=value` pairs from the raw search params. Relationship
+// navigation links a parent record to its children via
+// `?filter[<child_parent_key_field>]=<parent key>`; this is the receiving end.
+function readExactFilters(searchParams: Record<string, string | string[] | undefined>): Record<string, string> {
+  const filters: Record<string, string> = {};
+  for (const [key, value] of Object.entries(searchParams)) {
+    const match = FILTER_PARAM_RE.exec(key);
+    if (!match) {
+      continue;
+    }
+    const field = match[1];
+    const raw = Array.isArray(value) ? value[0] : value;
+    if (field && typeof raw === "string" && raw.length > 0) {
+      filters[field] = raw;
+    }
+  }
+  return filters;
+}
+
 export default async function StreamPage({
   params,
   searchParams,
 }: {
   params: Promise<{ connector: string; stream: string }>;
-  searchParams: Promise<{ cursors?: string; columns?: string }>;
+  searchParams: Promise<{ cursors?: string; columns?: string } & Record<string, string | string[] | undefined>>;
 }) {
   const { connector, stream } = await params;
-  const { cursors: cursorsParam, columns: columnsParam } = await searchParams;
+  const resolvedSearchParams = await searchParams;
+  const { cursors: cursorsParam, columns: columnsParam } = resolvedSearchParams;
+  const exactFilters = readExactFilters(resolvedSearchParams);
   const routeId = decodeURIComponent(connector);
   const streamName = decodeURIComponent(stream);
 
@@ -47,6 +72,7 @@ export default async function StreamPage({
 
   let page: RecordsPage;
   let streamManifest: StreamManifest | null = null;
+  let parentRelations: Array<{ parentStream: string; capability: ExpandCapability }> = [];
   try {
     const connection = await resolveConnectionForRecordsRoute(routeId);
     if (!connection) {
@@ -60,6 +86,7 @@ export default async function StreamPage({
         connectorInstanceId,
         limit: PAGE_SIZE,
         cursor: trail.at(-1),
+        ...(Object.keys(exactFilters).length > 0 ? { filter: exactFilters } : {}),
       }),
       listConnectorManifests().catch(() => []),
     ]);
@@ -67,6 +94,9 @@ export default async function StreamPage({
     const connectorManifest = manifests.find((m) => m.connector_id === connectorId);
     const maybeStream = connectorManifest?.streams?.find((s: { name: string }) => s.name === streamName);
     streamManifest = (maybeStream ?? null) as StreamManifest | null;
+    // Declared forward relations pointing AT this stream let a child-record field
+    // link back to its parent (manifest-declared only, never payload-guessed).
+    parentRelations = parentRelationsForChild(connectorManifest?.streams, streamName);
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
@@ -121,6 +151,19 @@ export default async function StreamPage({
   const prevHref = trail.length ? hrefFor(streamPath, trail.slice(0, -1), columnsParam) : null;
   const nextHref = page.next_cursor ? hrefFor(streamPath, [...trail, page.next_cursor], columnsParam) : null;
   const recordHref = (id: string) => `${streamPath}/${encodeURIComponent(id)}`;
+
+  // Fields on this (child) stream that link back to a parent record. The set of
+  // linkable fields comes only from declared forward relations; a field that
+  // merely looks like a foreign key is never linked.
+  const parentLinkFields = new Set(
+    parentRelations
+      .map(({ capability }) => capability.child_parent_key_field ?? capability.foreign_key)
+      .filter((field): field is string => typeof field === "string")
+  );
+  const parentLinkForCell = (record: StreamRecord, column: string) =>
+    parentLinkFields.has(column)
+      ? findParentBackLink(streamName, record.data, parentRelations, { connectionId })
+      : null;
 
   return (
     <DashboardShell active="records">
@@ -196,15 +239,31 @@ export default async function StreamPage({
                         {truncate(r.id, 32)}
                       </Link>
                     </td>
-                    {columns.map((c) => (
-                      <td className={`${TD} align-top`} key={c}>
-                        <Link className="block" href={recordHref(r.id)}>
-                          <span className="block max-w-[24rem] truncate" title={stringifyCell(r.data?.[c])}>
-                            {stringifyCell(r.data?.[c])}
-                          </span>
-                        </Link>
-                      </td>
-                    ))}
+                    {columns.map((c) => {
+                      const parentLink = parentLinkForCell(r, c);
+                      if (parentLink) {
+                        return (
+                          <td className={`${TD} align-top`} key={c}>
+                            <Link
+                              className="block max-w-[24rem] truncate font-mono text-foreground underline underline-offset-2 hover:no-underline"
+                              href={parentLink.href}
+                              title={`${parentLink.parentStream} · ${stringifyCell(r.data?.[c])}`}
+                            >
+                              {stringifyCell(r.data?.[c])}
+                            </Link>
+                          </td>
+                        );
+                      }
+                      return (
+                        <td className={`${TD} align-top`} key={c}>
+                          <Link className="block" href={recordHref(r.id)}>
+                            <span className="block max-w-[24rem] truncate" title={stringifyCell(r.data?.[c])}>
+                              {stringifyCell(r.data?.[c])}
+                            </span>
+                          </Link>
+                        </td>
+                      );
+                    })}
                   </tr>
                 ))}
               </tbody>

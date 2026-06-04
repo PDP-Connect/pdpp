@@ -88,3 +88,88 @@ test('validateResponse fails closed when payload violates declared response sche
     assert.equal(typeof err.message, 'string');
   }
 });
+
+// `expand_capabilities` target-naming contract. Each entry SHALL carry both
+// `target_stream` (the related child stream) and `child_parent_key_field` (the
+// field on the child holding the parent's key). Pinned via getStreamMetadata's
+// declared 200 response schema. See
+//   openspec/changes/add-record-relationship-navigation/.
+
+function streamMetadataWithExpandEntry(entry) {
+  return {
+    object: 'stream_metadata',
+    name: 'user',
+    field_capabilities: {},
+    expand_capabilities: [entry],
+  };
+}
+
+const VALID_EXPAND_ENTRY = {
+  name: 'user_stats',
+  stream: 'user_stats',
+  target_stream: 'user_stats',
+  cardinality: 'has_many',
+  child_parent_key_field: 'user_id',
+  foreign_key: 'user_id',
+  granted: true,
+  usable: true,
+};
+
+test('getStreamMetadata accepts an expand_capabilities entry carrying target_stream and child_parent_key_field', () => {
+  const result = validateResponse('getStreamMetadata', {
+    status: 200,
+    body: streamMetadataWithExpandEntry({ ...VALID_EXPAND_ENTRY }),
+  });
+  assert.deepEqual(result, { ok: true, skipped: false });
+});
+
+test('getStreamMetadata rejects an expand_capabilities entry missing target_stream', () => {
+  const entry = { ...VALID_EXPAND_ENTRY };
+  delete entry.target_stream;
+  const result = validateResponse('getStreamMetadata', {
+    status: 200,
+    body: streamMetadataWithExpandEntry(entry),
+  });
+  assert.equal(result.ok, false);
+  assert.ok(Array.isArray(result.errors) && result.errors.length > 0);
+});
+
+test('getStreamMetadata rejects an expand_capabilities entry missing child_parent_key_field', () => {
+  const entry = { ...VALID_EXPAND_ENTRY };
+  delete entry.child_parent_key_field;
+  const result = validateResponse('getStreamMetadata', {
+    status: 200,
+    body: streamMetadataWithExpandEntry(entry),
+  });
+  assert.equal(result.ok, false);
+  assert.ok(Array.isArray(result.errors) && result.errors.length > 0);
+});
+
+test('getStreamMetadata rejects an expand_capabilities entry with an out-of-enum reason', () => {
+  const result = validateResponse('getStreamMetadata', {
+    status: 200,
+    body: streamMetadataWithExpandEntry({
+      ...VALID_EXPAND_ENTRY,
+      granted: false,
+      usable: false,
+      reason: 'not_a_declared_reason',
+    }),
+  });
+  assert.equal(result.ok, false);
+  assert.ok(Array.isArray(result.errors) && result.errors.length > 0);
+});
+
+test('getStreamMetadata accepts each declared reason enum value on an inert entry', () => {
+  for (const reason of ['related_stream_not_granted', 'related_stream_unknown', 'related_stream_not_loaded']) {
+    const result = validateResponse('getStreamMetadata', {
+      status: 200,
+      body: streamMetadataWithExpandEntry({
+        ...VALID_EXPAND_ENTRY,
+        granted: false,
+        usable: false,
+        reason,
+      }),
+    });
+    assert.deepEqual(result, { ok: true, skipped: false }, `reason ${reason} should validate`);
+  }
+});

@@ -1245,17 +1245,43 @@ const StreamMetadataResponseSchema = {
         properties: {
           name: NonEmptyStringSchema,
           relation: NonEmptyStringSchema,
+          // `stream` is the historical name for the related child stream. It is
+          // retained for back-compat and carries the same value as
+          // `target_stream`.
           stream: NonEmptyStringSchema,
+          // The related child stream the forward relation points at. Required so
+          // a reader never has to infer "is `stream` the parent or the child?".
           target_stream: NonEmptyStringSchema,
           cardinality: { type: "string", enum: ["has_one", "has_many"] },
+          // The field on the child (target) record whose value holds the parent
+          // record's key — the field the server filters on as
+          // `WHERE child.<field> = <parent record key>` during hydration. This is
+          // the same field the manifest declares as `foreign_key`; it is NOT the
+          // child's own record key. Required.
+          child_parent_key_field: NonEmptyStringSchema,
+          // Back-compat alias for `child_parent_key_field`, carrying the identical
+          // value. New readers SHOULD prefer `child_parent_key_field`.
           foreign_key: NonEmptyStringSchema,
           default_limit: { type: "integer", minimum: 1 },
           max_limit: { type: "integer", minimum: 1 },
           granted: { type: "boolean" },
           usable: { type: "boolean" },
-          reason: { type: "string" },
+          // Present on `usable: false` entries. Enumerated reasons a declared
+          // relation is not usable under the current request:
+          //   - `related_stream_not_granted` — target stream outside the grant
+          //     (the value the server already emits today);
+          //   - `related_stream_unknown` — target stream absent from the loaded
+          //     manifest;
+          //   - `related_stream_not_loaded` — target stream declared but not
+          //     loaded at request time.
+          // Additive: a future grant/projection failure mode may add an enum
+          // member without breaking existing readers.
+          reason: {
+            type: "string",
+            enum: ["related_stream_not_granted", "related_stream_unknown", "related_stream_not_loaded"],
+          },
         },
-        required: ["name", "stream", "cardinality", "granted", "usable"],
+        required: ["name", "stream", "target_stream", "cardinality", "child_parent_key_field", "granted", "usable"],
       },
     },
     freshness: FreshnessSchema,

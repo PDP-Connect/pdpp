@@ -2113,6 +2113,338 @@ test('first-party manifests declare only parent-to-child query.expand entries wi
   }
 });
 
+// ─── GitHub user → user_stats first-party relationship ──────────────────────
+//
+// The GitHub manifest declares one safe parent-to-child join in this tranche:
+// `user → user_stats` (has_many, foreign_key=user_id). `user_id` is a required
+// top-level property of the `user_stats` child schema, so it satisfies the
+// existing "fk must be required on child" rule (proven by the first-party
+// manifest test above). See
+//   openspec/changes/add-record-relationship-navigation/.
+
+function readGithubManifest() {
+  return JSON.parse(readFileSync(join(POLYFILL_MANIFESTS_DIR, 'github.json'), 'utf8'));
+}
+
+async function seedGithubStream(rsUrl, ownerToken, connectorId, stream, records) {
+  const lines = records.map((record) => JSON.stringify({
+    key: record.id,
+    data: record,
+    emitted_at: record.emitted_at || record.observed_on || record.updated_at || '2026-04-01T00:00:00Z',
+  })).join('\n');
+  const resp = await fetch(`${rsUrl}/v1/ingest/${encodeURIComponent(stream)}?connector_id=${encodeURIComponent(connectorId)}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${ownerToken}`,
+      'Content-Type': 'application/x-ndjson',
+    },
+    body: lines,
+  });
+  assert.equal(resp.status, 200, `ingest github ${stream} ok`);
+}
+
+// Two users, each with daily user_stats samples keyed by `{user_id}:{date}`.
+// `user_stats.user_id` holds the parent user's record key (`id`), not the
+// child's own key — the child key is `id` ("{user_id}:{YYYY-MM-DD}").
+async function seedGithubExpansionFixture(rsUrl, ownerToken, connectorId) {
+  await seedGithubStream(rsUrl, ownerToken, connectorId, 'user', [
+    { id: '101', login: 'octocat', name: 'The Octocat', updated_at: '2026-04-01T10:00:00Z' },
+    { id: '202', login: 'hubot', name: 'Hubot', updated_at: '2026-04-02T10:00:00Z' },
+  ]);
+  await seedGithubStream(rsUrl, ownerToken, connectorId, 'user_stats', [
+    { id: '101:2026-04-01', user_id: '101', observed_on: '2026-04-01', followers: 10, following: 5, public_repos: 3, public_gists: 1 },
+    { id: '101:2026-04-02', user_id: '101', observed_on: '2026-04-02', followers: 12, following: 5, public_repos: 3, public_gists: 1 },
+    { id: '101:2026-04-03', user_id: '101', observed_on: '2026-04-03', followers: 14, following: 6, public_repos: 4, public_gists: 1 },
+    { id: '202:2026-04-02', user_id: '202', observed_on: '2026-04-02', followers: 99, following: 0, public_repos: 8, public_gists: 0 },
+  ]);
+}
+
+test('github manifest declares no relationship pointing at a commits stream', () => {
+  const manifest = readGithubManifest();
+  for (const stream of manifest.streams) {
+    for (const relationship of stream.relationships || []) {
+      assert.notEqual(
+        relationship.stream,
+        'commits',
+        `github.${stream.name} must not declare a relationship pointing at commits`,
+      );
+    }
+  }
+  // commits is not even a declared stream, so nothing can point at it.
+  assert.ok(
+    !manifest.streams.some((stream) => stream.name === 'commits'),
+    'github manifest must not declare a commits stream',
+  );
+});
+
+test('github manifest declares no reverse expansion from user_stats/issues/pull_requests', () => {
+  const manifest = readGithubManifest();
+  const byName = new Map(manifest.streams.map((stream) => [stream.name, stream]));
+  for (const childName of ['user_stats', 'issues', 'pull_requests']) {
+    const child = byName.get(childName);
+    assert.ok(child, `github manifest must declare ${childName}`);
+    assert.deepEqual(
+      (child.query?.expand || []).map((entry) => entry.name),
+      [],
+      `github.${childName} must not declare reverse query.expand entries`,
+    );
+  }
+});
+
+// The first-party manifest gate (the "FK on child must be required" test above)
+// is what keeps `repositories → issues` / `repositories → pull_requests`
+// deferred: their foreign_key (`repository_id`) is present on the child schema
+// but NOT in the child's `required[]`. The runtime registration validator only
+// enforces that the FK is a top-level child property, so this requiredness rule
+// is enforced at the manifest-test layer. This regression pins both halves:
+// (a) the deferred shape would pass the runtime validator's top-level check, and
+// (b) it fails the first-party manifest gate's requiredness predicate — which is
+// exactly why declaring it now would break that gate.
+test('repositories → issues shape fails the first-party manifest requiredness gate (deferral pin)', () => {
+  const manifest = readGithubManifest();
+  const issues = manifest.streams.find((stream) => stream.name === 'issues');
+  assert.ok(issues, 'github manifest must declare issues');
+
+  const childProperties = issues.schema?.properties || {};
+  const childRequired = issues.schema?.required || [];
+
+  // (a) `repository_id` is a top-level property — the runtime validator's
+  // `hasOwnProperty` check would accept it.
+  assert.ok(
+    Object.prototype.hasOwnProperty.call(childProperties, 'repository_id'),
+    'repository_id must be a top-level property on issues',
+  );
+  // (b) but it is NOT required — the first-party manifest gate's
+  // `required.includes(foreign_key)` predicate rejects it, which is the
+  // concrete reason `repositories → issues` is deferred to a follow-up slice
+  // that first makes the child key required (or adds a null-keyed-child policy).
+  assert.ok(
+    !childRequired.includes('repository_id'),
+    'repository_id must remain non-required on issues until the deferred slice makes it required',
+  );
+
+  // And the manifest does NOT declare the deferred join today.
+  const repositories = manifest.streams.find((stream) => stream.name === 'repositories');
+  assert.deepEqual(
+    (repositories.query?.expand || []).map((entry) => entry.name),
+    [],
+    'repositories must not declare any query.expand entries in this change',
+  );
+});
+
+test('github user expands user_stats filtered by user_id under a both-granted token', async () => {
+  await withHarness(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl, 'github_expand_owner');
+    const githubManifest = readGithubManifest();
+    const connectorId = githubManifest.connector_id;
+    const reg = await registerConnectorManifest(asUrl, githubManifest);
+    assert.equal(reg.status, 201, 'register github manifest');
+    await seedGithubExpansionFixture(rsUrl, ownerToken, connectorId);
+
+    const approved = await approveGrant(asUrl, 'github_expand_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/personalization',
+      purpose_description: 'Read GitHub profile with daily stats',
+      access_mode: 'continuous',
+      streams: [
+        { name: 'user', fields: ['id', 'login', 'name', 'updated_at'] },
+        { name: 'user_stats', fields: ['id', 'user_id', 'observed_on', 'followers'] },
+      ],
+    });
+
+    const list = await fetchJson(
+      `${rsUrl}/v1/streams/user/records?connector_id=${encodeURIComponent(connectorId)}&order=asc&expand=user_stats`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(list.status, 200);
+
+    const octocat = list.body.data.find((record) => record.id === '101');
+    assert.ok(octocat?.expanded?.user_stats, 'octocat carries hydrated user_stats');
+    assert.equal(octocat.expanded.user_stats.object, 'list');
+    // Every hydrated child carries user_id === the parent user's record key,
+    // and its own record key is its `id` (NOT user_id).
+    for (const child of octocat.expanded.user_stats.data) {
+      assert.equal(child.data.user_id, '101', 'child user_id equals parent user key');
+      assert.notEqual(child.id, '101', 'child record key is its own id, not the parent key');
+      assert.equal(child.id, `101:${child.data.observed_on}`, 'child id is the user_stats primary key');
+    }
+
+    // The other user's children are not mixed in.
+    const hubot = list.body.data.find((record) => record.id === '202');
+    assert.equal(hubot.expanded.user_stats.data.length, 1);
+    assert.equal(hubot.expanded.user_stats.data[0].data.user_id, '202');
+  });
+});
+
+test('github user_stats expand_limit caps the child fan-out and reports has_more', async () => {
+  await withHarness(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl, 'github_expand_limit_owner');
+    const githubManifest = readGithubManifest();
+    const connectorId = githubManifest.connector_id;
+    const reg = await registerConnectorManifest(asUrl, githubManifest);
+    assert.equal(reg.status, 201, 'register github manifest');
+    await seedGithubExpansionFixture(rsUrl, ownerToken, connectorId);
+
+    const approved = await approveGrant(asUrl, 'github_expand_limit_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/personalization',
+      purpose_description: 'Read GitHub profile with capped daily stats',
+      access_mode: 'continuous',
+      streams: [
+        { name: 'user', fields: ['id', 'login'] },
+        { name: 'user_stats', fields: ['id', 'user_id', 'observed_on'] },
+      ],
+    });
+
+    const detail = await fetchJson(
+      `${rsUrl}/v1/streams/user/records/101?connector_id=${encodeURIComponent(connectorId)}&expand=user_stats&expand_limit[user_stats]=2`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.expanded.user_stats.data.length, 2);
+    assert.equal(detail.body.expanded.user_stats.has_more, true, 'octocat has 3 stats rows, capped at 2');
+  });
+});
+
+test('github user expansion rejects requests missing the user_stats grant', async () => {
+  await withHarness(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl, 'github_expand_reject_owner');
+    const githubManifest = readGithubManifest();
+    const connectorId = githubManifest.connector_id;
+    const reg = await registerConnectorManifest(asUrl, githubManifest);
+    assert.equal(reg.status, 201, 'register github manifest');
+    await seedGithubExpansionFixture(rsUrl, ownerToken, connectorId);
+
+    // user-only grant: expanding the ungranted child fails with insufficient_scope.
+    const userOnly = await approveGrant(asUrl, 'github_expand_reject_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/personalization',
+      purpose_description: 'Read GitHub profile only',
+      access_mode: 'continuous',
+      streams: [{ name: 'user', fields: ['id', 'login'] }],
+    });
+
+    const missingStats = await fetchJson(
+      `${rsUrl}/v1/streams/user/records?connector_id=${encodeURIComponent(connectorId)}&expand=user_stats`,
+      { headers: { Authorization: `Bearer ${userOnly.token}` } },
+    );
+    assert.equal(missingStats.status, 403);
+    assert.equal(missingStats.body.error.code, 'insufficient_scope');
+
+    // Reverse expansion is not declared on the manifest. Grant user_stats so the
+    // request reaches expand-validation (not the grant gate) and the rejection is
+    // genuinely about the undeclared reverse relation, not a missing scope.
+    const bothGranted = await approveGrant(asUrl, 'github_expand_reject_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/personalization',
+      purpose_description: 'Read GitHub profile + stats',
+      access_mode: 'continuous',
+      streams: [
+        { name: 'user', fields: ['id', 'login'] },
+        { name: 'user_stats', fields: ['id', 'user_id', 'observed_on'] },
+      ],
+    });
+    const reverse = await fetchJson(
+      `${rsUrl}/v1/streams/user_stats/records?connector_id=${encodeURIComponent(connectorId)}&expand=user`,
+      { headers: { Authorization: `Bearer ${bothGranted.token}` } },
+    );
+    assert.equal(reverse.status, 400);
+    assert.equal(reverse.body.error.code, 'invalid_expand');
+  });
+});
+
+test('github repositories → issues expansion is not declared in this change', async () => {
+  await withHarness(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl, 'github_repo_issues_owner');
+    const githubManifest = readGithubManifest();
+    const connectorId = githubManifest.connector_id;
+    const reg = await registerConnectorManifest(asUrl, githubManifest);
+    assert.equal(reg.status, 201, 'register github manifest');
+    await seedGithubStream(rsUrl, ownerToken, connectorId, 'repositories', [
+      { id: 'r1', full_name: 'octocat/hello-world', updated_at: '2026-04-01T10:00:00Z' },
+    ]);
+
+    const approved = await approveGrant(asUrl, 'github_repo_issues_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/personalization',
+      purpose_description: 'Read GitHub repositories only',
+      access_mode: 'continuous',
+      streams: [{ name: 'repositories', fields: ['id', 'full_name'] }],
+    });
+
+    const resp = await fetchJson(
+      `${rsUrl}/v1/streams/repositories/records?connector_id=${encodeURIComponent(connectorId)}&expand=issues`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(resp.status, 400);
+    assert.equal(resp.body.error.code, 'invalid_expand');
+  });
+});
+
+test('github user stream metadata surfaces the user_stats expand capability with target naming', async () => {
+  await withHarness(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl, 'github_metadata_owner');
+    const githubManifest = readGithubManifest();
+    const connectorId = githubManifest.connector_id;
+    const reg = await registerConnectorManifest(asUrl, githubManifest);
+    assert.equal(reg.status, 201, 'register github manifest');
+    await seedGithubExpansionFixture(rsUrl, ownerToken, connectorId);
+
+    // Both streams granted → usable: true with full target naming.
+    const both = await approveGrant(asUrl, 'github_metadata_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/personalization',
+      purpose_description: 'Read GitHub profile + stats',
+      access_mode: 'continuous',
+      streams: [
+        { name: 'user', fields: ['id', 'login'] },
+        { name: 'user_stats', fields: ['id', 'user_id', 'observed_on'] },
+      ],
+    });
+    const bothMeta = await fetchJson(
+      `${rsUrl}/v1/streams/user?connector_id=${encodeURIComponent(connectorId)}`,
+      { headers: { Authorization: `Bearer ${both.token}` } },
+    );
+    assert.equal(bothMeta.status, 200);
+    const usableEntry = bothMeta.body.expand_capabilities.find((entry) => entry.name === 'user_stats');
+    assert.ok(usableEntry, 'user_stats expand capability is present');
+    assert.equal(usableEntry.target_stream, 'user_stats');
+    assert.equal(usableEntry.child_parent_key_field, 'user_id');
+    assert.equal(usableEntry.foreign_key, 'user_id');
+    assert.equal(usableEntry.cardinality, 'has_many');
+    assert.equal(usableEntry.usable, true);
+    assert.equal(usableEntry.granted, true);
+
+    // user-only grant → entry still present, inert, with the not-granted reason.
+    const userOnly = await approveGrant(asUrl, 'github_metadata_owner', {
+      client_id: 'longview',
+      connector_id: connectorId,
+      purpose_code: 'https://pdpp.org/purpose/personalization',
+      purpose_description: 'Read GitHub profile only',
+      access_mode: 'continuous',
+      streams: [{ name: 'user', fields: ['id', 'login'] }],
+    });
+    const userOnlyMeta = await fetchJson(
+      `${rsUrl}/v1/streams/user?connector_id=${encodeURIComponent(connectorId)}`,
+      { headers: { Authorization: `Bearer ${userOnly.token}` } },
+    );
+    assert.equal(userOnlyMeta.status, 200);
+    const inertEntry = userOnlyMeta.body.expand_capabilities.find((entry) => entry.name === 'user_stats');
+    assert.ok(inertEntry, 'declared relation stays visible even when not readable');
+    assert.equal(inertEntry.target_stream, 'user_stats');
+    assert.equal(inertEntry.child_parent_key_field, 'user_id');
+    assert.equal(inertEntry.usable, false);
+    assert.equal(inertEntry.granted, false);
+    assert.equal(inertEntry.reason, 'related_stream_not_granted');
+  });
+});
+
 test('slack messages expand message_attachments and reactions on list and detail reads', async () => {
   await withHarness(async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl, 'slack_expand_owner');

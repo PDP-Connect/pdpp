@@ -258,6 +258,7 @@ export interface MountRsReadContext {
     streamGrant: GrantStreamLike | null | undefined;
     grantStreams: GrantStreamLike[];
     freshness: unknown;
+    manifestStreamNames?: Set<string> | null;
   }): unknown;
   canonicalConnectorKey(connectorId: string): string | null;
 
@@ -1339,6 +1340,11 @@ export function mountRsStreamDetail(app: AppLike, ctx: MountRsReadContext): void
               streamGrant,
               grantStreams: tokenInfo.grant?.streams || [],
               freshness,
+              manifestStreamNames: new Set(
+                (manifest.streams || [])
+                  .map((s: ManifestStreamLike) => s.name)
+                  .filter((name): name is string => typeof name === "string")
+              ),
             });
           },
         };

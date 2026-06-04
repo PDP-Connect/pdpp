@@ -34,7 +34,16 @@ The response shape:
             }
           },
           "expand_capabilities": [
-            { "name": "message_bodies", "stream": "message_bodies", "granted": true, "usable": true }
+            {
+              "name": "message_bodies",
+              "stream": "message_bodies",
+              "target_stream": "message_bodies",
+              "cardinality": "has_one",
+              "child_parent_key_field": "message_id",
+              "foreign_key": "message_id",
+              "granted": true,
+              "usable": true
+            }
           ]
         }
       ]
@@ -179,7 +188,7 @@ If you reached this stream via `expand=attachments` on a parent record (e.g. `me
 
 ## Relationships and `expand[]`
 
-When the manifest declares relationships (e.g., Gmail `messages` → `message_bodies`), the schema lists them under `expand_capabilities`. Request hydration via `expand`:
+When the manifest declares relationships (e.g., Gmail `messages` → `message_bodies`, GitHub `user` → `user_stats`), the schema lists them under `expand_capabilities`. Request hydration via `expand`:
 
 ```bash
 curl -fsS "$RS_URL/v1/streams/messages/records?expand=message_bodies&limit=20" \
@@ -187,6 +196,22 @@ curl -fsS "$RS_URL/v1/streams/messages/records?expand=message_bodies&limit=20" \
 ```
 
 Don't fan out into a second query unless you actually need fields the relationship doesn't expose. `expand[]` keeps the call inside one grant boundary.
+
+Each `expand_capabilities` entry names the related stream and the join field precisely:
+
+- `target_stream` — the related **child** stream the relation points at (same value as the legacy `stream` field).
+- `child_parent_key_field` — the field **on the child record** whose value is the **parent's** record key (the same field the manifest declares as `foreign_key`, which is kept as a back-compat alias). It is **not** the child's own record key.
+
+So the join is parent → child: hydration filters `WHERE child.<child_parent_key_field> = <parent record key>`. For GitHub, `user` declares a `has_many` relation to `user_stats` with `child_parent_key_field=user_id`; each `user_stats` record carries `user_id` equal to the parent user's `id`, while its own record key is `{user_id}:{YYYY-MM-DD}`.
+
+Declared-but-unreadable relations stay visible with `usable: false` and a `reason` (`related_stream_not_granted`, `related_stream_unknown`, `related_stream_not_loaded`) so you can tell "no relation declared" apart from "relation declared but not readable under this grant". Don't request an expansion whose entry is not `usable`.
+
+To navigate without inline expansion (cheaper, no server hydration):
+
+- From a **parent** record, list the related children by filtering the child stream: `GET /v1/streams/<target_stream>/records?filter[<child_parent_key_field>]=<parent record key>`. The operator console's record-detail "Related" section links here for `has_many` relations — never to a single child-detail URL built from the parent key (the parent key is not a child record key).
+- From a **child** record, the `child_parent_key_field` value is the parent's record key, so it links straight to the parent's detail page. This is a console-only affordance; the server still refuses reverse `expand[]` unless a separate change declares it.
+
+`repositories → issues` / `repositories → pull_requests` are intentionally **not** declared yet: their `repository_id` join field is not a required property on the child schema, so it fails the "foreign key must be required on the child" manifest rule. They land in a follow-up change that first makes the child key required.
 
 ## Aggregation patterns by task
 

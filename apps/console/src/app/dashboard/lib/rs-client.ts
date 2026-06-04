@@ -77,7 +77,31 @@ export interface FieldCapability {
   [k: string]: unknown;
 }
 
+/**
+ * One declared parent-to-child relationship the caller may expand, as returned
+ * on `GET /v1/streams/<s>` in `expand_capabilities`. The reference emits one
+ * entry per enabled relation, including relations whose target stream is
+ * unreadable under the current grant (`usable: false` + `reason`).
+ *
+ * `target_stream` names the related child stream; `child_parent_key_field` is
+ * the field on the child carrying the parent's key (the back-compat alias is
+ * `foreign_key`). These are the only fields the console needs to build correct
+ * navigation — it never inspects the raw payload to guess at links.
+ */
+export interface ExpandCapability {
+  cardinality?: "has_one" | "has_many";
+  child_parent_key_field?: string;
+  foreign_key?: string;
+  granted?: boolean;
+  name: string;
+  reason?: string;
+  stream?: string;
+  target_stream?: string;
+  usable?: boolean;
+}
+
 export interface StreamMetadata {
+  expand_capabilities?: ExpandCapability[];
   field_capabilities?: Record<string, FieldCapability>;
   name: string;
   object?: "stream_metadata" | string;
@@ -162,11 +186,24 @@ export async function queryRecords(
   opts: {
     connectorInstanceId?: string | null;
     cursor?: string;
+    /**
+     * Exact-match payload filters, encoded on the wire as `filter[field]=value`.
+     * Used by relationship navigation to scope a child stream's list to one
+     * parent (`filter[<child_parent_key_field>]=<parent_record_key>`). Only
+     * top-level scalar fields are exact-filterable by the resource server.
+     */
+    filter?: Record<string, string>;
     limit?: number;
     order?: "asc" | "desc";
     window?: "exact" | "none";
   } = {}
 ): Promise<RecordsPage> {
+  const filterParams: Record<string, string> = {};
+  if (opts.filter) {
+    for (const [field, value] of Object.entries(opts.filter)) {
+      filterParams[`filter[${field}]`] = value;
+    }
+  }
   const body = (await authedFetch(`/v1/streams/${encodeURIComponent(stream)}/records`, {
     connector_id: connectorId,
     connector_instance_id: opts.connectorInstanceId,
@@ -174,6 +211,7 @@ export async function queryRecords(
     cursor: opts.cursor,
     order: opts.order,
     window: opts.window,
+    ...filterParams,
   })) as RecordsPage;
   const data = Array.isArray(body.data) ? body.data : [];
   // Single-record envelopes still wear the legacy `{ object: 'record', id, stream, data, emitted_at }`

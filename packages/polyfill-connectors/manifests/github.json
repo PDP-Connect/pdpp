@@ -3,7 +3,7 @@
   "connector_id": "https://registry.pdpp.org/connectors/github",
   "connector_key": "github",
   "manifest_uri": "https://registry.pdpp.org/connectors/github",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "display_name": "GitHub",
   "runtime_requirements": {
     "bindings": {
@@ -154,8 +154,23 @@
             "lte",
             "lt"
           ]
+        },
+        "expand": [
+          {
+            "name": "user_stats",
+            "default_limit": 30,
+            "max_limit": 365
+          }
+        ]
+      },
+      "relationships": [
+        {
+          "name": "user_stats",
+          "stream": "user_stats",
+          "foreign_key": "user_id",
+          "cardinality": "has_many"
         }
-      }
+      ]
     },
     {
       "name": "user_stats",

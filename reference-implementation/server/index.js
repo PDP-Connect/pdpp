@@ -2017,6 +2017,7 @@ function buildStreamMetadataEntry({
   grantStreams = [],
   freshness = null,
   grantedConnections = null,
+  manifestStreamNames = null,
 }) {
   const expandStreamGrant = streamGrant
     ? { ...streamGrant, grantStreams }
@@ -2034,7 +2035,7 @@ function buildStreamMetadataEntry({
     relationships: manifestStream.relationships || [],
     query: manifestStream.query || {},
     field_capabilities: buildFieldCapabilities(manifestStream, streamGrant),
-    expand_capabilities: buildExpandCapabilities(manifestStream, expandStreamGrant),
+    expand_capabilities: buildExpandCapabilities(manifestStream, expandStreamGrant, manifestStreamNames),
     freshness: freshness ?? buildFreshness(null),
   };
   if (Array.isArray(grantedConnections)) {
@@ -2043,7 +2044,17 @@ function buildStreamMetadataEntry({
   return entry;
 }
 
-function buildExpandCapabilities(manifestStream, streamGrant = null) {
+// Emit one `expand_capabilities` entry per enabled parent-stream relation (a
+// `query.expand[]` capability backed by a `relationships[]` declaration),
+// including relations whose target stream is unreadable under the current
+// request. Declared-but-unreadable relations stay visible with `usable: false`
+// and a `reason` enum value so a console can tell "no relation declared" apart
+// from "relation declared but not readable here".
+//
+// `manifestStreamNames`, when provided, is the set of streams the loaded
+// manifest declares; a relation pointing at a stream outside that set is
+// surfaced as `related_stream_unknown` rather than silently dropped.
+function buildExpandCapabilities(manifestStream, streamGrant = null, manifestStreamNames = null) {
   const relationships = new Map((manifestStream?.relationships || []).map((relationship) => [relationship.name, relationship]));
   const grantedStreams = Array.isArray(streamGrant?.grantStreams)
     ? new Set(streamGrant.grantStreams.map((stream) => stream.name))
@@ -2053,15 +2064,25 @@ function buildExpandCapabilities(manifestStream, streamGrant = null) {
     .map((capability) => {
       const relationship = relationships.get(capability.name);
       if (!relationship) return null;
-      const granted = !grantedStreams || grantedStreams.has(relationship.stream);
+      const targetStream = relationship.stream;
+      const known = !manifestStreamNames || manifestStreamNames.has(targetStream);
+      const granted = known && (!grantedStreams || grantedStreams.has(targetStream));
+      const usable = known && granted;
       const entry = {
         name: capability.name,
-        stream: relationship.stream,
+        // `stream` (back-compat) and `target_stream` both name the related child
+        // stream; the canonical, self-describing name is `target_stream`.
+        stream: targetStream,
+        target_stream: targetStream,
         cardinality: relationship.cardinality,
         granted,
-        usable: granted,
+        usable,
       };
       if (relationship.foreign_key) {
+        // The field on the child carrying the parent's key. `child_parent_key_field`
+        // is the canonical name; `foreign_key` stays as a back-compat alias with
+        // the identical value.
+        entry.child_parent_key_field = relationship.foreign_key;
         entry.foreign_key = relationship.foreign_key;
       }
       if (capability.default_limit !== undefined) {
@@ -2070,8 +2091,8 @@ function buildExpandCapabilities(manifestStream, streamGrant = null) {
       if (capability.max_limit !== undefined) {
         entry.max_limit = capability.max_limit;
       }
-      if (!granted) {
-        entry.reason = 'related_stream_not_granted';
+      if (!usable) {
+        entry.reason = known ? 'related_stream_not_granted' : 'related_stream_unknown';
       }
       return entry;
     })
@@ -2133,6 +2154,9 @@ async function buildConnectorSchemaItem({ source, storageBinding, manifest, gran
       .filter(Boolean)
     : manifest.streams || [];
   const grantStreams = grant?.streams || [];
+  // Streams the loaded manifest declares — lets the expand-capabilities builder
+  // distinguish "target stream not granted" from "target stream unknown".
+  const manifestStreamNames = new Set((manifest.streams || []).map((stream) => stream.name));
   const freshnessEvidence = await getConnectorFreshnessEvidence({ source, manifest });
 
   // Look up granted connections once per connector. For polyfill connectors
@@ -2165,6 +2189,7 @@ async function buildConnectorSchemaItem({ source, storageBinding, manifest, gran
       grantStreams,
       freshness: buildConnectorAwareFreshness(freshnessEvidence, lastUpdated),
       grantedConnections,
+      manifestStreamNames,
     });
   });
 
