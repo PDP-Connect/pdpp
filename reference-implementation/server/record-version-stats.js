@@ -190,10 +190,6 @@ function rowKey(row) {
   return `${row.connector_instance_id}\n${row.stream}`;
 }
 
-function raiseRiskAtLeastWatch(riskLevel) {
-  return riskLevel === 'normal' ? 'watch' : riskLevel;
-}
-
 function riskSortValue(riskLevel) {
   if (riskLevel === 'high') return 0;
   if (riskLevel === 'watch') return 1;
@@ -256,14 +252,11 @@ export async function buildRecordVersionStatsEnvelope({
         recordKeyCount,
       });
       const riskReasons = [...classification.riskReasons];
-      let riskLevel = classification.riskLevel;
       if (projectionMissing) {
         riskReasons.push('projection_missing');
-        riskLevel = raiseRiskAtLeastWatch(riskLevel);
       }
       if (Boolean(row.dirty)) {
         riskReasons.push('projection_dirty');
-        riskLevel = raiseRiskAtLeastWatch(riskLevel);
       }
       return {
         connector_id: row.connector_id || null,
@@ -281,7 +274,7 @@ export async function buildRecordVersionStatsEnvelope({
         projection_dirty: Boolean(row.dirty),
         projection_missing: projectionMissing,
         projection_authority: groundTruth ? 'record_changes_ground_truth' : 'retained_size_projection',
-        risk_level: riskLevel,
+        risk_level: classification.riskLevel,
         risk_reasons: riskReasons,
       };
     })
