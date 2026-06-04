@@ -758,6 +758,12 @@ export function WebPushSettings({
   // Whether this browser is set up and healthy, so the demoted summary line can
   // wear a calm "enabled" tone and skip pushing a setup CTA.
   const enabled = matchesThisBrowser && !unavailable;
+  let setupToggleLabel = "Set up notifications";
+  if (showSetup) {
+    setupToggleLabel = "Hide setup";
+  } else if (enabled) {
+    setupToggleLabel = "Manage";
+  }
 
   return (
     <Section
@@ -796,7 +802,7 @@ export function WebPushSettings({
               onClick={() => setShowSetup((open) => !open)}
               type="button"
             >
-              {showSetup ? "Hide setup" : enabled ? "Manage" : "Set up notifications"}
+              {setupToggleLabel}
             </button>
           </div>
         </div>

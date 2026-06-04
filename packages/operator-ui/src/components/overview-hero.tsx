@@ -192,7 +192,7 @@ function SecondaryMetric({ label, value, context }: { label: string; value: stri
     <div className="flex flex-col rounded-md border border-border bg-card px-4 py-3">
       <dt className="pdpp-eyebrow">{label}</dt>
       <dd className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-        <span className="pdpp-heading font-medium tracking-tight text-foreground tabular-nums">{value}</span>
+        <span className="pdpp-heading font-medium text-foreground tabular-nums tracking-tight">{value}</span>
         <span className="pdpp-caption text-muted-foreground">{context}</span>
       </dd>
     </div>
@@ -450,7 +450,7 @@ function formatCompactInteger(n: number): string {
   const units: Array<{ suffix: string; divisor: number }> = [
     { suffix: "B", divisor: 1_000_000_000 },
     { suffix: "M", divisor: 1_000_000 },
-    { suffix: "K", divisor: 1_000 },
+    { suffix: "K", divisor: 1000 },
   ];
   for (const { suffix, divisor } of units) {
     if (n >= divisor) {

@@ -3,6 +3,9 @@ import { test } from "node:test";
 
 import { grantRowLabel, runRowLabel, traceRowLabel } from "./summary-row-label.ts";
 
+const RUN_ID_PATTERN = /run_\d/;
+const RUN_PREFIX_PATTERN = /^run_/;
+
 // The contract these helpers exist to enforce: a list row leads with the
 // meaningful "what happened to whom" label (connector / source / client),
 // and NEVER with the raw artifact id. The id is rendered separately as a
@@ -13,7 +16,7 @@ test("runRowLabel leads with the connector, never the run id", () => {
   // A run id passed only as context must never leak into the label.
   const label = runRowLabel({ connector_id: "slack" } as Record<string, unknown>);
   assert.equal(label, "slack");
-  assert.ok(!/run_\d/.test(label));
+  assert.ok(!RUN_ID_PATTERN.test(label));
 });
 
 test("runRowLabel falls back source -> provider -> 'Run'", () => {
@@ -61,12 +64,8 @@ test("no helper ever returns a raw artifact id", () => {
   const runId = "run_1780463950373";
   // connector_id is the only label source; an id placed there would be a
   // caller bug, but the row must still never *originate* a run_ headline.
-  for (const label of [
-    runRowLabel({}),
-    traceRowLabel({}),
-    grantRowLabel({}),
-  ]) {
+  for (const label of [runRowLabel({}), traceRowLabel({}), grantRowLabel({})]) {
     assert.ok(!label.includes(runId));
-    assert.ok(!/^run_/.test(label));
+    assert.ok(!RUN_PREFIX_PATTERN.test(label));
   }
 });

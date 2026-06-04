@@ -12,11 +12,7 @@
  * rendered separately as secondary mono text.
  */
 
-import {
-  formatConnectorKeyForDisplay,
-  formatSourceForDisplay,
-  type SourceDisplayInput,
-} from "./connector-display.ts";
+import { formatConnectorKeyForDisplay, formatSourceForDisplay, type SourceDisplayInput } from "./connector-display.ts";
 
 interface RunLabelInput {
   connector_id?: string | null;

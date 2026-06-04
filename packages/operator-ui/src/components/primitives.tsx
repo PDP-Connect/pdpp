@@ -2,20 +2,6 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { RUN_LIFECYCLE_VOCABULARY, type StatusTone, type StatusVocabulary } from "./status-vocabularies.ts";
 
-// Re-export the status vocabularies (and their types) from their dedicated
-// sibling module so existing callers can keep importing them from
-// "@pdpp/operator-ui/components/primitives". A re-export does NOT trip the
-// Fast-Refresh `only-export-components` rule (which only flags *inline*
-// non-component value definitions), while still keeping the actual definitions
-// out of this component file.
-export {
-  ARTIFACT_LIFECYCLE_VOCABULARY,
-  RUN_LIFECYCLE_VOCABULARY,
-  type StatusTone,
-  type StatusVocabulary,
-  type StatusVocabularyEntry,
-} from "./status-vocabularies.ts";
-
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 export interface Breadcrumb {
