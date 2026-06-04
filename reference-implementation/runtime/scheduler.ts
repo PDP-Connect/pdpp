@@ -33,6 +33,11 @@ import {
   type RunTriggerKind,
 } from "./run-automation-policy.ts";
 import { type BackoffDecision, computeNextRunWithBackoff } from "./scheduler-backoff.ts";
+import {
+  computeSourcePressureCooldown,
+  type PendingPressureGap,
+  type SourcePressureCooldownDecision,
+} from "./scheduler-source-pressure-cooldown.ts";
 
 // ─── Shared domain types ────────────────────────────────────────────────────
 
@@ -201,8 +206,32 @@ export type HasUnresolvedAttentionHandler = (
   connectorInstanceId?: string
 ) => Promise<UnresolvedAttentionEvidence | null | undefined> | UnresolvedAttentionEvidence | null | undefined;
 
+/**
+ * Probe for durable pending *source-pressure* detail gaps keyed to a
+ * connection/source. When this returns a non-empty list of pending gaps whose
+ * reason is account/source pressure (e.g. ChatGPT `upstream_pressure` /
+ * `rate_limited`), the scheduler applies a decaying inter-run cooldown so an
+ * unattended cadence does not keep re-hitting a hot upstream bucket while the
+ * prior run's deferred work is still waiting to recover.
+ *
+ * Unlike `hasUnresolvedAttention`, this is not a hard pause: it only delays the
+ * next *automatic* dispatch on a capped backoff curve and surfaces
+ * `cooling_off`. Manual `runNow` bypasses it. A run that recovers the gaps
+ * empties the pending set, which relaxes the cooldown on the next tick.
+ *
+ * The handler MAY return an empty array, null/undefined, or throw to signal
+ * "no pressure or unable to determine". A throw is treated as "no evidence" —
+ * the scheduler must never silently suppress launches when the durable store
+ * is unreachable, because that would itself hide a real freshness problem.
+ */
+export type GetSourcePressureGapsHandler = (
+  connectorId: string,
+  connectorInstanceId?: string
+) => Promise<readonly PendingPressureGap[] | null | undefined> | readonly PendingPressureGap[] | null | undefined;
+
 export interface SchedulerOptions {
   connectors: readonly ConnectorSchedule[];
+  getSourcePressureGaps?: GetSourcePressureGapsHandler;
   getState?: GetStateHandler;
   hasUnresolvedAttention?: HasUnresolvedAttentionHandler;
   isNeedsHuman?: IsNeedsHumanHandler;
@@ -407,6 +436,13 @@ interface SchedulerRuntime {
   // identity and re-arms the emitter; an absent key (attention resolved)
   // clears the entry so the next observed suppression emits a new skip.
   readonly notifiedAttentionSkips: Map<string, string>;
+  // Tracks the source-pressure cooldown identity (from
+  // `computeSourcePressureCooldown`) for which we last emitted a cooling-off
+  // skip record. Keyed by connector_instance_id. A different identity means
+  // the pressure picture changed (gap count or persistence) and re-arms the
+  // emitter; an absent identity (pressure recovered) clears the entry so the
+  // next observed cooldown emits a fresh skip.
+  readonly notifiedCooldownIdentity: Map<string, string>;
   readonly notifiedDisabledGrantFailures: Set<string>;
   // Tracks connectors for which we have already emitted one needs-human skip
   // record this cycle. Cleared when the owner clears the needs-human flag via
@@ -430,6 +466,7 @@ function buildRuntime(): SchedulerRuntime {
     notifiedNeedsHumanSkips: new Set(),
     notifiedNotReadySkips: new Map(),
     notifiedAttentionSkips: new Map(),
+    notifiedCooldownIdentity: new Map(),
     running: false,
     timers: [],
   };
@@ -646,6 +683,36 @@ function buildBackoffSkip(connectorId: string, decision: BackoffDecision, connec
     startedAt: nowIso(),
     completedAt: nowIso(),
     error: `scheduler_backoff_applied: ${failures} consecutive ${reason} failures; next attempt at ${next}`,
+    attempt: 0,
+  };
+}
+
+function buildSourcePressureCooldownSkip(
+  connectorId: string,
+  decision: SourcePressureCooldownDecision,
+  connectorInstanceId?: string
+): RunRecord {
+  // One-shot skip emitted when the cross-run source-pressure cooldown first
+  // engages for the current pressure picture. Like the back-off skip, we keep
+  // emitting one record (rather than going silent) so the audit log shows the
+  // connection is intentionally cooling off rather than looking like a healthy
+  // gap-free run. Carries the pending-gap count and persistence so the
+  // dashboard can render `cooling_off; next attempt at HH:MM` without
+  // re-deriving anything.
+  const next = decision.nextRunAt;
+  const gaps = decision.pendingPressureGapCount;
+  const attempts = decision.maxAttemptCount;
+  return {
+    connectorId,
+    connectorInstanceId: connectorInstanceId ?? null,
+    source: buildScheduledRunSource(connectorId),
+    status: "skipped",
+    recordsEmitted: 0,
+    checkpointSummary: null,
+    knownGaps: [],
+    startedAt: nowIso(),
+    completedAt: nowIso(),
+    error: `source_pressure_cooldown_applied: ${gaps} pending source-pressure gap(s), persistence ${attempts}; next attempt at ${next}`,
     attempt: 0,
   };
 }
@@ -1079,6 +1146,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     },
     isNeedsHuman = () => false,
     hasUnresolvedAttention = () => null,
+    getSourcePressureGaps = () => [],
   } = opts;
 
   const runtime = buildRuntime();
@@ -1377,6 +1445,24 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     }
   }
 
+  // Read durable pending source-pressure gaps for the cross-run cooldown.
+  // A probe failure is treated as "no pressure" — the same fail-open stance as
+  // the attention probe: silently suppressing launches when the durable store
+  // is unreachable would itself hide a freshness problem.
+  async function probeSourcePressureGaps(
+    connectorId: string,
+    connectorInstanceId: string
+  ): Promise<readonly PendingPressureGap[]> {
+    try {
+      const observed = await getSourcePressureGaps(connectorId, connectorInstanceId);
+      return Array.isArray(observed) ? observed : [];
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[scheduler] source-pressure gap probe failed for ${connectorId}: ${message}`);
+      return [];
+    }
+  }
+
   // Durable attention is the highest-priority gate. If an equivalent
   // unresolved attention request exists for this connection/source, no other
   // policy result matters: we do not launch another automatic run, we emit at
@@ -1615,15 +1701,15 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
   // is explicit about this), but the interval loop will not call
   // `executeRun` for a connector whose `recommendedHealthState` is
   // `"blocked"`.
-  function evaluateBackoffDispatch(
+  async function evaluateBackoffDispatch(
     schedule: ConnectorSchedule,
     now: number
-  ): {
+  ): Promise<{
     decision: BackoffDecision;
     eligible: boolean;
     eventsToEmit: RunRecord[];
     skipToEmit: RunRecord | null;
-  } {
+  }> {
     const connectorId = schedule.connectorId;
     const key = runtimeKey(schedule);
     const history = runtime.history.filter((r) => (r.connectorInstanceId || r.connectorId) === key);
@@ -1638,8 +1724,17 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     const scheduleIntervalMs = normalizeScheduleIntervalMs(schedule.intervalMs);
     const decision = computeNextRunWithBackoff(history, scheduleIntervalMs, lastRun);
 
+    // Cross-run source-pressure cooldown. Independent of failure back-off: a
+    // connection that *succeeded* but deferred work under upstream pressure
+    // has no failure streak, so back-off alone would fire on the normal
+    // interval and re-hit the still-hot bucket. The cooldown reads the durable
+    // pending pressure gaps and defers the next automatic dispatch on its own
+    // capped curve. We take whichever governor defers the run further.
+    const pendingPressureGaps = await probeSourcePressureGaps(connectorId, key);
+    const cooldown = computeSourcePressureCooldown(pendingPressureGaps, scheduleIntervalMs, lastRun);
+
     const elapsed = now - lastRun;
-    let eligible = elapsed >= decision.effectiveIntervalMs;
+    let eligible = elapsed >= decision.effectiveIntervalMs && elapsed >= cooldown.effectiveIntervalMs;
 
     let skipToEmit: RunRecord | null = null;
     const eventsToEmit: RunRecord[] = [];
@@ -1689,17 +1784,49 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       runtime.announcedBackoffClass.delete(key);
     }
 
+    // Source-pressure cooldown is layered on top of failure back-off. When it
+    // engages, the run is deferred (eligibility already accounts for its
+    // interval above). `resolveCooldownSkip` emits at most one cooling-off skip
+    // per pressure identity, but only when back-off has not already emitted its
+    // own skip this tick (back-off is the stronger signal and already explains
+    // the quiet; double-emitting would be noise).
+    skipToEmit = resolveCooldownSkip(schedule, key, cooldown, skipToEmit);
+
     return { decision, eligible, skipToEmit, eventsToEmit };
+  }
+
+  // Decide whether this tick should emit a one-shot source-pressure cooling-off
+  // skip record. Manages the per-connection dedup map so the audit log shows
+  // one record per pressure identity and re-arms when pressure clears. Returns
+  // the (possibly unchanged) skip record the caller should emit.
+  function resolveCooldownSkip(
+    schedule: ConnectorSchedule,
+    key: string,
+    cooldown: SourcePressureCooldownDecision,
+    existingSkip: RunRecord | null
+  ): RunRecord | null {
+    if (!(cooldown.cooldownApplied && cooldown.identity)) {
+      // Pressure recovered (no pending pressure gaps): clear the announcement
+      // so a future pressure window emits a fresh cooling-off skip.
+      runtime.notifiedCooldownIdentity.delete(key);
+      return existingSkip;
+    }
+    const alreadyAnnounced = runtime.notifiedCooldownIdentity.get(key) === cooldown.identity;
+    runtime.notifiedCooldownIdentity.set(key, cooldown.identity);
+    if (existingSkip || alreadyAnnounced) {
+      return existingSkip;
+    }
+    return buildSourcePressureCooldownSkip(schedule.connectorId, cooldown, schedule.connectorInstanceId);
   }
 
   function startScheduledLoops(): void {
     if (runtime.timers.length > 0) {
       return;
     }
-    function dispatchIfDue(schedule: ConnectorSchedule): void {
-      let dispatch: ReturnType<typeof evaluateBackoffDispatch>;
+    async function dispatchIfDue(schedule: ConnectorSchedule): Promise<void> {
+      let dispatch: Awaited<ReturnType<typeof evaluateBackoffDispatch>>;
       try {
-        dispatch = evaluateBackoffDispatch(schedule, Date.now());
+        dispatch = await evaluateBackoffDispatch(schedule, Date.now());
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[scheduler] failed to evaluate back-off for ${schedule.connectorId}: ${message}`);
@@ -1732,18 +1859,30 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       }
     }
 
+    // `dispatchIfDue` is async (it awaits the durable source-pressure gap
+    // probe). Its body already try/catches the evaluator and swallows
+    // `executeRun` rejections, but a throw from the post-await skip emission
+    // would otherwise surface as an unhandled rejection out of the interval
+    // callback — swallow it here, matching the `executeRun` stance.
+    const tick = (schedule: ConnectorSchedule): void => {
+      dispatchIfDue(schedule).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[scheduler] dispatch tick failed for ${schedule.connectorId}: ${message}`);
+      });
+    };
+
     for (const schedule of connectors) {
       // Check immediately, then on interval. Startup uses the same persisted
       // last-run/back-off gate as every later tick; restarting the server must
       // not bypass a connector's configured interval.
-      dispatchIfDue(schedule);
+      tick(schedule);
 
       const timer = setInterval(
         () => {
           if (!runtime.running) {
             return;
           }
-          dispatchIfDue(schedule);
+          tick(schedule);
         },
         Math.min(normalizeScheduleIntervalMs(schedule.intervalMs), 60_000)
       );

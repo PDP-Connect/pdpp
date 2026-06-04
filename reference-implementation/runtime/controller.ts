@@ -37,6 +37,7 @@ import { canonicalConnectorKey, canonicalConnectorKeyFromManifest } from "../ser
 import { isPostgresStorageBackend, postgresQuery } from "../server/postgres-storage.js";
 import { getSyncState } from "../server/records.js";
 import type { BrowserSurfaceLeaseStore } from "../server/stores/browser-surface-lease-store.ts";
+import { getDefaultConnectorDetailGapStore } from "../server/stores/connector-detail-gap-store.js";
 import {
   type ActiveRunRecord,
   getDefaultSchedulerStore,
@@ -62,6 +63,12 @@ import {
 } from "./run-automation-policy.ts";
 import type { RunRecord } from "./scheduler.ts";
 import { type BackoffDecision, computeNextRunWithBackoff } from "./scheduler-backoff.ts";
+import {
+  computeSourcePressureCooldown,
+  type PendingPressureGap,
+  SOURCE_PRESSURE_GAP_REASONS,
+  type SourcePressureCooldownDecision,
+} from "./scheduler-source-pressure-cooldown.ts";
 
 // ─── Path constants ─────────────────────────────────────────────────────────
 
@@ -325,6 +332,12 @@ export interface ControllerOptions {
   browserSurfaceReadinessProbe?: BrowserSurfaceReadinessProbe | null;
   browserSurfaceReadinessTimeoutMs?: number;
   connectorPathResolver?: ConnectorPathResolver;
+  // Optional durable detail-gap store override; defaults to the configured
+  // storage-backed singleton. The controller reads pending *source-pressure*
+  // gaps from it so the schedule projection can surface `cooling_off` honestly
+  // while a connection is governed by the cross-run source-pressure cooldown.
+  // Tests substitute a fake to drive the projection without DB state.
+  detailGapStore?: ConnectorDetailGapReadStore;
   logger?: ControllerLogger;
   ownerClientId?: string;
   ownerSubjectId?: string;
@@ -857,6 +870,32 @@ export function __resetControllerPathResolverCachesForTests(): void {
  * doctor`. The index is purely additive: when the controller knows the
  * connector is currently running, the in-memory active-run row still wins.
  */
+/**
+ * One pending detail-gap row as the projection consumes it. Mirrors the subset
+ * of `connector_detail_gaps` (see
+ * `reference-implementation/server/stores/connector-detail-gap-store.js`) that
+ * the source-pressure cooldown needs. The store returns more fields; we read
+ * only these.
+ */
+interface PendingDetailGapRow {
+  readonly attempt_count?: number | null;
+  readonly connector_instance_id?: string | null;
+  readonly next_attempt_after?: string | null;
+  readonly reason?: string | null;
+  readonly stream?: string | null;
+}
+
+/**
+ * The read surface of the detail-gap store the controller depends on for the
+ * cooldown projection. Kept to one method so a test fake is trivial.
+ */
+interface ConnectorDetailGapReadStore {
+  listPendingGapsForConnector(
+    connectorId: string,
+    options?: { limit?: number }
+  ): Promise<readonly PendingDetailGapRow[]> | readonly PendingDetailGapRow[];
+}
+
 interface ScheduleHistoryFacts {
   /** Latest durable last-run timestamp, from history or `scheduler_last_run_times`. */
   readonly lastRunTimeMs: number | null;
@@ -868,6 +907,13 @@ interface ScheduleHistoryFacts {
   readonly latestStatus: "failed" | "skipped" | "succeeded" | null;
   /** Most recent `succeeded` record's `completedAt`. */
   readonly latestSuccessfulAt: string | null;
+  /**
+   * Pending durable source-pressure detail gaps for this connection (reason in
+   * `SOURCE_PRESSURE_GAP_REASONS`). Drives the cross-run cooldown projection so
+   * the dashboard shows `cooling_off` while pressure persists instead of bare
+   * green. Empty when there is no source pressure (the common case).
+   */
+  readonly pendingPressureGaps: readonly PendingPressureGap[];
   /** Recent durable scheduler history for this connector instance, oldest to newest. */
   readonly recentRuns: readonly SchedulerRunHistoryRecord[];
 }
@@ -881,6 +927,7 @@ interface MutableScheduleHistoryFacts {
   latestStartedAt: string | null;
   latestStatus: "failed" | "skipped" | "succeeded" | null;
   latestSuccessfulAt: string | null;
+  pendingPressureGaps: PendingPressureGap[];
   recentRuns: SchedulerRunHistoryRecord[];
 }
 
@@ -892,6 +939,7 @@ const EMPTY_SCHEDULE_HISTORY_FACTS: ScheduleHistoryFacts = {
   latestErrorCode: null,
   lastRunTimeMs: null,
   recentRuns: [],
+  pendingPressureGaps: [],
 };
 
 const SAFE_SCHEDULER_ERROR_PREFIXES = new Set([
@@ -922,6 +970,48 @@ function schedulerErrorCodeFromRecord(row: SchedulerRunHistoryRecord): string | 
 
 type EnsureScheduleFacts = (connectorKey: string) => MutableScheduleHistoryFacts;
 
+// Distinct connector types referenced by the bounded history + last-run rows.
+// These are the connectors whose durable pending pressure gaps we read for the
+// cooldown projection.
+function collectConnectorIds(
+  history: readonly SchedulerRunHistoryRecord[],
+  lastRunTimes: readonly SchedulerLastRunTimeRecord[]
+): Set<string> {
+  const connectorIds = new Set<string>();
+  for (const row of history) {
+    if (row.connectorId) {
+      connectorIds.add(row.connectorId);
+    }
+  }
+  for (const row of lastRunTimes) {
+    if (row.connector_id) {
+      connectorIds.add(row.connector_id);
+    }
+  }
+  return connectorIds;
+}
+
+// Bucket pending source-pressure detail-gap rows onto their connection's facts.
+// Keeps only the source-pressure reasons and maps each row to the lane-agnostic
+// `PendingPressureGap` shape the cooldown consumes.
+function bucketPressureGapsByInstance(
+  gaps: readonly PendingDetailGapRow[],
+  connectorId: string,
+  ensure: EnsureScheduleFacts
+): void {
+  for (const gap of gaps) {
+    if (typeof gap.reason !== "string" || !SOURCE_PRESSURE_GAP_REASONS.has(gap.reason)) {
+      continue;
+    }
+    const instanceKey = gap.connector_instance_id || connectorId;
+    ensure(instanceKey).pendingPressureGaps.push({
+      reason: gap.reason,
+      attemptCount: typeof gap.attempt_count === "number" ? gap.attempt_count : null,
+      nextAttemptAfter: typeof gap.next_attempt_after === "string" ? gap.next_attempt_after : null,
+    });
+  }
+}
+
 function ensureScheduleHistoryFacts(
   facts: Map<string, MutableScheduleHistoryFacts>,
   connectorKey: string
@@ -936,6 +1026,7 @@ function ensureScheduleHistoryFacts(
       latestErrorCode: null,
       lastRunTimeMs: null,
       recentRuns: [],
+      pendingPressureGaps: [],
     };
     facts.set(connectorKey, entry);
   }
@@ -1421,17 +1512,72 @@ function buildSchedulerBackoffApi(
   if (lastRunTimeMs === null) {
     return null;
   }
+  const intervalMs = Math.max(1, schedule.interval_seconds) * 1000;
   const decision: BackoffDecision = computeNextRunWithBackoff(
     facts.recentRuns.map(toBackoffRunRecord),
-    Math.max(1, schedule.interval_seconds) * 1000,
+    intervalMs,
     lastRunTimeMs
   );
+
+  // Blend in the cross-run source-pressure cooldown. A connection can have no
+  // failure streak (so `decision.backoffApplied` is false) yet still carry
+  // pending pressure gaps — without this blend the dashboard would render bare
+  // green while the scheduler is deferring the run. The two governors are
+  // combined conservatively: take whichever defers the next run further, and
+  // never downgrade a `blocked` failure state (a chronic failure is stronger
+  // than a recoverable cooldown).
+  const cooldown: SourcePressureCooldownDecision = computeSourcePressureCooldown(
+    facts.pendingPressureGaps,
+    intervalMs,
+    lastRunTimeMs
+  );
+
+  return mergeBackoffAndCooldown(decision, cooldown);
+}
+
+/**
+ * Merge the failure-back-off decision and the source-pressure cooldown into a
+ * single `SchedulerBackoffApi`. The dashboard consumes only this shape, so the
+ * merge is where cross-run pressure becomes an honest `cooling_off` pill.
+ */
+function mergeBackoffAndCooldown(
+  decision: BackoffDecision,
+  cooldown: SourcePressureCooldownDecision
+): SchedulerBackoffApi {
+  const backoffNextMs = Date.parse(decision.nextRunAt);
+  const cooldownNextMs = Date.parse(cooldown.nextRunAt);
+  // Whichever governor pushes the next attempt out further wins the timestamp.
+  const cooldownDefersFurther =
+    cooldown.cooldownApplied &&
+    Number.isFinite(cooldownNextMs) &&
+    (!Number.isFinite(backoffNextMs) || cooldownNextMs >= backoffNextMs);
+  const nextRunAt = cooldownDefersFurther ? cooldown.nextRunAt : decision.nextRunAt;
+
+  // `blocked` (chronic failure) is the strongest state and is never softened.
+  // Otherwise, if either governor is cooling, surface `cooling_off`.
+  let recommendedHealthState: SchedulerBackoffApi["recommended_health_state"];
+  if (decision.recommendedHealthState === "blocked") {
+    recommendedHealthState = "blocked";
+  } else if (decision.recommendedHealthState === "cooling_off" || cooldown.cooldownApplied) {
+    recommendedHealthState = "cooling_off";
+  } else {
+    recommendedHealthState = null;
+  }
+
+  // Preserve the failure reason class when back-off is engaged; otherwise, when
+  // the cooldown is the sole driver, label it so the dashboard/audit can
+  // distinguish a source-pressure pause from a failure streak.
+  let reasonClass = decision.reasonClass;
+  if (!decision.backoffApplied && cooldown.cooldownApplied) {
+    reasonClass = "source_pressure";
+  }
+
   return {
-    backoff_applied: decision.backoffApplied,
+    backoff_applied: decision.backoffApplied || cooldown.cooldownApplied,
     consecutive_failures: decision.consecutiveFailures,
-    next_run_at: decision.nextRunAt,
-    reason_class: decision.reasonClass,
-    recommended_health_state: decision.recommendedHealthState,
+    next_run_at: nextRunAt,
+    reason_class: reasonClass,
+    recommended_health_state: recommendedHealthState,
   };
 }
 
@@ -1538,6 +1684,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
   const ownerClientId = opts.ownerClientId || "cli_longview";
   const ownerSubjectId = opts.ownerSubjectId || "owner_local";
   const schedulerStore = opts.schedulerStore || getDefaultSchedulerStore();
+  const detailGapStore: ConnectorDetailGapReadStore = opts.detailGapStore || getDefaultConnectorDetailGapStore();
   const browserSurfaceAllocator = opts.browserSurfaceAllocator;
   const browserSurfaceLeaseManager = opts.browserSurfaceLeaseManager;
   const browserSurfaceReadinessTimeoutMs = opts.browserSurfaceReadinessTimeoutMs;
@@ -2294,7 +2441,35 @@ export function createController(opts: ControllerOptions = {}): Controller {
     hydrateScheduleHistoryFromLastRunTimes(lastRunTimes, ensure);
     bucketRecentRunsByConnector(history, ensure);
     deriveLatestScheduleFacts(history, ensure);
+    await attachPendingPressureGaps(history, lastRunTimes, ensure);
     return facts;
+  }
+
+  // One bounded pending-gap read per distinct connector type, bucketed onto the
+  // per-instance facts so the cooldown projection can render `cooling_off`. A
+  // probe failure is swallowed (best-effort, like the rest of the projection):
+  // an unreadable gap store must not erase the honest history facts or crash
+  // the records page — it just omits the cooldown overlay for that connector.
+  async function attachPendingPressureGaps(
+    history: readonly SchedulerRunHistoryRecord[],
+    lastRunTimes: readonly SchedulerLastRunTimeRecord[],
+    ensure: EnsureScheduleFacts
+  ): Promise<void> {
+    const connectorIds = collectConnectorIds(history, lastRunTimes);
+    await Promise.all(
+      [...connectorIds].map(async (connectorId) => {
+        try {
+          const gaps = (await detailGapStore.listPendingGapsForConnector(connectorId, { limit: 200 })) ?? [];
+          bucketPressureGapsByInstance(gaps, connectorId, ensure);
+        } catch (err) {
+          console.error(
+            `[controller] pending source-pressure gap read failed for ${connectorId}: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
+        }
+      })
+    );
   }
 
   async function listSchedules(): Promise<ScheduleApi[]> {

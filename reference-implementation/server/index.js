@@ -181,6 +181,7 @@ import {
 } from '../runtime/controller.ts';
 import { projectRunAutomationPolicy } from '../runtime/run-automation-policy.ts';
 import { createScheduler } from '../runtime/scheduler.ts';
+import { SOURCE_PRESSURE_GAP_REASONS } from '../runtime/scheduler-source-pressure-cooldown.ts';
 import { getDefaultSchedulerStore } from './stores/scheduler-store.ts';
 import { getDefaultSourceWebhookEventStore } from './stores/source-webhook-event-store.ts';
 import { BrowserSurfaceLeaseManager } from '@opendatalabs/remote-surface/leases';
@@ -4876,6 +4877,35 @@ function createReferenceSchedulerManager({
           return { key: record.dedupe_key || record.id, reason: record.reason_code };
         }
         return null;
+      },
+      getSourcePressureGaps: async (connectorId, connectorInstanceId) => {
+        // Durable source-pressure projection for the cross-run cooldown. Reads
+        // pending detail gaps from `connector_detail_gaps`, keeps only the
+        // account/source-pressure reasons (ChatGPT `upstream_pressure` /
+        // `rate_limited`), and maps them to the lane-agnostic shape the
+        // scheduler cooldown consumes. The read is bounded and reason-filtered;
+        // it never returns record bodies, locators, or secrets — only the
+        // reason, recovery-attempt count, and an optional next-attempt floor.
+        //
+        // A probe failure is surfaced as "no pressure" (empty list) so an
+        // unreadable gap store cannot silently pause a schedule — same
+        // fail-open stance as the attention probe above.
+        const store = getDefaultConnectorDetailGapStore();
+        const rows = await store.listPendingGapsForConnector(connectorId, { limit: 200 });
+        const instanceKey = connectorInstanceId || connectorId;
+        const gaps = [];
+        for (const row of rows ?? []) {
+          if (typeof row?.reason !== 'string' || !SOURCE_PRESSURE_GAP_REASONS.has(row.reason)) continue;
+          // `listPendingGapsForConnector` spans every instance of the connector
+          // type; keep only this connection's gaps so cooldown stays per-source.
+          if ((row.connector_instance_id || connectorId) !== instanceKey) continue;
+          gaps.push({
+            reason: row.reason,
+            attemptCount: typeof row.attempt_count === 'number' ? row.attempt_count : null,
+            nextAttemptAfter: typeof row.next_attempt_after === 'string' ? row.next_attempt_after : null,
+          });
+        }
+        return gaps;
       },
       onInteraction: async (interaction) => {
         const connectorDisplayName =
