@@ -100,6 +100,16 @@ false` is the only posture that should back operator-host evidence. A
 `repo_dist_override`, an `unknown`, or `is_placeholder_version: true` means
 re-pin before treating any output as operator-host evidence.
 
+Re-pinning means moving to a published build that is *at least as current as the
+repo build you are leaving*. The published `@beta` is cut from the `beta`
+release branch, which can lag `main`, so a `repo_dist_override` built from a
+newer `main` can be **ahead** of `@beta` — re-pinning it onto a stale `@beta`
+would regress the host. Before re-pinning, confirm `@beta` carries the fixes you
+need: the release owner runs `pnpm release:dist-tag-check` to verify the live
+dist-tag posture, and cuts a fresh `@beta` from `main` if the published build
+lags. Until then, a repo override that is ahead of `@beta` is dev evidence to
+keep, not a build to downgrade.
+
 The manual path check still works as an out-of-band cross-check:
 
 ```bash

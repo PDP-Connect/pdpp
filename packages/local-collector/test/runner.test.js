@@ -517,6 +517,12 @@ test('status carries the deployment_posture block; doctor warns (not critical) f
   assert.match(postureHint, /repo `dist\/` override/);
   assert.match(postureHint, /0\.0\.0/);
   assert.match(postureHint, /@pdpp\/local-collector@beta/);
+  // The remediation must not promise that `@beta` is current: the published
+  // beta can lag the repo build, so re-pinning a repo override onto a stale
+  // `@beta` would regress it. The hint routes through the release owner's
+  // dist-tag check instead of asserting `@beta` is up to date.
+  assert.match(postureHint, /can lag the repo build/);
+  assert.match(postureHint, /release:dist-tag-check/);
 });
 
 test('doctor deployment_posture check is ok for a pinned published install', async () => {
@@ -1247,8 +1253,15 @@ test('lifecycle_state is coverage_missing after a clean drain that never carried
   assert.ok(doctor.remediation.some((line) => /default stream set/.test(line)));
   // The hint must name the npx -y path so an operator with a stale globally-installed
   // binary (which may predate coverage_diagnostics in bundled defaults) gets the right
-  // recovery: fetch the current build, not just re-run with the existing install.
+  // recovery: fetch a current published build, not just re-run with the existing install.
   assert.ok(doctor.remediation.some((line) => /npx -y @pdpp\/local-collector@beta/.test(line)), 'coverage_missing remediation must name the npx -y upgrade path');
+  // …but it must not promise that the published `@beta` is current. When the
+  // coverage fix only exists on the repo build and not yet on `@beta`, the npx
+  // path alone would not close the gap, so the hint routes verification through
+  // the release owner's dist-tag check instead of asserting `@beta` is current.
+  const coverageHint = doctor.remediation.find((line) => /coverage_unknown/.test(line));
+  assert.match(coverageHint, /can still lag the repo build/);
+  assert.match(coverageHint, /release:dist-tag-check/);
 });
 
 test('lifecycle_state is healthy_idle once a drained lane has carried a coverage_diagnostics record', async () => {

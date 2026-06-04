@@ -788,9 +788,11 @@ export function buildLocalOutboxDoctor(
     remediation.push(
       `This lane drained ${status.coverage.record_batches} record batch(es) but never carried a ` +
         "`coverage_diagnostics` record, so the dashboard can only show coverage_unknown. " +
-        "Re-run with the current `@beta` and the default stream set (no `--streams`): " +
-        "`npx -y @pdpp/local-collector@beta run …` (or `pdpp-local-collector run …` if already on the current build). " +
-        "Older installs may omit `coverage_diagnostics` from bundled defaults — `npx -y` always fetches the latest published build."
+        "Re-run with a build that emits `coverage_diagnostics` by default and the default stream set (no `--streams`): " +
+        "`npx -y @pdpp/local-collector@beta run …` (or `pdpp-local-collector run …` if already on a current build). " +
+        "Older installs may omit `coverage_diagnostics` from bundled defaults. `npx -y` fetches the latest *published* `@beta`, " +
+        "which can still lag the repo build — if the gap persists, confirm `@beta` carries the fix with " +
+        "`pnpm release:dist-tag-check` (release owner) rather than assuming the published build is current."
     );
   }
   if (checks.deployment_posture === "warn") {
@@ -830,6 +832,10 @@ function deploymentPostureRemediation(posture: LocalCollectorDeploymentPosture):
   parts.push(
     "Pin a published version before capturing operator-host evidence: " +
       "`npm i -g @pdpp/local-collector@beta` (or an explicit `@0.1.0-beta.<n>`). " +
+      "The published `@beta` can lag the repo build, so confirm it carries the " +
+      "fixes you need before re-pinning — `pnpm release:dist-tag-check` (release " +
+      "owner) reports whether `@beta` is current; a `repo_dist_override` that is " +
+      "ahead of `@beta` is dev evidence, not a build to downgrade to. " +
       "See docs/local-collector.md §\"Deployment Posture: Published vs Dev\"."
   );
   return parts.join(" ");
