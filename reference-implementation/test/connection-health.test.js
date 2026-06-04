@@ -589,8 +589,10 @@ test('healthy: complete coverage and fresh evidence can project healthy without 
 
 // ─── Stale axis (never a headline state) ──────────────────────────────────
 
-test('stale: freshness stale alone surfaces as axis+badge, not a stale headline state', () => {
+test('stale: schedulable connector stale alone surfaces as axis+badge and degrades', () => {
   // Spec scenario: "Freshness policy is violated" — stale is an axis.
+  // A schedulable / background-safe connector (no refresh evidence, the
+  // default) was supposed to auto-refresh and did not, so stale degrades.
   const snap = computeConnectionHealth(
     input({
       run: run(),
@@ -603,6 +605,215 @@ test('stale: freshness stale alone surfaces as axis+badge, not a stale headline 
   assert.equal(snap.state, 'degraded');
   assert.equal(snap.axes.freshness, 'stale');
   assert.equal(snap.badges.stale, true);
+  const fresh = findCondition(snap, 'Fresh');
+  assert.equal(fresh?.status, 'false');
+  assert.equal(fresh?.severity, 'warning');
+  assert.equal(fresh?.reason, 'stale');
+});
+
+// ─── Manual / background-unsafe connector freshness ───────────────────────
+// A connector whose manifest refresh policy declares it manual or
+// background-unsafe (e.g. Reddit: recommended_mode "manual",
+// background_safe false) cannot auto-refresh. Stale data for such a
+// connector is an owner-action / manual-refresh advisory, not a
+// degradation — but only when nothing else is wrong. Every real failure
+// still degrades or blocks exactly as for a schedulable connector.
+
+test('manual stale: background-unsafe complete+succeeded+stale is idle advisory, not degraded', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: false, recommendedMode: 'manual' },
+    })
+  );
+  assert.equal(snap.state, 'idle');
+  assert.equal(snap.reason_code, 'stale_manual_refresh');
+  // The stale axis and badge stay on so the UI still says "stale — run it".
+  assert.equal(snap.axes.freshness, 'stale');
+  assert.equal(snap.badges.stale, true);
+  const fresh = findCondition(snap, 'Fresh');
+  assert.equal(fresh?.status, 'false');
+  assert.equal(fresh?.severity, 'info');
+  assert.equal(fresh?.reason, 'stale_manual_refresh');
+  assert.equal(fresh?.remediation?.action, 'retry_by_runtime');
+  assert.equal(fresh?.remediation?.target, 'run');
+  // The advisory is the dominant condition so the surface explains why idle.
+  assert.equal(snap.dominant_condition_id, fresh?.id);
+});
+
+test('manual stale: recommended_mode manual alone (background_safe null) is enough to advisory', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: null, recommendedMode: 'manual' },
+    })
+  );
+  assert.equal(snap.state, 'idle');
+  assert.equal(snap.reason_code, 'stale_manual_refresh');
+});
+
+test('manual stale: background_safe false alone (mode null) is enough to advisory', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: false, recommendedMode: null },
+    })
+  );
+  assert.equal(snap.state, 'idle');
+  assert.equal(snap.reason_code, 'stale_manual_refresh');
+});
+
+test('manual stale: a local-device collection verdict also satisfies the advisory', () => {
+  // Local collectors write no spine run; the caller-supplied verdict is the
+  // collection-succeeded proof. A manual local-device connector that drained
+  // cleanly but whose data aged out gets the same idle advisory, not degraded.
+  const snap = computeConnectionHealth(
+    input({
+      run: null,
+      localDeviceCollection: { verdict: 'succeeded' },
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      outbox: { axis: 'idle' },
+      refresh: { backgroundSafe: false, recommendedMode: 'manual' },
+    })
+  );
+  assert.equal(snap.state, 'idle');
+  assert.equal(snap.reason_code, 'stale_manual_refresh');
+});
+
+test('manual stale: schedulable connector with the SAME stale evidence still degrades', () => {
+  // The distinction is purely the refresh policy. An automatic /
+  // background-safe connector degrades on the identical stale+complete+
+  // succeeded evidence the manual connector treats as an advisory.
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: true, recommendedMode: 'automatic' },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+  assert.equal(findCondition(snap, 'Fresh')?.severity, 'warning');
+});
+
+test('manual stale: incomplete coverage still degrades a manual connector', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'partial' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: false, recommendedMode: 'manual' },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+  assert.equal(findCondition(snap, 'SourceCoverageComplete')?.status, 'false');
+});
+
+test('manual stale: terminal-gap coverage still degrades a manual connector', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'terminal_gap' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: false, recommendedMode: 'manual' },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+});
+
+test('manual stale: failed last run still degrades a manual connector', () => {
+  // A non-credential failure (e.g. a scrape timeout) degrades; the manual
+  // advisory must never reclassify a failed run as a benign idle.
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ latestStatus: 'failed', lastSuccessAt: null, reasonCode: 'reddit_scrape_timeout' }),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: false, recommendedMode: 'manual' },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+  assert.equal(findCondition(snap, 'CollectionSucceeded')?.status, 'false');
+});
+
+test('manual stale: a credential-rejected failure still blocks a manual connector', () => {
+  // A login/credential failure is readiness-blocked — even stronger than
+  // degraded. The manual advisory must not soften it.
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ latestStatus: 'failed', lastSuccessAt: null, reasonCode: 'reddit_login_failed' }),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: false, recommendedMode: 'manual' },
+    })
+  );
+  assert.equal(snap.state, 'blocked');
+  assert.equal(findCondition(snap, 'CredentialsValid')?.status, 'false');
+});
+
+test('manual stale: stalled outbox still degrades a manual connector', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      outbox: { axis: 'stalled', cause: 'stale_pending' },
+      refresh: { backgroundSafe: false, recommendedMode: 'manual' },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+});
+
+test('manual stale: open attention still dominates a manual connector', () => {
+  const snap = computeConnectionHealth(
+    input({
+      observedAt: NOW,
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      attention: { lifecycle: 'open', expiresAt: null, reasonCode: 'needs_login', actionTarget: 'external_app', id: 'att-1', ownerAction: 'act_elsewhere', responseContract: 'response_required' },
+      refresh: { backgroundSafe: false, recommendedMode: 'manual' },
+    })
+  );
+  assert.equal(snap.state, 'needs_attention');
+});
+
+test('manual stale: a manual connector that is fresh still projects healthy', () => {
+  // The advisory only fires on stale. A manual connector with fresh data
+  // and a successful run is fully healthy, exactly as before.
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      refresh: { backgroundSafe: false, recommendedMode: 'manual' },
+    })
+  );
+  assert.equal(snap.state, 'healthy');
+});
+
+test('manual stale: a never-run manual connector that is stale stays idle (not advisory-reclassified)', () => {
+  // No collection has ever succeeded, so the advisory must NOT fire — the
+  // honest state is the never-run idle, not a "fresh-but-for-staleness"
+  // advisory. CollectionSucceeded is unknown, so the advisory guard fails.
+  const snap = computeConnectionHealth(
+    input({
+      run: null,
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: false, recommendedMode: 'manual' },
+    })
+  );
+  assert.equal(snap.state, 'idle');
+  // It is the never-run idle, NOT the manual-stale advisory.
+  assert.notEqual(snap.reason_code, 'stale_manual_refresh');
 });
 
 // ─── Syncing badge (never a headline state) ───────────────────────────────

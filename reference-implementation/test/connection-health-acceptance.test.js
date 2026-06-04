@@ -194,6 +194,87 @@ test('acceptance 7.1: owner-paused schedule projects idle even with failed last 
   assert.equal(snap.next_attempt_at, null, 'paused schedules emit no next_attempt');
 });
 
+// Reddit-shaped raw manifest refresh policy: manual + background-unsafe.
+const REDDIT_REFRESH_POLICY = {
+  recommended_mode: 'manual',
+  maximum_staleness_seconds: 86400,
+  background_safe: false,
+};
+const SCHEDULABLE_REFRESH_POLICY = {
+  recommended_mode: 'automatic',
+  maximum_staleness_seconds: 86400,
+  background_safe: true,
+};
+
+test('acceptance 7.1: manual/background-unsafe connector that is complete+succeeded+stale projects idle advisory, not degraded', () => {
+  // Reddit-like: the raw manifest refresh_policy declares manual +
+  // background_safe:false, so stale data is an owner-action advisory the
+  // caller wiring (buildRefreshEvidence) recognizes end-to-end.
+  const run = succeededRun();
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: STALE_FRESHNESS,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    outbox: { axis: 'idle' },
+    refreshPolicy: REDDIT_REFRESH_POLICY,
+    schedule: { enabled: true },
+  });
+  assertHeadline(snap, 'idle');
+  assert.equal(snap.reason_code, 'stale_manual_refresh');
+  assert.equal(snap.axes.freshness, 'stale');
+  assert.equal(snap.badges.stale, true);
+});
+
+test('acceptance 7.1: schedulable connector with the SAME stale evidence still degrades', () => {
+  const run = succeededRun();
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: STALE_FRESHNESS,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    outbox: { axis: 'idle' },
+    refreshPolicy: SCHEDULABLE_REFRESH_POLICY,
+    schedule: { enabled: true },
+  });
+  assertHeadline(snap, 'degraded');
+  assert.equal(snap.axes.freshness, 'stale');
+});
+
+test('acceptance 7.1: a manual connector with no refresh policy still degrades on stale (default = schedulable)', () => {
+  const run = succeededRun();
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: STALE_FRESHNESS,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    outbox: { axis: 'idle' },
+    schedule: { enabled: true },
+  });
+  assertHeadline(snap, 'degraded');
+});
+
+test('acceptance 7.1: a manual connector with incomplete coverage still degrades even when stale', () => {
+  const run = succeededRun();
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: STALE_FRESHNESS,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    pendingDetailGaps: [{ reason: 'rate_limited', status: 'pending', stream: 'posts' }],
+    refreshPolicy: REDDIT_REFRESH_POLICY,
+    schedule: { enabled: true },
+  });
+  assertHeadline(snap, 'degraded');
+});
+
+test('acceptance 7.1: a manual connector whose last run failed still degrades even when stale', () => {
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: STALE_FRESHNESS,
+    lastRun: failedRun(),
+    lastSuccessfulRun: null,
+    refreshPolicy: REDDIT_REFRESH_POLICY,
+    schedule: { enabled: true },
+  });
+  assertHeadline(snap, 'degraded');
+});
+
 test('acceptance 7.1: succeeded run + complete coverage + fresh + no attention projects healthy', () => {
   const run = succeededRun();
   const snap = projectConnectorSummaryConnectionHealth({

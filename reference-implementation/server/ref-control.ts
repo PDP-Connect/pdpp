@@ -18,6 +18,7 @@ import {
   type ConnectionAttentionEvidence,
   type ConnectionHealthSnapshot,
   type ConnectionLocalDeviceCollectionEvidence,
+  type ConnectionRefreshEvidence,
   type ConnectionRemoteSurfaceEvidence,
   type CoverageAxis,
   computeConnectionHealth,
@@ -863,6 +864,30 @@ function getMaximumStalenessSeconds(refreshPolicy: unknown): number | null {
   }
   const value = (refreshPolicy as { maximum_staleness_seconds?: unknown }).maximum_staleness_seconds;
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/**
+ * Project the manifest `refresh_policy` into the `background_safe` /
+ * `recommended_mode` evidence the connection-health projection needs to tell
+ * a schedulable connector apart from a manual / background-unsafe one. Reads
+ * the same two flags the schedule auto-enroll gate
+ * (`auto-enroll-eligible-schedules.ts`) uses to deny a background schedule, so
+ * the health story stays consistent with "this connector cannot auto-refresh".
+ * Returns `null` when the policy is absent/malformed, preserving the prior
+ * behavior (treated as schedulable; staleness degrades).
+ */
+function buildRefreshEvidence(refreshPolicy: unknown): ConnectionRefreshEvidence | null {
+  if (!refreshPolicy || typeof refreshPolicy !== "object" || Array.isArray(refreshPolicy)) {
+    return null;
+  }
+  const policy = refreshPolicy as { background_safe?: unknown; recommended_mode?: unknown };
+  const backgroundSafe = typeof policy.background_safe === "boolean" ? policy.background_safe : null;
+  const recommendedMode =
+    policy.recommended_mode === "manual" || policy.recommended_mode === "automatic" ? policy.recommended_mode : null;
+  if (backgroundSafe === null && recommendedMode === null) {
+    return null;
+  }
+  return { backgroundSafe, recommendedMode };
 }
 
 function mapFreshnessAxis(freshness: Freshness): FreshnessAxis {
@@ -2039,6 +2064,15 @@ export function projectConnectorSummaryConnectionHealth(input: {
    * axis.
    */
   readonly remoteSurface?: ConnectionRemoteSurfaceEvidence | null;
+  /**
+   * Manifest `capabilities.refresh_policy` (raw). The projection reads only
+   * `background_safe` and `recommended_mode` to decide whether the connector
+   * is manual / background-unsafe — i.e. cannot auto-refresh, so stale
+   * freshness is an owner-action advisory rather than a degradation. Omitting
+   * it preserves the prior behavior (treated as schedulable; staleness
+   * degrades).
+   */
+  readonly refreshPolicy?: unknown;
   readonly unreliableSources?: readonly string[];
   readonly schedule: unknown;
 }): ConnectionHealthSnapshot {
@@ -2104,6 +2138,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
     localDeviceCollection,
     outbox,
     projection: { unreliableSources: input.unreliableSources ?? [] },
+    refresh: buildRefreshEvidence(input.refreshPolicy),
     remoteSurface: input.remoteSurface ?? null,
     run: {
       hasDegradingGaps: hasPendingDetailGap(pendingDetailGaps) || hasDegradingKnownGap(input.lastRun),
@@ -2333,6 +2368,7 @@ export async function listConnectorSummaries(
         manifestStreams: manifest.streams ?? [],
         outbox: { axis: outbox.axis, cause: outbox.cause },
         pendingDetailGaps: detailGaps.gaps,
+        refreshPolicy,
         remoteSurface: remoteSurface.evidence,
         unreliableSources: combineUnreliableSources(
           detailGaps.unreliable,
@@ -2412,6 +2448,7 @@ export async function getConnectorDetail(
     manifestStreams: manifest.streams ?? [],
     outbox: { axis: outbox.axis, cause: outbox.cause },
     pendingDetailGaps: detailGaps.gaps,
+    refreshPolicy,
     remoteSurface: remoteSurface.evidence,
     unreliableSources: combineUnreliableSources(
       detailGaps.unreliable,
