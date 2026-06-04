@@ -716,14 +716,18 @@ export function VersionChurnNotice({ rows }: { rows: RefRecordVersionStatsRow[] 
         <p className="pdpp-caption mb-2 text-muted-foreground">
           These streams retain many historical versions per current record. This is kept{" "}
           <strong className="font-medium text-foreground">change history</strong>, not current data loss — your latest
-          records are intact. A churning stream falls into one of three buckets, and they have different fixes. When a
+          records are intact. A churning stream falls into one of four buckets, each with a different disposition. When a
           connector re-emits unchanged records (a no-op or run-clock refresh) on a stream with a registered policy,
-          compacting history is safe and starts with a dry-run maintenance check. When a stream versions on a value that{" "}
-          <strong className="font-medium text-foreground">genuinely changes</strong> (a follower count, a member count,
-          a balance), that history is real and <strong className="font-medium text-foreground">expected to grow</strong>{" "}
+          compacting history is safe and starts with a dry-run maintenance check. When such a stream has been
+          owner-reviewed and confirmed as expected pre-fix residue (the connector is now fingerprint-correct, dry-run
+          shows removableVersions=0), it is marked{" "}
+          <strong className="font-medium text-foreground">reviewed residue</strong> — not alarming, safe to leave or
+          compact later. When a stream versions on a value that{" "}
+          <strong className="font-medium text-foreground">genuinely changes</strong> (a follower count, a member count, a
+          balance), that history is real and <strong className="font-medium text-foreground">expected to grow</strong>{" "}
           — it must not be compacted; the durable fix is an append-keyed point-in-time stream. Only a stream that is
-          neither — an <strong className="font-medium text-foreground">unclassified</strong> high-churn row — actually
-          needs review.
+          none of these — an <strong className="font-medium text-foreground">unclassified</strong> high-churn row —
+          actually needs review.
         </p>
         <p className="pdpp-caption mb-3 text-muted-foreground" data-testid="version-churn-dry-run-safety">
           Rows that show a command are safe to start with: the command is{" "}
