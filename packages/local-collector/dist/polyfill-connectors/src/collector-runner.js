@@ -27,8 +27,7 @@ export const DEFAULT_COLLECTOR_OUTBOX_POLICY = Object.freeze({
 });
 export const DEFAULT_COLLECTOR_AUTO_PRUNE_POLICY = Object.freeze({
     enabled: true,
-    keepWithinDays: 30,
-    keepRecentCount: 1000,
+    keepRecentCount: 10_000,
 });
 export function resolveCollectorAutoPrunePolicy(override, env = process.env) {
     const policy = { ...DEFAULT_COLLECTOR_AUTO_PRUNE_POLICY, ...(override ?? {}) };
@@ -40,10 +39,6 @@ export function resolveCollectorAutoPrunePolicy(override, env = process.env) {
     if (keepCount !== null) {
         policy.keepRecentCount = keepCount;
     }
-    const keepDays = parseNonNegativeNumber(env.PDPP_COLLECTOR_AUTO_PRUNE_KEEP_DAYS);
-    if (keepDays !== null) {
-        policy.keepWithinDays = keepDays;
-    }
     return policy;
 }
 const DISABLED_ENV_VALUES = new Set(["0", "false", "off", "no"]);
@@ -54,28 +49,17 @@ function parseNonNegativeInt(raw) {
     const value = Number(raw.trim());
     return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
-function parseNonNegativeNumber(raw) {
-    if (typeof raw !== "string" || raw.trim() === "") {
-        return null;
-    }
-    const value = Number(raw.trim());
-    return Number.isFinite(value) && value >= 0 ? value : null;
-}
 export function autoPruneSucceededOutbox(input) {
     if (!input.policy.enabled) {
         return { enabled: false, matched: 0, pruned: 0 };
     }
-    const now = input.now ?? new Date();
-    const olderThanIso = new Date(now.getTime() - input.policy.keepWithinDays * MS_PER_DAY).toISOString();
     const result = input.outbox.pruneSent({
         dryRun: false,
         keepCount: input.policy.keepRecentCount,
-        olderThanIso,
         sourceInstanceId: input.sourceInstanceId,
     });
     return { enabled: true, matched: result.matched, pruned: result.pruned };
 }
-const MS_PER_DAY = 86_400_000;
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const REPO_ROOT = join(PACKAGE_ROOT, "..", "..");
 export async function enrollCollector(config) {
@@ -192,6 +176,11 @@ export async function runCollectorConnector(config) {
             deferRecoveredGapCleanup: streamResult.scanBudgetExceeded,
             outbox,
         });
+        const prunedSent = autoPruneSucceededOutbox({
+            outbox,
+            policy: autoPrunePolicy,
+            sourceInstanceId: config.sourceInstanceId,
+        });
         const finalSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
         const recordsPending = pendingOutboxWorkCount(finalSummary);
         if (!checkpointResult.statePutFailed) {
@@ -207,11 +196,6 @@ export async function runCollectorConnector(config) {
                 status: streamResult.scanBudgetExceeded ? "retrying" : heartbeatStatusForSummary(finalSummary, policy),
             });
         }
-        const prunedSent = autoPruneSucceededOutbox({
-            outbox,
-            policy: autoPrunePolicy,
-            sourceInstanceId: config.sourceInstanceId,
-        });
         return {
             completeness: summarizeCollectorCompleteness(streamResult.coverageByStore),
             done,
@@ -251,6 +235,11 @@ async function maybeSkipScanForBacklog(input) {
             sourceInstanceId: input.config.sourceInstanceId,
         });
     }
+    const prunedSent = autoPruneSucceededOutbox({
+        outbox: input.outbox,
+        policy: input.autoPrunePolicy,
+        sourceInstanceId: input.config.sourceInstanceId,
+    });
     const summaryAfterGap = input.outbox.summary({ sourceInstanceId: input.config.sourceInstanceId });
     const recordsPendingAfterGap = pendingOutboxWorkCount(summaryAfterGap);
     await safeHeartbeat(input.client, {
@@ -261,11 +250,6 @@ async function maybeSkipScanForBacklog(input) {
         records_pending: recordsPendingAfterGap,
         source_instance_id: input.config.sourceInstanceId,
         status: heartbeatStatusForSummary(summaryAfterGap, input.policy),
-    });
-    const prunedSent = autoPruneSucceededOutbox({
-        outbox: input.outbox,
-        policy: input.autoPrunePolicy,
-        sourceInstanceId: input.config.sourceInstanceId,
     });
     return {
         completeness: null,

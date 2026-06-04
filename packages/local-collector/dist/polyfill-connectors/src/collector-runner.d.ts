@@ -19,12 +19,10 @@ export declare const DEFAULT_COLLECTOR_OUTBOX_POLICY: Readonly<CollectorOutboxPo
 export interface CollectorAutoPrunePolicy {
     enabled: boolean;
     keepRecentCount: number;
-    keepWithinDays: number;
 }
 export declare const DEFAULT_COLLECTOR_AUTO_PRUNE_POLICY: Readonly<CollectorAutoPrunePolicy>;
 export declare function resolveCollectorAutoPrunePolicy(override?: Partial<CollectorAutoPrunePolicy>, env?: NodeJS.ProcessEnv): CollectorAutoPrunePolicy;
 export declare function autoPruneSucceededOutbox(input: {
-    now?: Date;
     outbox: Pick<LocalDeviceOutbox, "pruneSent">;
     policy: CollectorAutoPrunePolicy;
     sourceInstanceId: string;

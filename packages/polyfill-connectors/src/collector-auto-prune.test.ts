@@ -18,8 +18,10 @@ async function tempOutboxPath(): Promise<string> {
 
 /**
  * Seed `count` succeeded `record_batch` rows directly, mirroring what an
- * acknowledged drain leaves behind, dated `ackedAt` so the age bound can be
- * exercised deterministically without waiting real wall-clock days.
+ * acknowledged drain leaves behind, all dated `ackedAt`. The automatic prune is
+ * bounded by count alone, so `ackedAt` only affects the manual age-based CLI
+ * path (exercised elsewhere) — here it lets a test assert that recency of
+ * acknowledgement never protects a row from the count cap.
  */
 function seedSucceededRows(path: string, sourceInstanceId: string, count: number, ackedAt: string): void {
   new LocalDeviceOutbox({ path }).close();
@@ -41,18 +43,20 @@ function seedSucceededRows(path: string, sourceInstanceId: string, count: number
   }
 }
 
-test("resolveCollectorAutoPrunePolicy returns the conservative default with no overrides", () => {
+test("resolveCollectorAutoPrunePolicy returns the count-bounded default with no overrides", () => {
   const policy = resolveCollectorAutoPrunePolicy(undefined, {});
   assert.deepEqual(policy, DEFAULT_COLLECTOR_AUTO_PRUNE_POLICY);
   assert.equal(policy.enabled, true);
-  assert.equal(policy.keepRecentCount, 1000);
-  assert.equal(policy.keepWithinDays, 30);
+  // The default cap equals the runner's own per-run / per-queue bound
+  // (maxEnqueuedBatchesPerRun / maxQueueDepth), not an arbitrary fraction.
+  assert.equal(policy.keepRecentCount, 10_000);
+  // The policy is count-only: there is no age knob to defeat the cap.
+  assert.equal("keepWithinDays" in policy, false);
 });
 
 test("resolveCollectorAutoPrunePolicy honors a run-config override", () => {
-  const policy = resolveCollectorAutoPrunePolicy({ keepRecentCount: 5, keepWithinDays: 1 }, {});
+  const policy = resolveCollectorAutoPrunePolicy({ keepRecentCount: 5 }, {});
   assert.equal(policy.keepRecentCount, 5);
-  assert.equal(policy.keepWithinDays, 1);
   assert.equal(policy.enabled, true);
 });
 
@@ -63,37 +67,33 @@ test("PDPP_COLLECTOR_AUTO_PRUNE=0 disables the run-time prune", () => {
   }
 });
 
-test("env overrides take precedence over run-config and tune the bounds", () => {
+test("env override takes precedence over run-config and tunes the count bound", () => {
   const policy = resolveCollectorAutoPrunePolicy(
-    { keepRecentCount: 5, keepWithinDays: 2 },
-    { PDPP_COLLECTOR_AUTO_PRUNE_KEEP_COUNT: "100", PDPP_COLLECTOR_AUTO_PRUNE_KEEP_DAYS: "7" }
+    { keepRecentCount: 5 },
+    { PDPP_COLLECTOR_AUTO_PRUNE_KEEP_COUNT: "100" }
   );
   assert.equal(policy.keepRecentCount, 100);
-  assert.equal(policy.keepWithinDays, 7);
 });
 
-test("malformed env overrides fall through to the lower-precedence value", () => {
+test("malformed env override falls through to the lower-precedence value", () => {
   const policy = resolveCollectorAutoPrunePolicy(
-    { keepRecentCount: 5, keepWithinDays: 2 },
-    { PDPP_COLLECTOR_AUTO_PRUNE_KEEP_COUNT: "-3", PDPP_COLLECTOR_AUTO_PRUNE_KEEP_DAYS: "abc" }
+    { keepRecentCount: 5 },
+    { PDPP_COLLECTOR_AUTO_PRUNE_KEEP_COUNT: "-3" }
   );
   assert.equal(policy.keepRecentCount, 5);
-  assert.equal(policy.keepWithinDays, 2);
 });
 
-test("autoPruneSucceededOutbox prunes succeeded rows over both bounds and reports the count", async () => {
+test("autoPruneSucceededOutbox prunes succeeded rows over the count bound and reports the count", async () => {
   const path = await tempOutboxPath();
   const sourceInstanceId = "src-prune";
-  // 50 acknowledged rows, all dated 90 days ago, with a keep-recent bound of 10.
-  // 10 survive on the count bound; the other 40 are both outside the recent set
-  // AND older than the 30-day age floor, so they prune.
+  // 50 acknowledged rows; keep the most-recent 10. The other 40 are outside the
+  // recent set, so they prune. Age is irrelevant — these are dated 90 days ago.
   seedSucceededRows(path, sourceInstanceId, 50, "2026-03-01T00:00:00.000Z");
   const outbox = new LocalDeviceOutbox({ path });
   try {
     const result = autoPruneSucceededOutbox({
-      now: new Date("2026-06-04T00:00:00.000Z"),
       outbox,
-      policy: { enabled: true, keepRecentCount: 10, keepWithinDays: 30 },
+      policy: { enabled: true, keepRecentCount: 10 },
       sourceInstanceId,
     });
     assert.equal(result.enabled, true);
@@ -105,45 +105,95 @@ test("autoPruneSucceededOutbox prunes succeeded rows over both bounds and report
   }
 });
 
-test("autoPruneSucceededOutbox keeps recent rows even when all rows are old (count bound holds)", async () => {
+test("REGRESSION (v1 flaw): rows ALL acknowledged today still prune down to the count cap", async () => {
+  // This is the exact incident shape v1 could not handle: a large succeeded
+  // tail whose rows are ALL acknowledged within the last few minutes/days.
+  // v1 ANDed a 30-day age floor with the count cap, so nothing younger than 30
+  // days ever pruned — the owner's 170k-row / 35 GB outbox (all acked over ~15 days)
+  // would have reclaimed ZERO rows on the next run. The count-only bound must
+  // reclaim everything beyond the cap regardless of how fresh the rows are.
   const path = await tempOutboxPath();
-  const sourceInstanceId = "src-recent";
-  // Only 5 rows, all old. keepRecentCount=10 means every row is in the
-  // most-recent-10 set, so nothing prunes despite all being past the age floor.
-  seedSucceededRows(path, sourceInstanceId, 5, "2026-01-01T00:00:00.000Z");
+  const sourceInstanceId = "src-fresh-flood";
+  // 5,000 rows all acknowledged "today" (well inside any age window).
+  seedSucceededRows(path, sourceInstanceId, 5000, "2026-06-04T00:00:00.000Z");
   const outbox = new LocalDeviceOutbox({ path });
   try {
     const result = autoPruneSucceededOutbox({
-      now: new Date("2026-06-04T00:00:00.000Z"),
       outbox,
-      policy: { enabled: true, keepRecentCount: 10, keepWithinDays: 30 },
+      policy: { enabled: true, keepRecentCount: 1000 },
       sourceInstanceId,
     });
-    assert.equal(result.pruned, 0);
-    assert.equal(outbox.summary({ sourceInstanceId }).succeeded, 5);
+    assert.equal(result.matched, 4000, "every row past the cap matches, regardless of recency");
+    assert.equal(result.pruned, 4000);
+    assert.equal(
+      outbox.summary({ sourceInstanceId }).succeeded,
+      1000,
+      "the tail is capped at keepRecentCount even when no row is old"
+    );
   } finally {
     outbox.close();
   }
 });
 
-test("autoPruneSucceededOutbox keeps rows within the age window even past the count bound", async () => {
+test("REGRESSION (incident shape): a 15-day spread of fresh rows is capped on the first pass", async () => {
+  // The live incident's succeeded rows spanned ~2026-05-20 .. 2026-06-04 (~15
+  // days) — none older than the 30-day floor. Seed rows spread across that
+  // window and prove the cap reclaims the whole over-cap tail in one pass.
   const path = await tempOutboxPath();
-  const sourceInstanceId = "src-young";
-  // 50 rows acknowledged today, keepRecentCount=10. The 40 outside the recent
-  // set are still younger than the 30-day floor, so the age bound protects
-  // them — nothing prunes. A row survives if recent by count OR by age.
-  seedSucceededRows(path, sourceInstanceId, 50, "2026-06-03T00:00:00.000Z");
+  const sourceInstanceId = "src-incident-15d";
+  const dbSeed = new LocalDeviceOutbox({ path });
+  dbSeed.close();
+  const db = new DatabaseSync(path);
+  try {
+    const insert = db.prepare(
+      `INSERT INTO local_device_outbox (
+         id, source_instance_id, kind, status, payload_json, body_hash,
+         attempt_count, next_attempt_at, acknowledged_at, created_at, updated_at
+       ) VALUES (?, ?, 'record_batch', 'succeeded', '{"records":[]}', 'hash', 0, ?, ?, ?, ?)`
+    );
+    db.exec("BEGIN");
+    // 3,000 rows spread one-per-row across 2026-05-20 .. 2026-06-04 (15 days).
+    const startMs = Date.parse("2026-05-20T00:00:00.000Z");
+    const endMs = Date.parse("2026-06-04T00:00:00.000Z");
+    const total = 3000;
+    for (let index = 0; index < total; index++) {
+      const ms = startMs + Math.round(((endMs - startMs) * index) / (total - 1));
+      const acked = new Date(ms).toISOString();
+      insert.run(`${sourceInstanceId}:row:${index}`, sourceInstanceId, acked, acked, acked, acked);
+    }
+    db.exec("COMMIT");
+  } finally {
+    db.close();
+  }
   const outbox = new LocalDeviceOutbox({ path });
   try {
     const result = autoPruneSucceededOutbox({
-      now: new Date("2026-06-04T00:00:00.000Z"),
       outbox,
-      policy: { enabled: true, keepRecentCount: 10, keepWithinDays: 30 },
+      policy: { enabled: true, keepRecentCount: 1000 },
       sourceInstanceId,
     });
-    assert.equal(result.matched, 0);
+    assert.equal(result.pruned, 2000, "all but the most-recent 1,000 prune on the first pass");
+    assert.equal(outbox.summary({ sourceInstanceId }).succeeded, 1000);
+  } finally {
+    outbox.close();
+  }
+});
+
+test("autoPruneSucceededOutbox keeps every row when the count is within the bound", async () => {
+  const path = await tempOutboxPath();
+  const sourceInstanceId = "src-recent";
+  // Only 5 rows, keepRecentCount=10 → every row is in the most-recent set, so
+  // nothing prunes. (They are old, proving age does not force a prune either.)
+  seedSucceededRows(path, sourceInstanceId, 5, "2026-01-01T00:00:00.000Z");
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    const result = autoPruneSucceededOutbox({
+      outbox,
+      policy: { enabled: true, keepRecentCount: 10 },
+      sourceInstanceId,
+    });
     assert.equal(result.pruned, 0);
-    assert.equal(outbox.summary({ sourceInstanceId }).succeeded, 50);
+    assert.equal(outbox.summary({ sourceInstanceId }).succeeded, 5);
   } finally {
     outbox.close();
   }
@@ -168,8 +218,6 @@ test("autoPruneSucceededOutbox never prunes ready, leased, retrying, or dead-let
     assert.equal(leased.length, 4);
     const byId = new Map(leased.map((item) => [item.id, item]));
 
-    // Acknowledge nothing for ready (re-fail it back), retry one, dead-letter one,
-    // leave one leased. The remaining "ready" item we re-fail to a ready/retry state.
     const retry = byId.get("r:retry");
     const dead = byId.get("r:dead");
     const ready = byId.get("r:ready");
@@ -181,11 +229,10 @@ test("autoPruneSucceededOutbox never prunes ready, leased, retrying, or dead-let
     const before = outbox.summary({ sourceInstanceId });
     assert.equal(before.succeeded, 0);
 
-    // Aggressive policy: keep nothing, prune everything older than -1 day.
+    // Most aggressive count bound possible: keep nothing.
     const result = autoPruneSucceededOutbox({
-      now: new Date("2026-07-04T00:00:00.000Z"),
       outbox,
-      policy: { enabled: true, keepRecentCount: 0, keepWithinDays: 0 },
+      policy: { enabled: true, keepRecentCount: 0 },
       sourceInstanceId,
     });
     assert.equal(result.pruned, 0, "no succeeded rows means nothing prunes");
@@ -205,11 +252,11 @@ test("autoPruneSucceededOutbox never prunes ready, leased, retrying, or dead-let
   }
 });
 
-test("autoPruneSucceededOutbox keeps a succeeded row alongside non-succeeded work, pruning only the succeeded over-retention tail", async () => {
+test("autoPruneSucceededOutbox keeps a succeeded row alongside non-succeeded work, pruning only the succeeded over-cap tail", async () => {
   const path = await tempOutboxPath();
   const sourceInstanceId = "src-mixed";
   const holder = "holder-2";
-  // Seed 30 old succeeded rows directly.
+  // Seed 30 succeeded rows directly.
   seedSucceededRows(path, sourceInstanceId, 30, "2026-01-01T00:00:00.000Z");
   const outbox = new LocalDeviceOutbox({ clock: () => new Date("2026-06-04T00:00:00.000Z"), path });
   try {
@@ -232,12 +279,11 @@ test("autoPruneSucceededOutbox keeps a succeeded row alongside non-succeeded wor
     });
 
     const result = autoPruneSucceededOutbox({
-      now: new Date("2026-06-04T00:00:00.000Z"),
       outbox,
-      policy: { enabled: true, keepRecentCount: 5, keepWithinDays: 30 },
+      policy: { enabled: true, keepRecentCount: 5 },
       sourceInstanceId,
     });
-    // 30 succeeded, keep 5 recent → 25 are both old and outside the recent set.
+    // 30 succeeded, keep 5 recent → 25 prune.
     assert.equal(result.pruned, 25);
     const after = outbox.summary({ sourceInstanceId });
     assert.equal(after.succeeded, 5);
@@ -255,9 +301,8 @@ test("autoPruneSucceededOutbox is a no-op when disabled", async () => {
   const outbox = new LocalDeviceOutbox({ path });
   try {
     const result = autoPruneSucceededOutbox({
-      now: new Date("2026-06-04T00:00:00.000Z"),
       outbox,
-      policy: { enabled: false, keepRecentCount: 0, keepWithinDays: 0 },
+      policy: { enabled: false, keepRecentCount: 0 },
       sourceInstanceId,
     });
     assert.equal(result.enabled, false);
@@ -293,9 +338,8 @@ test("autoPruneSucceededOutbox scopes the prune to one source instance", async (
   const outbox = new LocalDeviceOutbox({ path });
   try {
     const result = autoPruneSucceededOutbox({
-      now: new Date("2026-06-04T00:00:00.000Z"),
       outbox,
-      policy: { enabled: true, keepRecentCount: 5, keepWithinDays: 30 },
+      policy: { enabled: true, keepRecentCount: 5 },
       sourceInstanceId: "src-a",
     });
     assert.equal(result.pruned, 25);

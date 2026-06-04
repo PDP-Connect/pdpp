@@ -271,11 +271,12 @@ test("runCollectorConnector auto-prunes over-retention succeeded rows after a cl
     const queuePath = await tempQueuePath();
     const fixture = await writeFixtureConnector({ script: ONE_RECORD_CONNECTOR_SCRIPT });
     const baseConfig = {
-      // Keep only the single most-recent succeeded row, and an age floor of 0
-      // days so any older acknowledged row is eligible. After two clean passes
-      // the first pass's acknowledged batch is both outside the recent set and
-      // older than the prune `now`, so it is reclaimed.
-      autoPrune: { keepRecentCount: 1, keepWithinDays: 0 },
+      // Keep only the single most-recent succeeded row. The bound is count-only
+      // — no age floor — so even the second pass's freshly-acknowledged batch
+      // makes pass 1's batch eligible the instant it falls outside the recent
+      // set. (v1 needed a `keepWithinDays: 0` age trick here; the corrected
+      // count-only bound does not.)
+      autoPrune: { keepRecentCount: 1 },
       baseUrl: harness.url,
       connector: {
         args: [fixture],
@@ -295,13 +296,22 @@ test("runCollectorConnector auto-prunes over-retention succeeded rows after a cl
     assert.equal(pass1.prunedSent.enabled, true);
     // Pass 1 left exactly one acknowledged batch, which is inside keepRecentCount.
     assert.equal(pass1.prunedSent.pruned, 0);
+    // The returned summary reflects the post-prune state.
+    assert.equal(pass1.outboxSummary.succeeded, 1);
 
     const pass2 = await runCollectorConnector(baseConfig);
     assert.equal(pass2.done?.status, "succeeded");
     assert.equal(pass2.prunedSent.enabled, true);
     // Pass 2 acknowledges a second batch; keepRecentCount=1 keeps it and prunes
-    // pass 1's now-older acknowledged batch.
+    // pass 1's batch — regardless of how recently pass 1 was acknowledged.
     assert.equal(pass2.prunedSent.pruned, 1);
+    // The returned summary is post-prune: one row retained, not two.
+    assert.equal(pass2.outboxSummary.succeeded, 1);
+
+    // The final heartbeat the server received must also carry the post-prune
+    // succeeded count, not the stale pre-prune tail.
+    const lastHeartbeat = harness.heartbeats.at(-1);
+    assert.equal((lastHeartbeat?.outbox as { succeeded?: number } | undefined)?.succeeded, 1);
 
     const outbox = new LocalDeviceOutbox({ path: queuePath });
     try {
@@ -324,8 +334,8 @@ test("runCollectorConnector leaves succeeded rows intact when auto-prune is disa
     const queuePath = await tempQueuePath();
     const fixture = await writeFixtureConnector({ script: ONE_RECORD_CONNECTOR_SCRIPT });
     const baseConfig = {
-      // Disabled despite an aggressive count/age bound that would otherwise prune.
-      autoPrune: { enabled: false, keepRecentCount: 0, keepWithinDays: 0 },
+      // Disabled despite an aggressive count bound that would otherwise prune.
+      autoPrune: { enabled: false, keepRecentCount: 0 },
       baseUrl: harness.url,
       connector: {
         args: [fixture],
@@ -366,8 +376,8 @@ test("runCollectorConnector under the default policy retains a clean run's ackno
   try {
     const queuePath = await tempQueuePath();
     const fixture = await writeFixtureConnector({ script: ONE_RECORD_CONNECTOR_SCRIPT });
-    // No autoPrune override → default policy (keep 1,000 recent, 30-day floor).
-    // A single clean run's one acknowledged batch is well inside both bounds.
+    // No autoPrune override → default policy (keep the most-recent 10,000).
+    // A single clean run's one acknowledged batch is well inside the cap.
     const result = await runCollectorConnector({
       baseUrl: harness.url,
       connector: {
