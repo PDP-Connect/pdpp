@@ -869,8 +869,8 @@ function getMaximumStalenessSeconds(refreshPolicy: unknown): number | null {
 /**
  * Project the manifest `refresh_policy` into the `background_safe` /
  * `recommended_mode` evidence the connection-health projection needs to tell
- * a schedulable connector apart from a manual / background-unsafe one. Reads
- * the same two flags the schedule auto-enroll gate
+ * a schedulable connector apart from a manual / paused / background-unsafe one.
+ * Reads the same refresh-policy values the schedule auto-enroll gate
  * (`auto-enroll-eligible-schedules.ts`) uses to deny a background schedule, so
  * the health story stays consistent with "this connector cannot auto-refresh".
  * Returns `null` when the policy is absent/malformed, preserving the prior
@@ -883,7 +883,11 @@ function buildRefreshEvidence(refreshPolicy: unknown): ConnectionRefreshEvidence
   const policy = refreshPolicy as { background_safe?: unknown; recommended_mode?: unknown };
   const backgroundSafe = typeof policy.background_safe === "boolean" ? policy.background_safe : null;
   const recommendedMode =
-    policy.recommended_mode === "manual" || policy.recommended_mode === "automatic" ? policy.recommended_mode : null;
+    policy.recommended_mode === "manual" ||
+    policy.recommended_mode === "automatic" ||
+    policy.recommended_mode === "paused"
+      ? policy.recommended_mode
+      : null;
   if (backgroundSafe === null && recommendedMode === null) {
     return null;
   }
@@ -2067,10 +2071,10 @@ export function projectConnectorSummaryConnectionHealth(input: {
   /**
    * Manifest `capabilities.refresh_policy` (raw). The projection reads only
    * `background_safe` and `recommended_mode` to decide whether the connector
-   * is manual / background-unsafe — i.e. cannot auto-refresh, so stale
-   * freshness is an owner-action advisory rather than a degradation. Omitting
-   * it preserves the prior behavior (treated as schedulable; staleness
-   * degrades).
+   * is manual / paused / background-unsafe — i.e. cannot auto-refresh, so
+   * stale freshness is an owner-action advisory rather than a degradation.
+   * Omitting it preserves the prior behavior (treated as schedulable;
+   * staleness degrades).
    */
   readonly refreshPolicy?: unknown;
   readonly unreliableSources?: readonly string[];

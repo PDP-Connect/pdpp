@@ -205,6 +205,11 @@ const SCHEDULABLE_REFRESH_POLICY = {
   maximum_staleness_seconds: 86400,
   background_safe: true,
 };
+const PAUSED_REFRESH_POLICY = {
+  recommended_mode: 'paused',
+  maximum_staleness_seconds: 86400,
+  background_safe: true,
+};
 
 test('acceptance 7.1: manual/background-unsafe connector that is complete+succeeded+stale projects idle advisory, not degraded', () => {
   // Reddit-like: the raw manifest refresh_policy declares manual +
@@ -237,6 +242,20 @@ test('acceptance 7.1: schedulable connector with the SAME stale evidence still d
   });
   assertHeadline(snap, 'degraded');
   assert.equal(snap.axes.freshness, 'stale');
+});
+
+test('acceptance 7.1: paused connector that is complete+succeeded+stale projects idle advisory, not degraded', () => {
+  const run = succeededRun();
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: STALE_FRESHNESS,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    outbox: { axis: 'idle' },
+    refreshPolicy: PAUSED_REFRESH_POLICY,
+    schedule: { enabled: true },
+  });
+  assertHeadline(snap, 'idle');
+  assert.equal(snap.reason_code, 'stale_manual_refresh');
 });
 
 test('acceptance 7.1: a manual connector with no refresh policy still degrades on stale (default = schedulable)', () => {

@@ -611,8 +611,8 @@ test('stale: schedulable connector stale alone surfaces as axis+badge and degrad
   assert.equal(fresh?.reason, 'stale');
 });
 
-// ─── Manual / background-unsafe connector freshness ───────────────────────
-// A connector whose manifest refresh policy declares it manual or
+// ─── Manual / paused / background-unsafe connector freshness ──────────────
+// A connector whose manifest refresh policy declares it manual, paused, or
 // background-unsafe (e.g. Reddit: recommended_mode "manual",
 // background_safe false) cannot auto-refresh. Stale data for such a
 // connector is an owner-action / manual-refresh advisory, not a
@@ -650,6 +650,19 @@ test('manual stale: recommended_mode manual alone (background_safe null) is enou
       coverage: { axis: 'complete' },
       freshness: { axis: 'stale' },
       refresh: { backgroundSafe: null, recommendedMode: 'manual' },
+    })
+  );
+  assert.equal(snap.state, 'idle');
+  assert.equal(snap.reason_code, 'stale_manual_refresh');
+});
+
+test('manual stale: recommended_mode paused alone (background_safe null) is enough to advisory', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: null, recommendedMode: 'paused' },
     })
   );
   assert.equal(snap.state, 'idle');

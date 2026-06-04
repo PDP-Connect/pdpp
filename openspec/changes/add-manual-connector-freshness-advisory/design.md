@@ -18,11 +18,12 @@ that *can* be auto-refreshed from one that cannot.
 ## Decision: manual-refresh-only is the same discriminator the scheduler uses
 
 A connector is **manual-refresh-only** when its manifest refresh policy
-declares `background_safe: false` OR `recommended_mode: "manual"`. These are
-exactly the two flags `auto-enroll-eligible-schedules.ts` reads to deny a
-background schedule. Reusing them keeps the health story consistent with the
-scheduler's own decision: a connector the scheduler will never auto-run is a
-connector whose staleness is not a background-refresh failure.
+declares `background_safe: false`, `recommended_mode: "manual"`, OR
+`recommended_mode: "paused"`. These are the refresh-policy values
+`auto-enroll-eligible-schedules.ts` reads to deny a background schedule.
+Reusing them keeps the health story consistent with the scheduler's own
+decision: a connector the scheduler will never auto-run is a connector whose
+staleness is not a background-refresh failure.
 
 Absent/malformed policy → treated as schedulable (prior behavior). This is
 the safe default: a connector with no declared policy still degrades on

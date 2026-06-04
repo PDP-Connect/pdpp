@@ -632,12 +632,13 @@ export interface ConnectionScheduleEvidence {
 /**
  * Manifest refresh-policy evidence the projection needs to tell a
  * schedulable/background-safe connection apart from one that is
- * intentionally manual / background-unsafe.
+ * intentionally manual, paused, or background-unsafe.
  *
  * A connector is **manual-refresh-only** when its manifest refresh policy
- * declares `background_safe: false` OR `recommended_mode: "manual"` — the
- * exact two flags the schedule auto-enroll gate already uses to deny it a
- * background schedule (`auto-enroll-eligible-schedules.ts`). Such a
+ * declares `background_safe: false`, `recommended_mode: "manual"`, or
+ * `recommended_mode: "paused"` — the refresh-policy values the schedule
+ * auto-enroll gate already uses to deny it a background schedule
+ * (`auto-enroll-eligible-schedules.ts`). Such a
  * connector cannot make progress on its own: only an owner-initiated run
  * advances its data. The projection trusts these flags from the caller and
  * never re-reads the manifest.
@@ -653,7 +654,7 @@ export interface ConnectionScheduleEvidence {
  */
 export interface ConnectionRefreshEvidence {
   readonly backgroundSafe: boolean | null;
-  readonly recommendedMode: "automatic" | "manual" | null;
+  readonly recommendedMode: "automatic" | "manual" | "paused" | null;
 }
 
 /**
@@ -931,9 +932,9 @@ function classifyCurrentEvidenceWithoutVerdict(ctx: ClassificationContext): Retu
 }
 
 function classifyManualStaleAdvisory(ctx: ClassificationContext): ReturnType<ClassificationStep> {
-  // 6b'. Manual / background-unsafe connector that is otherwise green but
-  //      whose data has aged past its staleness window -> idle with a
-  //      manual-refresh advisory, NOT degraded. Reaching this step already
+  // 6b'. Manual / paused / background-unsafe connector that is otherwise
+  //      green but whose data has aged past its staleness window -> idle with
+  //      a manual-refresh advisory, NOT degraded. Reaching this step already
   //      means no degrading condition fired (classifyDegradedEvidence ran
   //      first), so coverage is complete, the last collection succeeded, the
   //      outbox is not stalled, and no credential/runtime/attention/backoff
@@ -1662,17 +1663,18 @@ function sourceCoverageCondition(input: ComputeConnectionHealthInput, axes: Conn
 /**
  * A connector is manual-refresh-only when its manifest refresh policy
  * declares it cannot be auto-scheduled in the background — either
- * `background_safe: false` or `recommended_mode: "manual"`. These are the
- * same two flags the schedule auto-enroll gate uses to deny a background
- * schedule, so the projection stays consistent with "this connector will
- * never refresh on its own." Absent/unknown evidence is treated as
- * schedulable (the pre-change behavior), so staleness still degrades.
+ * `background_safe: false`, `recommended_mode: "manual"`, or
+ * `recommended_mode: "paused"`. These are the same refresh-policy values the
+ * schedule auto-enroll gate treats as ineligible for automatic scheduling, so
+ * the projection stays consistent with "this connector will never refresh on
+ * its own." Absent/unknown evidence is treated as schedulable (the pre-change
+ * behavior), so staleness still degrades.
  */
 function isManualRefreshOnly(refresh: ConnectionRefreshEvidence | null | undefined): boolean {
   if (!refresh) {
     return false;
   }
-  return refresh.backgroundSafe === false || refresh.recommendedMode === "manual";
+  return refresh.backgroundSafe === false || refresh.recommendedMode === "manual" || refresh.recommendedMode === "paused";
 }
 
 function freshCondition(input: ComputeConnectionHealthInput, axes: ConnectionAxes): ConnectionHealthCondition {
@@ -1688,10 +1690,10 @@ function freshCondition(input: ComputeConnectionHealthInput, axes: ConnectionAxe
     });
   }
   if (axes.freshness === "stale") {
-    // A manual / background-unsafe connector cannot auto-refresh, so stale
-    // data is not a failure — it is an owner-action advisory. Emit the stale
-    // `Fresh` condition at `info` severity so it never trips the degrading
-    // threshold; the headline becomes `idle` with a manual-refresh
+    // A manual / paused / background-unsafe connector cannot auto-refresh, so
+    // stale data is not a failure — it is an owner-action advisory. Emit the
+    // stale `Fresh` condition at `info` severity so it never trips the
+    // degrading threshold; the headline becomes `idle` with a manual-refresh
     // remediation and the `stale` badge stays on. Schedulable / background-
     // safe connectors keep the degrading `warning` stale condition, because
     // the system was supposed to refresh them and did not.

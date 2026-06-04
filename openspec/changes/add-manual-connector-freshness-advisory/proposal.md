@@ -1,10 +1,10 @@
 ## Why
 
-A connector whose manifest refresh policy declares it **manual** /
-**background-unsafe** (Reddit: `recommended_mode: "manual"`,
+A connector whose manifest refresh policy declares it **manual**, **paused**, or
+**background-unsafe** (for example Reddit: `recommended_mode: "manual"`,
 `background_safe: false`) cannot auto-refresh — only an owner-initiated run
 advances its data. The schedule auto-enroll gate already refuses such a
-connector a background schedule for exactly these two flags.
+connector a background schedule for exactly these refresh-policy values.
 
 The connection-health projection, however, treats stale freshness as
 degrading for every connector: `freshCondition` emits `Fresh=false` at
@@ -25,9 +25,9 @@ data-health failure.
 
 - Plumb the manifest refresh policy's `background_safe` / `recommended_mode`
   into the connection-health projection as `ConnectionRefreshEvidence`. A
-  connector is **manual-refresh-only** when `background_safe === false` OR
-  `recommended_mode === "manual"` — the same discriminator the auto-enroll
-  gate uses.
+  connector is **manual-refresh-only** when `background_safe === false`,
+  `recommended_mode === "manual"`, OR `recommended_mode === "paused"` — the
+  same discriminator the auto-enroll gate uses.
 - For a manual-refresh-only connector, surface stale freshness as an
   **owner-action / manual-refresh advisory** (`Fresh=false` at `info`
   severity, reason `stale_manual_refresh`, a manual-refresh remediation),
