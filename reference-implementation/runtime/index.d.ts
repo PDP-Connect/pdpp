@@ -106,13 +106,6 @@ export interface RuntimeRunConnectorOptions {
    * the registry; never logged.
    */
   streamingRegistrationToken?: string | null;
-  /**
-   * Operator tuning knobs for this run. Validated against the manifest
-   * `options_schema` before spawn; run fails fast on mismatch. Credentials
-   * SHALL NOT appear here — use the credential path (staticSecretEnv).
-   * See openspec/changes/promote-connector-config-schema.
-   */
-  connector_options?: Record<string, unknown> | null;
   traceContext?: RuntimeTraceContext;
   triggerKind?: RuntimeRunTriggerKind | null;
 }

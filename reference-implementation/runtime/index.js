@@ -17,7 +17,6 @@ import { getDefaultConnectorDetailGapStore } from '../server/stores/connector-de
 import { getDefaultConnectorAttentionStore } from '../server/stores/connector-attention-store.js';
 import { createAttentionWriter } from './attention-writer.js';
 import { canonicalConnectorKey } from '../server/connector-key.js';
-import { validateConnectorOptions } from '../../packages/polyfill-connectors/src/validate-connector-options.ts';
 
 // ─── Owned connector-child process-group registry ──────────────────────────
 //
@@ -1371,9 +1370,6 @@ export async function runConnector(opts) {
     // escalation. A run that already recorded a terminal event ignores abort.
     // See openspec/changes/add-owner-run-cancellation-control.
     cancelSignal = null,
-    // Operator tuning knobs validated against manifest options_schema before
-    // spawn. Credentials SHALL NOT appear here. See promote-connector-config-schema.
-    connector_options = null,
   } = opts;
   const connectorId = canonicalConnectorKey(rawConnectorId) ?? rawConnectorId;
 
@@ -1385,14 +1381,6 @@ export async function runConnector(opts) {
     if (req.required && !(binding in availableBindings)) {
       throw new Error(`Runtime cannot satisfy required binding: ${binding}`);
     }
-  }
-
-  // Validate connector_options against the manifest options_schema before spawn.
-  // Fails fast so an invalid option is caught before any resources are acquired.
-  const optionsValidation = validateConnectorOptions(manifest, connector_options);
-  if (!optionsValidation.ok) {
-    const detail = optionsValidation.issues.map((i) => `${i.field}: ${i.reason}`).join('; ');
-    throw new Error(`connector_options validation failed for ${connectorId}: ${detail}`);
   }
 
   const explicitlyRequestedStreams = providedScope?.streams
@@ -1689,7 +1677,6 @@ export async function runConnector(opts) {
     state: startState,
     bindings: availableBindings,
     detail_gaps: startDetailGaps,
-    ...(connector_options && Object.keys(connector_options).length > 0 ? { connector_options } : {}),
   };
   if (!writeChildStdin(JSON.stringify(startMsg) + '\n', 'start')) {
     onProgress({
@@ -1800,21 +1787,6 @@ export async function runConnector(opts) {
   if (!_bootEpoch) {
     _bootEpoch = await emitControllerBootedAndStashEpoch();
   }
-  // Build the safe options snapshot for spine capture: strip any key that
-  // appears in the manifest credentials_schema to enforce the invariant that
-  // credential values never appear in spine_events. The no-overlap build-time
-  // honesty guard (connector-config-schema-honesty.test.ts) means this filter
-  // is normally a no-op, but we apply it defensively here too.
-  const credentialFieldNames = new Set(
-    Object.keys(manifest.credentials_schema?.properties ?? {})
-  );
-  const safeOptionsForSpine =
-    connector_options && Object.keys(connector_options).length > 0
-      ? Object.fromEntries(
-          Object.entries(connector_options).filter(([k]) => !credentialFieldNames.has(k))
-        )
-      : null;
-
   await emitSpineEventTracked({
     event_type: 'run.started',
     trace_id: traceContext.trace_id,
@@ -1839,7 +1811,6 @@ export async function runConnector(opts) {
       boot_epoch: _bootEpoch.boot_epoch,
       seq: _bootEpoch.seq,
       controller_id: _bootEpoch.controller_id,
-      ...(safeOptionsForSpine ? { connector_options: safeOptionsForSpine } : {}),
     },
   });
   if (typeof onStarted === 'function') {

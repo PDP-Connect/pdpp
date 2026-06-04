@@ -2119,56 +2119,5 @@
         }
       ]
     }
-  ],
-  "options_schema": {
-    "type": "object",
-    "description": "Operator tuning knobs for the Slack connector. Values are passed via START.connector_options or SLACK_* env vars (env-var fallback preserved for backward compatibility).",
-    "properties": {
-      "LOOKBACK_DAYS": {
-        "type": "integer",
-        "description": "How many days of message history to fetch per channel on a full refresh.",
-        "default": 7
-      },
-      "CHANNEL_ALLOWLIST": {
-        "type": "array",
-        "items": { "type": "string" },
-        "description": "Explicit list of channel IDs to include. Empty list means all accessible channels.",
-        "default": []
-      },
-      "CHANNEL_TYPES": {
-        "type": "array",
-        "items": { "type": "string" },
-        "description": "Channel types to export. Allowed values: public, private, im, mpim.",
-        "default": ["public", "private", "im", "mpim"]
-      },
-      "MEMBER_ONLY": {
-        "type": "boolean",
-        "description": "When true, export only channels the authenticated user is a member of.",
-        "default": true
-      },
-      "SKIP_FILES": {
-        "type": "boolean",
-        "description": "When true, skip file attachment metadata (reduces export size).",
-        "default": true
-      }
-    }
-  },
-  "credentials_schema": {
-    "type": "object",
-    "description": "Secrets required by the Slack connector. Values are sourced from the credential path (env vars today; grant-injected in multi-tenant deployments). Never carried in connector_options.",
-    "properties": {
-      "SLACK_TOKEN": {
-        "type": "string",
-        "description": "Slack user/bot OAuth token (xoxc- or xoxp- prefix)."
-      },
-      "SLACK_COOKIE": {
-        "type": "string",
-        "description": "Slack session cookie (d= value), required for slackdump export."
-      },
-      "SLACK_WORKSPACE": {
-        "type": "string",
-        "description": "Slack workspace subdomain (e.g. myteam for myteam.slack.com)."
-      }
-    }
-  }
+  ]
 }

@@ -52,7 +52,6 @@ import {
   type ConnectorPlacementInput,
   type RuntimeBindingName,
 } from "./runtime-capabilities.ts";
-import { type ManifestWithConfigSchemas, validateConnectorOptions } from "./validate-connector-options.ts";
 
 /**
  * Maximum stderr bytes retained from a connector child before the runner
@@ -284,20 +283,8 @@ export interface CollectorConnectorSpec extends ConnectorPlacementInput {
   readonly command: string;
   /** Stable connector id used for ingest envelopes. */
   readonly connector_id: string;
-  /**
-   * Operator tuning knobs for this run. Validated against `manifest.options_schema`
-   * before spawn when `manifest` is provided; run fails fast on mismatch.
-   * Credentials SHALL NOT appear here. See openspec/changes/promote-connector-config-schema.
-   */
-  readonly connector_options?: Record<string, unknown>;
   /** Optional extra env passed to the connector child process. */
   readonly env?: NodeJS.ProcessEnv;
-  /**
-   * Connector manifest. When provided alongside `connector_options`, the runner
-   * validates options against `options_schema` before spawn. Omit for connectors
-   * without a declared schema (backward compatible — no validation is applied).
-   */
-  readonly manifest?: ManifestWithConfigSchemas;
   /** Streams the collector should request from the connector. */
   readonly streams: readonly string[];
   /** Optional explicit stream backfills requested from the connector. */
@@ -509,16 +496,6 @@ export class CollectorStateReadError extends Error {
 export async function runCollectorConnector(config: CollectorRunConfig): Promise<CollectorRunResult> {
   throwIfAborted(config.abortSignal);
   const satisfiedBindings = assertPlacementOrThrow(config.connector, COLLECTOR_RUNTIME_CAPABILITIES);
-
-  // Validate connector_options against the manifest options_schema when both are
-  // provided. Fails fast before any resources (outbox, heartbeat) are acquired.
-  if (config.connector.manifest) {
-    const optionsValidation = validateConnectorOptions(config.connector.manifest, config.connector.connector_options);
-    if (!optionsValidation.ok) {
-      const detail = optionsValidation.issues.map((i) => `${i.field}: ${i.reason}`).join("; ");
-      throw new Error(`connector_options validation failed for ${config.connector.connector_id}: ${detail}`);
-    }
-  }
 
   const policy: CollectorOutboxPolicy = { ...DEFAULT_COLLECTOR_OUTBOX_POLICY, ...(config.outboxPolicy ?? {}) };
   const autoPrunePolicy = resolveCollectorAutoPrunePolicy(config.autoPrune);
@@ -1066,8 +1043,7 @@ async function streamConnectorIntoOutbox(
       buildCollectorStartMessage(
         input.config.connector.streams,
         input.config.connector.streamsToBackfill,
-        input.priorState,
-        input.config.connector.connector_options
+        input.priorState
       )
     )}\n`
   );
@@ -1373,8 +1349,7 @@ async function safeHeartbeat(
 export function buildCollectorStartMessage(
   streams: readonly string[],
   streamsToBackfill: readonly string[] = [],
-  priorState?: Readonly<Record<string, unknown>> | null,
-  connectorOptions?: Record<string, unknown>
+  priorState?: Readonly<Record<string, unknown>> | null
 ): StartMessage {
   const start: StartMessage = {
     scope: { streams: streams.map((name): StreamScope => ({ name })) },
@@ -1385,9 +1360,6 @@ export function buildCollectorStartMessage(
   }
   if (priorState && Object.keys(priorState).length > 0) {
     start.state = { ...priorState };
-  }
-  if (connectorOptions && Object.keys(connectorOptions).length > 0) {
-    start.connector_options = { ...connectorOptions };
   }
   return start;
 }
