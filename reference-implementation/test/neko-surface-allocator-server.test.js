@@ -476,6 +476,73 @@ test("stopSurface(idle_ttl) preserves the container so it can be restarted cheap
   assert.equal(docker.containers.has(containerId), true);
 });
 
+test("ensureSurface replaces a RUNNING container that Docker marks unhealthy (wedged CDP carcass, never exits)", async () => {
+  // Recurrence (ri-browser-surface-recurrence-v2): a dynamic ChatGPT/Amazon
+  // surface can be leased + probed healthy, run, release, then have its CDP /
+  // Chromium wedge while idle and unleased. The container keeps RUNNING, so it
+  // never hits the exited-carcass branch; Docker's healthcheck flips it to
+  // `unhealthy` (observed live: 500+ failing streak, Up 19h). Returning that
+  // carcass would hand the next acquire a dead CDP socket and burn an owner OTP
+  // cycle. The allocator must replace it, exactly as it replaces an exited one.
+  const docker = new FakeDocker();
+  const service = new NekoSurfaceAllocatorService({ ...BASE_OPTIONS, docker, fetchImpl: readyFetch() });
+  await service.ensureSurface({ surfaceId: "surface_1", connectorId: "chatgpt", profileKey: "profile_1" });
+  const firstContainerId = [...docker.containers.keys()][0];
+  // The container is still running, but Docker's healthcheck has marked it
+  // unhealthy after its retry budget — the wedged-but-running scenario.
+  docker.containers.get(firstContainerId).health = "unhealthy";
+  docker.calls.length = 0;
+
+  const surface = await service.ensureSurface({
+    surfaceId: "surface_1",
+    connectorId: "chatgpt",
+    profileKey: "profile_1",
+  });
+
+  // The wedged running container was removed (DELETE) and a fresh one created.
+  const deleteCall = docker.calls.find(
+    (call) => call.init.method === "DELETE" && call.path === `/containers/${firstContainerId}`,
+  );
+  assert.ok(deleteCall, "unhealthy running container must be removed before a fresh container is created");
+  assert.ok(docker.calls.some((call) => call.path === "/containers/create"));
+  assert.notEqual(surface.container_id, firstContainerId);
+  assert.equal(docker.containers.has(firstContainerId), false);
+  assert.equal(surface.health, "ready");
+});
+
+test("ensureSurface does NOT replace a running container that is cold-starting (no boot loop)", async () => {
+  // Boot-loop safety: a freshly launched surface legitimately reports
+  // cdp_unready ("starting") while Chromium boots, and Docker reports
+  // Health.Status="starting" inside the StartPeriod. The allocator must key on
+  // Docker's debounced "unhealthy" verdict, never on the transient cold-start
+  // signal, or every acquire during boot would destroy the booting container.
+  const docker = new FakeDocker();
+  // CDP /json/version not yet answering -> allocator #readiness = cdp_unready.
+  const service = new NekoSurfaceAllocatorService({
+    ...BASE_OPTIONS,
+    docker,
+    fetchImpl: selectiveFetch((url) => !url.pathname.includes("/json/version")),
+  });
+  await service.ensureSurface({ surfaceId: "surface_1", connectorId: "chatgpt", profileKey: "profile_1" });
+  const firstContainerId = [...docker.containers.keys()][0];
+  // Docker still inside StartPeriod: health "starting", not "unhealthy".
+  docker.containers.get(firstContainerId).health = "starting";
+  docker.calls.length = 0;
+
+  const surface = await service.ensureSurface({
+    surfaceId: "surface_1",
+    connectorId: "chatgpt",
+    profileKey: "profile_1",
+  });
+
+  const deleteCall = docker.calls.find((call) => call.init.method === "DELETE");
+  assert.equal(deleteCall, undefined, "a cold-starting container must NOT be removed");
+  assert.ok(!docker.calls.some((call) => call.path === "/containers/create"), "no fresh container during cold-start");
+  assert.equal(surface.container_id, firstContainerId);
+  // It is returned with honest non-ready health so the caller waits/probes.
+  assert.equal(surface.health, "starting");
+});
+
 class FakeDocker {
   calls = [];
   containers = new Map();
@@ -554,7 +621,13 @@ class FakeDocker {
         Id: id,
         Name: `/${container.name}`,
         Config: { Labels: this.foreignInspectIds.has(id) ? { "other.owner": "someone-else" } : container.labels },
-        State: { Running: container.running, Status: container.running ? "running" : "exited" },
+        State: {
+          Running: container.running,
+          Status: container.running ? "running" : "exited",
+          ...(container.health === undefined
+            ? {}
+            : { Health: { Status: container.health, FailingStreak: container.health === "unhealthy" ? 12 : 0 } }),
+        },
         NetworkSettings: {
           Ports: ports,
           Networks: { [container.network]: {} },

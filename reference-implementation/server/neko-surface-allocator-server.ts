@@ -56,6 +56,10 @@ interface DockerContainerInspect {
   readonly State?: {
     readonly Running?: boolean;
     readonly Status?: string;
+    readonly Health?: {
+      readonly Status?: string;
+      readonly FailingStreak?: number;
+    };
   };
 }
 
@@ -265,15 +269,34 @@ export class NekoSurfaceAllocatorService {
     if (existing !== null) {
       this.#assertContainerMatchesRequest(existing, request);
       if (isInspectRunning(existing)) {
-        return this.#surfaceFromInspect(await this.#inspectContainer(existing.Id), { request });
-      }
-      // An exited container is not safe to "start again" — its previous run
-      // may have lost its network attachment, left the profile in a half-
-      // initialized state, or hit a crash loop. Replacing it is cheaper
-      // than re-binding clients to a dead CDP socket and is the only way
-      // an allocator-aware boot reconcile can make progress when prior
-      // surfaces were OOM/network-evicted across restarts.
-      if (this.#isReplaceableExitedContainer(existing)) {
+        // A running container is not automatically trustworthy. Docker's own
+        // healthcheck (neko HTTP + CDP /json/version + supervisorctl chromium)
+        // is debounced past the StartPeriod, so `State.Health.Status` of
+        // "unhealthy" means the browser surface has been wedged long enough to
+        // fail its retries — not merely cold-starting. Returning that carcass
+        // would hand the next acquire a dead CDP socket and, because the
+        // surface never exits, no later boot reconcile or idle sweep would ever
+        // recycle it. Replace it now, exactly as we replace an exited carcass.
+        // The host profile bind mount survives container removal, so this is
+        // non-destructive for owner-visible state.
+        //
+        // We intentionally key on Docker's healthcheck verdict, NOT the
+        // allocator's own single-shot #readiness() probe: a freshly launched
+        // container legitimately reports cdp_unready ("starting") while
+        // Chromium boots, and replacing on that signal would cause a boot loop.
+        // "unhealthy" only appears after StartPeriod + failing retries.
+        if (isInspectUnhealthy(existing)) {
+          await this.#removeContainer(existing.Id);
+        } else {
+          return this.#surfaceFromInspect(await this.#inspectContainer(existing.Id), { request });
+        }
+      } else if (this.#isReplaceableExitedContainer(existing)) {
+        // An exited container is not safe to "start again" — its previous run
+        // may have lost its network attachment, left the profile in a half-
+        // initialized state, or hit a crash loop. Replacing it is cheaper
+        // than re-binding clients to a dead CDP socket and is the only way
+        // an allocator-aware boot reconcile can make progress when prior
+        // surfaces were OOM/network-evicted across restarts.
         await this.#removeContainer(existing.Id);
       } else {
         await this.#startContainer(existing.Id);
@@ -953,6 +976,24 @@ function isDockerNotFoundError(value: unknown): boolean {
 
 function isInspectRunning(inspect: DockerContainerInspect): boolean {
   return inspect.State?.Running === true || inspect.State?.Status === "running";
+}
+
+/**
+ * A running container that Docker's own healthcheck has marked `unhealthy`.
+ * The healthcheck (see #containerHealthcheck) probes neko HTTP, CDP
+ * /json/version, and the supervised Chromium process, with a StartPeriod that
+ * suppresses failures during legitimate cold-start and Retries that debounce
+ * transient blips. By the time `State.Health.Status === "unhealthy"`, the
+ * surface has failed those probes past its retry budget: the CDP socket /
+ * Chromium is wedged, not merely booting. Such a container is as unrecoverable
+ * as an exited one, so ensureSurface replaces rather than reuses it.
+ *
+ * Containers with no healthcheck (Health undefined) or still inside the
+ * StartPeriod (Health.Status === "starting") are NOT treated as unhealthy, so
+ * a freshly launched surface is never destroyed mid-boot.
+ */
+function isInspectUnhealthy(inspect: DockerContainerInspect): boolean {
+  return isInspectRunning(inspect) && inspect.State?.Health?.Status === "unhealthy";
 }
 
 function hasNetwork(inspect: DockerContainerInspect, network: string): boolean {
