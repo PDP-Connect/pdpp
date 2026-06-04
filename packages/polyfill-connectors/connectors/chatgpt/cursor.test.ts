@@ -391,3 +391,54 @@ test("runConversationsAndMessagesStreams: messages backfill is independent from 
   assert.ok(messagesState && messagesState.type === "STATE");
   assert.deepEqual(messagesState.cursor, { last_update_time: "2026-04-22T10:00:00.000Z" });
 });
+
+test("runConversationsAndMessagesStreams: coalesces divergent parent/message cursors into one list request", async () => {
+  const list = [
+    makeListItem("conv-new", "2026-04-22T11:00:00Z"),
+    makeListItem("conv-mid", "2026-04-22T10:00:00Z"),
+    makeListItem("conv-old", "2026-04-22T09:00:00Z"),
+  ];
+  const details = new Map<string, ChatGptFetchResult>([
+    ["conv-new", makeDetail("conv-new", 1)],
+    ["conv-mid", makeDetail("conv-mid", 1)],
+    ["conv-old", makeDetail("conv-old", 1)],
+  ]);
+  const fetches: string[] = [];
+  const api = makeFakeApi(list, details);
+  const recordingApi: ChatGptApi = {
+    auth: api.auth,
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      fetches.push(path);
+      return api.fetch(path);
+    },
+  };
+  const { deps, emitted, protocolMessages } = makeDeps(recordingApi, ["conversations", "messages"]);
+
+  await runConversationsAndMessagesStreams(deps, {
+    conversations: { last_update_time: "2026-04-22T10:00:00.000Z" },
+    messages: { last_update_time: "2026-04-22T09:00:00.000Z" },
+  });
+
+  assert.deepEqual(fetches, [
+    "/conversations?offset=0&limit=100&order=updated",
+    "/conversation/conv-new",
+    "/conversation/conv-mid",
+  ]);
+  assert.deepEqual(
+    emitted.filter((r) => r.stream === "conversations").map((r) => r.data.id),
+    ["conv-new", "conv-mid"],
+    "parents emit once per conversation already hydrated by the required message detail lane"
+  );
+  assert.deepEqual(
+    emitted.filter((r) => r.stream === "messages").map((r) => r.data.conversation_id),
+    ["conv-new", "conv-mid"]
+  );
+
+  const conversationsState = protocolMessages.find((m) => m.type === "STATE" && m.stream === "conversations");
+  assert.ok(conversationsState && conversationsState.type === "STATE");
+  assert.deepEqual(conversationsState.cursor, { last_update_time: "2026-04-22T11:00:00.000Z" });
+
+  const messagesState = protocolMessages.find((m) => m.type === "STATE" && m.stream === "messages");
+  assert.ok(messagesState && messagesState.type === "STATE");
+  assert.deepEqual(messagesState.cursor, { last_update_time: "2026-04-22T11:00:00.000Z" });
+});

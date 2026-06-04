@@ -149,6 +149,8 @@ Connectors may decide to emit `SKIP_RESULT` for optional data or fail for requir
 
 For cursor batches, connectors must wait for all lane-managed work that can affect the cursor boundary to settle before emitting the stream `STATE`. Concurrent completion order must not change the cursor calculation, and a failed required item must not masquerade as complete coverage.
 
+ChatGPT request minimization follows the same boundary: when both `conversations` and `messages` are requested, the connector lists the conversation index once from the older of the two stream cursors, then filters that shared list against each stream's own cursor. This removes duplicate `/conversations` pagination without allowing the parent stream to advance from the message cursor or the message stream to skip a detail row that is still needed for backfill.
+
 ## QoS Separation
 
 High-volume bulk hydration should not starve recovery-critical work. The design should support separate lanes for at least:

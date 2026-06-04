@@ -774,9 +774,11 @@ async function runChatGptSideEffectProbe({
       "ChatGPT side-effect probe enabled; running one GET-only list/detail/list comparison and skipping collection",
   });
   const auth = await api.auth();
-  const result = (await page.evaluate(async ({ accessToken, deviceId }) => {
-    const metadata = (value: unknown, index: number): ChatGptConversationProbeItem => {
-      const item = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const result = (await page.evaluate(`(async () => {
+    const accessToken = ${JSON.stringify(auth.accessToken)};
+    const deviceId = ${JSON.stringify(auth.deviceId)};
+    const metadata = (value, index) => {
+      const item = value && typeof value === "object" ? value : {};
       return {
         index,
         id: typeof item.id === "string" ? item.id : null,
@@ -785,26 +787,26 @@ async function runChatGptSideEffectProbe({
         current_node: typeof item.current_node === "string" ? item.current_node : null,
       };
     };
-    const pickList = (json: unknown): ChatGptConversationProbeItem[] => {
-      const body = json && typeof json === "object" ? (json as { items?: unknown }) : {};
+    const pickList = (json) => {
+      const body = json && typeof json === "object" ? json : {};
       const items = Array.isArray(body.items) ? body.items : [];
       return items.slice(0, 5).map((item, index) => metadata(item, index));
     };
-    const getJson = async (path: string): Promise<{ json: unknown; status: number }> => {
-      const headers: Record<string, string> = {
+    const getJson = async (path) => {
+      const headers = {
         accept: "*/*",
-        authorization: `Bearer ${accessToken}`,
+        authorization: "Bearer " + accessToken,
         "oai-language": "en-US",
       };
       if (deviceId) {
         headers["oai-device-id"] = deviceId;
       }
-      const res = await fetch(`https://chatgpt.com/backend-api${path}`, {
+      const res = await fetch("https://chatgpt.com/backend-api" + path, {
         credentials: "include",
         headers,
         method: "GET",
       });
-      let json: unknown = null;
+      let json = null;
       if (res.ok) {
         try {
           json = await res.json();
@@ -816,22 +818,21 @@ async function runChatGptSideEffectProbe({
     };
 
     if (!accessToken) {
-      return { ok: false, stage: "auth_extract" } satisfies ChatGptSideEffectProbeResult;
+      return { ok: false, stage: "auth_extract" };
     }
 
     const beforeRes = await getJson("/conversations?offset=0&limit=5&order=updated");
     if (beforeRes.status !== 200) {
-      return { ok: false, stage: "before_list", status: beforeRes.status } satisfies ChatGptSideEffectProbeResult;
+      return { ok: false, stage: "before_list", status: beforeRes.status };
     }
     const before = pickList(beforeRes.json);
     const target = before[0];
-    if (!target?.id) {
-      return { ok: false, stage: "select_target", before } satisfies ChatGptSideEffectProbeResult;
+    if (!target || !target.id) {
+      return { ok: false, stage: "select_target", before };
     }
 
-    const detailRes = await getJson(`/conversation/${encodeURIComponent(target.id)}`);
-    const detailBody =
-      detailRes.json && typeof detailRes.json === "object" ? (detailRes.json as Record<string, unknown>) : {};
+    const detailRes = await getJson("/conversation/" + encodeURIComponent(target.id));
+    const detailBody = detailRes.json && typeof detailRes.json === "object" ? detailRes.json : {};
     const detail = {
       status: detailRes.status,
       create_time: typeof detailBody.create_time === "number" ? detailBody.create_time : null,
@@ -848,7 +849,7 @@ async function runChatGptSideEffectProbe({
         before,
         detail,
         target_id: target.id,
-      } satisfies ChatGptSideEffectProbeResult;
+      };
     }
     await new Promise((resolve) => setTimeout(resolve, 2000));
     const after2Res = await getJson("/conversations?offset=0&limit=5&order=updated");
@@ -861,7 +862,7 @@ async function runChatGptSideEffectProbe({
         after1: pickList(after1Res.json),
         detail,
         target_id: target.id,
-      } satisfies ChatGptSideEffectProbeResult;
+      };
     }
 
     return {
@@ -871,8 +872,8 @@ async function runChatGptSideEffectProbe({
       after2: pickList(after2Res.json),
       detail,
       target_id: target.id,
-    } satisfies ChatGptSideEffectProbeResult;
-  }, auth)) as ChatGptSideEffectProbeResult;
+    };
+  })()`)) as ChatGptSideEffectProbeResult;
 
   await emit({
     type: "PROGRESS",
@@ -1267,6 +1268,62 @@ async function listConversationsSinceCursor(
     }
   }
   return convosToSync;
+}
+
+function conversationIsAfterCursor(c: ConversationListItem, priorCursor: string | null): boolean {
+  if (!priorCursor) {
+    return true;
+  }
+  const updateIso = c.update_time ? tsToIso(c.update_time) : null;
+  return !updateIso || updateIso > priorCursor;
+}
+
+function oldestConversationCursor(a: string | null, b: string | null): string | null {
+  if (!(a && b)) {
+    return null;
+  }
+  return a <= b ? a : b;
+}
+
+type ConversationListForCursor = (cursor: string | null) => Promise<ConversationListItem[]>;
+
+async function selectConversationListsForRequestedStreams({
+  wantsConversations,
+  wantsMessages,
+  priorConversationsCursor,
+  priorMessagesCursor,
+  listForCursor,
+}: {
+  wantsConversations: boolean;
+  wantsMessages: boolean;
+  priorConversationsCursor: string | null;
+  priorMessagesCursor: string | null;
+  listForCursor: ConversationListForCursor;
+}): Promise<{
+  conversationsToSync: ConversationListItem[];
+  messageDetailConversations: ConversationListItem[];
+}> {
+  if (wantsConversations && wantsMessages) {
+    const sharedCursor = oldestConversationCursor(priorConversationsCursor, priorMessagesCursor);
+    const sharedList = await listForCursor(sharedCursor);
+    return {
+      conversationsToSync: sharedList.filter((c) => conversationIsAfterCursor(c, priorConversationsCursor)),
+      messageDetailConversations: sharedList.filter((c) => conversationIsAfterCursor(c, priorMessagesCursor)),
+    };
+  }
+  if (wantsConversations) {
+    return {
+      conversationsToSync: await listForCursor(priorConversationsCursor),
+      messageDetailConversations: [],
+    };
+  }
+  if (wantsMessages) {
+    return {
+      conversationsToSync: [],
+      messageDetailConversations: await listForCursor(priorMessagesCursor),
+    };
+  }
+  return { conversationsToSync: [], messageDetailConversations: [] };
 }
 
 const CONVO_DETAIL_PAUSE_MIN_MS = 1500;
@@ -1974,7 +2031,13 @@ export async function runConversationsAndMessagesStreams(
     await recoverPendingConversationDetailGaps(deps, emitConversation, options.detailPacing);
   }
 
-  const conversationsToSync = wantsConversations ? await listForCursor(priorConversationsCursor) : [];
+  const { conversationsToSync, messageDetailConversations } = await selectConversationListsForRequestedStreams({
+    wantsConversations,
+    wantsMessages,
+    priorConversationsCursor,
+    priorMessagesCursor,
+    listForCursor,
+  });
   if (wantsConversations) {
     const foundProgressMsg = {
       type: "PROGRESS",
@@ -1986,7 +2049,6 @@ export async function runConversationsAndMessagesStreams(
     deps.emit(foundProgressMsg);
   }
 
-  const messageDetailConversations = wantsMessages ? await listForCursor(priorMessagesCursor) : [];
   if (wantsMessages) {
     const foundMessageDetailProgressMsg = {
       type: "PROGRESS",

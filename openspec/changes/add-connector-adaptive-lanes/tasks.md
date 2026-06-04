@@ -40,6 +40,7 @@
 - [x] Gate any raised detail concurrency behind a cold-state preflight (`classifyChatGptSourcePressure` + `applyChatGptColdStatePreflight`): a status-only serial probe of the first few conversations classifies cold vs. pressured; a pressured account forces the run back to serial `1/1`. Skipped entirely when `maxConcurrency === 1`, so production is unchanged. Motivated by the 2026-06-02 evidence that the throttle is per-account and time-varying; see `design.md` → Cold-State Preflight. Fresh cold-window evidence: `tmp/workstreams/ri-chatgpt-throughput-policy-v2-probe-evidence.md`.
 - [x] Strengthen the owner-only preflight with a bounded burst canary when requested detail concurrency is above `1`. Motivated by `run_1780452117753`: serial preflight passed, but concurrency `3` immediately triggered bare-429 pressure.
 - [x] Ensure pressure-deferred ChatGPT gap bookkeeping is not classified as clean detail-fetch success by the adaptive lane, so upstream-pressure recovery cannot train concurrency upward while the circuit is open.
+- [x] Coalesce ChatGPT parent/message index pagination when both streams are requested: list once from the older cursor, filter the shared list per stream cursor, and cover divergent cursor behavior with an orchestration test.
 
 ## 5. Validation
 
