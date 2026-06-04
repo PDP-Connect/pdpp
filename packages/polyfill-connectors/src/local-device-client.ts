@@ -18,7 +18,34 @@ export interface LocalDeviceClientOptions {
   deviceId?: string;
   deviceToken?: string;
   fetchImpl?: typeof fetch;
+  /**
+   * Hard per-request ceiling in milliseconds. A reference server that
+   * stalls mid-request (for example during a projection rebuild) would
+   * otherwise hang `fetch` indefinitely, pinning the collector process
+   * until the host supervisor's start-timeout reaps it. Bounding the
+   * request makes a stalled call fail fast and *durably*: a hung drain
+   * row is marked retryable/dead-lettered by the outbox path exactly like
+   * any other send failure, and a hung state read surfaces an honest
+   * `state_read_failed` block instead of a silent 15-minute timeout.
+   *
+   * Defaults to {@link DEFAULT_LOCAL_DEVICE_REQUEST_TIMEOUT_MS}, which is
+   * well under the documented systemd `TimeoutStartSec=900`. Pass `0` to
+   * disable the ceiling (the caller then owns liveness via its own signal).
+   */
+  requestTimeoutMs?: number;
 }
+
+/**
+ * Default hard per-request timeout for {@link LocalDeviceClient}.
+ *
+ * 120s is generous enough for a large ingest batch under recovery load
+ * yet far below the host supervisor's 15-minute start timeout, so a
+ * stalled server fails the run fast — durably, since the outbox keeps the
+ * work — rather than holding a process slot and blocking the next
+ * scheduled drain. See `docs/local-collector.md` and
+ * `systemd-durable-limits.test.js` for the `TimeoutStartSec=900` posture.
+ */
+export const DEFAULT_LOCAL_DEVICE_REQUEST_TIMEOUT_MS = 120_000;
 
 export interface EnrollmentExchangeRequest {
   device_label?: string;
@@ -225,17 +252,36 @@ function sanitizeErrorDetail(value: string): string {
   return compact.length > 160 ? `${compact.slice(0, 159)}…` : compact;
 }
 
+/**
+ * A local-device request exceeded its hard timeout (the server stalled
+ * before responding). Distinct from {@link LocalDeviceHttpError}: there is
+ * no HTTP status because the response never arrived. Carried through the
+ * outbox failure path like any other transient send error so the work
+ * stays durable and retryable instead of crashing the run.
+ */
+export class LocalDeviceRequestTimeoutError extends Error {
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number) {
+    super(`local device request timed out after ${timeoutMs}ms`);
+    this.name = "LocalDeviceRequestTimeoutError";
+    this.timeoutMs = timeoutMs;
+  }
+}
+
 export class LocalDeviceClient {
   readonly #baseUrl: URL;
   readonly #deviceId: string | undefined;
   readonly #deviceToken: string | undefined;
   readonly #fetch: typeof fetch;
+  readonly #requestTimeoutMs: number;
 
   constructor(options: LocalDeviceClientOptions) {
     this.#baseUrl = new URL(options.baseUrl);
     this.#deviceId = options.deviceId;
     this.#deviceToken = options.deviceToken;
     this.#fetch = options.fetchImpl ?? fetch;
+    this.#requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_LOCAL_DEVICE_REQUEST_TIMEOUT_MS;
   }
 
   exchangeEnrollment(request: EnrollmentExchangeRequest): Promise<EnrollmentExchangeResponse> {
@@ -323,15 +369,47 @@ export class LocalDeviceClient {
     if (options.body !== undefined) {
       init.body = JSON.stringify(options.body);
     }
-    const response = await this.#fetch(new URL(path, this.#baseUrl), init);
 
-    const text = await response.text();
-    if (!response.ok) {
-      throw new LocalDeviceHttpError(response.status, text);
+    // Bound the whole round trip — connect, response headers, and the body
+    // read below — so a server that stalls cannot hang the collector. The
+    // controller is aborted in `finally` so the timer never outlives the
+    // request and keep the process alive past a clean run.
+    const controller = this.#requestTimeoutMs > 0 ? new AbortController() : null;
+    const timer = controller
+      ? setTimeout(
+          () => controller.abort(new LocalDeviceRequestTimeoutError(this.#requestTimeoutMs)),
+          this.#requestTimeoutMs
+        )
+      : null;
+    if (controller) {
+      init.signal = controller.signal;
     }
-    if (!text) {
-      return { ok: true } as TResponse;
+
+    try {
+      const response = await this.#fetch(new URL(path, this.#baseUrl), init);
+
+      const text = await response.text();
+      if (!response.ok) {
+        throw new LocalDeviceHttpError(response.status, text);
+      }
+      if (!text) {
+        return { ok: true } as TResponse;
+      }
+      return JSON.parse(text) as TResponse;
+    } catch (error) {
+      // Surface the typed timeout regardless of how the runtime reports the
+      // abort (DOMException "AbortError", or the abort reason passed through).
+      if (controller?.signal.aborted) {
+        const reason = controller.signal.reason;
+        throw reason instanceof LocalDeviceRequestTimeoutError
+          ? reason
+          : new LocalDeviceRequestTimeoutError(this.#requestTimeoutMs);
+      }
+      throw error;
+    } finally {
+      if (timer) {
+        clearTimeout(timer);
+      }
     }
-    return JSON.parse(text) as TResponse;
   }
 }

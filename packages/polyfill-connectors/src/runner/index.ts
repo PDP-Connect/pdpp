@@ -76,6 +76,7 @@ export type {
 } from "../connector-runtime-protocol.ts";
 export { isMainModule } from "../is-main-module.ts";
 export {
+  DEFAULT_LOCAL_DEVICE_REQUEST_TIMEOUT_MS,
   type EnrollmentExchangeRequest,
   type EnrollmentExchangeResponse,
   type GetSourceInstanceStateRequest,
@@ -85,6 +86,7 @@ export {
   LocalDeviceClient,
   type LocalDeviceClientOptions,
   LocalDeviceHttpError,
+  LocalDeviceRequestTimeoutError,
   type PutSourceInstanceStateRequest,
   type SourceInstanceStateResponse,
 } from "../local-device-client.ts";
