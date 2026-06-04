@@ -77,7 +77,7 @@ export function AttentionOverviewPlaceholder() {
     <>
       <div className="pdpp-caption mb-8 flex items-center gap-2">
         <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
-        <span className="font-medium text-foreground">Checking failures...</span>
+        <span className="font-medium text-foreground">Checking failures…</span>
         <span className="text-muted-foreground">Failed traces and runs are loading independently.</span>
       </div>
       <div className="grid gap-8 lg:grid-cols-2">
@@ -325,7 +325,7 @@ function StatusStrip({
     );
   }
   return (
-    <div className="pdpp-caption mb-8 flex flex-wrap items-center gap-3 rounded-md border border-destructive/30 border-l-4 border-l-destructive/60 bg-destructive/5 px-4 py-2.5">
+    <div className="pdpp-caption mb-8 flex flex-wrap items-center gap-3 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-2.5 shadow-[inset_3px_0_0_0_color-mix(in_oklab,var(--destructive)_60%,transparent)]">
       <span className="font-medium text-destructive">
         {actionNeeded} recent failure{actionNeeded === 1 ? "" : "s"}
       </span>

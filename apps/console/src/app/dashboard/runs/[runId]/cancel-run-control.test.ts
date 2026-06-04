@@ -39,11 +39,19 @@ test("run detail page renders the cancel control only when the run is active", a
   const src = await readFile(PAGE_FILE, "utf8");
   assert.match(src, PAGE_IMPORTS_CONTROL_RE);
   assert.match(src, PAGE_GATES_ON_ACTIVE_RE);
-  // The gate must live inside the beforeTimeline fragment, after the
-  // assistance section — i.e. between beforeTimeline and the timeline meta.
-  const before = src.indexOf("beforeTimeline=");
+  // The gate must live inside the before-timeline fragment that is handed to
+  // TimelineDetailView's `beforeTimelineContent` slot. The fragment is defined
+  // (`const beforeTimeline = (`) before it is passed (`beforeTimelineContent={`),
+  // and the active-gated control sits inside that fragment definition.
+  const fragmentDefAt = src.indexOf("const beforeTimeline = (");
+  const slotPassAt = src.indexOf("beforeTimelineContent={");
   const gateAt = src.search(PAGE_GATES_ON_ACTIVE_RE);
-  assert.equal(before >= 0 && gateAt > before, true, "cancel control must render inside beforeTimeline");
+  assert.ok(fragmentDefAt >= 0, "before-timeline fragment must be defined");
+  assert.ok(slotPassAt > fragmentDefAt, "fragment must be passed to the beforeTimelineContent slot");
+  assert.ok(
+    gateAt > fragmentDefAt && gateAt < slotPassAt,
+    "the active-gated cancel control must render inside the before-timeline fragment"
+  );
 });
 
 // ── Control: client component, confirmation step, action call ─────────────────

@@ -53,7 +53,7 @@ interface PivotKind {
 
 function pivotsForSubject(envelope: TimelineEnvelope, subject: TimelineSubject): PivotKind[] {
   const collect = (key: "trace_id" | "grant_id" | "run_id"): string[] =>
-    Array.from(new Set(envelope.events.map((e) => e[key]).filter(Boolean) as string[]));
+    Array.from(new Set(envelope.events.flatMap((e) => (e[key] ? [e[key] as string] : []))));
   const all: PivotKind[] = [
     { kind: "trace", ids: collect("trace_id") },
     { kind: "grant", ids: collect("grant_id") },
@@ -73,8 +73,11 @@ export function TimelineDetailView({
   count,
   description,
   breadcrumbs,
-  beforeTimeline,
-  meta,
+  // Slot-named props (`…Content` suffix) so the Fast-Refresh/perf linter
+  // recognises them as legitimate JSX-bearing slots rather than accidental
+  // inline-JSX props.
+  beforeTimelineContent,
+  metaContent,
 }: {
   subject: TimelineSubject;
   id: string;
@@ -86,8 +89,8 @@ export function TimelineDetailView({
   count?: string;
   description?: React.ReactNode;
   breadcrumbs: { label: string; href?: string }[];
-  beforeTimeline?: React.ReactNode;
-  meta?: React.ReactNode;
+  beforeTimelineContent?: React.ReactNode;
+  metaContent?: React.ReactNode;
 }) {
   const pivots = pivotsForSubject(envelope, subject);
   const pivotHref = (kind: TimelineSubject, pivotId: string) => {
@@ -106,7 +109,7 @@ export function TimelineDetailView({
         breadcrumbs={breadcrumbs}
         count={count}
         description={description}
-        meta={meta}
+        meta={metaContent}
         title={<code className="font-mono">{id}</code>}
       />
 
@@ -146,7 +149,7 @@ export function TimelineDetailView({
         );
       })()}
 
-      {beforeTimeline}
+      {beforeTimelineContent}
 
       <Section title="Timeline">
         <TimelineView events={envelope.events} loadMoreHref={loadMoreHref} />

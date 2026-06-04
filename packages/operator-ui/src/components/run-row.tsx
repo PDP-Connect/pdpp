@@ -21,6 +21,7 @@ import type { RunSummary } from "../lib/ref-client.ts";
 import { runRowLabel } from "../lib/summary-row-label.ts";
 import { Timestamp } from "../ui/timestamp.tsx";
 import { StatusBadge } from "./primitives.tsx";
+import { browserSurfaceStatusCopy, isAwaitingInteraction } from "./run-row-helpers.ts";
 
 export function RunRow({
   run,
@@ -104,33 +105,4 @@ function BrowserSurfaceChip({ label }: { label: string }) {
       {label}
     </span>
   );
-}
-
-export function browserSurfaceStatusCopy(run: RunSummary): { detail: string; label: string } | null {
-  if (!run.browser_surface_status) {
-    return null;
-  }
-  const reason = run.browser_surface_wait_reason
-    ? ` Reason: ${run.browser_surface_wait_reason.replaceAll("_", " ")}.`
-    : "";
-  if (run.browser_surface_status === "waiting_for_browser_surface") {
-    return {
-      label: "browser queued",
-      detail: `Waiting for an available n.eko browser surface. This is runtime resource backpressure, not connector auth or protocol failure.${reason}`,
-    };
-  }
-  if (run.browser_surface_status === "deferred") {
-    return {
-      label: "browser deferred",
-      detail: `Deferred by the n.eko browser-surface lease policy. This is runtime resource backpressure, not connector auth or protocol failure.${reason}`,
-    };
-  }
-  return {
-    label: "browser surface",
-    detail: `Browser-surface lease status: ${run.browser_surface_status.replaceAll("_", " ")}.${reason}`,
-  };
-}
-
-export function isAwaitingInteraction(run: RunSummary): boolean {
-  return run.needs_input === true;
 }

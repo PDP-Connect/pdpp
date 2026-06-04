@@ -1,5 +1,20 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { RUN_LIFECYCLE_VOCABULARY, type StatusTone, type StatusVocabulary } from "./status-vocabularies.ts";
+
+// Re-export the status vocabularies (and their types) from their dedicated
+// sibling module so existing callers can keep importing them from
+// "@pdpp/operator-ui/components/primitives". A re-export does NOT trip the
+// Fast-Refresh `only-export-components` rule (which only flags *inline*
+// non-component value definitions), while still keeping the actual definitions
+// out of this component file.
+export {
+  ARTIFACT_LIFECYCLE_VOCABULARY,
+  RUN_LIFECYCLE_VOCABULARY,
+  type StatusTone,
+  type StatusVocabulary,
+  type StatusVocabularyEntry,
+} from "./status-vocabularies.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -238,18 +253,10 @@ export function MetaPill({ label, value, tone = "neutral" }: { label: string; va
 }
 
 // ─── Status badge ──────────────────────────────────────────────────────────
-// One primitive (the chip), many vocabularies (one per domain).
-// Vocabularies are domain-bound — don't conflate run lifecycle ("started")
-// with artifact authoring states ("in-progress").
-
-export type StatusTone = "success" | "danger" | "warning" | "neutral";
-
-interface StatusVocabularyEntry {
-  label: string;
-  tone: StatusTone;
-}
-
-export type StatusVocabulary = Record<string, StatusVocabularyEntry>;
+// One primitive (the chip), many vocabularies (one per domain). The tone/
+// vocabulary types and the domain vocabularies themselves live in the sibling
+// `status-vocabularies.ts` module so this component file stays Fast-Refresh
+// clean (component-only exports).
 
 // The badge fill rides on a base (light) wash class; the dark-mode fill + ring
 // strengthening and the semantic label COLOR are owned by the brand stylesheet
@@ -269,31 +276,6 @@ const STATUS_BADGE_TONE_CLASSES: Record<StatusTone, string> = {
   success: "bg-[color:var(--success-wash)]",
   warning: "bg-[color:var(--warning-wash)]",
   neutral: "bg-muted",
-};
-
-// Run/grant lifecycle: event states of transient operations.
-export const RUN_LIFECYCLE_VOCABULARY: StatusVocabulary = {
-  failed: { label: "failed", tone: "danger" },
-  rejected: { label: "rejected", tone: "danger" },
-  denied: { label: "denied", tone: "danger" },
-  revoked: { label: "revoked", tone: "danger" },
-  cancelled: { label: "cancelled", tone: "danger" },
-  succeeded: { label: "succeeded", tone: "success" },
-  issued: { label: "issued", tone: "success" },
-  token_issued: { label: "token issued", tone: "success" },
-  approved: { label: "approved", tone: "success" },
-  started: { label: "started", tone: "warning" },
-  pending: { label: "pending", tone: "warning" },
-  staged: { label: "staged", tone: "warning" },
-  verification_pending: { label: "verification pending", tone: "warning" },
-  succeeded_with_gaps: { label: "partial", tone: "warning" },
-};
-
-// Change/spec authoring lifecycle: maturity states of durable artifacts.
-export const ARTIFACT_LIFECYCLE_VOCABULARY: StatusVocabulary = {
-  "in-progress": { label: "in progress", tone: "warning" },
-  complete: { label: "complete", tone: "success" },
-  unknown: { label: "no tasks", tone: "neutral" },
 };
 
 export function StatusBadge({

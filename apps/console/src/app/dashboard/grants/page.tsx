@@ -35,8 +35,9 @@ interface Params {
 function listHref(params: Params, overrides: Partial<Params> = {}): string {
   const merged = { ...params, ...overrides };
   const qs = Object.entries(merged)
-    .filter(([, v]) => v !== undefined && v !== "")
-    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+    .flatMap(([k, v]) =>
+      v === undefined || v === "" ? [] : [`${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`]
+    )
     .join("&");
   return qs ? `/dashboard/grants?${qs}` : "/dashboard/grants";
 }
@@ -81,7 +82,7 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
   const preHeader = (
     <>
       {params.approval_error ? (
-        <div className="pdpp-caption mb-6 rounded-md border border-destructive/30 border-l-4 border-l-destructive/60 bg-destructive/5 px-4 py-2.5">
+        <div className="pdpp-caption mb-6 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-2.5 shadow-[inset_3px_0_0_0_color-mix(in_oklab,var(--destructive)_60%,transparent)]">
           <span className="font-medium text-destructive">Approval error:</span> <span>{params.approval_error}</span>
         </div>
       ) : null}
@@ -166,13 +167,14 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
 
 function PendingApprovalRow({ approval }: { approval: PendingApproval }) {
   const previewStreams = Array.isArray(approval.grant_preview?.streams)
-    ? approval.grant_preview.streams
-        .map((stream) => (typeof stream === "string" ? stream : stream?.name || ""))
-        .filter(Boolean)
+    ? approval.grant_preview.streams.flatMap((stream) => {
+        const name = typeof stream === "string" ? stream : stream?.name || "";
+        return name ? [name] : [];
+      })
     : [];
 
   return (
-    <div className="grid gap-3 px-3 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+    <div className="grid gap-3 p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
       <div className="min-w-0">
         <div className="flex flex-wrap items-baseline gap-2">
           <code className="pdpp-caption break-all font-medium font-mono text-foreground">{approval.approval_id}</code>

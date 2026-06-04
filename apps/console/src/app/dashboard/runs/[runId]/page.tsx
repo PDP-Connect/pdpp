@@ -114,61 +114,66 @@ export default async function RunDetailPage({
   const stateValue = getRunStateValue({ active, currentAssistance, terminalStatus: displayTerminalStatus });
   const failureRows = summarizeFailure(failure);
 
+  // The before-timeline stack, header meta pills, and description are assigned
+  // to locals and passed to TimelineDetailView's slot-named props
+  // (beforeTimelineContent / metaContent) so this once-per-request server render
+  // composes them in the component body rather than constructing JSX inline in
+  // the prop position.
+  const beforeTimeline = (
+    <>
+      <CurrentAssistanceSection active={active} currentAssistance={currentAssistance} runId={runId} />
+      {active ? <CancelRunControl runId={runId} /> : null}
+      <LatestProgressSection active={active} latestProgress={latestProgress} terminalStatus={displayTerminalStatus} />
+      <StatsGrid
+        checkpoints={checkpoints}
+        failure={failure}
+        failureRows={failureRows}
+        interactions={interactions}
+        progress={progress}
+      />
+      <KnownGapsSection
+        coverageGaps={gapClassification.coverageGaps}
+        informationalGaps={gapClassification.informationalGaps}
+        protocolViolationCount={gapClassification.protocolViolationGaps.length}
+        skippedCount={events.filter((e) => e.event_type === "run.stream_skipped").length}
+        summary={terminalKnownGaps.summary ?? gapClassification.summary}
+      />
+      <ViolationDiagnosis failure={failure} />
+      <ConnectorStderrTailSection failure={failure} />
+    </>
+  );
+  const description = (
+    <>
+      {connectorId ? (
+        <>
+          connector <span className="font-mono text-foreground">{connectorId}</span>
+          {" · "}
+        </>
+      ) : null}
+      {events.length} events
+    </>
+  );
+  const meta = (
+    <>
+      <MetaPill label="state" tone={stateTone} value={stateValue} />
+      {latestProgress?.percentLabel ? (
+        <MetaPill label="progress" tone="protocol" value={latestProgress.percentLabel} />
+      ) : null}
+    </>
+  );
+
   return (
     <DashboardShell active="runs">
       <RunDetailPoller enabled={active} />
       <TimelineDetailView
-        beforeTimeline={
-          <>
-            <CurrentAssistanceSection active={active} currentAssistance={currentAssistance} runId={runId} />
-            {active ? <CancelRunControl runId={runId} /> : null}
-            <LatestProgressSection
-              active={active}
-              latestProgress={latestProgress}
-              terminalStatus={displayTerminalStatus}
-            />
-            <StatsGrid
-              checkpoints={checkpoints}
-              failure={failure}
-              failureRows={failureRows}
-              interactions={interactions}
-              progress={progress}
-            />
-            <KnownGapsSection
-              coverageGaps={gapClassification.coverageGaps}
-              informationalGaps={gapClassification.informationalGaps}
-              protocolViolationCount={gapClassification.protocolViolationGaps.length}
-              skippedCount={events.filter((e) => e.event_type === "run.stream_skipped").length}
-              summary={terminalKnownGaps.summary ?? gapClassification.summary}
-            />
-            <ViolationDiagnosis failure={failure} />
-            <ConnectorStderrTailSection failure={failure} />
-          </>
-        }
+        beforeTimelineContent={beforeTimeline}
         breadcrumbs={[{ label: "Runs", href: dashboardRoutes.section.runs }, { label: "Run" }]}
         cliCommand={`pdpp ref run timeline ${runId}`}
-        description={
-          <>
-            {connectorId ? (
-              <>
-                connector <span className="font-mono text-foreground">{connectorId}</span>
-                {" · "}
-              </>
-            ) : null}
-            {events.length} events
-          </>
-        }
+        description={description}
         envelope={envelope}
         id={runId}
         loadMoreHref={envelope.truncated && envelope.next_cursor ? runTimelineHref(runId, envelope.next_cursor) : null}
-        meta={
-          <>
-            <MetaPill label="state" tone={stateTone} value={stateValue} />
-            {latestProgress?.percentLabel ? (
-              <MetaPill label="progress" tone="protocol" value={latestProgress.percentLabel} />
-            ) : null}
-          </>
-        }
+        metaContent={meta}
         rawUrl={`${getAsInternalUrl()}/_ref/runs/${encodeURIComponent(runId)}/timeline`}
         routes={dashboardRoutes}
         subject="run"
@@ -204,7 +209,7 @@ function CurrentAssistanceSection({
   return (
     <Callout
       action={<StatusBadge inline status={active ? "pending" : "cancelled"} />}
-      className="mb-6 border border-[color:var(--warning)] border-l-4 bg-[color:var(--warning-wash)]"
+      className="mb-6 border border-[color:var(--warning)] bg-[color:var(--warning-wash)] shadow-[inset_3px_0_0_0_var(--warning)]"
       description={getAssistanceDescription(currentAssistance, active, supportsStreaming)}
       surface="human"
       title={getAssistanceTitle(currentAssistance, active)}
@@ -418,7 +423,7 @@ function KnownGapsSection({
   }
 
   return (
-    <section className="mb-8 rounded-md border border-[color:var(--warning)]/35 border-l-4 border-l-[color:var(--warning)] bg-[color:var(--warning-wash)]/45 px-4 py-3">
+    <section className="mb-8 rounded-md border border-[color:var(--warning)]/35 bg-[color:var(--warning-wash)]/45 px-4 py-3 shadow-[inset_3px_0_0_0_var(--warning)]">
       <header className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
         <div>
           <h3 className="pdpp-eyebrow">Known source gaps</h3>
@@ -528,7 +533,7 @@ function GapDiagnosticsPanel({ diagnostics }: { diagnostics?: Record<string, unk
         ) : null}
       </summary>
       <p className="pdpp-caption mt-1.5 text-muted-foreground/80">
-        Connector-authored evidence. Bounded and redacted by the runtime — not a verified PDPP error classification.
+        Connector-authored evidence. Bounded and redacted by the runtime, not a verified PDPP error classification.
       </p>
       <pre className="pdpp-caption mt-1.5 overflow-x-auto rounded border border-border/70 bg-background p-2 font-mono">
         {JSON.stringify(diagnostics, null, 2)}
@@ -600,7 +605,7 @@ function ViolationDiagnosis({ failure }: { failure: SpineEvent | undefined }) {
   const truncated = violation.truncated === true;
 
   return (
-    <section className="mb-8 rounded-md border border-destructive/30 border-l-4 border-l-destructive/60 bg-destructive/5 px-4 py-3">
+    <section className="mb-8 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 shadow-[inset_3px_0_0_0_color-mix(in_oklab,var(--destructive)_60%,transparent)]">
       <header className="mb-2 flex items-baseline justify-between gap-4">
         <h3 className="pdpp-eyebrow">Failure diagnosis</h3>
         <span className="pdpp-caption text-muted-foreground">runtime-authored</span>
@@ -737,7 +742,7 @@ function ConnectorStderrTailSection({ failure }: { failure: SpineEvent | undefin
           </span>
         </summary>
         <p className="pdpp-caption mt-3 text-muted-foreground">
-          Connector-authored output captured before exit. This is untrusted evidence — not a verified PDPP error. Use it
+          Connector-authored output captured before exit. This is untrusted evidence, not a verified PDPP error. Use it
           as a hint for what the connector was doing, not as the authoritative failure reason.
         </p>
         <dl className="pdpp-caption mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
@@ -764,7 +769,7 @@ function ConnectorStderrTailSection({ failure }: { failure: SpineEvent | undefin
 
 function Stat({ title, rows, emphasis }: { title: string; rows: [string, string][]; emphasis?: boolean }) {
   const className = emphasis
-    ? "rounded-md border border-destructive/30 border-l-4 border-l-destructive/60 bg-destructive/5 px-3 py-2.5"
+    ? "rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5 shadow-[inset_3px_0_0_0_color-mix(in_oklab,var(--destructive)_60%,transparent)]"
     : "rounded-md border border-border/70 bg-muted/20 px-3 py-2.5";
 
   return (

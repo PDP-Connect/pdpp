@@ -1,5 +1,6 @@
 import { PageHeader } from "@pdpp/operator-ui/components/primitives";
-import { isAwaitingInteraction, RunRow } from "@pdpp/operator-ui/components/run-row";
+import { RunRow } from "@pdpp/operator-ui/components/run-row";
+import { isAwaitingInteraction } from "@pdpp/operator-ui/components/run-row-helpers";
 import { type ListWithPeekParams, ListWithPeekView } from "@pdpp/operator-ui/components/views/list-with-peek";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { redirect } from "next/navigation";
@@ -21,8 +22,9 @@ interface Params {
 function listHref(params: Params, overrides: Record<string, string | undefined> = {}): string {
   const merged: Record<string, string | undefined> = { ...params, ...overrides };
   const qs = Object.entries(merged)
-    .filter(([, v]) => v !== undefined && v !== "")
-    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+    .flatMap(([k, v]) =>
+      v === undefined || v === "" ? [] : [`${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`]
+    )
     .join("&");
   return qs ? `/dashboard/runs?${qs}` : "/dashboard/runs";
 }

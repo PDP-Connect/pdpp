@@ -28,8 +28,9 @@ interface Params {
 function listHref(params: Params, overrides: Record<string, string | undefined> = {}): string {
   const merged: Record<string, string | undefined> = { ...params, ...overrides };
   const qs = Object.entries(merged)
-    .filter(([, v]) => v !== undefined && v !== "")
-    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+    .flatMap(([k, v]) =>
+      v === undefined || v === "" ? [] : [`${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`]
+    )
     .join("&");
   return qs ? `/dashboard/traces?${qs}` : "/dashboard/traces";
 }

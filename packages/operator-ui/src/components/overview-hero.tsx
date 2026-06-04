@@ -130,7 +130,7 @@ function MetricStrip({ summary }: { summary: DatasetSummary }) {
  */
 function PrimaryMetric({ label, value, context }: { label: string; value: string; context: string }) {
   return (
-    <dl className="rounded-md border border-primary/30 border-l-2 border-l-primary bg-[color:var(--primary-wash)] px-4 py-3">
+    <dl className="rounded-md border border-primary/30 bg-[color:var(--primary-wash)] px-4 py-3 shadow-[inset_2px_0_0_0_var(--primary)]">
       <dt className="pdpp-eyebrow text-primary/90">{label}</dt>
       <dd className="mt-1 flex items-baseline gap-2">
         <span className="pdpp-display font-semibold text-foreground tabular-nums">{value}</span>
@@ -148,7 +148,7 @@ function PrimaryMetric({ label, value, context }: { label: string; value: string
  */
 function SecondaryMetric({ label, value, context }: { label: string; value: string; context: string }) {
   return (
-    <div className="rounded-md border border-border bg-card px-3 py-3">
+    <div className="rounded-md border border-border bg-card p-3">
       <dt className="pdpp-eyebrow">{label}</dt>
       <dd className="mt-1.5 flex flex-wrap items-baseline gap-x-1.5">
         <span className="pdpp-heading font-medium text-foreground tabular-nums">{value}</span>
@@ -234,7 +234,7 @@ export function OverviewHeroPlaceholder() {
   return (
     <section aria-label="Dataset overview" className="mb-8">
       <p className="pdpp-heading font-semibold text-foreground">
-        <span>Summarizing retained records...</span>
+        <span>Summarizing retained records…</span>
       </p>
       <p className="pdpp-body mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-muted-foreground">
         <span>records pending</span>

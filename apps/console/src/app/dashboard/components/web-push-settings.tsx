@@ -1,8 +1,68 @@
 "use client";
 
 import { Section } from "@pdpp/operator-ui/components/primitives";
-import { useEffect, useState } from "react";
+import { useEffect, useReducer, useState } from "react";
 import type { WebPushConfig, WebPushSubscriptionSummary } from "../lib/ref-client.ts";
+
+type SwState = "registered" | "absent" | "unknown" | "unsupported";
+
+// The runtime state for *this* browser/device: whether Web Push is usable, the
+// notification permission, the service-worker registration, and the active push
+// endpoint, plus the human-readable status line. These all change together as
+// the async inspection settles and as the owner enables/disables this device,
+// so they live in one reducer (atomic transitions, no cascading re-renders).
+interface DeviceState {
+  endpoint: string | null;
+  permission: NotificationPermission | "unknown";
+  status: string;
+  swState: SwState;
+  unavailable: string | null;
+}
+
+type DeviceAction =
+  | {
+      type: "supportDetected";
+      permission: NotificationPermission | "unknown";
+      status: string;
+      unavailable: string | null;
+    }
+  | { type: "swState"; swState: SwState; status?: string }
+  | { type: "subscribed"; endpoint: string; status: string }
+  | { type: "disabled"; status: string }
+  | { type: "endpoint"; endpoint: string | null }
+  | { type: "permission"; permission: NotificationPermission | "unknown" }
+  | { type: "status"; status: string };
+
+function deviceReducer(state: DeviceState, action: DeviceAction): DeviceState {
+  switch (action.type) {
+    case "supportDetected":
+      return { ...state, unavailable: action.unavailable, permission: action.permission, status: action.status };
+    case "swState":
+      return action.status === undefined
+        ? { ...state, swState: action.swState }
+        : { ...state, swState: action.swState, status: action.status };
+    case "subscribed":
+      return { ...state, endpoint: action.endpoint, status: action.status };
+    case "disabled":
+      return { ...state, endpoint: null, status: action.status };
+    case "endpoint":
+      return { ...state, endpoint: action.endpoint };
+    case "permission":
+      return { ...state, permission: action.permission };
+    case "status":
+      return { ...state, status: action.status };
+    default:
+      return state;
+  }
+}
+
+const INITIAL_DEVICE_STATE: DeviceState = {
+  endpoint: null,
+  permission: "unknown",
+  status: "Checking this browser...",
+  swState: "unknown",
+  unavailable: null,
+};
 
 function urlBase64ToUint8Array(base64String: string) {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
@@ -440,6 +500,50 @@ function buildDiagnostics({
   ];
 }
 
+// Collapsible per-precondition checklist. Presentational: the parent owns the
+// device state and re-inspection, this only renders the rows and the toggle.
+function DiagnosticsDisclosure({
+  diagnostics,
+  expanded,
+  onToggle,
+}: {
+  diagnostics: DiagnosticRow[];
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="mt-4 border-border/60 border-t pt-3">
+      <button
+        aria-controls="web-push-diagnostics"
+        aria-expanded={expanded}
+        className="pdpp-caption text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+        onClick={onToggle}
+        type="button"
+      >
+        {expanded ? "Hide diagnostics" : "Show diagnostics"}
+      </button>
+      {expanded ? (
+        <ul aria-label="Web Push diagnostics" className="mt-3 space-y-1.5" id="web-push-diagnostics">
+          {diagnostics.map((row) => (
+            <li className="pdpp-caption flex items-start gap-2" key={row.label}>
+              <span
+                aria-hidden="true"
+                className={`inline-block w-10 shrink-0 font-mono ${diagnosticToneClass(row.state)}`}
+              >
+                {diagnosticMarker(row.state)}
+              </span>
+              <span className="min-w-0">
+                <span className="font-medium text-foreground">{row.label}</span>
+                <span className="ml-2 text-muted-foreground">{row.detail}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 export function WebPushSettings({
   config,
   subscriptions,
@@ -447,38 +551,36 @@ export function WebPushSettings({
   config: WebPushConfig;
   subscriptions: WebPushSubscriptionSummary[];
 }) {
-  const [status, setStatus] = useState("Checking this browser...");
+  const [device, dispatch] = useReducer(deviceReducer, INITIAL_DEVICE_STATE);
+  const { status, endpoint, unavailable, permission, swState } = device;
   const [busy, setBusy] = useState(false);
-  const [endpoint, setEndpoint] = useState<string | null>(null);
-  const [unavailable, setUnavailable] = useState<string | null>(null);
   const [testStatus, setTestStatus] = useState<string | null>(null);
-  const [permission, setPermission] = useState<NotificationPermission | "unknown">("unknown");
-  const [swState, setSwState] = useState<"registered" | "absent" | "unknown" | "unsupported">("unknown");
   const [showDetails, setShowDetails] = useState(false);
 
   async function refreshSubscriptionState() {
     if (!hasNavigatorFeature("serviceWorker")) {
-      setSwState("unsupported");
+      dispatch({ type: "swState", swState: "unsupported" });
       return;
     }
     try {
       const registration = await navigator.serviceWorker.getRegistration("/");
       await registration?.update().catch(() => undefined);
-      setSwState(registration ? "registered" : "absent");
+      dispatch({ type: "swState", swState: registration ? "registered" : "absent" });
       const existing = await registration?.pushManager.getSubscription();
-      setEndpoint(existing?.endpoint ?? null);
+      dispatch({ type: "endpoint", endpoint: existing?.endpoint ?? null });
     } catch {
-      setSwState("unknown");
+      dispatch({ type: "swState", swState: "unknown" });
     }
   }
 
   useEffect(() => {
     const reason = detectSupport(config);
-    setUnavailable(reason);
-    if ("Notification" in window) {
-      setPermission(Notification.permission);
-    }
-    setStatus(reason ? "Unavailable in this browser" : `Permission: ${Notification.permission}`);
+    dispatch({
+      type: "supportDetected",
+      unavailable: reason,
+      permission: "Notification" in window ? Notification.permission : "unknown",
+      status: reason ? "Unavailable in this browser" : `Permission: ${Notification.permission}`,
+    });
     if (reason) {
       return;
     }
@@ -489,21 +591,27 @@ export function WebPushSettings({
         if (cancelled) {
           return;
         }
-        setSwState(registration ? "registered" : "absent");
+        dispatch({ type: "swState", swState: registration ? "registered" : "absent" });
         await registration?.update().catch(() => undefined);
         const existing = await registration?.pushManager.getSubscription();
         if (cancelled) {
           return;
         }
         if (existing) {
-          setEndpoint(existing.endpoint);
-          setStatus("Web Push is enabled for this browser.");
+          dispatch({
+            type: "subscribed",
+            endpoint: existing.endpoint,
+            status: "Web Push is enabled for this browser.",
+          });
         }
       })
       .catch(() => {
         if (!cancelled) {
-          setSwState("unknown");
-          setStatus("Could not inspect this browser's Web Push subscription.");
+          dispatch({
+            type: "swState",
+            swState: "unknown",
+            status: "Could not inspect this browser's Web Push subscription.",
+          });
         }
       });
     return () => {
@@ -519,15 +627,17 @@ export function WebPushSettings({
     setTestStatus(null);
     try {
       const registration = await navigator.serviceWorker.register("/pdpp-dashboard-sw.js");
-      setSwState("registered");
+      dispatch({ type: "swState", swState: "registered" });
       const result = await Notification.requestPermission();
-      setPermission(result);
+      dispatch({ type: "permission", permission: result });
       if (result !== "granted") {
-        setStatus(
-          result === "denied"
-            ? "Permission denied. Enable notifications in browser settings."
-            : "Permission was not granted."
-        );
+        dispatch({
+          type: "status",
+          status:
+            result === "denied"
+              ? "Permission denied. Enable notifications in browser settings."
+              : "Permission was not granted.",
+        });
         return;
       }
       const subscription =
@@ -549,10 +659,13 @@ export function WebPushSettings({
       if (!response.ok) {
         throw await webPushResponseError(response, "Subscription failed");
       }
-      setEndpoint(subscription.endpoint);
-      setStatus("Web Push is enabled for this browser.");
+      dispatch({
+        type: "subscribed",
+        endpoint: subscription.endpoint,
+        status: "Web Push is enabled for this browser.",
+      });
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : "Failed to enable Web Push.");
+      dispatch({ type: "status", status: err instanceof Error ? err.message : "Failed to enable Web Push." });
     } finally {
       setBusy(false);
     }
@@ -612,10 +725,9 @@ export function WebPushSettings({
           throw await webPushResponseError(response, "Unsubscribe failed");
         }
       }
-      setEndpoint(null);
-      setStatus("Web Push is disabled for this browser.");
+      dispatch({ type: "disabled", status: "Web Push is disabled for this browser." });
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : "Failed to disable Web Push.");
+      dispatch({ type: "status", status: err instanceof Error ? err.message : "Failed to disable Web Push." });
     } finally {
       setBusy(false);
     }
@@ -703,41 +815,17 @@ export function WebPushSettings({
           </p>
         ) : null}
 
-        <div className="mt-4 border-border/60 border-t pt-3">
-          <button
-            aria-controls="web-push-diagnostics"
-            aria-expanded={showDetails}
-            className="pdpp-caption text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-            onClick={async () => {
-              const next = !showDetails;
-              setShowDetails(next);
-              if (next) {
-                await refreshSubscriptionState();
-              }
-            }}
-            type="button"
-          >
-            {showDetails ? "Hide diagnostics" : "Show diagnostics"}
-          </button>
-          {showDetails ? (
-            <ul aria-label="Web Push diagnostics" className="mt-3 space-y-1.5" id="web-push-diagnostics">
-              {diagnostics.map((row) => (
-                <li className="pdpp-caption flex items-start gap-2" key={row.label}>
-                  <span
-                    aria-hidden="true"
-                    className={`inline-block w-10 shrink-0 font-mono ${diagnosticToneClass(row.state)}`}
-                  >
-                    {diagnosticMarker(row.state)}
-                  </span>
-                  <span className="min-w-0">
-                    <span className="font-medium text-foreground">{row.label}</span>
-                    <span className="ml-2 text-muted-foreground">{row.detail}</span>
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-        </div>
+        <DiagnosticsDisclosure
+          diagnostics={diagnostics}
+          expanded={showDetails}
+          onToggle={async () => {
+            const next = !showDetails;
+            setShowDetails(next);
+            if (next) {
+              await refreshSubscriptionState();
+            }
+          }}
+        />
       </div>
     </Section>
   );

@@ -61,7 +61,7 @@ export default async function GrantDetailPage({
   return (
     <DashboardShell active="grants">
       <TimelineDetailView
-        beforeTimeline={
+        beforeTimelineContent={
           <div className="pdpp-caption mb-6 flex flex-wrap gap-x-4 gap-y-1 text-muted-foreground">
             {packageHref ? (
               <Link className="underline-offset-2 hover:underline" href={packageHref}>

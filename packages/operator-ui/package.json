@@ -25,6 +25,8 @@
     "./components/timeline-view": "./src/components/timeline-view.tsx",
     "./components/overview-hero": "./src/components/overview-hero.tsx",
     "./components/run-row": "./src/components/run-row.tsx",
+    "./components/run-row-helpers": "./src/components/run-row-helpers.ts",
+    "./components/status-vocabularies": "./src/components/status-vocabularies.ts",
     "./components/views/explorer-utils": "./src/components/views/explorer-utils.ts",
     "./components/views/list-with-peek": "./src/components/views/list-with-peek.tsx",
     "./components/views/overview-view": "./src/components/views/overview-view.tsx",
