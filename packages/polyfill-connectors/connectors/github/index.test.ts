@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import type { StreamScope } from "../../src/connector-runtime.ts";
-import { collectPullRequests, collectStarred, collectUser, type StreamCtx } from "./index.ts";
+import {
+  collectPullRequests,
+  collectStarred,
+  collectUser,
+  isoYear,
+  prCreatedWindows,
+  resolvePrSearchWindows,
+  type StreamCtx,
+} from "./index.ts";
 
 const ORIGINAL_FETCH = globalThis.fetch;
 
@@ -251,4 +259,216 @@ test("collectPullRequests: degradation denominator counts emitted records, not f
   assert.equal(skips.length, 1);
   assert.match(skips[0]?.message ?? "", /1 of 2 pull request record\(s\) emitted without detail/);
   assert.deepEqual(skips[0]?.diagnostics, { detail_failed: 1, total_emitted: 2, total_seen: 3 });
+});
+
+// ─── Search-cap windowing: pure window math ──────────────────────────────
+
+test("isoYear: parses leading year, tolerates absent/garbage", () => {
+  assert.equal(isoYear("2018-04-01T00:00:00Z"), 2018);
+  assert.equal(isoYear("2018"), 2018);
+  assert.equal(isoYear(null), null);
+  assert.equal(isoYear(undefined), null);
+  assert.equal(isoYear("not-a-date"), null);
+});
+
+test("prCreatedWindows: descending year windows inclusive of both ends", () => {
+  assert.deepEqual(prCreatedWindows(2026, 2024), [
+    { from: "2026-01-01", to: "2026-12-31" },
+    { from: "2025-01-01", to: "2025-12-31" },
+    { from: "2024-01-01", to: "2024-12-31" },
+  ]);
+});
+
+test("prCreatedWindows: single year when floor equals current", () => {
+  assert.deepEqual(prCreatedWindows(2026, 2026), [{ from: "2026-01-01", to: "2026-12-31" }]);
+});
+
+test("prCreatedWindows: tolerates inverted bounds (floor after current)", () => {
+  // Should never happen (account predates PRs) but must not loop forever.
+  assert.deepEqual(prCreatedWindows(2024, 2026), [
+    { from: "2026-01-01", to: "2026-12-31" },
+    { from: "2025-01-01", to: "2025-12-31" },
+    { from: "2024-01-01", to: "2024-12-31" },
+  ]);
+});
+
+test("resolvePrSearchWindows: incremental run (since bound) is one unwindowed query", () => {
+  const windows = resolvePrSearchWindows(
+    "2026-05-01T00:00:00Z",
+    "2018-01-01T00:00:00Z",
+    new Date("2026-06-04T00:00:00Z")
+  );
+  assert.deepEqual(windows, [undefined]);
+});
+
+test("resolvePrSearchWindows: full resync windows from now back to account-creation year", () => {
+  const windows = resolvePrSearchWindows(null, "2024-03-10T00:00:00Z", new Date("2026-06-04T00:00:00Z"));
+  assert.deepEqual(windows, [
+    { from: "2026-01-01", to: "2026-12-31" },
+    { from: "2025-01-01", to: "2025-12-31" },
+    { from: "2024-01-01", to: "2024-12-31" },
+  ]);
+});
+
+test("resolvePrSearchWindows: missing account created_at floors at current year (single window)", () => {
+  const windows = resolvePrSearchWindows(null, undefined, new Date("2026-06-04T00:00:00Z"));
+  assert.deepEqual(windows, [{ from: "2026-01-01", to: "2026-12-31" }]);
+});
+
+// ─── Search-cap windowing: integration through collectPullRequests ───────
+
+interface WindowedPrFetch {
+  /** Every /search/issues query path the connector issued, in order. */
+  searchPaths: string[];
+}
+
+/**
+ * Routes the PR fetch shapes with per-`created:`-window item partitioning.
+ *  - GET /user                  → login + created_at (drives window count)
+ *  - GET /search/issues?...     → items whose `created` year matches the
+ *                                 window's `created:YYYY-..` qualifier, plus a
+ *                                 per-window `total_count` (to trip the cap)
+ *  - GET /repos/.../pulls/{n}   → minimal detail
+ * Items are keyed by created-year so each window returns only its own items,
+ * proving partitioning unions the full set without relying on the mock to
+ * ignore the query (which would hide double-counting).
+ */
+function installWindowedPrFetch(
+  createdAt: string,
+  itemsByYear: Record<number, Record<string, unknown>[]>,
+  totalCountByYear: Record<number, number> = {}
+): WindowedPrFetch {
+  const handle: WindowedPrFetch = { searchPaths: [] };
+  globalThis.fetch = (input: string | URL | Request) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.endsWith("/user")) {
+      return Promise.resolve(jsonResponse({ id: 42, login: "octocat", created_at: createdAt }));
+    }
+    if (url.includes("/search/issues")) {
+      handle.searchPaths.push(url);
+      const decoded = decodeURIComponent(url);
+      const yearMatch = /created:(\d{4})-/.exec(decoded);
+      const year = yearMatch ? Number.parseInt(yearMatch[1] ?? "", 10) : Number.NaN;
+      const items = itemsByYear[year] ?? [];
+      const total = totalCountByYear[year] ?? items.length;
+      return Promise.resolve(jsonResponse({ total_count: total, items }));
+    }
+    if (/\/repos\/[^/]+\/[^/]+\/pulls\/\d+$/.test(url)) {
+      return Promise.resolve(jsonResponse({ merged_at: "2025-01-01T00:00:00Z", commits: 1 }));
+    }
+    return Promise.resolve(jsonResponse({}));
+  };
+  return handle;
+}
+
+function prSearchItemCreated(id: number, repo: string, createdYear: number): Record<string, unknown> {
+  return {
+    id,
+    number: id,
+    title: `PR ${String(id)}`,
+    created_at: `${String(createdYear)}-06-15T00:00:00Z`,
+    updated_at: `${String(createdYear)}-07-01T00:00:00Z`,
+    repository_url: `https://api.github.com/repos/${repo}`,
+    user: { login: "octocat", id: 42 },
+  };
+}
+
+test("collectPullRequests: full resync partitions by created-year and unions every window", async () => {
+  // Account created mid-2024 → windows 2026, 2025, 2024. A PR in each year.
+  const fetchHandle = installWindowedPrFetch("2024-03-01T00:00:00Z", {
+    2026: [prSearchItemCreated(1, "owner/a", 2026)],
+    2025: [prSearchItemCreated(2, "owner/b", 2025)],
+    2024: [prSearchItemCreated(3, "owner/c", 2024)],
+  });
+  const { ctx, records, skips, states } = makeCtx(["pull_requests"]);
+
+  await collectPullRequests(ctx);
+
+  // Every PR across all three windows is emitted exactly once (no dup, no loss).
+  const prIds = records.filter((r) => r.stream === "pull_requests").map((r) => r.data.id);
+  assert.deepEqual(prIds.sort(), ["1", "2", "3"]);
+  // Three distinct created: windows were queried, newest first.
+  assert.equal(fetchHandle.searchPaths.length, 3);
+  assert.match(decodeURIComponent(fetchHandle.searchPaths[0] ?? ""), /created:2026-01-01\.\.2026-12-31/);
+  assert.match(decodeURIComponent(fetchHandle.searchPaths[2] ?? ""), /created:2024-01-01\.\.2024-12-31/);
+  // No cap tripped → no cap SKIP_RESULT; cursor advances to the newest update.
+  assert.equal(skips.length, 0);
+  assert.equal((states[0]?.cursor as { last_updated_at?: string })?.last_updated_at, "2026-07-01T00:00:00Z");
+});
+
+test("collectPullRequests: a window over the search cap emits one terminal-gap SKIP_RESULT", async () => {
+  // Single window (account created this year) but it reports 1023 PRs > 1000.
+  const fetchHandle = installWindowedPrFetch(
+    "2026-01-01T00:00:00Z",
+    { 2026: [prSearchItemCreated(1, "owner/a", 2026), prSearchItemCreated(2, "owner/b", 2026)] },
+    { 2026: 1023 }
+  );
+  const { ctx, records, skips } = makeCtx(["pull_requests"]);
+
+  await collectPullRequests(ctx);
+
+  // Records that WERE reachable are still emitted.
+  assert.equal(records.filter((r) => r.stream === "pull_requests").length, 2);
+  assert.equal(fetchHandle.searchPaths.length, 1);
+  // Exactly one cap-truncation gap, counts only (no PR identifiers).
+  const capSkip = skips.find((s) => s.reason === "pr_search_cap_truncated");
+  assert.ok(capSkip, "expected a pr_search_cap_truncated SKIP_RESULT");
+  assert.equal(capSkip?.stream, "pull_requests");
+  assert.match(capSkip?.message ?? "", /more than 1000 pull requests/);
+  assert.deepEqual(capSkip?.diagnostics, {
+    cap_truncated_windows: 1,
+    result_cap: 1000,
+    max_reported_total: 1023,
+  });
+});
+
+test("collectPullRequests: windows under the cap emit no cap gap (honest only when truncated)", async () => {
+  installWindowedPrFetch(
+    "2025-01-01T00:00:00Z",
+    { 2026: [prSearchItemCreated(1, "owner/a", 2026)], 2025: [prSearchItemCreated(2, "owner/b", 2025)] },
+    { 2026: 1000, 2025: 999 }
+  );
+  const { ctx, skips } = makeCtx(["pull_requests"]);
+
+  await collectPullRequests(ctx);
+
+  // total_count exactly at the cap is reachable (the cap is ~1000 inclusive);
+  // only strictly-greater trips the gap.
+  assert.equal(skips.filter((s) => s.reason === "pr_search_cap_truncated").length, 0);
+});
+
+test("collectPullRequests: incremental run (cursor set) issues one unwindowed updated:>= query", async () => {
+  const fetchHandle = installWindowedPrFetch("2018-01-01T00:00:00Z", {});
+  // Route the unwindowed query (no created: qualifier) to a couple of items.
+  // Both updated after the cursor so neither is filtered by the since cutoff.
+  const items = [
+    { ...prSearchItemCreated(1, "owner/a", 2026), updated_at: "2026-05-20T00:00:00Z" },
+    { ...prSearchItemCreated(2, "owner/b", 2018), updated_at: "2026-05-10T00:00:00Z" },
+  ];
+  globalThis.fetch = (input: string | URL | Request) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.endsWith("/user")) {
+      return Promise.resolve(jsonResponse({ id: 42, login: "octocat", created_at: "2018-01-01T00:00:00Z" }));
+    }
+    if (url.includes("/search/issues")) {
+      fetchHandle.searchPaths.push(url);
+      return Promise.resolve(jsonResponse({ total_count: items.length, items }));
+    }
+    if (/\/repos\/[^/]+\/[^/]+\/pulls\/\d+$/.test(url)) {
+      return Promise.resolve(jsonResponse({ merged_at: "2025-01-01T00:00:00Z", commits: 1 }));
+    }
+    return Promise.resolve(jsonResponse({}));
+  };
+  const { ctx, records } = makeCtx(["pull_requests"], {
+    pull_requests: { last_updated_at: "2026-05-01T00:00:00Z" },
+  });
+
+  await collectPullRequests(ctx);
+
+  // One query only, carrying updated:>= and no created: window.
+  assert.equal(fetchHandle.searchPaths.length, 1);
+  const decoded = decodeURIComponent(fetchHandle.searchPaths[0] ?? "");
+  assert.match(decoded, /updated:>=2026-05-01/);
+  assert.doesNotMatch(decoded, /created:/);
+  assert.equal(records.filter((r) => r.stream === "pull_requests").length, 2);
 });

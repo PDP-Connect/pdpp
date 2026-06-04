@@ -385,7 +385,25 @@ async function collectIssues(ctx: StreamCtx): Promise<void> {
 // Search returns summary records; for per-PR detail (merged_at, commits,
 // additions, deletions, changed_files, requested_reviewers) we fetch
 // /repos/{owner}/{repo}/pulls/{number}. That's 1 extra request per PR.
+//
+// SEARCH-API 1000-RESULT CAP. GitHub's search endpoint returns at most ~1000
+// results for any single query and silently stops paginating there (no error,
+// no `next` link) — see https://docs.github.com/en/rest/search. A user with
+// >1000 authored PRs would therefore lose the oldest ones from a single
+// `type:pr author:{login}` query. On a *full* resync (no incremental `since`
+// bound) we partition the query into per-year `created:` windows so each
+// window stays under the cap; `created` is immutable, so every PR falls in
+// exactly one window and the union is the complete set. Incremental runs
+// (a `since` bound is present) keep the single `updated:>=` query — the set of
+// PRs updated since the last cursor is almost never >1000, and a window that
+// somehow still exceeds the cap emits a terminal-gap SKIP_RESULT so the run is
+// honestly incomplete rather than silently truncated.
 const PR_ERROR_BUBBLE_PATTERN = /rate_limited|auth_failed/;
+
+// A single search window that still reports more than this many total results
+// cannot be fully drained (the API stops at ~1000). We treat any window whose
+// reported total exceeds this as cap-truncated and surface it as a gap.
+const PR_SEARCH_RESULT_CAP = 1000;
 
 interface PullDetailResult {
   detail: GitHubPullDetail | null;
@@ -417,14 +435,51 @@ async function fetchPullDetail(
   }
 }
 
-function buildPrSearchPath(login: string, sinceParam: string | null): string {
+interface PrSearchPathOptions {
+  /** Inclusive `created:` window (YYYY-MM-DD..YYYY-MM-DD) for cap partitioning. */
+  createdRange?: { from: string; to: string };
+  sinceParam?: string | null;
+}
+
+function buildPrSearchPath(login: string, options: PrSearchPathOptions = {}): string {
+  const { sinceParam = null, createdRange } = options;
   const qParts = ["type:pr", `author:${login}`];
   if (sinceParam) {
     // Search API date-precision; strict `since` still applied per-item.
     qParts.push(`updated:>=${sinceParam.slice(0, 10)}`);
   }
+  if (createdRange) {
+    // Immutable partitioning field: each PR falls in exactly one window, so
+    // windows can be drained independently and unioned without dedup.
+    qParts.push(`created:${createdRange.from}..${createdRange.to}`);
+  }
   const q = encodeURIComponent(qParts.join(" "));
   return `/search/issues?q=${q}&sort=updated&order=desc&per_page=100`;
+}
+
+/**
+ * Per-year `created:` windows from the current year back to `floorYear`,
+ * descending (newest first, matching the single-query `order=desc` shape).
+ * `floorYear` is the user's account-creation year — no authored PR predates
+ * the account. Exported for unit testing the window math without a network.
+ */
+export function prCreatedWindows(currentYear: number, floorYear: number): Array<{ from: string; to: string }> {
+  const top = Math.max(currentYear, floorYear);
+  const bottom = Math.min(currentYear, floorYear);
+  const windows: Array<{ from: string; to: string }> = [];
+  for (let year = top; year >= bottom; year--) {
+    windows.push({ from: `${String(year)}-01-01`, to: `${String(year)}-12-31` });
+  }
+  return windows;
+}
+
+/** Year of an ISO timestamp, or null when absent/unparseable. */
+export function isoYear(iso: string | null | undefined): number | null {
+  if (!iso) {
+    return null;
+  }
+  const year = Number.parseInt(iso.slice(0, 4), 10);
+  return Number.isInteger(year) && year > 0 ? year : null;
 }
 
 interface PrPageResult {
@@ -434,6 +489,18 @@ interface PrPageResult {
   emitted: number;
   latest: string | null | undefined;
   stop: boolean;
+}
+
+interface PrWindowResult {
+  /** True when this window's reported total exceeded the search cap (gap). */
+  capTruncated: boolean;
+  detailFailed: number;
+  emitted: number;
+  /** Raw search hits seen across this window's pages (before since/until filters). */
+  fetched: number;
+  latest: string | null | undefined;
+  /** Highest reported total_count seen for this window (for gap diagnostics). */
+  reportedTotal: number;
 }
 
 interface PrItemResult {
@@ -480,30 +547,37 @@ async function emitPullRequestPage(
   return { detailFailed, emitted, latest, stop: false };
 }
 
-export async function collectPullRequests(ctx: StreamCtx): Promise<void> {
-  await ctx.progress("Fetching pull requests", { stream: "pull_requests", phase: "start" });
-  const req = ctx.requested.get("pull_requests");
-  const prState = ctx.state.pull_requests as { last_updated_at?: string } | undefined;
-  const priorUpdated = prState?.last_updated_at;
-  const sinceParam = req?.time_range?.since || priorUpdated || null;
-  const until = req?.time_range?.until || null;
-  let latestUpdated: string | null | undefined = priorUpdated;
-
-  // Need the login to build the search query.
-  const { data: me } = await gh<GitHubUser>("/user", ctx.token);
-  let path: string | null = buildPrSearchPath(me.login, sinceParam);
+/**
+ * Drain one search query (a single `since`-bounded query, or one `created:`
+ * window) page by page until pagination ends or a per-item `since` cutoff
+ * stops it. Detects the search-API cap: if the first page reports a
+ * `total_count` above {@link PR_SEARCH_RESULT_CAP}, the window's oldest
+ * results are unreachable and the run is honestly incomplete for that window.
+ */
+async function drainPrSearchWindow(
+  ctx: StreamCtx,
+  login: string,
+  sinceParam: string | null,
+  until: string | null,
+  createdRange: { from: string; to: string } | undefined,
+  latestIn: string | null | undefined,
+  pageIndexStart: number
+): Promise<PrWindowResult & { pageIndexEnd: number }> {
+  let path: string | null = buildPrSearchPath(login, { sinceParam, ...(createdRange ? { createdRange } : {}) });
   let stop = false;
+  let pageIndex = pageIndexStart;
   let fetchedCount = 0;
-  let pageIndex = 0;
-  let detailFailedTotal = 0;
-  let emittedCount = 0;
+  let detailFailed = 0;
+  let emitted = 0;
+  let reportedTotal = 0;
+  let latest = latestIn;
   while (path && !stop) {
     const pageExtra = {
       stream: "pull_requests",
       phase: "fetch",
       page_index: pageIndex,
       total_seen: fetchedCount,
-      cursor_present: pageIndex > 0 || Boolean(sinceParam),
+      cursor_present: pageIndex > pageIndexStart || Boolean(sinceParam) || Boolean(createdRange),
     };
     await ctx.progress("Fetching GitHub pull requests page", pageExtra);
     const page: GhResult<GitHubSearchResponse> = await gh<GitHubSearchResponse>(
@@ -513,12 +587,15 @@ export async function collectPullRequests(ctx: StreamCtx): Promise<void> {
       ctx.progress,
       pageExtra
     );
+    if (page.data.total_count !== undefined) {
+      reportedTotal = Math.max(reportedTotal, page.data.total_count);
+    }
     const items = page.data.items || [];
-    const result = await emitPullRequestPage(ctx, items, sinceParam, until, latestUpdated);
-    latestUpdated = result.latest;
+    const result = await emitPullRequestPage(ctx, items, sinceParam, until, latest);
+    latest = result.latest;
     stop = result.stop;
-    detailFailedTotal += result.detailFailed;
-    emittedCount += result.emitted;
+    detailFailed += result.detailFailed;
+    emitted += result.emitted;
     fetchedCount += items.length;
     await ctx.progress("Fetched GitHub pull requests page", {
       stream: "pull_requests",
@@ -533,6 +610,75 @@ export async function collectPullRequests(ctx: StreamCtx): Promise<void> {
     path = page.nextUrl;
     pageIndex++;
   }
+  return {
+    capTruncated: reportedTotal > PR_SEARCH_RESULT_CAP,
+    detailFailed,
+    emitted,
+    fetched: fetchedCount,
+    reportedTotal,
+    latest,
+    pageIndexEnd: pageIndex,
+  };
+}
+
+export async function collectPullRequests(ctx: StreamCtx): Promise<void> {
+  await ctx.progress("Fetching pull requests", { stream: "pull_requests", phase: "start" });
+  const req = ctx.requested.get("pull_requests");
+  const prState = ctx.state.pull_requests as { last_updated_at?: string } | undefined;
+  const priorUpdated = prState?.last_updated_at;
+  const sinceParam = req?.time_range?.since || priorUpdated || null;
+  const until = req?.time_range?.until || null;
+  let latestUpdated: string | null | undefined = priorUpdated;
+
+  // Need the login to build the search query (and created_at to floor the
+  // full-resync windowing at the user's account-creation year).
+  const { data: me } = await gh<GitHubUser>("/user", ctx.token);
+
+  // Full resync (no incremental `since`) is the cap-prone path: partition by
+  // immutable `created:` year so each window stays under the search cap.
+  // Incremental runs use one `updated:>=` query (rarely >1000 results).
+  const windows = resolvePrSearchWindows(sinceParam, me.created_at);
+
+  let detailFailedTotal = 0;
+  let emittedCount = 0;
+  let fetchedTotal = 0;
+  let capTruncatedWindows = 0;
+  let maxReportedTotal = 0;
+  let pageIndex = 0;
+  for (const createdRange of windows) {
+    const result = await drainPrSearchWindow(ctx, me.login, sinceParam, until, createdRange, latestUpdated, pageIndex);
+    latestUpdated = result.latest;
+    detailFailedTotal += result.detailFailed;
+    emittedCount += result.emitted;
+    fetchedTotal += result.fetched;
+    maxReportedTotal = Math.max(maxReportedTotal, result.reportedTotal);
+    if (result.capTruncated) {
+      capTruncatedWindows++;
+    }
+    pageIndex = result.pageIndexEnd;
+  }
+
+  // Terminal-gap evidence: a window whose reported total exceeded the search
+  // cap could not be fully drained, so the oldest PRs in that window were never
+  // emitted. One bounded summary per run (counts only — no PR identifiers). The
+  // runtime forwards this to the run's known_gap so the projection is honestly
+  // incomplete rather than silently truncated.
+  if (capTruncatedWindows > 0) {
+    await ctx.emit({
+      type: "SKIP_RESULT",
+      stream: "pull_requests",
+      reason: "pr_search_cap_truncated",
+      message:
+        `${String(capTruncatedWindows)} search window(s) reported more than ${String(PR_SEARCH_RESULT_CAP)} ` +
+        "pull requests; GitHub's search API caps results so the oldest in those windows could not be collected",
+      diagnostics: {
+        cap_truncated_windows: capTruncatedWindows,
+        result_cap: PR_SEARCH_RESULT_CAP,
+        max_reported_total: maxReportedTotal,
+      },
+    });
+  }
+
   // Stream-level evidence that some PR records are degraded: the search summary
   // was emitted but the per-PR detail fetch failed (merged_at, commit/diff
   // stats, reviewers are absent on those records). One bounded summary per run
@@ -544,7 +690,7 @@ export async function collectPullRequests(ctx: StreamCtx): Promise<void> {
       stream: "pull_requests",
       reason: "pr_detail_fetch_failed",
       message: `${String(detailFailedTotal)} of ${String(emittedCount)} pull request record(s) emitted without detail fields (per-PR detail fetch failed)`,
-      diagnostics: { detail_failed: detailFailedTotal, total_emitted: emittedCount, total_seen: fetchedCount },
+      diagnostics: { detail_failed: detailFailedTotal, total_emitted: emittedCount, total_seen: fetchedTotal },
     });
   }
   await ctx.emit({
@@ -552,6 +698,27 @@ export async function collectPullRequests(ctx: StreamCtx): Promise<void> {
     stream: "pull_requests",
     cursor: { last_updated_at: latestUpdated || priorUpdated || null },
   });
+}
+
+/**
+ * Resolve the search windows to drain. Incremental runs (a `since` bound is
+ * present) return a single unwindowed query (`[undefined]`); the updated-since
+ * set is rarely over the cap. A full resync returns one `created:` window per
+ * year from now back to the account-creation year so each stays under the cap.
+ * `now`/`accountCreatedAt` are explicit so the windowing is testable without
+ * wall-clock dependence.
+ */
+export function resolvePrSearchWindows(
+  sinceParam: string | null,
+  accountCreatedAt: string | null | undefined,
+  now: Date = new Date()
+): Array<{ from: string; to: string } | undefined> {
+  if (sinceParam) {
+    return [undefined];
+  }
+  const currentYear = now.getUTCFullYear();
+  const floorYear = isoYear(accountCreatedAt) ?? currentYear;
+  return prCreatedWindows(currentYear, floorYear);
 }
 
 async function emitGistsPage(
