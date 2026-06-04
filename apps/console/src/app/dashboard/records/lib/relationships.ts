@@ -53,6 +53,34 @@ function recordsBasePath(connectionId: string): string {
   return `/dashboard/records/${encodeURIComponent(connectionId)}`;
 }
 
+/**
+ * Bundled manifests use a URL-form `connector_id` and also carry the short
+ * `connector_key`; reference connections report the short key. Resolve against
+ * both namespaces so manifest-grounded relationship navigation does not silently
+ * disappear for live connections.
+ */
+export interface ManifestIdentity {
+  connector_id?: string;
+  connector_key?: string;
+}
+
+export function manifestMatchesConnectorId(
+  manifest: ManifestIdentity,
+  connectorId: string | null | undefined
+): boolean {
+  if (!connectorId) {
+    return false;
+  }
+  return manifest.connector_id === connectorId || manifest.connector_key === connectorId;
+}
+
+export function findManifestForConnectorId<T extends ManifestIdentity>(
+  manifests: readonly T[],
+  connectorId: string | null | undefined
+): T | undefined {
+  return manifests.find((manifest) => manifestMatchesConnectorId(manifest, connectorId));
+}
+
 /** Minimal manifest shapes for pruning which parent streams need metadata reads. */
 interface ManifestRelationship {
   cardinality?: string;

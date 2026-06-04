@@ -31,6 +31,7 @@ import {
   type StreamSummary,
 } from "../../lib/rs-client.ts";
 import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } from "../connection-route.ts";
+import { findManifestForConnectorId } from "../lib/relationships.ts";
 import { ConnectionDiagnostics } from "./connection-diagnostics.tsx";
 import { RenameConnection } from "./rename-connection.tsx";
 import { SyncNowButton } from "./sync-now-button.tsx";
@@ -137,7 +138,7 @@ async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageMod
   const connectionId = summary.connection_id;
   const connectorInstanceId = connectorInstanceIdForConnection(summary);
   const manifest =
-    manifests.find((m) => m.connector_id === connectorId) ??
+    findManifestForConnectorId(manifests, connectorId) ??
     ({
       connector_id: connectorId,
       display_name: summary.connector_display_name ?? summary.display_name,

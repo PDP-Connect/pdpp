@@ -24,6 +24,7 @@ import {
 import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } from "../../connection-route.ts";
 import {
   candidateParentStreamsForChild,
+  findManifestForConnectorId,
   findParentBackLink,
   parentRelationsForChild,
 } from "../../lib/relationships.ts";
@@ -96,7 +97,7 @@ export default async function StreamPage({
       listConnectorManifests().catch(() => []),
     ]);
     page = pageResult;
-    const connectorManifest = manifests.find((m) => m.connector_id === connectorId);
+    const connectorManifest = findManifestForConnectorId(manifests, connectorId);
     const maybeStream = connectorManifest?.streams?.find((s: { name: string }) => s.name === streamName);
     streamManifest = (maybeStream ?? null) as StreamManifest | null;
     // The manifest is used only to prune parent metadata reads. Link semantics

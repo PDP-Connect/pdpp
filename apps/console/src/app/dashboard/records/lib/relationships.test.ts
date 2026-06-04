@@ -6,7 +6,9 @@ import {
   buildRelatedLinks,
   candidateParentStreamsForChild,
   childHasOneBackLinksFromManifest,
+  findManifestForConnectorId,
   findParentBackLink,
+  manifestMatchesConnectorId,
   parentRelationsForChild,
 } from "./relationships.ts";
 
@@ -140,6 +142,52 @@ test("candidateParentStreamsForChild uses the manifest only to prune parent meta
   // `issues` relation is declared but disabled, so no metadata read is needed.
   assert.deepEqual(candidateParentStreamsForChild(streams, "issues"), []);
   assert.deepEqual(candidateParentStreamsForChild(undefined, "issues"), []);
+});
+
+test("manifest lookup tolerates URL-form connector_id and short connector_key", () => {
+  const manifests = [
+    {
+      connector_id: "https://registry.pdpp.org/connectors/chase",
+      connector_key: "chase",
+      streams: [{ name: "transactions" }],
+    },
+    {
+      connector_id: "https://registry.pdpp.org/connectors/github",
+      connector_key: "github",
+      streams: [{ name: "user" }],
+    },
+  ];
+
+  assert.equal(manifestMatchesConnectorId(manifests[0]!, "chase"), true);
+  assert.equal(manifestMatchesConnectorId(manifests[0]!, "https://registry.pdpp.org/connectors/chase"), true);
+  assert.equal(manifestMatchesConnectorId(manifests[0]!, "github"), false);
+  assert.equal(manifestMatchesConnectorId(manifests[0]!, ""), false);
+  assert.equal(findManifestForConnectorId(manifests, "chase")?.connector_key, "chase");
+  assert.equal(
+    findManifestForConnectorId(manifests, "https://registry.pdpp.org/connectors/github")?.connector_key,
+    "github"
+  );
+  assert.equal(findManifestForConnectorId(manifests, "slack"), undefined);
+});
+
+test("short connection connector key resolves child-declared relationship manifest stream", () => {
+  const manifests = [
+    {
+      connector_id: "https://registry.pdpp.org/connectors/chase",
+      connector_key: "chase",
+      streams: [CHASE_TRANSACTIONS_MANIFEST_STREAM],
+    },
+  ];
+
+  const connectorManifest = findManifestForConnectorId(manifests, "chase");
+  const stream = connectorManifest?.streams.find((candidate) => candidate.name === "transactions");
+  const links = childHasOneBackLinksFromManifest(
+    stream,
+    { id: "1212486749|2026042024323046109400600036029", account_id: "1212486749" },
+    { connectionId: "cin_029a67a16d8a252f6e3eb896" }
+  );
+
+  assert.equal(links[0]?.href, "/dashboard/records/cin_029a67a16d8a252f6e3eb896/accounts/1212486749");
 });
 
 test("parentRelationsForChild derives linkable relations from live expand_capabilities metadata", () => {

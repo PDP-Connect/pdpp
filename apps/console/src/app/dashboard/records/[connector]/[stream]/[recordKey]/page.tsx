@@ -17,6 +17,7 @@ import {
   buildRelatedLinks,
   candidateParentStreamsForChild,
   childHasOneBackLinksFromManifest,
+  findManifestForConnectorId,
   findParentBackLink,
   parentRelationsForChild,
   type RelatedLink,
@@ -62,7 +63,7 @@ export default async function RecordDetailPage({
     ]);
     record = recordResult;
     expandCapabilities = Array.isArray(metadataResult?.expand_capabilities) ? metadataResult.expand_capabilities : [];
-    const connectorManifest = manifests.find((m) => m.connector_id === connection.connector_id);
+    const connectorManifest = findManifestForConnectorId(manifests, connection.connector_id);
     childManifestStream = connectorManifest?.streams?.find((s) => s.name === streamName) as typeof childManifestStream;
     const parentMetadata = await Promise.all(
       candidateParentStreamsForChild(connectorManifest?.streams, streamName).map(async (parentStream) => {

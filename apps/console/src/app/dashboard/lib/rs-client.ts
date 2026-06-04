@@ -18,6 +18,7 @@ import {
   ReferenceServerUnreachableError,
   ResourceServerHttpError,
 } from "./owner-token.ts";
+import { findManifestForConnectorId } from "../records/lib/relationships.ts";
 import { type CanonicalReadWarning, extractReadWarnings } from "./read-envelope.ts";
 import type { RefConnectionHealthSnapshot, RefLocalDeviceProgress, RefRetainedBytesBreakdown } from "./ref-client.ts";
 import { verifyDashboardSession } from "./verify-session.ts";
@@ -110,6 +111,7 @@ export interface StreamMetadata {
 
 export interface ConnectorManifest {
   connector_id: string;
+  connector_key?: string;
   display_name?: string;
   name?: string;
   provider_id?: string;
@@ -842,7 +844,7 @@ async function resolveStreamDef(
   streamName: string
 ): Promise<{ cursorField: string | null; declaredProps: string[] }> {
   const manifests = await listConnectorManifests();
-  const manifest = manifests.find((m) => m.connector_id === connectorId);
+  const manifest = findManifestForConnectorId(manifests, connectorId);
   const streamDef = (manifest?.streams ?? []).find((s) => s.name === streamName) as StreamDef | undefined;
   const declaredProps = streamDef?.schema?.properties ? Object.keys(streamDef.schema.properties) : [];
   const cursorField = streamDef?.cursor_field ?? null;
