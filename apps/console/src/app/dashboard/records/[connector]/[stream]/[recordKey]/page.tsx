@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { DashboardShell, ServerUnreachable } from "../../../../components/shell.tsx";
 import { WarningsBanner } from "../../../../components/warnings-banner.tsx";
-import { ReferenceServerUnreachableError } from "../../../../lib/owner-token.ts";
+import { ReferenceServerUnreachableError, ResourceServerHttpError } from "../../../../lib/owner-token.ts";
 import {
   type ExpandCapability,
   getRecord,
@@ -22,8 +22,6 @@ import {
 } from "../../../lib/relationships.ts";
 
 export const dynamic = "force-dynamic";
-
-const NOT_FOUND_ERROR_RE = /\(404\)/;
 
 export default async function RecordDetailPage({
   params,
@@ -79,8 +77,14 @@ export default async function RecordDetailPage({
         </DashboardShell>
       );
     }
-    const msg = err instanceof Error ? err.message : String(err);
-    if (NOT_FOUND_ERROR_RE.test(msg)) {
+    // A 404/410 from the resource server is an expected end-state for a record
+    // route: the record was deleted, or its stream was retired/renamed in a
+    // newer manifest and `getRecord` can no longer resolve it (owner-mode
+    // visibility is manifest-derived). The reference returns "Record not found"
+    // for both, so this surfaces as the standard not-found page. Branch on the
+    // typed `ResourceServerHttpError.status` — authoritative and 410-aware —
+    // rather than substring-matching the wrapped message.
+    if (err instanceof ResourceServerHttpError && (err.status === 404 || err.status === 410)) {
       notFound();
     }
     throw err;
