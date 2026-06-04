@@ -182,8 +182,7 @@ function BrowserBoundEnrollmentNotice({ connectorId }: { connectorId: string }) 
       title="This connector is not generated here yet"
     >
       <p className="pdpp-caption text-muted-foreground">
-        The browser-collector procedure — proven so far only against Amazon, the one committed exemplar — is documented
-        in{" "}
+        The browser-collector procedure, proven so far only against Amazon as the committed exemplar, is documented in{" "}
         <code className="pdpp-eyebrow font-mono text-foreground" data-testid="browser-bound-runbook-path">
           {BROWSER_BOUND_RUNBOOK_PATH}
         </code>
