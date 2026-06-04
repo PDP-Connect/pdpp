@@ -87,3 +87,12 @@
   heal appends one history row, so a consumer whose prior history for that key
   was already pruned sees the record re-emit once (faithful — the history was
   pruned). If feed-invisibility is desired, that is a separate contract change.
+- [x] 6.5 Add `scripts/repair/connector-cursor-reset.mjs` (+ test) as the
+  owner's "source resync" primitive for the 6.3 `current_*_history` disposition:
+  scoped to explicit `(connector_instance_id, stream)` pairs, dry-run by
+  default, snapshots the prior cursor to a `ccr_backup` table before resetting
+  `connector_state.state_json` to `{}`, and never triggers the run itself. With
+  the cursor cleared, the next run re-emits every live key and ingest self-heals
+  each unanchored current row (tasks 3a.*). There is no reset-all mode. This is
+  operator tooling around the already-specified self-heal recovery, not a new
+  contract.
