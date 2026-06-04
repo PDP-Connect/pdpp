@@ -1,5 +1,16 @@
 @import "@pdpp/brand/app.css";
 @import "tailwindcss";
+/*
+ * The operator console renders most of its surfaces from the @pdpp/operator-ui
+ * package (overview hero, run/grant/trace lists, primitives), but Tailwind v4's
+ * automatic source detection only scans this app's own tree — so any utility
+ * used *only* in operator-ui (e.g. the hero's two-column
+ * `lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1.9fr)]` and the secondary
+ * `grid-cols-3`) was being purged, collapsing the hero to a single column.
+ * Registering the package as an explicit @source restores those classes. Paths
+ * resolve relative to this CSS file.
+ */
+@source "../../../../packages/operator-ui/src/**/*.{ts,tsx}";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "fumadocs-ui/css/neutral.css";

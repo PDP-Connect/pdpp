@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { ReactNode } from "react";
 import { formatConnectorKeyForDisplay } from "../lib/connector-display.ts";
 import type { DatasetSummary } from "../lib/ref-client.ts";
 import { Timestamp } from "../ui/timestamp.tsx";
@@ -48,7 +49,7 @@ export function OverviewHero({
 
   return (
     <section aria-label="Dataset overview" className="mb-8">
-      <MetricStrip summary={summary} />
+      <MetricStrip computedAt={projection?.computed_at} summary={summary} />
 
       <DistributionRow
         connectors={summary.top_connectors}
@@ -100,11 +101,16 @@ export function OverviewHero({
  * the numbers align. Elevation is the surface ladder — `bg-card`/tint fill + a
  * hairline border, radius-md, no drop shadow; spacing from the named 4px scale.
  */
-function MetricStrip({ summary }: { summary: DatasetSummary }) {
+function MetricStrip({ summary, computedAt }: { summary: DatasetSummary; computedAt?: string | null }) {
   const bytes = splitBytes(summary.total_retained_bytes);
   return (
     <div className="grid gap-3 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1.9fr)]">
-      <PrimaryMetric context="retained" label="Records" value={formatInteger(summary.record_count)} />
+      <PrimaryMetric
+        caption={<RecordsSummaryLine computedAt={computedAt} summary={summary} />}
+        context="retained"
+        label="Records"
+        value={formatInteger(summary.record_count)}
+      />
       <dl className="grid grid-cols-3 gap-3">
         <SecondaryMetric context={bytes.unit} label="Retained" value={bytes.value} />
         <SecondaryMetric
@@ -123,12 +129,46 @@ function MetricStrip({ summary }: { summary: DatasetSummary }) {
 }
 
 /**
+ * One plain-language sentence under the dominant Records KPI — the investor /
+ * standards-reviewer read of the same facts the figures already carry ("2.06M
+ * records across 28 connectors · last synced 7m ago"). Every value is live: the
+ * compact record count, the connector count, and the projection freshness
+ * instant the status line already uses (reusing <Timestamp> so the "N ago" tick
+ * stays consistent). Muted, single line, tabular-nums on the numbers.
+ */
+function RecordsSummaryLine({ summary, computedAt }: { summary: DatasetSummary; computedAt?: string | null }) {
+  return (
+    <span className="pdpp-caption text-muted-foreground">
+      <span className="tabular-nums">{formatCompactInteger(summary.record_count)}</span> records across{" "}
+      <span className="tabular-nums">{formatInteger(summary.connector_count)}</span>{" "}
+      {summary.connector_count === 1 ? "connector" : "connectors"}
+      {computedAt ? (
+        <>
+          {" · last synced "}
+          <Timestamp className="text-muted-foreground" mode="relative" value={computedAt} />
+        </>
+      ) : null}
+    </span>
+  );
+}
+
+/**
  * The single dominant KPI. Primary tint + accent border + left marker and the
  * display-scale figure make it the page's one focal point. Rendered as its own
  * <dl> so the primary/secondary split doesn't break the description-list
  * semantics.
  */
-function PrimaryMetric({ label, value, context }: { label: string; value: string; context: string }) {
+function PrimaryMetric({
+  label,
+  value,
+  context,
+  caption,
+}: {
+  label: string;
+  value: string;
+  context: string;
+  caption?: ReactNode;
+}) {
   return (
     <dl className="rounded-md border border-primary/30 bg-[color:var(--primary-wash)] px-4 py-3 shadow-[inset_2px_0_0_0_var(--primary)]">
       <dt className="pdpp-eyebrow text-primary/90">{label}</dt>
@@ -136,6 +176,7 @@ function PrimaryMetric({ label, value, context }: { label: string; value: string
         <span className="pdpp-display font-semibold text-foreground tabular-nums">{value}</span>
         <span className="pdpp-caption text-muted-foreground">{context}</span>
       </dd>
+      {caption ? <dd className="mt-2">{caption}</dd> : null}
     </dl>
   );
 }
@@ -148,10 +189,10 @@ function PrimaryMetric({ label, value, context }: { label: string; value: string
  */
 function SecondaryMetric({ label, value, context }: { label: string; value: string; context: string }) {
   return (
-    <div className="rounded-md border border-border bg-card p-3">
+    <div className="flex flex-col rounded-md border border-border bg-card px-4 py-3">
       <dt className="pdpp-eyebrow">{label}</dt>
-      <dd className="mt-1.5 flex flex-wrap items-baseline gap-x-1.5">
-        <span className="pdpp-heading font-medium text-foreground tabular-nums">{value}</span>
+      <dd className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        <span className="pdpp-heading font-medium tracking-tight text-foreground tabular-nums">{value}</span>
         <span className="pdpp-caption text-muted-foreground">{context}</span>
       </dd>
     </div>
@@ -394,6 +435,31 @@ function distributionBarColor(recordCount: number, leadCount: number): string {
 
 function formatInteger(n: number): string {
   return Number.isFinite(n) ? n.toLocaleString("en-US") : "0";
+}
+
+/**
+ * Compact record count for the plain-language summary line ("2.06M", "28.4K").
+ * Below 10,000 the full grouped integer still reads cleanly, so only larger
+ * counts collapse to a K/M/B magnitude — keeping the sentence terse without
+ * hiding small datasets behind a rounded "0.0K".
+ */
+function formatCompactInteger(n: number): string {
+  if (!Number.isFinite(n) || n < 10_000) {
+    return formatInteger(n);
+  }
+  const units: Array<{ suffix: string; divisor: number }> = [
+    { suffix: "B", divisor: 1_000_000_000 },
+    { suffix: "M", divisor: 1_000_000 },
+    { suffix: "K", divisor: 1_000 },
+  ];
+  for (const { suffix, divisor } of units) {
+    if (n >= divisor) {
+      const scaled = n / divisor;
+      const rounded = scaled >= 100 ? Math.round(scaled).toString() : scaled.toFixed(scaled >= 10 ? 1 : 2);
+      return `${rounded}${suffix}`;
+    }
+  }
+  return formatInteger(n);
 }
 
 /**

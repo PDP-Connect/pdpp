@@ -201,6 +201,10 @@
   --surface-raised: oklch(0.235 0.006 260);
   --surface-overlay: oklch(0.275 0.006 260);
   --border-strong: oklch(0.34 0.006 260);
+  /* One luminance step above --border-strong, dedicated to dense-list row
+     dividers so they chunk rows on charcoal without nudging every
+     --border-strong consumer. */
+  --data-list-divider: oklch(0.40 0.006 260);
   --shadow-overlay: 0 10px 28px -10px oklch(0 0 0 / 0.55), 0 3px 8px -3px oklch(0 0 0 / 0.40);
 
   color-scheme: dark;
@@ -264,6 +268,10 @@
     --surface-raised: oklch(0.235 0.006 260);
     --surface-overlay: oklch(0.275 0.006 260);
     --border-strong: oklch(0.34 0.006 260);
+    /* One luminance step above --border-strong, dedicated to dense-list row
+       dividers so they chunk rows on charcoal without nudging every
+       --border-strong consumer. */
+    --data-list-divider: oklch(0.40 0.006 260);
     --shadow-overlay: 0 10px 28px -10px oklch(0 0 0 / 0.55), 0 3px 8px -3px oklch(0 0 0 / 0.40);
 
     color-scheme: dark;
@@ -499,22 +507,27 @@ samp {
    Tailwind dark: utilities) because the operator console's Tailwind content
    scan only covers apps/console/src, so a dark: divider token used only in
    @pdpp/operator-ui never gets generated. Light keeps the gentle hairline; the
-   charcoal dark surface steps the rules up to --border-strong so the list scans
-   as a dense table instead of reading nearly flat. */
+   charcoal dark surface needs the dividers a step ABOVE --border-strong (0.34 L)
+   so the dense lists scan as a real table instead of reading nearly flat — at
+   0.34 the hairlines still dissolved into the charcoal at a glance. 0.40 L is
+   one more perceptual step up: crisp enough to chunk rows for fast scanning,
+   still quiet enough to read as a divider rather than a drawn grid. Scoped to
+   the data list so it never bleeds into --border-strong's other consumers
+   (status-badge rings, table-cell insets). */
 :is(html.dark, html[data-theme="dark"]) .pdpp-data-list {
-  border-top-color: var(--border-strong);
-  border-bottom-color: var(--border-strong);
+  border-top-color: var(--data-list-divider);
+  border-bottom-color: var(--data-list-divider);
 }
 :is(html.dark, html[data-theme="dark"]) .pdpp-data-list > :where(:not(:last-child)) {
-  border-color: var(--border-strong);
+  border-color: var(--data-list-divider);
 }
 @media (prefers-color-scheme: dark) {
   html[data-theme="system"] .pdpp-data-list {
-    border-top-color: var(--border-strong);
-    border-bottom-color: var(--border-strong);
+    border-top-color: var(--data-list-divider);
+    border-bottom-color: var(--data-list-divider);
   }
   html[data-theme="system"] .pdpp-data-list > :where(:not(:last-child)) {
-    border-color: var(--border-strong);
+    border-color: var(--data-list-divider);
   }
 }
 
