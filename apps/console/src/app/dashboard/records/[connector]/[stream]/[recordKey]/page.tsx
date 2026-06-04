@@ -38,7 +38,12 @@ export default async function RecordDetailPage({
   let connectionId = routeId;
   let expandCapabilities: ExpandCapability[] = [];
   let parentRelations: Array<{ parentStream: string; capability: ExpandCapability }> = [];
-  let childManifestStream: { name: string; relationships?: Array<{ name: string; stream?: string; foreign_key?: string; cardinality?: string }> } | undefined;
+  let childManifestStream:
+    | {
+        name: string;
+        relationships?: Array<{ name: string; stream?: string; foreign_key?: string; cardinality?: string }>;
+      }
+    | undefined;
   try {
     const connection = await resolveConnectionForRecordsRoute(routeId);
     if (!connection) {
@@ -115,7 +120,9 @@ export default async function RecordDetailPage({
   const seenParentStreams = new Set<string>();
   const allParentBackLinks = [...(parentBackLinkFromMeta ? [parentBackLinkFromMeta] : []), ...childHasOneLinks].filter(
     (link) => {
-      if (seenParentStreams.has(link.parentStream)) return false;
+      if (seenParentStreams.has(link.parentStream)) {
+        return false;
+      }
       seenParentStreams.add(link.parentStream);
       return true;
     }
@@ -150,7 +157,7 @@ export default async function RecordDetailPage({
         <Section title="Related">
           <ul className="space-y-2">
             {allParentBackLinks.map((backLink) => (
-              <li key={backLink.parentStream} className="pdpp-caption">
+              <li className="pdpp-caption" key={backLink.parentStream}>
                 <span className="text-muted-foreground">{backLink.parentStream} · </span>
                 <Link
                   className="font-mono text-foreground underline underline-offset-2 hover:no-underline"

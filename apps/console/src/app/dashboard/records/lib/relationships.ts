@@ -55,10 +55,10 @@ function recordsBasePath(connectionId: string): string {
 
 /** Minimal manifest shapes for pruning which parent streams need metadata reads. */
 interface ManifestRelationship {
+  cardinality?: string;
+  foreign_key?: string;
   name: string;
   stream?: string;
-  foreign_key?: string;
-  cardinality?: string;
 }
 interface ManifestStreamShape {
   name: string;
