@@ -100,6 +100,9 @@ jobs:
       - name: Test package release policy checks
         run: pnpm release:policy-check:test
 
+      - name: Test beta release-cadence guard
+        run: pnpm release:cadence-check:test
+
       - name: Typecheck operator console app
         run: pnpm --dir apps/console run types:check
 
