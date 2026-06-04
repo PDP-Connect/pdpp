@@ -16,6 +16,24 @@ export interface CollectorOutboxPolicy {
     retryBackoffMs: number;
 }
 export declare const DEFAULT_COLLECTOR_OUTBOX_POLICY: Readonly<CollectorOutboxPolicy>;
+export interface CollectorAutoPrunePolicy {
+    enabled: boolean;
+    keepRecentCount: number;
+    keepWithinDays: number;
+}
+export declare const DEFAULT_COLLECTOR_AUTO_PRUNE_POLICY: Readonly<CollectorAutoPrunePolicy>;
+export declare function resolveCollectorAutoPrunePolicy(override?: Partial<CollectorAutoPrunePolicy>, env?: NodeJS.ProcessEnv): CollectorAutoPrunePolicy;
+export declare function autoPruneSucceededOutbox(input: {
+    now?: Date;
+    outbox: Pick<LocalDeviceOutbox, "pruneSent">;
+    policy: CollectorAutoPrunePolicy;
+    sourceInstanceId: string;
+}): CollectorAutoPruneResult;
+export interface CollectorAutoPruneResult {
+    enabled: boolean;
+    matched: number;
+    pruned: number;
+}
 export interface CollectorEnrollmentConfig {
     baseUrl: string;
     code: string;
@@ -32,6 +50,7 @@ export interface CollectorConnectorSpec extends ConnectorPlacementInput {
 }
 export interface CollectorRunConfig {
     abortSignal?: AbortSignal;
+    autoPrune?: Partial<CollectorAutoPrunePolicy>;
     baseUrl: string;
     batchSize?: number;
     collectorHolderId?: string;
@@ -62,6 +81,7 @@ export interface CollectorRunResult {
     flushedState: Readonly<Record<string, unknown>> | null;
     outboxSummary: LocalDeviceOutboxSummary;
     priorState: Readonly<Record<string, unknown>>;
+    prunedSent: CollectorAutoPruneResult;
     recordsQueued: number;
     recoveredLeases: number;
     satisfiedBindings: readonly RuntimeBindingName[];

@@ -122,6 +122,149 @@ export const DEFAULT_COLLECTOR_OUTBOX_POLICY: Readonly<CollectorOutboxPolicy> = 
   retryBackoffMs: 30_000,
 });
 
+/**
+ * Run-time bound on retained acknowledged (`succeeded`) outbox rows.
+ *
+ * A `succeeded` row is an acknowledged outbox work item — a delivered record
+ * batch, checkpoint, gap, or blob upload. Nothing reads it again: the server
+ * already holds the durable copy, and the local row only survives as a
+ * forensic tail. Without a bound it accumulates one row per acknowledged batch
+ * forever, which is the root cause behind the 35 GB local outbox the
+ * memory-pressure investigation found. The drain path is the natural place to
+ * bound it: after a clean drain the outbox is at its quietest, and pruning only
+ * `succeeded` rows can never race or drop undelivered work.
+ *
+ * Both bounds are ANDed by {@link LocalDeviceOutbox.pruneSent}: a row is pruned
+ * only when it is BOTH outside the most-recent `keepCount` set AND older than
+ * the age floor. So a row survives if it is recent by count OR recent by age —
+ * the conservative reading. The two bounds are not arbitrary:
+ *
+ * - `keepRecentCount` (1,000) keeps roughly the order of a single run's
+ *   enqueue budget worth of acknowledged rows per source instance for
+ *   inspection, a tenth of {@link CollectorOutboxPolicy.maxEnqueuedBatchesPerRun}
+ *   / {@link CollectorOutboxPolicy.maxQueueDepth} (10,000), and caps retention
+ *   four-plus orders of magnitude below the ~170k-row incident.
+ * - `keepWithinDays` (30) matches the manual `prune-sent` CLI's default age
+ *   window so the automatic and operator paths agree on the age floor rather
+ *   than inventing a second number.
+ *
+ * The automatic path never writes a backup file — it runs every drain and a
+ * multi-GB backup every 15 minutes is exactly the disk pressure this bound is
+ * meant to relieve. The manual CLI keeps its backup-before-`--apply` behavior
+ * for one-shot operator compaction; the run-time prune relies on the bounds
+ * (count + age) and the same single-transaction, `succeeded`-only delete.
+ */
+export interface CollectorAutoPrunePolicy {
+  /** When false, the run-time prune is skipped entirely. */
+  enabled: boolean;
+  /** Keep at least this many most-recent succeeded rows per source instance. */
+  keepRecentCount: number;
+  /** Keep succeeded rows acknowledged within this many days (age floor). */
+  keepWithinDays: number;
+}
+
+export const DEFAULT_COLLECTOR_AUTO_PRUNE_POLICY: Readonly<CollectorAutoPrunePolicy> = Object.freeze({
+  enabled: true,
+  keepWithinDays: 30,
+  keepRecentCount: 1000,
+});
+
+/**
+ * Resolve the effective auto-prune policy from (in increasing precedence) the
+ * built-in default, an explicit run-config override, and environment overrides.
+ * Operators get a no-rebuild override path:
+ *
+ * - `PDPP_COLLECTOR_AUTO_PRUNE=0|false|off|no` disables the run-time prune.
+ * - `PDPP_COLLECTOR_AUTO_PRUNE_KEEP_COUNT=<int>` overrides the count bound.
+ * - `PDPP_COLLECTOR_AUTO_PRUNE_KEEP_DAYS=<number>` overrides the age bound.
+ *
+ * Invalid or absent env values fall through to the lower-precedence value
+ * rather than throwing, so a malformed override never breaks a collector run.
+ */
+export function resolveCollectorAutoPrunePolicy(
+  override?: Partial<CollectorAutoPrunePolicy>,
+  env: NodeJS.ProcessEnv = process.env
+): CollectorAutoPrunePolicy {
+  const policy: CollectorAutoPrunePolicy = { ...DEFAULT_COLLECTOR_AUTO_PRUNE_POLICY, ...(override ?? {}) };
+
+  const enabledRaw = env.PDPP_COLLECTOR_AUTO_PRUNE;
+  if (typeof enabledRaw === "string" && enabledRaw.trim() !== "") {
+    policy.enabled = !DISABLED_ENV_VALUES.has(enabledRaw.trim().toLowerCase());
+  }
+
+  const keepCount = parseNonNegativeInt(env.PDPP_COLLECTOR_AUTO_PRUNE_KEEP_COUNT);
+  if (keepCount !== null) {
+    policy.keepRecentCount = keepCount;
+  }
+
+  const keepDays = parseNonNegativeNumber(env.PDPP_COLLECTOR_AUTO_PRUNE_KEEP_DAYS);
+  if (keepDays !== null) {
+    policy.keepWithinDays = keepDays;
+  }
+
+  return policy;
+}
+
+const DISABLED_ENV_VALUES = new Set(["0", "false", "off", "no"]);
+
+function parseNonNegativeInt(raw: string | undefined): number | null {
+  if (typeof raw !== "string" || raw.trim() === "") {
+    return null;
+  }
+  const value = Number(raw.trim());
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function parseNonNegativeNumber(raw: string | undefined): number | null {
+  if (typeof raw !== "string" || raw.trim() === "") {
+    return null;
+  }
+  const value = Number(raw.trim());
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/**
+ * Run the bounded auto-prune for one source instance after a clean drain.
+ *
+ * Returns the prune outcome so the run result can surface it for diagnostics.
+ * Always supplies BOTH `keepCount` and `olderThanIso` so the prune is doubly
+ * bounded — never a "prune all succeeded" call — and scopes to the source
+ * instance so one connection never prunes another's retained tail. Only
+ * `succeeded` rows are eligible inside {@link LocalDeviceOutbox.pruneSent}; the
+ * ready/leased/retrying/dead-letter rows this run may have left behind are
+ * structurally untouchable here.
+ */
+export function autoPruneSucceededOutbox(input: {
+  now?: Date;
+  outbox: Pick<LocalDeviceOutbox, "pruneSent">;
+  policy: CollectorAutoPrunePolicy;
+  sourceInstanceId: string;
+}): CollectorAutoPruneResult {
+  if (!input.policy.enabled) {
+    return { enabled: false, matched: 0, pruned: 0 };
+  }
+  const now = input.now ?? new Date();
+  const olderThanIso = new Date(now.getTime() - input.policy.keepWithinDays * MS_PER_DAY).toISOString();
+  const result = input.outbox.pruneSent({
+    dryRun: false,
+    keepCount: input.policy.keepRecentCount,
+    olderThanIso,
+    sourceInstanceId: input.sourceInstanceId,
+  });
+  return { enabled: true, matched: result.matched, pruned: result.pruned };
+}
+
+const MS_PER_DAY = 86_400_000;
+
+export interface CollectorAutoPruneResult {
+  /** False when the policy disabled the run-time prune (no prune attempted). */
+  enabled: boolean;
+  /** Succeeded rows that matched the bounded prune predicate. */
+  matched: number;
+  /** Succeeded rows actually deleted this pass. */
+  pruned: number;
+}
+
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const REPO_ROOT = join(PACKAGE_ROOT, "..", "..");
 
@@ -162,6 +305,13 @@ export interface CollectorRunConfig {
    * consumption, and between queue drain iterations.
    */
   abortSignal?: AbortSignal;
+  /**
+   * Override the run-time auto-prune of acknowledged (`succeeded`) outbox
+   * rows. Defaults to {@link DEFAULT_COLLECTOR_AUTO_PRUNE_POLICY}; environment
+   * overrides ({@link resolveCollectorAutoPrunePolicy}) take final precedence so
+   * an operator can disable or retune it on a deployed host without a rebuild.
+   */
+  autoPrune?: Partial<CollectorAutoPrunePolicy>;
   baseUrl: string;
   batchSize?: number;
   /**
@@ -287,6 +437,15 @@ export interface CollectorRunResult {
   outboxSummary: LocalDeviceOutboxSummary;
   /** Prior state replayed into the START message (empty when first run). */
   priorState: Readonly<Record<string, unknown>>;
+  /**
+   * Outcome of this pass's run-time auto-prune of acknowledged (`succeeded`)
+   * outbox rows. `enabled: false` means the prune was turned off; otherwise
+   * `pruned` is how many over-retention succeeded rows this drain reclaimed.
+   * Surfaced so operators and tests can see the bound working without
+   * inspecting the SQLite file. Never reflects ready/leased/retrying/dead-letter
+   * rows — those are not prune candidates.
+   */
+  prunedSent: CollectorAutoPruneResult;
   recordsQueued: number;
   /**
    * Number of leases recovered before scan/spawn. Non-zero means the
@@ -344,6 +503,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
   const satisfiedBindings = assertPlacementOrThrow(config.connector, COLLECTOR_RUNTIME_CAPABILITIES);
 
   const policy: CollectorOutboxPolicy = { ...DEFAULT_COLLECTOR_OUTBOX_POLICY, ...(config.outboxPolicy ?? {}) };
+  const autoPrunePolicy = resolveCollectorAutoPrunePolicy(config.autoPrune);
   const holderId = config.collectorHolderId ?? randomUUID();
   const outboxPath = config.outboxPath ?? config.queuePath;
   const outbox = new LocalDeviceOutbox({ path: outboxPath });
@@ -367,6 +527,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
 
     const postDrainSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
     const skipResult = await maybeSkipScanForBacklog({
+      autoPrunePolicy,
       client,
       config,
       outbox,
@@ -455,6 +616,15 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       });
     }
 
+    // Bound the retained acknowledged tail now that the drain has completed.
+    // Only `succeeded` rows are eligible; the ready/leased/retrying/dead-letter
+    // work this run may have left behind is structurally out of scope.
+    const prunedSent = autoPruneSucceededOutbox({
+      outbox,
+      policy: autoPrunePolicy,
+      sourceInstanceId: config.sourceInstanceId,
+    });
+
     return {
       completeness: summarizeCollectorCompleteness(streamResult.coverageByStore),
       done,
@@ -462,6 +632,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       flushedState: checkpointResult.flushedState,
       outboxSummary: finalSummary,
       priorState,
+      prunedSent,
       recordsQueued: enqueueResult.recordsQueued,
       recoveredLeases,
       satisfiedBindings,
@@ -477,6 +648,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
 }
 
 interface MaybeSkipScanInput {
+  autoPrunePolicy: CollectorAutoPrunePolicy;
   client: Pick<LocalDeviceClient, "heartbeat">;
   config: CollectorRunConfig;
   outbox: LocalDeviceOutbox;
@@ -521,6 +693,14 @@ async function maybeSkipScanForBacklog(input: MaybeSkipScanInput): Promise<Colle
     source_instance_id: input.config.sourceInstanceId,
     status: heartbeatStatusForSummary(summaryAfterGap, input.policy),
   });
+  // The pre-scan drain has completed, so the bounded prune of acknowledged
+  // rows is safe even though scan was skipped. Open backlog rows
+  // (ready/leased/retrying/dead-letter) are not prune candidates.
+  const prunedSent = autoPruneSucceededOutbox({
+    outbox: input.outbox,
+    policy: input.autoPrunePolicy,
+    sourceInstanceId: input.config.sourceInstanceId,
+  });
   return {
     // No connector spawned on a backlog skip, so no coverage was observed.
     completeness: null,
@@ -529,6 +709,7 @@ async function maybeSkipScanForBacklog(input: MaybeSkipScanInput): Promise<Colle
     flushedState: null,
     outboxSummary: summaryAfterGap,
     priorState: Object.freeze({}),
+    prunedSent,
     recordsQueued: 0,
     recoveredLeases: input.recoveredLeases,
     satisfiedBindings: input.satisfiedBindings,

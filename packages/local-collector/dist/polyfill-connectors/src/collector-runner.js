@@ -25,6 +25,57 @@ export const DEFAULT_COLLECTOR_OUTBOX_POLICY = Object.freeze({
     maxQueueDepth: 10_000,
     retryBackoffMs: 30_000,
 });
+export const DEFAULT_COLLECTOR_AUTO_PRUNE_POLICY = Object.freeze({
+    enabled: true,
+    keepWithinDays: 30,
+    keepRecentCount: 1000,
+});
+export function resolveCollectorAutoPrunePolicy(override, env = process.env) {
+    const policy = { ...DEFAULT_COLLECTOR_AUTO_PRUNE_POLICY, ...(override ?? {}) };
+    const enabledRaw = env.PDPP_COLLECTOR_AUTO_PRUNE;
+    if (typeof enabledRaw === "string" && enabledRaw.trim() !== "") {
+        policy.enabled = !DISABLED_ENV_VALUES.has(enabledRaw.trim().toLowerCase());
+    }
+    const keepCount = parseNonNegativeInt(env.PDPP_COLLECTOR_AUTO_PRUNE_KEEP_COUNT);
+    if (keepCount !== null) {
+        policy.keepRecentCount = keepCount;
+    }
+    const keepDays = parseNonNegativeNumber(env.PDPP_COLLECTOR_AUTO_PRUNE_KEEP_DAYS);
+    if (keepDays !== null) {
+        policy.keepWithinDays = keepDays;
+    }
+    return policy;
+}
+const DISABLED_ENV_VALUES = new Set(["0", "false", "off", "no"]);
+function parseNonNegativeInt(raw) {
+    if (typeof raw !== "string" || raw.trim() === "") {
+        return null;
+    }
+    const value = Number(raw.trim());
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+function parseNonNegativeNumber(raw) {
+    if (typeof raw !== "string" || raw.trim() === "") {
+        return null;
+    }
+    const value = Number(raw.trim());
+    return Number.isFinite(value) && value >= 0 ? value : null;
+}
+export function autoPruneSucceededOutbox(input) {
+    if (!input.policy.enabled) {
+        return { enabled: false, matched: 0, pruned: 0 };
+    }
+    const now = input.now ?? new Date();
+    const olderThanIso = new Date(now.getTime() - input.policy.keepWithinDays * MS_PER_DAY).toISOString();
+    const result = input.outbox.pruneSent({
+        dryRun: false,
+        keepCount: input.policy.keepRecentCount,
+        olderThanIso,
+        sourceInstanceId: input.sourceInstanceId,
+    });
+    return { enabled: true, matched: result.matched, pruned: result.pruned };
+}
+const MS_PER_DAY = 86_400_000;
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const REPO_ROOT = join(PACKAGE_ROOT, "..", "..");
 export async function enrollCollector(config) {
@@ -53,6 +104,7 @@ export async function runCollectorConnector(config) {
     throwIfAborted(config.abortSignal);
     const satisfiedBindings = assertPlacementOrThrow(config.connector, COLLECTOR_RUNTIME_CAPABILITIES);
     const policy = { ...DEFAULT_COLLECTOR_OUTBOX_POLICY, ...(config.outboxPolicy ?? {}) };
+    const autoPrunePolicy = resolveCollectorAutoPrunePolicy(config.autoPrune);
     const holderId = config.collectorHolderId ?? randomUUID();
     const outboxPath = config.outboxPath ?? config.queuePath;
     const outbox = new LocalDeviceOutbox({ path: outboxPath });
@@ -74,6 +126,7 @@ export async function runCollectorConnector(config) {
         });
         const postDrainSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
         const skipResult = await maybeSkipScanForBacklog({
+            autoPrunePolicy,
             client,
             config,
             outbox,
@@ -154,6 +207,11 @@ export async function runCollectorConnector(config) {
                 status: streamResult.scanBudgetExceeded ? "retrying" : heartbeatStatusForSummary(finalSummary, policy),
             });
         }
+        const prunedSent = autoPruneSucceededOutbox({
+            outbox,
+            policy: autoPrunePolicy,
+            sourceInstanceId: config.sourceInstanceId,
+        });
         return {
             completeness: summarizeCollectorCompleteness(streamResult.coverageByStore),
             done,
@@ -161,6 +219,7 @@ export async function runCollectorConnector(config) {
             flushedState: checkpointResult.flushedState,
             outboxSummary: finalSummary,
             priorState,
+            prunedSent,
             recordsQueued: enqueueResult.recordsQueued,
             recoveredLeases,
             satisfiedBindings,
@@ -203,6 +262,11 @@ async function maybeSkipScanForBacklog(input) {
         source_instance_id: input.config.sourceInstanceId,
         status: heartbeatStatusForSummary(summaryAfterGap, input.policy),
     });
+    const prunedSent = autoPruneSucceededOutbox({
+        outbox: input.outbox,
+        policy: input.autoPrunePolicy,
+        sourceInstanceId: input.config.sourceInstanceId,
+    });
     return {
         completeness: null,
         done: null,
@@ -210,6 +274,7 @@ async function maybeSkipScanForBacklog(input) {
         flushedState: null,
         outboxSummary: summaryAfterGap,
         priorState: Object.freeze({}),
+        prunedSent,
         recordsQueued: 0,
         recoveredLeases: input.recoveredLeases,
         satisfiedBindings: input.satisfiedBindings,

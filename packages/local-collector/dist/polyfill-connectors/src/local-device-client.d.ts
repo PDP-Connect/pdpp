@@ -12,7 +12,9 @@ export interface LocalDeviceClientOptions {
     deviceId?: string;
     deviceToken?: string;
     fetchImpl?: typeof fetch;
+    requestTimeoutMs?: number;
 }
+export declare const DEFAULT_LOCAL_DEVICE_REQUEST_TIMEOUT_MS = 120000;
 export interface EnrollmentExchangeRequest {
     device_label?: string;
     enrollment_code: string;
@@ -118,6 +120,10 @@ export declare class LocalDeviceHttpError extends Error {
     readonly status: number;
     readonly code: string | null;
     constructor(status: number, body: string);
+}
+export declare class LocalDeviceRequestTimeoutError extends Error {
+    readonly timeoutMs: number;
+    constructor(timeoutMs: number);
 }
 export declare class LocalDeviceClient {
     #private;

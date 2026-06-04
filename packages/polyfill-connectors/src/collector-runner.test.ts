@@ -253,6 +253,149 @@ test("runCollectorConnector reports null completeness when no coverage diagnosti
   }
 });
 
+const ONE_RECORD_CONNECTOR_SCRIPT = `
+  await new Promise((r) => {
+    let buf = "";
+    process.stdin.on("data", (c) => { buf += c; if (buf.includes("\\n")) r(); });
+  });
+  process.stdout.write(JSON.stringify({
+    type: "RECORD", stream: "messages", key: "m-1",
+    data: { id: "m-1" }, emitted_at: new Date().toISOString(),
+  }) + "\\n");
+  process.stdout.write(JSON.stringify({ type: "DONE", status: "succeeded", records_emitted: 1 }) + "\\n");
+`;
+
+test("runCollectorConnector auto-prunes over-retention succeeded rows after a clean drain and reports the count", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const fixture = await writeFixtureConnector({ script: ONE_RECORD_CONNECTOR_SCRIPT });
+    const baseConfig = {
+      // Keep only the single most-recent succeeded row, and an age floor of 0
+      // days so any older acknowledged row is eligible. After two clean passes
+      // the first pass's acknowledged batch is both outside the recent set and
+      // older than the prune `now`, so it is reclaimed.
+      autoPrune: { keepRecentCount: 1, keepWithinDays: 0 },
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-auto-prune",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      queuePath,
+      sourceInstanceId: "src-auto-prune",
+    } as const;
+
+    const pass1 = await runCollectorConnector(baseConfig);
+    assert.equal(pass1.done?.status, "succeeded");
+    assert.equal(pass1.prunedSent.enabled, true);
+    // Pass 1 left exactly one acknowledged batch, which is inside keepRecentCount.
+    assert.equal(pass1.prunedSent.pruned, 0);
+
+    const pass2 = await runCollectorConnector(baseConfig);
+    assert.equal(pass2.done?.status, "succeeded");
+    assert.equal(pass2.prunedSent.enabled, true);
+    // Pass 2 acknowledges a second batch; keepRecentCount=1 keeps it and prunes
+    // pass 1's now-older acknowledged batch.
+    assert.equal(pass2.prunedSent.pruned, 1);
+
+    const outbox = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      assert.equal(
+        outbox.summary({ sourceInstanceId: "src-auto-prune" }).succeeded,
+        1,
+        "exactly the most-recent succeeded row is retained"
+      );
+    } finally {
+      outbox.close();
+    }
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector leaves succeeded rows intact when auto-prune is disabled", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const fixture = await writeFixtureConnector({ script: ONE_RECORD_CONNECTOR_SCRIPT });
+    const baseConfig = {
+      // Disabled despite an aggressive count/age bound that would otherwise prune.
+      autoPrune: { enabled: false, keepRecentCount: 0, keepWithinDays: 0 },
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-prune-disabled",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      queuePath,
+      sourceInstanceId: "src-prune-disabled",
+    } as const;
+
+    const pass1 = await runCollectorConnector(baseConfig);
+    const pass2 = await runCollectorConnector(baseConfig);
+    assert.equal(pass1.prunedSent.enabled, false);
+    assert.equal(pass2.prunedSent.enabled, false);
+    assert.equal(pass2.prunedSent.pruned, 0);
+
+    const outbox = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      assert.equal(
+        outbox.summary({ sourceInstanceId: "src-prune-disabled" }).succeeded,
+        2,
+        "both acknowledged batches are retained when prune is disabled"
+      );
+    } finally {
+      outbox.close();
+    }
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector under the default policy retains a clean run's acknowledged rows", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const fixture = await writeFixtureConnector({ script: ONE_RECORD_CONNECTOR_SCRIPT });
+    // No autoPrune override → default policy (keep 1,000 recent, 30-day floor).
+    // A single clean run's one acknowledged batch is well inside both bounds.
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-default-prune",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      queuePath,
+      sourceInstanceId: "src-default-prune",
+    });
+    assert.equal(result.prunedSent.enabled, true);
+    assert.equal(result.prunedSent.pruned, 0, "a clean run within bounds prunes nothing");
+
+    const outbox = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      assert.equal(outbox.summary({ sourceInstanceId: "src-default-prune" }).succeeded, 1);
+    } finally {
+      outbox.close();
+    }
+  } finally {
+    await harness.close();
+  }
+});
+
 test("runCollectorConnector flags an unrecognized coverage status as unaccounted", async () => {
   const harness = await startCollectorHarness({ priorState: {} });
   try {
