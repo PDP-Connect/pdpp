@@ -67,6 +67,26 @@ export const DISPLAY_MESSAGES: Record<string, string> = {
   credit_card_export_unverified: "We couldn't confirm the credit card export",
   doordash_graphql_wiring_pending: "DoorDash support isn't wired up yet",
   empty_detail: "We opened this conversation but found no messages to import",
+  // 2026-06-04 baseline repair: these reason literals are emitted by
+  // connectors but were missing vetted copy, so the registry completeness
+  // test was red and the dashboard would have shown `null` for a real code.
+  // Codes that surface through a `reason:` ternary (missing_mapping,
+  // csv_no_data_rows, csv_no_usable_transactions) were also invisible to the
+  // scan until it was taught to read ternary literals — they are included here
+  // so the now-stricter scan stays green. Copy stays operator/end-user voice.
+  csv_no_data_rows: "The transactions file had no rows to import",
+  csv_no_usable_transactions: "We couldn't find any usable transactions in that file",
+  empty_first_page_without_diagnostics: "The first page came back empty and we couldn't tell why",
+  empty_first_page_without_terminal_signal: "The first page came back empty with no sign it was really the end",
+  missing_mapping: "We opened this conversation but it had no message data to read",
+  no_orders_text: "This account shows no orders to import",
+  pagination_exhausted: "We reached the end of the available pages",
+  pr_detail_fetch_failed: "We saved these pull requests but couldn't load every detail",
+  pr_search_cap_truncated: "There were more results than the service will return, so the oldest couldn't be collected",
+  source_auth_or_challenge: "We need you to sign in or pass a verification check to continue",
+  starred_entry_missing_repo: "We skipped a starred entry whose repository was unavailable",
+  unparseable_order_date: "We skipped some orders because their dates couldn't be read",
+  upstream_pressure_deferred: "The service was busy, so we saved what we could and will finish the rest later",
   export_error: "The export couldn't be downloaded",
   export_no_download: "The export didn't produce a downloadable file",
   export_not_found: "We couldn't find an export to import",
