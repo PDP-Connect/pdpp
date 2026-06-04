@@ -203,6 +203,45 @@ test('the cooling-off audit line re-arms when the pressure picture changes', asy
   }
 });
 
+test('a future nextAttemptAfter floor is enforced, not only displayed', async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-cooldown-floor-'));
+  const { attemptsPath, connectorPath } = writeUnusedConnector(tmpDir, 'floor.mjs');
+  const completedRuns = [];
+  const connectorId = 'chatgpt-floor-connector';
+  const futureFloor = new Date(Date.now() + 2_000).toISOString();
+
+  const scheduler = createScheduler({
+    connectors: [{
+      connectorId,
+      connectorPath,
+      manifest: POLICY_BLOCKED_MANIFEST,
+      intervalMs: 50,
+      maxRetries: 0,
+      ownerToken: 'owner-token',
+    }],
+    rsUrl: 'http://localhost.invalid',
+    schedulerStore: anchorStore([{ connectorId, lastRunTimeMs: Date.now() - 500 }]),
+    onInteraction: cancelledInteractionResponse,
+    onRunComplete: (record) => completedRuns.push(record),
+    getSourcePressureGaps: () => [pressureGap({ attemptCount: 0, nextAttemptAfter: futureFloor })],
+  });
+
+  try {
+    scheduler.start();
+    await waitFor(() => cooldownSkips(completedRuns).length >= 1, 5000);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    scheduler.stop();
+
+    const skips = cooldownSkips(completedRuns);
+    assert.equal(skips.length, 1, 'future nextAttemptAfter should keep the connection cooling');
+    assert.equal(policySkips(completedRuns).length, 0, 'the connector must not fall through as eligible before the floor');
+    assert.equal(readAttempts(attemptsPath).length, 0, 'connector never spawned before the floor elapsed');
+  } finally {
+    scheduler.stop();
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('a recovered run clears the cooldown — the connection becomes eligible again', async () => {
   const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-cooldown-recover-'));
   const { attemptsPath, connectorPath } = writeUnusedConnector(tmpDir, 'recover.mjs');

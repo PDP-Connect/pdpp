@@ -200,13 +200,14 @@ export function computeSourcePressureCooldown(
   const exponent = Math.min(maxAttemptCount, maxExp);
   const multiplier = Math.max(minMultiplier, 2 ** exponent);
   const rawDelay = normalizedBaseIntervalMs * multiplier;
-  const effectiveIntervalMs = Math.min(rawDelay, maxMs);
+  const cappedIntervalMs = Math.min(rawDelay, maxMs);
 
-  const computedNextRunMs = normalizedLastRunAtMs + effectiveIntervalMs;
   // Honour a connector/runtime-authored `next_attempt_after` floor when it
   // pushes the schedule out further than our computed cooldown.
   const explicitFloorMs = maxNextAttemptAfterMs(pressureGaps);
-  const nextRunMs = Math.max(computedNextRunMs, explicitFloorMs);
+  const explicitFloorIntervalMs = Math.max(0, explicitFloorMs - normalizedLastRunAtMs);
+  const effectiveIntervalMs = Math.max(cappedIntervalMs, explicitFloorIntervalMs);
+  const nextRunMs = normalizedLastRunAtMs + effectiveIntervalMs;
 
   const reasonSummary = summarizeReasons(pressureGaps);
 

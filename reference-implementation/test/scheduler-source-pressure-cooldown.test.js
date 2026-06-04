@@ -151,6 +151,7 @@ test('an explicit next_attempt_after later than the computed cooldown is honoure
     T0,
   );
   assert.equal(decision.nextRunAt, farFuture);
+  assert.equal(decision.effectiveIntervalMs, BASE_INTERVAL_MS * 100);
 });
 
 test('an explicit next_attempt_after earlier than the computed cooldown does not shorten it', () => {
