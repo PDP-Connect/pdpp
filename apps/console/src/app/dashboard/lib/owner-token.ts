@@ -179,6 +179,29 @@ export class ReferenceServerUnreachableError extends Error {
 }
 
 /**
+ * Thrown by `authedFetch` and friends when the resource server returns a
+ * non-OK HTTP status. Carries the status code so callers can branch on
+ * `404` to render a graceful "stream unavailable" state instead of throwing
+ * to the segment error boundary. Stream/connector visibility under owner
+ * tokens is manifest-derived; once a stream is dropped from the manifest,
+ * records-read endpoints return 404; that is an expected, recoverable
+ * state for the dashboard, not a runtime error.
+ */
+export class ResourceServerHttpError extends Error {
+  readonly status: number;
+  readonly body: string;
+  readonly path: string;
+
+  constructor(path: string, status: number, body: string) {
+    super(`RS ${path} failed (${status}): ${body}`);
+    this.name = "ResourceServerHttpError";
+    this.path = path;
+    this.status = status;
+    this.body = body;
+  }
+}
+
+/**
  * Mint an owner-scoped self-export bearer for `/v1/*` reads by driving the
  * canonical RFC 8628 device flow against the AS, server-to-server.
  *

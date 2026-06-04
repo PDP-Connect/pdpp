@@ -67,17 +67,6 @@ const GITHUB_REPOS = [
   { id: 'gh:repo:567890', name: 'private-project', full_name: 'seedowner/private-project', description: 'Work project', language: 'Go', stargazers_count: 0, forks_count: 0, is_private: true, is_fork: false, topics: [], source_created_at: isoDate(200), source_updated_at: isoDate(1) },
 ];
 
-const GITHUB_COMMITS = [
-  { id: 'gh:commit:abc1', repo_full_name: 'seedowner/personal-site', sha: 'abc1def2', message: 'feat: add dark mode toggle', additions: 87, deletions: 12, source_created_at: isoDate(5) },
-  { id: 'gh:commit:abc2', repo_full_name: 'seedowner/personal-site', sha: 'abc2def3', message: 'fix: mobile navigation overflow', additions: 15, deletions: 8, source_created_at: isoDate(6) },
-  { id: 'gh:commit:abc3', repo_full_name: 'seedowner/dotfiles', sha: 'abc3def4', message: 'chore: update neovim plugins', additions: 43, deletions: 21, source_created_at: isoDate(2) },
-  { id: 'gh:commit:abc4', repo_full_name: 'seedowner/ml-experiments', sha: 'abc4def5', message: 'feat: add attention visualization', additions: 210, deletions: 5, source_created_at: isoDate(30) },
-  { id: 'gh:commit:abc5', repo_full_name: 'seedowner/private-project', sha: 'abc5def6', message: 'feat: implement auth middleware', additions: 320, deletions: 45, source_created_at: isoDate(1) },
-  { id: 'gh:commit:abc6', repo_full_name: 'seedowner/dotfiles', sha: 'abc6def7', message: 'refactor: reorganize zsh aliases', additions: 67, deletions: 89, source_created_at: isoDate(10) },
-  { id: 'gh:commit:abc7', repo_full_name: 'seedowner/personal-site', sha: 'abc7def8', message: 'docs: update README', additions: 45, deletions: 12, source_created_at: isoDate(15) },
-  { id: 'gh:commit:abc8', repo_full_name: 'seedowner/advent-of-code', sha: 'abc8def9', message: 'solve: day 25 part 2', additions: 55, deletions: 0, source_created_at: isoDate(120) },
-];
-
 const GITHUB_STARRED = [
   { id: 'gh:starred:111', full_name: 'anthropics/claude-code', description: 'The official Claude Code CLI', language: 'TypeScript', stargazers_count: 15000, starred_at: isoDate(30) },
   { id: 'gh:starred:222', full_name: 'neovim/neovim', description: 'Vim-fork focused on extensibility and usability', language: 'Vim Script', stargazers_count: 78000, starred_at: isoDate(60) },
@@ -160,17 +149,13 @@ async function main() {
   }
 
   // GitHub
-  if (wants('repositories', 'commits', 'starred_repos')) {
+  if (wants('repositories', 'starred')) {
     emit({ type: 'PROGRESS', stream: 'repositories', message: `Emitting ${GITHUB_REPOS.length} repos` });
     for (const repo of GITHUB_REPOS) emitRecord('repositories', repo);
     emit({ type: 'STATE', stream: 'repositories', cursor: { last_updated: GITHUB_REPOS[0].source_updated_at } });
 
-    emit({ type: 'PROGRESS', stream: 'commits', message: `Emitting ${GITHUB_COMMITS.length} commits` });
-    for (const commit of GITHUB_COMMITS) emitRecord('commits', commit);
-    emit({ type: 'STATE', stream: 'commits', cursor: { since: GITHUB_COMMITS[0].source_created_at } });
-
-    emit({ type: 'PROGRESS', stream: 'starred_repos', message: `Emitting ${GITHUB_STARRED.length} starred repos` });
-    for (const star of GITHUB_STARRED) emitRecord('starred_repos', star);
+    emit({ type: 'PROGRESS', stream: 'starred', message: `Emitting ${GITHUB_STARRED.length} starred repos` });
+    for (const star of GITHUB_STARRED) emitRecord('starred', star);
   }
 
   // Reddit

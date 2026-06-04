@@ -984,6 +984,39 @@ async function listOwnerStreamsForConnector(
   }));
 }
 
+async function listExplicitPolyfillOwnerStreams(
+  ctx: MountRsReadContext,
+  req: RouteRequest,
+  ownerResolved: ResolvedManifest,
+): Promise<Record<string, unknown>[]> {
+  const requestParams = (req.query as Record<string, unknown>) || {};
+  const ownerSubjectId = ctx.getOwnerTokenSubjectId(req);
+  const grant = buildOwnerReadGrantForManifest(ownerResolved.manifest);
+  const firstStream = Array.isArray(grant.streams) ? grant.streams[0]?.name : null;
+  const { bindings, warnings: resolverWarnings } = await ctx.resolveReadRequestBindings({
+    ownerSubjectId,
+    storageBinding: ownerResolved.storageBinding,
+    grant,
+    requestParams,
+    streamName: firstStream ?? null,
+    nativeProviderStorage: false,
+  });
+  req._pdpp_resolver_warnings = [...(req._pdpp_resolver_warnings || []), ...(resolverWarnings || [])];
+  return await ctx.listStreamsAcrossBindings(bindings, grant, ownerResolved.manifest, {
+    resolveBindingsForStream: async (streamGrant: GrantStreamLike) => {
+      const { bindings: streamBindings } = await ctx.resolveReadRequestBindings({
+        ownerSubjectId,
+        storageBinding: ownerResolved.storageBinding,
+        grant,
+        requestParams,
+        streamName: streamGrant?.name || null,
+        nativeProviderStorage: false,
+      });
+      return streamBindings;
+    },
+  });
+}
+
 async function listOwnerStreamsAcrossRegisteredConnectors(
   ctx: MountRsReadContext,
   req: RouteRequest
@@ -1053,10 +1086,16 @@ async function buildStreamsListOwnerPlan(
   return {
     operationInput: {
       actor: { kind: "owner", subject_id: tokenInfo.subject_id || null },
+      connection_id: resolveRequestConnectionId(req.query),
     },
     dependencies: {
       getSourceDescriptor: () => queryContext.sourceDescriptor,
-      listSummaries: async () => ctx.listAllStreams(ownerResolved.storageBinding),
+      listSummaries: async () => {
+        if (ownerScope.public_scope === "polyfill" || ownerScope.source?.kind === "connector") {
+          return listExplicitPolyfillOwnerStreams(ctx, req, ownerResolved);
+        }
+        return ctx.listAllStreams(ownerResolved.storageBinding);
+      },
     },
     streamListFreshnessEvidence,
   };

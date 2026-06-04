@@ -12,7 +12,12 @@
  */
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { getOwnerToken, getRsInternalUrl, ReferenceServerUnreachableError } from "./owner-token.ts";
+import {
+  getOwnerToken,
+  getRsInternalUrl,
+  ReferenceServerUnreachableError,
+  ResourceServerHttpError,
+} from "./owner-token.ts";
 import { type CanonicalReadWarning, extractReadWarnings } from "./read-envelope.ts";
 import type { RefConnectionHealthSnapshot, RefLocalDeviceProgress, RefRetainedBytesBreakdown } from "./ref-client.ts";
 import { verifyDashboardSession } from "./verify-session.ts";
@@ -121,7 +126,7 @@ async function authedFetch(path: string, params?: Record<string, string | number
   }
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`RS ${path} failed (${res.status}): ${body}`);
+    throw new ResourceServerHttpError(path, res.status, body);
   }
   return res.json();
 }

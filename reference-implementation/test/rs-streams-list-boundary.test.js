@@ -58,3 +58,17 @@ test('sandbox builders.ts no longer exports buildLiveStreamsList', () => {
     'buildLiveStreamsList must be removed so the public route cannot import a parallel AS/RS builder',
   );
 });
+
+test('polyfill owner stream list is manifest-scoped, not raw storage-scoped', () => {
+  const src = read('reference-implementation/server/routes/rs-read.ts');
+  assert.match(
+    src,
+    /async function listExplicitPolyfillOwnerStreams[\s\S]*buildOwnerReadGrantForManifest\(ownerResolved\.manifest\)[\s\S]*ctx\.listStreamsAcrossBindings\(/,
+    'explicit polyfill owner stream lists must use manifest-grant-scoped summaries',
+  );
+  assert.equal(
+    /listSummaries:\s*async\s*\(\)\s*=>\s*ctx\.listAllStreams\(ownerResolved\.storageBinding\)/.test(src),
+    false,
+    'explicit owner connector scope must not expose raw storage streams that manifest/detail/records routes reject',
+  );
+});

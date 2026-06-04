@@ -3002,8 +3002,9 @@ export async function deleteAllRecordsForConnector(connectorId) {
   if (typeof connectorId !== 'string' || !connectorId) {
     return { deletedCount: 0, streams: [] };
   }
+  const storageConnectorId = canonicalConnectorKey(connectorId) ?? connectorId;
   if (isPostgresStorageBackend()) {
-    return postgresDeleteAllRecordsForConnector(connectorId);
+    return postgresDeleteAllRecordsForConnector(storageConnectorId);
   }
   // REVIEWED-BOUNDED: rows are one per distinct (connector instance, stream)
   // pair a connector type has produced. Manifest stream counts are bounded by
@@ -3011,11 +3012,11 @@ export async function deleteAllRecordsForConnector(connectorId) {
   // configured connection set, not record-table cardinality.
   const namespaceRows = allowUnboundedReadAcknowledged(
     referenceQueries.recordsDeleteListInstanceStreamsByConnector,
-    [connectorId],
+    [storageConnectorId],
   );
   const countRow = getOne(
     referenceQueries.recordsDeleteCountRecordsByConnector,
-    [connectorId],
+    [storageConnectorId],
   );
   const deletedCount = countRow?.count || 0;
   const streams = Array.from(new Set(namespaceRows.map((row) => row.stream)));
@@ -3034,8 +3035,8 @@ export async function deleteAllRecordsForConnector(connectorId) {
     const connectorInstanceId = row.connector_instance_id;
     const stream = row.stream;
     await markRetainedSizeStreamDirty({ connectorInstanceId, stream });
-    await lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
-    await semanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
+    await lexicalIndexDeleteByConnectorStream({ connectorId: storageConnectorId, connectorInstanceId, stream });
+    await semanticIndexDeleteByConnectorStream({ connectorId: storageConnectorId, connectorInstanceId, stream });
   }
   if (deletedCount > 0) {
     markDatasetSummaryProjectionStale('bulk connector record delete bypassed exact dataset summary projection deltas');

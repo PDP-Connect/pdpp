@@ -6,7 +6,7 @@ import { buttonVariants } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { DashboardShell, ServerUnreachable } from "../../../components/shell.tsx";
 import { WarningsBanner } from "../../../components/warnings-banner.tsx";
-import { ReferenceServerUnreachableError } from "../../../lib/owner-token.ts";
+import { ReferenceServerUnreachableError, ResourceServerHttpError } from "../../../lib/owner-token.ts";
 import {
   computeDefaultColumns,
   deriveAllColumns,
@@ -73,6 +73,41 @@ export default async function StreamPage({
         <DashboardShell active="records">
           <PageHeader title="Connections" />
           <ServerUnreachable />
+        </DashboardShell>
+      );
+    }
+    if (err instanceof ResourceServerHttpError && (err.status === 404 || err.status === 410)) {
+      // Stream is not (or no longer) advertised by this connector's manifest.
+      // Owner-mode stream visibility is manifest-derived; once a stream is
+      // dropped from the manifest, records-read returns 404. Render a bounded
+      // honest state instead of crashing to the segment error boundary.
+      return (
+        <DashboardShell active="records">
+          <PageHeader
+            breadcrumbs={[
+              { label: "Connections", href: "/dashboard/records" },
+              { label: connectionId, href: `/dashboard/records/${encodeURIComponent(connectionId)}` },
+              { label: streamName },
+            ]}
+            title={<code className="font-mono">{streamName}</code>}
+          />
+          <div className="rounded-md border border-border/70 bg-muted/30 p-4">
+            <p className="pdpp-caption text-foreground">
+              This stream is not available for <code className="font-mono">{connectionId}</code>.
+            </p>
+            <p className="pdpp-caption mt-2 text-muted-foreground">
+              The connector no longer advertises a stream named <code className="font-mono">{streamName}</code>. It may
+              have been renamed or retired in a newer manifest, or the stream list is showing a stale entry that has not
+              yet been reconciled. Return to{" "}
+              <Link
+                className="underline underline-offset-2"
+                href={`/dashboard/records/${encodeURIComponent(connectionId)}`}
+              >
+                the connection page
+              </Link>{" "}
+              to see currently available streams.
+            </p>
+          </div>
         </DashboardShell>
       );
     }
