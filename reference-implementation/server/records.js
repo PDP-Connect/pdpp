@@ -2916,9 +2916,11 @@ export async function deleteAllRecords(storageTarget, stream) {
     [connectorInstanceId, stream],
   );
   const deletedRecordCount = countRow?.count || 0;
-  exec(referenceQueries.recordsDeleteDeleteRecordsByStream, [connectorInstanceId, stream]);
-  exec(referenceQueries.recordsDeleteDeleteRecordChangesByStream, [connectorInstanceId, stream]);
-  exec(referenceQueries.recordsDeleteDeleteVersionCounterByStream, [connectorInstanceId, stream]);
+  writeTransaction(() => {
+    exec(referenceQueries.recordsDeleteDeleteRecordsByStream, [connectorInstanceId, stream]);
+    exec(referenceQueries.recordsDeleteDeleteRecordChangesByStream, [connectorInstanceId, stream]);
+    exec(referenceQueries.recordsDeleteDeleteVersionCounterByStream, [connectorInstanceId, stream]);
+  });
   if (deletedRecordCount > 0) {
     markDatasetSummaryProjectionStale('bulk stream record delete bypassed exact dataset summary projection deltas');
     await markRetainedSizeStreamDirty({ connectorInstanceId, stream });
@@ -2963,13 +2965,19 @@ export async function deleteAllRecordsForConnector(connectorId) {
   const deletedCount = countRow?.count || 0;
   const streams = Array.from(new Set(namespaceRows.map((row) => row.stream)));
 
+  writeTransaction(() => {
+    for (const row of namespaceRows) {
+      const connectorInstanceId = row.connector_instance_id;
+      const stream = row.stream;
+      exec(referenceQueries.recordsDeleteDeleteRecordsByStream, [connectorInstanceId, stream]);
+      exec(referenceQueries.recordsDeleteDeleteRecordChangesByStream, [connectorInstanceId, stream]);
+      exec(referenceQueries.recordsDeleteDeleteVersionCounterByStream, [connectorInstanceId, stream]);
+      exec(referenceQueries.recordsDeleteDeleteBlobBindingsByStream, [connectorInstanceId, stream]);
+    }
+  });
   for (const row of namespaceRows) {
     const connectorInstanceId = row.connector_instance_id;
     const stream = row.stream;
-    exec(referenceQueries.recordsDeleteDeleteRecordsByStream, [connectorInstanceId, stream]);
-    exec(referenceQueries.recordsDeleteDeleteRecordChangesByStream, [connectorInstanceId, stream]);
-    exec(referenceQueries.recordsDeleteDeleteVersionCounterByStream, [connectorInstanceId, stream]);
-    exec(referenceQueries.recordsDeleteDeleteBlobBindingsByStream, [connectorInstanceId, stream]);
     await markRetainedSizeStreamDirty({ connectorInstanceId, stream });
     await lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
     await semanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
