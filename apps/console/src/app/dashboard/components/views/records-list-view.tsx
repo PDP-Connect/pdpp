@@ -878,6 +878,12 @@ const CHURN_DISPOSITION_META: Record<ChurnRemediation, { label: string; tone: st
     title:
       "Has a registered, fingerprint-mirrored compaction policy — the dry-run command reports what redundant history it would remove.",
   },
+  reviewed_compaction_residue: {
+    label: "reviewed residue",
+    tone: "bg-muted text-muted-foreground",
+    title:
+      "Owner-reviewed: the compaction policy is registered and the connector is now fingerprint-correct. The dry-run confirms removableVersions=0 — this is pre-fix history that accumulated before the policy was applied. Not actively growing; safe to leave or compact with --apply.",
+  },
   point_in_time_real_field: {
     label: "expected history",
     tone: "bg-muted text-muted-foreground",

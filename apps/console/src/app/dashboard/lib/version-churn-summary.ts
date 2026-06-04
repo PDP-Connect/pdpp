@@ -132,7 +132,41 @@ export const LOSSLESS_COMPACTION_POLICY_STREAMS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Classification of a churn row's remediation path. There are three, mapping
+ * (connector, stream) pairs that have a registered lossless compaction policy
+ * AND have been owner-reviewed as "expected residue" — history that accumulated
+ * before the fingerprint fix was deployed. The fingerprint-correct connector
+ * now stops producing no-op versions, so the dry-run returns
+ * `removableVersions=0`: there is nothing actionable to compact. The history is
+ * legitimate (pre-fix versions that were real at the time they were written).
+ *
+ * Streams in this set are still in `LOSSLESS_COMPACTION_POLICY_STREAMS` — the
+ * compaction policy is valid and the command still works. The distinction is
+ * purely presentational: "reviewed residue" means the owner has inspected this
+ * state and confirmed it is expected, not actively-growing no-op churn that
+ * needs a corrective action now. The dry-run command is still shown (it remains
+ * the correct tool for applying `--apply` if the owner ever wants to free the
+ * disk space), but the row is no longer framed as "actionable today."
+ *
+ * Adding a pair to this set is an explicit owner acknowledgement. Do not add
+ * pairs whose churn is still actively growing from no-op connector behaviour —
+ * those belong in `LOSSLESS_COMPACTION_POLICY_STREAMS` only until the
+ * connector is fixed and the state is reviewed.
+ *
+ * All pairs here MUST also be in `LOSSLESS_COMPACTION_POLICY_STREAMS`; the
+ * console test `version-churn-summary.test.ts` guards this invariant.
+ */
+export const REVIEWED_COMPACTION_RESIDUE_STREAMS: ReadonlySet<string> = new Set([
+  // These four streams accumulated no-op/run-clock history before the
+  // fingerprint fix deployed. The dry-run confirms removableVersions=0 (no
+  // adjacent identical versions remain to compact). Reviewed 2026-06-04.
+  "usaa/accounts",
+  "usaa/statements",
+  "chase/statements",
+  "claude-code/sessions",
+]);
+
+/**
+ * Classification of a churn row's remediation path. There are four, mapping
  * to the SLVP version-churn dispositions (see
  * design-notes/real-field-version-churn-point-in-time-streams-2026-06-02.md):
  *
@@ -141,6 +175,13 @@ export const LOSSLESS_COMPACTION_POLICY_STREAMS: ReadonlySet<string> = new Set([
  *   read-only dry-run maintenance command is a real remediation here. This is
  *   the only class that gets a command, and it is the only class that is
  *   actually actionable as "clean up redundant history."
+ * - `reviewed_compaction_residue`: a stream with a registered compaction policy
+ *   that has been owner-reviewed as expected residue. The connector is now
+ *   fingerprint-correct (no new no-op versions), and the dry-run confirms
+ *   `removableVersions=0`. The history is legitimate pre-fix accumulation. Not
+ *   alarming — the dry-run command is still shown for completeness (the owner
+ *   may run `--apply` later to free disk space), but this row does not count
+ *   as "needs review."
  * - `point_in_time_real_field`: genuine real-field movement on a snapshot
  *   record (a follower count, a member count, a balance). This is EXPECTED
  *   RETAINED HISTORY, not a defect — the observations are the product. NOT
@@ -154,17 +195,22 @@ export const LOSSLESS_COMPACTION_POLICY_STREAMS: ReadonlySet<string> = new Set([
  *   It still gets a dry-run command (the read-only script is the safe first
  *   diagnostic step; it will report whether a policy exists).
  */
-export type ChurnRemediation = "lossless_compaction_candidate" | "point_in_time_real_field" | "unclassified";
+export type ChurnRemediation =
+  | "lossless_compaction_candidate"
+  | "reviewed_compaction_residue"
+  | "point_in_time_real_field"
+  | "unclassified";
 
 /**
  * True when this row is already classified as expected retained history that
  * the operator should NOT be alarmed about: a point-in-time real-field stream
- * (or, in future, any disposition the connector declares as expected). These
- * rows keep their full counts and risk chip in the table, but they do not
- * count toward the "needs review" headline.
+ * or an owner-reviewed compaction residue stream. These rows keep their full
+ * counts and risk chip in the table, but they do not count toward the "needs
+ * review" headline.
  */
 export function isExpectedRetainedHistory(row: RefRecordVersionStatsRow): boolean {
-  return classifyChurnRow(row) === "point_in_time_real_field";
+  const classification = classifyChurnRow(row);
+  return classification === "point_in_time_real_field" || classification === "reviewed_compaction_residue";
 }
 
 /**
@@ -193,13 +239,17 @@ function normalizeConnectorId(connectorId: string | null): string | null {
  *
  *   1. in the real-field known-list → `point_in_time_real_field`
  *      (expected retained history; never compacted);
- *   2. else if it has a registered lossless compaction policy →
+ *   2. else if it is in the reviewed-residue set →
+ *      `reviewed_compaction_residue` (policy exists, dry-run shows 0
+ *      removable, owner has reviewed as expected pre-fix accumulation);
+ *   3. else if it has a registered lossless compaction policy →
  *      `lossless_compaction_candidate` (dry-run command is a real fix);
- *   3. else → `unclassified` (genuinely needs review).
+ *   4. else → `unclassified` (genuinely needs review).
  *
- * The real-field list takes precedence: those pairs intentionally have NO
- * compaction policy, so this ordering is defensive only — a pair can never be
- * in both sets without failing the in-sync guardrail tests.
+ * The real-field list takes precedence over both compaction sets: those pairs
+ * intentionally have NO compaction policy, so the ordering is defensive.
+ * Reviewed residue is checked before general compaction candidates so that an
+ * owner-acknowledged stream is not re-promoted to "actionable candidate."
  */
 export function classifyChurnRow(row: RefRecordVersionStatsRow): ChurnRemediation {
   const connector = normalizeConnectorId(row.connector_id);
@@ -208,6 +258,9 @@ export function classifyChurnRow(row: RefRecordVersionStatsRow): ChurnRemediatio
   );
   if (isRealField) {
     return "point_in_time_real_field";
+  }
+  if (connector && REVIEWED_COMPACTION_RESIDUE_STREAMS.has(`${connector}/${row.stream}`)) {
+    return "reviewed_compaction_residue";
   }
   if (connector && LOSSLESS_COMPACTION_POLICY_STREAMS.has(`${connector}/${row.stream}`)) {
     return "lossless_compaction_candidate";
@@ -246,12 +299,18 @@ export function churnRowLabel(row: RefRecordVersionStatsRow): string {
 
 /** Per-disposition counts over a churn row set. */
 export interface ChurnDispositionCounts {
-  /** Rows with a registered lossless compaction policy. */
+  /** Rows with a registered lossless compaction policy (not yet reviewed). */
   compactionCandidates: number;
   /** Rows that are expected retained point-in-time / real-field history. */
   expectedRetained: number;
   /** Rows still needing operator review (unclassified high/watch churn). */
   needsReview: number;
+  /**
+   * Rows with a registered policy that have been owner-reviewed as expected
+   * pre-fix residue — the fingerprint-correct connector stopped producing
+   * no-op versions, dry-run shows removableVersions=0.
+   */
+  reviewedResidueCount: number;
 }
 
 /**
@@ -262,6 +321,7 @@ export function countChurnDispositions(rows: readonly RefRecordVersionStatsRow[]
   let needsReviewCount = 0;
   let compactionCandidates = 0;
   let expectedRetained = 0;
+  let reviewedResidueCount = 0;
   for (const row of rows) {
     switch (classifyChurnRow(row)) {
       case "unclassified":
@@ -273,11 +333,14 @@ export function countChurnDispositions(rows: readonly RefRecordVersionStatsRow[]
       case "point_in_time_real_field":
         expectedRetained += 1;
         break;
+      case "reviewed_compaction_residue":
+        reviewedResidueCount += 1;
+        break;
       default:
         break;
     }
   }
-  return { needsReview: needsReviewCount, compactionCandidates, expectedRetained };
+  return { needsReview: needsReviewCount, compactionCandidates, expectedRetained, reviewedResidueCount };
 }
 
 function pluralStreams(n: number): string {
@@ -327,6 +390,11 @@ export function summarizeVersionChurn(rows: readonly RefRecordVersionStatsRow[])
   if (dispositions.compactionCandidates > 0) {
     segments.push(
       `${dispositions.compactionCandidates} compaction ${dispositions.compactionCandidates === 1 ? "candidate" : "candidates"}`
+    );
+  }
+  if (dispositions.reviewedResidueCount > 0) {
+    segments.push(
+      `${dispositions.reviewedResidueCount} reviewed ${dispositions.reviewedResidueCount === 1 ? "residue" : "residue streams"}`
     );
   }
   if (dispositions.expectedRetained > 0) {
