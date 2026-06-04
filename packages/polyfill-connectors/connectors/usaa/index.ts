@@ -44,6 +44,12 @@ import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerp
 import { isMainModule } from "../../src/is-main-module.ts";
 import { readPlaywrightDownloadBufferDetailed } from "../../src/playwright-download.ts";
 import {
+  openStatementHydrationCursor,
+  readPriorStatementHydration,
+  type StatementHydration,
+  type StatementHydrationCursor,
+} from "../../src/statement-hydration-carry-forward.ts";
+import {
   buildAccountRecord,
   buildAccountStatsRecord,
   buildCandidateStarts,
@@ -496,16 +502,25 @@ function formatDiagnosticInfo(diag: DiagnosticInfo): string {
 
 /**
  * Emit one `statements` record per index row. A hydrated row gets a
- * populated `pdf_path` / `pdf_sha256` / `document_url`; a failed
- * hydration falls back to an index-only row (all three are null) so
- * the client never loses the fact that the statement exists. Emits a
- * final PROGRESS + STATE for the stream.
+ * populated `pdf_path` / `pdf_sha256` / `document_url`. A failed hydration
+ * falls back to an index-only row so the client never loses the fact that
+ * the statement exists — and, if the statement was previously hydrated,
+ * carries the prior content-addressed pointers forward (instead of null)
+ * so a transient re-download failure does not flap them `value -> null` and
+ * re-version an immutable statement. A statement that was never hydrated
+ * stays all-null (honest index-only). Emits a final PROGRESS + STATE.
  *
- * Invariants (tested in integration.test.ts):
+ * Body-honesty: a carried-forward body asserts the artifact's last known
+ * content-addressed location (bytes a prior run stored, which never move),
+ * not that this run re-verified it; the failed-download SKIP_RESULT emitted
+ * by the hydration path remains the authoritative per-run record.
+ *
+ * Invariants (tested in integration.test.ts + statements-fingerprint.test.ts):
  *   - same number of records emitted as rows in, regardless of
- *     hydration success (null fallback, not drop),
- *   - hydrated rows set pdf_path + pdf_sha256 + document_url; index-
- *     only rows leave all three null,
+ *     hydration success (carry-forward/null fallback, not drop),
+ *   - hydrated rows set pdf_path + pdf_sha256 + document_url; a
+ *     never-hydrated failed row leaves all three null; a previously-
+ *     hydrated failed row carries the prior pointers forward,
  *   - STATE emits exactly once after all records.
  */
 export async function emitStatementRecords(
@@ -513,27 +528,44 @@ export async function emitStatementRecords(
   indexRows: readonly IndexRow[],
   hydrationResults: Map<number, HydrationResult>,
   summary: HydrationSummary,
-  fingerprintCursor?: FingerprintCursor
+  fingerprintCursor?: FingerprintCursor,
+  hydrationCursor?: StatementHydrationCursor
 ): Promise<void> {
   for (const row of indexRows) {
     const ok = hydrationSuccess(hydrationResults.get(row.rowIndex));
+    // On success use this run's fresh pointers; on failure carry the prior
+    // hydrated pointers forward if the statement was previously hydrated,
+    // else stay all-null.
+    let pointers: StatementHydration;
+    if (ok) {
+      pointers = { document_url: fileUrlForPath(ok.pdfPath), pdf_path: ok.pdfPath, pdf_sha256: ok.pdfSha256 };
+    } else if (hydrationCursor) {
+      pointers = hydrationCursor.resolveOnFailure(row.id);
+    } else {
+      pointers = { document_url: null, pdf_path: null, pdf_sha256: null };
+    }
     const rec: StatementRecord = {
       id: row.id,
       account_id: row.account_id,
       title: row.title,
       date_delivered: row.date_delivered,
       account_reference: row.account_reference,
-      document_url: ok ? fileUrlForPath(ok.pdfPath) : null,
-      pdf_sha256: ok?.pdfSha256 ?? null,
-      pdf_path: ok?.pdfPath ?? null,
+      document_url: pointers.document_url,
+      pdf_sha256: pointers.pdf_sha256,
+      pdf_path: pointers.pdf_path,
       fetched_at: nowIso(),
     };
+    // Record the resolved pointers (fresh, carried, or all-null) so the
+    // next run's prior map stays complete and the prune step is correct.
+    hydrationCursor?.note(row.id, pointers);
     // Gate on a per-statement fingerprint that excludes the run-clock
     // `fetched_at`. A statement's identity fields (id, account_id, title,
     // date_delivered) are immutable, and pdf_path/pdf_sha256/document_url
     // are content-addressed (the path embeds the sha256 prefix), so a
     // re-hydrated identical statement produces a byte-identical body
-    // modulo `fetched_at`. Without this gate every run appended a fresh
+    // modulo `fetched_at`. With carry-forward, a transient failure also
+    // produces a body identical to the prior hydrated one, so the cursor
+    // suppresses the re-emit. Without this gate every run appended a fresh
     // version of every statement (~15 versions/record of pure run-clock
     // churn). When no cursor is supplied (legacy callers/tests) the
     // record always emits.
@@ -542,8 +574,11 @@ export async function emitStatementRecords(
     }
   }
   // Statements is a full scan of the documents index: prune fingerprints
-  // for statements no longer listed so a re-appearance re-emits.
+  // (and the carried hydration pointers, in lockstep) for statements no
+  // longer listed so a re-appearance re-emits and a delisted statement
+  // stops being carried forever.
   fingerprintCursor?.pruneStale();
+  hydrationCursor?.pruneStale();
   const progressMsg = {
     type: "PROGRESS",
     stream: "statements",
@@ -555,6 +590,9 @@ export async function emitStatementRecords(
   const cursor: Record<string, unknown> = { fetched_at: nowIso() };
   if (fingerprintCursor && fingerprintCursor.size() > 0) {
     cursor.fingerprints = fingerprintCursor.toState();
+  }
+  if (hydrationCursor && hydrationCursor.size() > 0) {
+    cursor.hydration = hydrationCursor.toState();
   }
   await deps.emit({
     type: "STATE",
@@ -1736,7 +1774,8 @@ async function runStatementsStream(
   accounts: readonly DashboardAccount[],
   requested: BrowserCollectContext["requested"],
   statementsFingerprintCursor?: FingerprintCursor,
-  transactionsFingerprintCursor?: FingerprintCursor
+  transactionsFingerprintCursor?: FingerprintCursor,
+  statementsHydrationCursor?: StatementHydrationCursor
 ): Promise<void> {
   try {
     await deps.emit({
@@ -1760,7 +1799,14 @@ async function runStatementsStream(
     const summary = await hydratePdfsForIndex(deps, indexRows);
 
     if (requested.has("statements")) {
-      await emitStatementRecords(deps, indexRows, summary.results, summary, statementsFingerprintCursor);
+      await emitStatementRecords(
+        deps,
+        indexRows,
+        summary.results,
+        summary,
+        statementsFingerprintCursor,
+        statementsHydrationCursor
+      );
     }
     if (requested.has("transactions")) {
       await emitPdfStatementTransactions(deps, indexRows, summary.results, accounts, transactionsFingerprintCursor);
@@ -2141,12 +2187,19 @@ if (isMainModule(import.meta.url)) {
               priorFingerprints: readPriorStatementFingerprints(state),
             })
           : undefined;
+        // Carry-forward of prior hydrated PDF pointers: seeded from the prior
+        // statements STATE so a transient re-download failure re-emits the
+        // prior content-addressed pointers instead of null.
+        const statementsHydrationCursor = requested.has("statements")
+          ? openStatementHydrationCursor(readPriorStatementHydration(state.statements))
+          : undefined;
         await runStatementsStream(
           { ...deps, page },
           accounts,
           requested,
           statementsFingerprintCursor,
-          transactionsFingerprintCursor
+          transactionsFingerprintCursor,
+          statementsHydrationCursor
         );
       }
 

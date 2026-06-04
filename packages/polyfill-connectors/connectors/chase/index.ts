@@ -51,6 +51,12 @@ import { isMainModule } from "../../src/is-main-module.ts";
 import { savePlaywrightDownload } from "../../src/playwright-download.ts";
 import { resourceSet } from "../../src/scope-filters.ts";
 import {
+  openStatementHydrationCursor,
+  readPriorStatementHydration,
+  type StatementHydration,
+  type StatementHydrationCursor,
+} from "../../src/statement-hydration-carry-forward.ts";
+import {
   ACTIVITY_LABELS,
   accountSlug,
   chooseActivity,
@@ -1249,14 +1255,24 @@ export function statementRowOutsideTimeRange(deps: EmitDeps, dateIso: string | n
 }
 
 /**
- * Emit a `statements` record with no hydrated PDF. Used when the PDF
- * download click fails — the caller still wants a record that the
- * statement exists so the owner can see it in the archive, even if the
- * bytes aren't available this run.
+ * Emit a `statements` record when the PDF could not be hydrated this run —
+ * the caller still wants a record that the statement exists so the owner
+ * can see it in the archive, even though this run did not fetch the bytes.
  *
- * Gated on the per-statement fingerprint cursor (excludes `fetched_at`)
- * so a re-listed index-only statement that is byte-identical modulo the
- * run clock does not append a fresh version every run.
+ * Carry-forward: if the statement was previously hydrated, re-emit the
+ * prior `document_url`/`pdf_path`/`pdf_sha256` (which point at content-
+ * addressed bytes a prior run stored and that never move) instead of null.
+ * A statement that was never hydrated stays all-null (honest index-only).
+ * Either way the per-run `pdf_download_failed` SKIP_RESULT — emitted by the
+ * caller — remains the authoritative record that this run did not re-fetch
+ * the PDF; the carried body asserts the artifact's last known location, not
+ * that this run re-verified it. This stops the `value -> null` hydration-
+ * availability flap from re-versioning an immutable statement.
+ *
+ * Gated on the per-statement fingerprint cursor (excludes `fetched_at`) so a
+ * re-listed statement that is byte-identical modulo the run clock does not
+ * append a fresh version every run; with carry-forward the carried body
+ * matches the prior hydrated body, so the cursor suppresses the re-emit.
  */
 export async function emitStatementIndexOnly(
   deps: EmitDeps,
@@ -1264,19 +1280,26 @@ export async function emitStatementIndexOnly(
   row: StatementRow,
   accountId: string | null,
   dateIso: string | null,
-  fingerprintCursor?: FingerprintCursor
+  fingerprintCursor?: FingerprintCursor,
+  hydrationCursor?: StatementHydrationCursor
 ): Promise<void> {
+  const carried: StatementHydration = hydrationCursor
+    ? hydrationCursor.resolveOnFailure(id)
+    : { document_url: null, pdf_path: null, pdf_sha256: null };
   const record = {
     id,
     account_id: accountId,
     title: row.title,
     date_delivered: dateIso,
     account_reference: row.account_reference,
-    document_url: null,
-    pdf_path: null,
-    pdf_sha256: null,
+    document_url: carried.document_url,
+    pdf_path: carried.pdf_path,
+    pdf_sha256: carried.pdf_sha256,
     fetched_at: deps.emittedAt,
   };
+  // Record the resolved pointers (carried or all-null) so the next run's
+  // prior map stays complete and the prune step has the right inputs.
+  hydrationCursor?.note(id, carried);
   if (!fingerprintCursor || fingerprintCursor.shouldEmit(record)) {
     await deps.emitRecord("statements", record);
   }
@@ -1577,7 +1600,8 @@ async function processStatementRow(
   filteredAccounts: readonly ChaseAccount[],
   accounts: readonly ChaseAccount[],
   accountsResFilter: ReadonlySet<string> | null,
-  fingerprintCursor?: FingerprintCursor
+  fingerprintCursor?: FingerprintCursor,
+  hydrationCursor?: StatementHydrationCursor
 ): Promise<void> {
   try {
     const dateIso = parseDateDelivered(row.date_delivered_raw);
@@ -1609,9 +1633,11 @@ async function processStatementRow(
         message: `Statement PDF download failed: ${dlResult.error}`,
         diagnostics: { error: dlResult.error, account_matched: Boolean(accountId) },
       });
-      // Still emit the index row so the owner has a record the statement
-      // exists, just without hydrated bytes.
-      await emitStatementIndexOnly(deps, id, row, accountId, dateIso, fingerprintCursor);
+      // Still emit a record so the owner has proof the statement exists.
+      // If it was previously hydrated, carry the prior pointers forward so a
+      // transient download failure does not flap them to null and re-version
+      // an immutable statement.
+      await emitStatementIndexOnly(deps, id, row, accountId, dateIso, fingerprintCursor, hydrationCursor);
       return;
     }
 
@@ -1626,6 +1652,13 @@ async function processStatementRow(
       pdf_sha256: dlResult.pdfSha256,
       fetched_at: deps.emittedAt,
     };
+    // Record this run's fresh hydration so a later run that fails to
+    // re-download can carry these content-addressed pointers forward.
+    hydrationCursor?.note(id, {
+      document_url: record.document_url,
+      pdf_path: record.pdf_path,
+      pdf_sha256: record.pdf_sha256,
+    });
     // Gate on a per-statement fingerprint that excludes the run-clock
     // `fetched_at`. A statement's identity (id = hash(account_reference|
     // date|title)) is immutable and pdf_path/pdf_sha256/document_url are
@@ -1656,7 +1689,8 @@ async function runStatements(
   filteredAccounts: readonly ChaseAccount[],
   accounts: readonly ChaseAccount[],
   accountsResFilter: ReadonlySet<string> | null,
-  fingerprintCursor?: FingerprintCursor
+  fingerprintCursor?: FingerprintCursor,
+  hydrationCursor?: StatementHydrationCursor
 ): Promise<void> {
   try {
     await deps.emit({
@@ -1686,15 +1720,30 @@ async function runStatements(
         total: rows.length,
       } as const;
       await deps.emit(progressMsg);
-      await processStatementRow(deps, page, row, filteredAccounts, accounts, accountsResFilter, fingerprintCursor);
+      await processStatementRow(
+        deps,
+        page,
+        row,
+        filteredAccounts,
+        accounts,
+        accountsResFilter,
+        fingerprintCursor,
+        hydrationCursor
+      );
     }
 
     // Statements is a full scan of the documents index: prune fingerprints
-    // for statements no longer listed so a re-appearance re-emits.
+    // (and the carried hydration pointers, in lockstep) for statements no
+    // longer listed so a re-appearance re-emits and a delisted statement
+    // stops being carried forever.
     fingerprintCursor?.pruneStale();
+    hydrationCursor?.pruneStale();
     const cursor: Record<string, unknown> = { fetched_at: deps.emittedAt };
     if (fingerprintCursor && fingerprintCursor.size() > 0) {
       cursor.fingerprints = fingerprintCursor.toState();
+    }
+    if (hydrationCursor && hydrationCursor.size() > 0) {
+      cursor.hydration = hydrationCursor.toState();
     }
     const stateMsg: Extract<EmittedMessage, { type: "STATE" }> = {
       type: "STATE",
@@ -1867,7 +1916,21 @@ if (isMainModule(import.meta.url)) {
             excludeFromFingerprint: ["fetched_at"],
             priorFingerprints: readPriorStatementFingerprints(startState),
           });
-          await runStatements(deps, page, filteredAccounts, accounts, accountsResFilter, statementsFingerprintCursor);
+          // Carry-forward of prior hydrated PDF pointers: seeded from the
+          // prior statements STATE so a transient re-download failure re-emits
+          // the prior content-addressed pointers instead of null.
+          const statementsHydrationCursor = openStatementHydrationCursor(
+            readPriorStatementHydration(startState.statements)
+          );
+          await runStatements(
+            deps,
+            page,
+            filteredAccounts,
+            accounts,
+            accountsResFilter,
+            statementsFingerprintCursor,
+            statementsHydrationCursor
+          );
         }
       } finally {
         await rm(tmpDir, { recursive: true, force: true }).catch((): undefined => undefined);

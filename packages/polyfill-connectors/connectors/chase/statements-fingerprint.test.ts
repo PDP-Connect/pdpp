@@ -29,6 +29,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { EmittedMessage, StreamScope } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor, recordFingerprint } from "../../src/fingerprint-cursor.ts";
+import {
+  openStatementHydrationCursor,
+  readPriorStatementHydration,
+  type StatementHydrationCursor,
+} from "../../src/statement-hydration-carry-forward.ts";
 import { makeRecordingEmit } from "../../src/test-harness.ts";
 import { type EmitDeps, emitStatementIndexOnly, readPriorStatementFingerprints } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
@@ -188,4 +193,203 @@ test("statements: connector fingerprint (excludes fetched_at) == compaction fing
     recordFingerprint(later, ["fetched_at"]),
     "fetched_at must not participate; both runs hash identically"
   );
+});
+
+// ─── Hydration-availability carry-forward (AC-1..AC-6) ───────────────────
+//
+// A previously-hydrated immutable statement that later fails to re-download
+// must NOT flap its content-addressed pointers value->null and re-version.
+// processStatementRow's success branch is not exported, so these tests
+// reproduce its exact success record + `note` shape via `emitHydratedSuccess`
+// and drive the real failure path through the exported `emitStatementIndexOnly`.
+
+const STMT_ID = "S1";
+const ACCT = "INTACC123";
+const DATE = "2026-04-13";
+
+/** Mirror of processStatementRow's success branch: build the hydrated
+ *  record, gate it on the fingerprint cursor, and `note` the content-
+ *  addressed pointers into the hydration cursor — the exact shape the
+ *  connector persists on a successful download. */
+async function emitHydratedSuccess(
+  deps: EmitDeps,
+  emit: EmitDeps["emit"],
+  id: string,
+  row: StatementRow,
+  pdfPath: string,
+  pdfSha256: string,
+  fingerprint: ReturnType<typeof openFingerprintCursor>,
+  hydration: StatementHydrationCursor
+): Promise<void> {
+  const record = {
+    id,
+    account_id: ACCT,
+    title: row.title,
+    date_delivered: DATE,
+    account_reference: row.account_reference,
+    document_url: `file://${pdfPath}`,
+    pdf_path: pdfPath,
+    pdf_sha256: pdfSha256,
+    fetched_at: deps.emittedAt,
+  };
+  hydration.note(id, { document_url: record.document_url, pdf_path: record.pdf_path, pdf_sha256: record.pdf_sha256 });
+  if (fingerprint.shouldEmit(record)) {
+    await deps.emitRecord("statements", record);
+  }
+  await flushState(emit, deps.emittedAt, fingerprint, hydration);
+}
+
+/** Drive the failure path through the real exported `emitStatementIndexOnly`,
+ *  then flush the statements STATE carrying both cursors (mirrors
+ *  runStatements' end-of-loop STATE write). */
+async function emitFailureRow(
+  deps: EmitDeps,
+  emit: EmitDeps["emit"],
+  id: string,
+  row: StatementRow,
+  fingerprint: ReturnType<typeof openFingerprintCursor>,
+  hydration: StatementHydrationCursor
+): Promise<void> {
+  await emitStatementIndexOnly(deps, id, row, ACCT, DATE, fingerprint, hydration);
+  await flushState(emit, deps.emittedAt, fingerprint, hydration);
+}
+
+function flushState(
+  emit: EmitDeps["emit"],
+  emittedAt: string,
+  fingerprint: ReturnType<typeof openFingerprintCursor>,
+  hydration: StatementHydrationCursor
+): Promise<void> {
+  fingerprint.pruneStale();
+  hydration.pruneStale();
+  const cursor: Record<string, unknown> = { fetched_at: emittedAt };
+  if (fingerprint.size() > 0) {
+    cursor.fingerprints = fingerprint.toState();
+  }
+  if (hydration.size() > 0) {
+    cursor.hydration = hydration.toState();
+  }
+  return emit({ type: "STATE", stream: "statements", cursor });
+}
+
+function openCursors(priorState: Record<string, unknown>): {
+  fingerprint: ReturnType<typeof openFingerprintCursor>;
+  hydration: StatementHydrationCursor;
+} {
+  return {
+    fingerprint: openFingerprintCursor(priorState.statements, {
+      excludeFromFingerprint: ["fetched_at"],
+      priorFingerprints: readPriorStatementFingerprints(priorState),
+    }),
+    hydration: openStatementHydrationCursor(
+      readPriorStatementHydration((priorState as { statements?: unknown }).statements)
+    ),
+  };
+}
+
+test("AC-1: previously hydrated + transient download failure carries pointers forward (no flap)", async () => {
+  const row = makeRow();
+  const PDF = "/tmp/chase/2026-04-aaaa.pdf";
+  const SHA = "a".repeat(64);
+
+  // Run A: hydrate.
+  const a = makeDeps(FROZEN_EMITTED_AT_1);
+  const ca = openCursors({});
+  await emitHydratedSuccess(a.deps, a.deps.emit, STMT_ID, row, PDF, SHA, ca.fingerprint, ca.hydration);
+  assert.equal(a.emitted.length, 1, "run A emits the hydrated statement once");
+  const priorA = nextStateFrom(a.messages);
+
+  // Run B: same statement fails to re-download.
+  const b = makeDeps(FROZEN_EMITTED_AT_2);
+  const cb = openCursors(priorA);
+  await emitFailureRow(b.deps, b.deps.emit, STMT_ID, row, cb.fingerprint, cb.hydration);
+  assert.equal(b.emitted.length, 0, "run B emits NO new version — prior pointers carried forward");
+
+  const carried = readPriorStatementHydration(nextStateFrom(b.messages).statements);
+  assert.equal(carried.get(STMT_ID)?.pdf_path, PDF, "carried pdf_path survives the failed run");
+  assert.equal(carried.get(STMT_ID)?.pdf_sha256, SHA);
+});
+
+test("AC-2: never-hydrated failure stays all-null (honest), and the body has null pointers", async () => {
+  const row = makeRow();
+  const run = makeDeps(FROZEN_EMITTED_AT_1);
+  const c = openCursors({});
+  await emitFailureRow(run.deps, run.deps.emit, STMT_ID, row, c.fingerprint, c.hydration);
+  assert.equal(run.emitted.length, 1, "index-only row emits");
+  const rec = run.emitted[0]?.data as Record<string, unknown>;
+  assert.equal(rec.pdf_path, null, "never-hydrated stays all-null");
+  assert.equal(rec.document_url, null);
+  assert.equal(rec.pdf_sha256, null);
+  assert.equal(readPriorStatementHydration(nextStateFrom(run.messages).statements).size, 0, "nothing to carry");
+});
+
+test("AC-2b: first hydration (null->value) is real history and versions exactly once", async () => {
+  const row = makeRow();
+  // Run A: failure (never hydrated).
+  const a = makeDeps(FROZEN_EMITTED_AT_1);
+  const ca = openCursors({});
+  await emitFailureRow(a.deps, a.deps.emit, STMT_ID, row, ca.fingerprint, ca.hydration);
+
+  // Run B: first successful hydration.
+  const b = makeDeps(FROZEN_EMITTED_AT_2);
+  const cb = openCursors(nextStateFrom(a.messages));
+  await emitHydratedSuccess(
+    b.deps,
+    b.deps.emit,
+    STMT_ID,
+    row,
+    "/tmp/chase/p.pdf",
+    "b".repeat(64),
+    cb.fingerprint,
+    cb.hydration
+  );
+  assert.equal(b.emitted.length, 1, "first hydration is a real change and versions exactly once");
+});
+
+test("AC-4: flap-back is idempotent — hydrate, fail, re-hydrate identical → one version total", async () => {
+  const row = makeRow();
+  const PDF = "/tmp/chase/p.pdf";
+  const SHA = "c".repeat(64);
+
+  const a = makeDeps(FROZEN_EMITTED_AT_1);
+  const ca = openCursors({});
+  await emitHydratedSuccess(a.deps, a.deps.emit, STMT_ID, row, PDF, SHA, ca.fingerprint, ca.hydration);
+  assert.equal(a.emitted.length, 1, "run A versions once");
+
+  const b = makeDeps(FROZEN_EMITTED_AT_2);
+  const cb = openCursors(nextStateFrom(a.messages));
+  await emitFailureRow(b.deps, b.deps.emit, STMT_ID, row, cb.fingerprint, cb.hydration);
+  assert.equal(b.emitted.length, 0, "run B carries forward, no new version");
+
+  const c = makeDeps(FROZEN_EMITTED_AT_1);
+  const cc = openCursors(nextStateFrom(b.messages));
+  await emitHydratedSuccess(c.deps, c.deps.emit, STMT_ID, row, PDF, SHA, cc.fingerprint, cc.hydration);
+  assert.equal(c.emitted.length, 0, "run C re-hydrates the identical PDF — still no new version");
+});
+
+test("AC-6: a delisted statement is pruned, never carried forward as a phantom", async () => {
+  const rowS1 = makeRow();
+
+  // Run A: hydrate two statements (note both via the success path, single STATE flush).
+  const a = makeDeps(FROZEN_EMITTED_AT_1);
+  const ca = openCursors({});
+  ca.hydration.note("S1", {
+    document_url: "file:///tmp/chase/s1.pdf",
+    pdf_path: "/tmp/chase/s1.pdf",
+    pdf_sha256: "a".repeat(64),
+  });
+  ca.hydration.note("S2", {
+    document_url: "file:///tmp/chase/s2.pdf",
+    pdf_path: "/tmp/chase/s2.pdf",
+    pdf_sha256: "b".repeat(64),
+  });
+  await flushState(a.deps.emit, a.deps.emittedAt, ca.fingerprint, ca.hydration);
+
+  // Run B: only S1 is still listed (full scan); S2 was terminally removed.
+  const b = makeDeps(FROZEN_EMITTED_AT_2);
+  const cb = openCursors(nextStateFrom(a.messages));
+  await emitFailureRow(b.deps, b.deps.emit, "S1", rowS1, cb.fingerprint, cb.hydration);
+  const carried = readPriorStatementHydration(nextStateFrom(b.messages).statements);
+  assert.equal(carried.has("S2"), false, "a delisted statement is pruned, never carried as a phantom");
+  assert.equal(carried.has("S1"), true, "the still-listed statement is retained");
 });
