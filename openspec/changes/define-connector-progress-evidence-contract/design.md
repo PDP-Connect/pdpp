@@ -84,16 +84,59 @@ root `polyfill-runtime` protocol spec.
 
 ### Forward disposition derivation
 
-Per stream, in order:
+Per stream, in order (first match wins — gaps are evaluated before freshness so a
+real coverage gap is never masked by staleness):
 
 - outstanding gap blocked on open attention evidence → `awaiting_owner`
 - outstanding recoverable detail gap or ordinary partial boundary, no attention →
   `resumable`
 - outstanding `unsupported` / `terminal_gap` with no recovery path → `terminal`
+- no outstanding gap, committed checkpoint, but **manual-refresh stale** (the
+  connection is manual-refresh-only and its freshness axis is `stale`) →
+  `owner_refresh_due`
 - no outstanding gap with a committed checkpoint → `complete`
 
 This is a pure function of (coverage condition, gap retryability, attention
-presence) — all already durable.
+presence, freshness axis, refresh policy) — all already durable. The first four
+inputs were already used by the prior draft; this lane adds the last two to close
+the freshness seam.
+
+### The manual-refresh freshness seam
+
+The prior draft derived disposition from coverage and gaps only, so a
+manual-refresh-only connection (Reddit, and any connector whose manifest refresh
+policy is `recommended_mode: manual | paused` or `background_safe: false`) that had
+collected everything it considered would derive `complete` — even when its retained
+data was stale and an owner-initiated run was overdue. That collapses two distinct
+facts the refresh doc explicitly keeps separate (full-context-refresh.md: "Do not
+conflate revocation, deletion, retention, access validity, data freshness, and
+collection state"): coverage completeness and freshness.
+
+The runtime already models this correctly one level up. `connection-health.ts`
+emits a separate `FreshnessAxis` (`fresh | stale | unknown`) from its `CoverageAxis`,
+and `isManualRefreshOnly()` plus `freshCondition()` already turn a manual-stale
+connection into an `idle` headline with a `stale` badge and a "Run the connector
+manually" remediation at `info` severity — explicitly *not* a `degraded` pill,
+because the connector was never expected to self-refresh. The per-run Collection
+Report's disposition was the one place this distinction had not yet propagated.
+
+`owner_refresh_due` is the disposition that carries the freshness fact into the
+per-run report without re-encoding it as coverage:
+
+- The **coverage condition stays `complete`** and the **freshness axis stays
+  `stale`**. Neither is mutated. A stale-but-complete stream is never reported as
+  `partial` / `retryable_gap` / `terminal_gap` — there is no missing data to fill.
+- It is **distinct from `awaiting_owner`**, which means an outstanding coverage gap
+  is blocked on structured attention (credentials, OTP, re-consent). Refresh-due is
+  not blocked and not a gap; conflating the two would tell the owner data is missing
+  when it is only aged.
+- It is **distinct from `resumable`**, which implies an automatic future run fills a
+  gap. A manual connection has no automatic run; the owner must initiate it.
+- A **schedulable, background-safe** connection that goes stale is the system's own
+  scheduled-refresh responsibility, not owner work, so it is *not*
+  `owner_refresh_due` — it stays `complete` at the report level while the
+  connection-health projection raises the schedulable-stale `warning` it already
+  owns. This keeps the per-run report from second-guessing the scheduler.
 
 ## Alternatives considered
 
@@ -111,6 +154,22 @@ presence) — all already durable.
 - **Compute considered = collected when no gaps recorded.** Explicitly rejected as
   the core dishonesty this change removes: that is exactly how a silent-drop run
   looks complete. Unknown must read as unknown.
+- **Reuse `awaiting_owner` for manual-refresh-stale streams.** Rejected:
+  `awaiting_owner` means an outstanding *coverage gap* is blocked on structured
+  attention (credentials, OTP, re-consent). A stale-but-complete stream has no gap;
+  labelling it `awaiting_owner` would tell the owner data is missing when it is only
+  aged, re-conflating freshness with collection state. `owner_refresh_due` keeps the
+  two distinguishable.
+- **Encode staleness as a `stale` coverage condition.** Rejected: `stale` is a
+  `FreshnessAxis` value, not a `CoverageAxis` value, and the coverage-vocabulary
+  requirement already forbids carrying it on the coverage axis. Staleness belongs on
+  the freshness axis and surfaces through the disposition, never as a coverage
+  condition.
+- **Let the per-run report flag schedulable-stale connections too.** Rejected for
+  this tranche: a background-safe connection going stale is the scheduler's own
+  responsibility and is already surfaced by the connection-health `warning`. Having
+  the per-run report also raise owner-action on it would duplicate and second-guess
+  the scheduler. `owner_refresh_due` is scoped to manual-refresh-only connections.
 
 ## Acceptance checks
 
@@ -123,6 +182,14 @@ presence) — all already durable.
   `resumable` forward disposition when no attention is open.
 - A stream with open attention evidence yields `awaiting_owner`.
 - An `unsupported` stream yields `terminal`.
+- A complete-coverage stream with `fresh` freshness yields a `complete` disposition
+  and signals no owner action.
+- A complete-coverage stream on a manual-refresh-only connection with `stale`
+  freshness yields `owner_refresh_due` (not `complete`, not `awaiting_owner`), while
+  its coverage condition stays `complete` and its freshness axis stays `stale`.
+- A `retryable_gap` stream that is also `stale` still yields a `resumable`
+  disposition with its pending-gap count intact — staleness does not mask the gap.
+- A schedulable, background-safe stale stream is *not* `owner_refresh_due`.
 - A connector that declares a considered value larger than collected yields
   `partial`; a connector that declares none yields a `considered: unknown` entry
   that is not projected as `complete`.

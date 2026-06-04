@@ -5,11 +5,16 @@
 - [x] 1.1 Add `reference-implementation-architecture` requirement: per-run,
   per-stream Collection Report derived by the runtime from existing signals.
 - [x] 1.2 Add requirement: per-stream forward disposition
-  (`complete | resumable | awaiting_owner | terminal`).
+  (`complete | resumable | awaiting_owner | owner_refresh_due | terminal`).
 - [x] 1.3 Add requirement: absence of a `considered` denominator is `unknown`,
-  never inferred `complete`.
+  never inferred `complete` (and never an inferred-`complete` disposition).
 - [x] 1.4 Add requirement: report is a reference-only projection; reuses but does
   not promote `DETAIL_GAP` / `DETAIL_COVERAGE`; secret-redacted and bounded.
+- [x] 1.6 Close the manual-refresh freshness seam in the disposition: coverage
+  completeness and freshness stay distinct axes; a complete-coverage,
+  manual-refresh-stale stream is `owner_refresh_due` (not `complete`, not
+  `awaiting_owner`); a retryable gap stays visible even when stale; a schedulable
+  stale stream is not `owner_refresh_due`. Add the four seam scenarios.
 - [x] 1.5 `openspec validate define-connector-progress-evidence-contract --strict`.
 
 ## 2. Smallest safe runtime tranche (additive only)
@@ -20,10 +25,15 @@
 - [ ] 2.2 In `buildRunTerminalData()`, derive a per-stream Collection Report block
   (`considered` axis, `collected`, coverage condition, checkpoint status,
   `forward_disposition`) from `RECORD` counts, `SKIP_RESULT`, `DETAIL_GAP` /
-  `DETAIL_COVERAGE`, committed `STATE`, and open attention evidence. Attach to the
+  `DETAIL_COVERAGE`, committed `STATE`, open attention evidence, and the
+  connection's freshness axis + refresh-policy evidence
+  (`connection-health.ts` `FreshnessAxis` / `isManualRefreshOnly`). Attach to the
   terminal event payload alongside the existing `known_gaps` block.
 - [ ] 2.3 Forward-disposition derivation is a pure function of (coverage
-  condition, gap retryability, attention presence). Unit-test the four branches.
+  condition, gap retryability, attention presence, freshness axis, refresh policy).
+  Unit-test all five branches, including `owner_refresh_due` for manual-refresh
+  stale and the schedulable-stale negative case. Gaps are evaluated before
+  freshness so a retryable gap is never masked by staleness.
 - [ ] 2.4 `considered: unknown` when no connector-declared value exists; prove a
   collected-records, no-gaps, no-considered run is NOT projected `complete`.
 - [ ] 2.5 Prove the report is absent from grant-scoped `/v1` reads (records,

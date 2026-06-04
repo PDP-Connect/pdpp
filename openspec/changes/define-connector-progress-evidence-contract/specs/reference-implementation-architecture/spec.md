@@ -54,21 +54,43 @@ is a separate axis and SHALL NOT be encoded as a coverage condition.
 ### Requirement: A Collection Report entry SHALL state a forward disposition
 
 Each Collection Report stream entry SHALL carry a **forward disposition** that
-states whether the next run is expected to fill any gap on that stream. The
-disposition SHALL be one of `complete` (no outstanding gap), `resumable` (an
-outstanding gap that ordinary forward collection or detail-gap recovery is
-expected to fill on a later run without owner action), `awaiting_owner` (an
-outstanding gap blocked on structured owner attention such as credentials, OTP,
-re-consent, or a manual action), or `terminal` (an outstanding gap that no future
-run is expected to fill without a connector or source change). The disposition
-SHALL be derived from the entry's coverage condition, the retryability of any
-recorded gap, and current attention evidence — not from run timeline prose.
+states what work, if any, the next run is expected to do on that stream. The
+disposition SHALL be one of `complete` (no outstanding gap and freshness is fresh
+or unknown), `resumable` (an outstanding gap that ordinary forward collection or
+detail-gap recovery is expected to fill on a later run without owner action),
+`awaiting_owner` (an outstanding gap blocked on structured owner attention such as
+credentials, OTP, re-consent, or a manual action), `owner_refresh_due` (no
+outstanding coverage gap, but the retained data is stale for a connection that
+cannot refresh on its own, so an owner-initiated run is due), or `terminal` (an
+outstanding gap that no future run is expected to fill without a connector or
+source change). The disposition SHALL be derived from the entry's coverage
+condition, the retryability of any recorded gap, current attention evidence, and
+the connection's freshness and refresh-policy evidence — not from run timeline
+prose.
+
+Coverage completeness and freshness are distinct axes and SHALL NOT be conflated:
+a stale stream that collected everything it considered SHALL keep a `complete`
+coverage condition and a `stale` freshness axis. Staleness SHALL NOT be encoded as
+a coverage gap, and a stale-but-complete stream SHALL NOT be reported with a
+coverage condition of `partial`, `gaps`, `retryable_gap`, or `terminal_gap`. The
+disposition is where the freshness fact becomes an owner-facing action: a
+complete-coverage stream whose connection is manual-refresh-only (its manifest
+refresh policy is not background-safe — `recommended_mode` `manual` or `paused`,
+or `background_safe` `false`) and whose freshness axis is `stale` SHALL be
+`owner_refresh_due`, signalling owner-initiated refresh work rather than degraded
+or lost data. A schedulable, background-safe connection that goes stale is the
+system's own responsibility to refresh and SHALL NOT be reported as
+`owner_refresh_due`.
 
 The forward disposition SHALL be consistent with the gap it describes: an entry
-with no outstanding gap SHALL be `complete`; an entry whose only outstanding gap is
-a recoverable detail gap or an ordinary partial boundary SHALL be `resumable`
-unless blocked on owner attention; an entry whose gap is a terminal or unsupported
-condition SHALL be `terminal`.
+with an outstanding gap blocked on owner attention SHALL be `awaiting_owner`; an
+entry whose only outstanding gap is a recoverable detail gap or an ordinary partial
+boundary SHALL be `resumable` unless blocked on owner attention; an entry whose gap
+is a terminal or unsupported condition SHALL be `terminal`; an entry with no
+outstanding gap SHALL be `owner_refresh_due` when it is manual-refresh stale and
+`complete` otherwise. `awaiting_owner` SHALL be reserved for an outstanding
+coverage gap and SHALL NOT be used for a stale-but-complete stream, so the owner
+can tell missing data from merely aged data.
 
 #### Scenario: A retryable gap is resumable
 
@@ -88,10 +110,31 @@ condition SHALL be `terminal`.
 - **THEN** the entry's forward disposition SHALL be `terminal`
 - **AND** the owner surface SHALL NOT imply that a future ordinary run will collect that stream
 
-#### Scenario: A complete stream has no outstanding work
+#### Scenario: Complete coverage with fresh freshness is complete and needs no owner action
 
-- **WHEN** a stream entry has no outstanding gap and a committed checkpoint
-- **THEN** the entry's forward disposition SHALL be `complete`
+- **WHEN** a stream entry has no outstanding gap, a committed checkpoint, a known considered value the collected count satisfies, and a freshness axis of `fresh`
+- **THEN** the entry's coverage condition SHALL be `complete` and its forward disposition SHALL be `complete`
+- **AND** the owner surface SHALL state that no owner action is required for that stream
+
+#### Scenario: Complete coverage that is manual-refresh stale is owner-refresh-due, not degraded data loss
+
+- **WHEN** a stream entry has no outstanding coverage gap and a committed checkpoint, but the connection is manual-refresh-only (its manifest refresh policy is `recommended_mode` `manual` or `paused`, or `background_safe` `false`) and its freshness axis is `stale`
+- **THEN** the entry's coverage condition SHALL remain `complete` and its freshness axis SHALL remain `stale`
+- **AND** the entry's forward disposition SHALL be `owner_refresh_due`, not `awaiting_owner`, `resumable`, or `complete`
+- **AND** the owner surface SHALL frame this as an owner-initiated refresh that is due, not as missing, dropped, or degraded data
+
+#### Scenario: A retryable detail gap stays visible even when the stream is also stale
+
+- **WHEN** a stream entry has a pending recoverable `DETAIL_GAP` with retryable upstream pressure, no owner attention is open, and the connection's freshness axis is also `stale`
+- **THEN** the entry's coverage condition SHALL be `retryable_gap` and its pending recoverable-gap count SHALL remain recorded
+- **AND** the entry's forward disposition SHALL be `resumable` so the retryable/resumable recovery path stays visible and is not masked by the stale freshness
+- **AND** staleness SHALL NOT downgrade, hide, or absorb the recorded retryable gap
+
+#### Scenario: A schedulable stale stream is not owner-refresh-due
+
+- **WHEN** a stream entry has no outstanding gap but the connection is schedulable and background-safe and its freshness axis is `stale`
+- **THEN** the entry's forward disposition SHALL NOT be `owner_refresh_due`
+- **AND** the owner surface SHALL treat the stale freshness as the system's own scheduled-refresh responsibility rather than owner-initiated refresh work
 
 ### Requirement: Absence of a considered denominator SHALL be honest, not assumed complete
 
@@ -120,6 +163,7 @@ completeness.
 - **WHEN** a connector collects records for a stream but declares no considered value, inventory, or required-keys set, and records no gaps
 - **THEN** the Collection Report entry's considered axis SHALL be `unknown`
 - **AND** the entry SHALL NOT be projected as `complete` solely because it collected records and recorded no gaps
+- **AND** the entry's forward disposition SHALL NOT be `complete` on the strength of collected count alone, because `complete` requires the absence of an outstanding gap to be established rather than assumed from an unknown denominator
 
 #### Scenario: Considered evidence is unreadable
 

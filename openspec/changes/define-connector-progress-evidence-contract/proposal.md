@@ -46,9 +46,17 @@ instead of a coincidence, and names the one genuinely-missing-but-derivable fiel
   `RECORD`, `SKIP_RESULT`, `DETAIL_GAP`, `DETAIL_COVERAGE`, and `STATE` signals
   plus the runtime's own terminal accounting.
 - Add a requirement that the report carries a **forward disposition** per stream
-  (`resumable` | `awaiting_owner` | `terminal` | `complete`) so an owner surface
-  can state whether the next run is expected to fill the gap, derived from
-  retryability and attention evidence rather than prose.
+  (`complete` | `resumable` | `awaiting_owner` | `owner_refresh_due` | `terminal`)
+  so an owner surface can state what the next run is expected to do, derived from
+  coverage condition, gap retryability, attention evidence, and the connection's
+  freshness / refresh-policy evidence rather than prose. The `owner_refresh_due`
+  value closes the manual-refresh seam: a manual-refresh-only connection (such as
+  Reddit) can have **complete coverage** yet **stale freshness**, and the
+  disposition SHALL surface that owner-initiated refresh is due instead of
+  collapsing to `complete` and hiding the refresh work. Coverage and freshness stay
+  distinct axes — staleness is never re-encoded as a coverage gap, and
+  `awaiting_owner` stays reserved for an actual outstanding coverage gap so missing
+  data is never confused with merely aged data.
 - Add a requirement that **absence of a considered denominator is itself honest**:
   when a connector does not declare what it considered, the runtime SHALL mark the
   stream's considered axis `unknown` and SHALL NOT infer `complete`.
