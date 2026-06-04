@@ -29,11 +29,21 @@
   connection's freshness axis + refresh-policy evidence
   (`connection-health.ts` `FreshnessAxis` / `isManualRefreshOnly`). Attach to the
   terminal event payload alongside the existing `known_gaps` block.
-- [ ] 2.3 Forward-disposition derivation is a pure function of (coverage
+- [x] 2.3 Forward-disposition derivation is a pure function of (coverage
   condition, gap retryability, attention presence, freshness axis, refresh policy).
   Unit-test all five branches, including `owner_refresh_due` for manual-refresh
   stale and the schedulable-stale negative case. Gaps are evaluated before
   freshness so a retryable gap is never masked by staleness.
+  Landed as `deriveForwardDisposition()` + `ForwardDisposition` /
+  `ForwardDispositionInput` in `reference-implementation/runtime/connection-health.ts`,
+  reusing the existing `CoverageAxis` / `FreshnessAxis` vocabulary and
+  `isManualRefreshOnly()`. Covers all five dispositions (`complete`,
+  `owner_refresh_due`, `resumable`, `awaiting_owner`, `terminal`) plus the
+  unknown-denominator (`unknown` coverage is never `complete`), schedulable-stale
+  negative, and gap-before-freshness cases in
+  `reference-implementation/test/forward-disposition.test.js` (25 cases). Pure +
+  additive: no terminal-event wiring yet (that is 2.2), so no existing field,
+  status code, or commit semantic changed.
 - [ ] 2.4 `considered: unknown` when no connector-declared value exists; prove a
   collected-records, no-gaps, no-considered run is NOT projected `complete`.
 - [ ] 2.5 Prove the report is absent from grant-scoped `/v1` reads (records,
@@ -64,5 +74,13 @@
 - Tranche 2 is the only code in this change and is strictly additive. If 2.1–2.7
   cannot all land green, ship the spec (section 1) and record tranche 2 as the
   next implementation lane rather than landing a partial runtime change.
+- Tranche-2 increment landed so far: 2.3 only — the pure `deriveForwardDisposition`
+  helper and its tests. This is the safest possible slice of tranche 2: it adds a
+  new exported pure function plus unit tests and emits nothing new on any spine
+  event, so it cannot perturb an existing terminal-event field, status code, or
+  commit semantic (the 2.7 invariant). It de-risks the wiring lane by proving the
+  disposition logic in isolation. The remaining tranche-2 tasks (2.1 considered
+  input, 2.2 `buildRunTerminalData()` Collection Report block consuming this helper,
+  2.4–2.7 honesty/absence/portability proofs) are the next implementation lane.
 - The detail-gap reference-only constraint is preserved: this change reuses
   `DETAIL_GAP` / `DETAIL_COVERAGE` but does not promote them to portable protocol.

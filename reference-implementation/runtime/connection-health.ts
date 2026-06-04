@@ -230,6 +230,37 @@ export type CoverageAxis =
 export type AttentionAxis = "acknowledged" | "in_progress" | "none" | "open";
 
 /**
+ * Forward disposition: per-stream answer to "what is the next run expected to
+ * do on this stream?" for the per-run Collection Report
+ * (`define-connector-progress-evidence-contract`).
+ *
+ *   - `complete`          : no outstanding gap and freshness is fresh or unknown.
+ *   - `resumable`         : an outstanding gap that ordinary forward collection
+ *                           or detail-gap recovery is expected to fill on a later
+ *                           run without owner action.
+ *   - `awaiting_owner`    : an outstanding gap blocked on structured owner
+ *                           attention (credentials, OTP, re-consent, manual step).
+ *   - `owner_refresh_due` : no outstanding coverage gap, but retained data is
+ *                           stale for a connection that cannot refresh on its own
+ *                           (manual / paused / not background-safe), so an
+ *                           owner-initiated run is due. Carries the freshness fact
+ *                           without re-encoding staleness as a coverage gap.
+ *   - `terminal`          : an outstanding gap that no future ordinary run is
+ *                           expected to fill without a connector or source change.
+ *
+ * Coverage completeness and freshness are distinct axes: `owner_refresh_due`
+ * keeps the coverage condition `complete` and the freshness axis `stale`. Gaps
+ * are evaluated before freshness, so a retryable gap on a stale stream stays
+ * `resumable` and is never masked by staleness.
+ */
+export type ForwardDisposition =
+  | "awaiting_owner"
+  | "complete"
+  | "owner_refresh_due"
+  | "resumable"
+  | "terminal";
+
+/**
  * Outbox / work axis: durable work health for executors that buffer.
  *
  *   - `idle`    : no pending durable work
@@ -1726,6 +1757,134 @@ function freshCondition(input: ComputeConnectionHealthInput, axes: ConnectionAxe
     message: "Freshness evidence is missing.",
     origin: "connector",
   });
+}
+
+/**
+ * Inputs to the per-stream forward-disposition derivation. These are exactly the
+ * five durable signals the design names: the stream's coverage condition, the
+ * retryability of any recorded gap, whether structured owner attention is open,
+ * the freshness axis, and the connection's refresh-policy evidence. Keeping the
+ * function pure over this struct (rather than over the whole health input) makes
+ * every branch unit-testable in isolation and keeps the contract free of run
+ * timeline prose.
+ *
+ * See `define-connector-progress-evidence-contract`.
+ */
+export interface ForwardDispositionInput {
+  /** The stream's coverage condition from the canonical {@link CoverageAxis}. */
+  readonly coverage: CoverageAxis;
+  /**
+   * Whether the stream's outstanding gap is recoverable by an ordinary future
+   * run (a pending recoverable `DETAIL_GAP` or an ordinary partial boundary).
+   * Ignored when the coverage condition carries no outstanding gap.
+   */
+  readonly gapRetryable: boolean;
+  /**
+   * Whether structured owner attention is open for the connection (missing
+   * credentials, a pending OTP, required re-consent, or a manual action).
+   */
+  readonly attentionOpen: boolean;
+  /** The connection's freshness axis from {@link FreshnessAxis}. */
+  readonly freshness: FreshnessAxis;
+  /**
+   * The connection's manifest refresh-policy evidence. Used only to decide
+   * whether a stale-but-complete stream is owner-refresh-due (manual / paused /
+   * not background-safe) or the scheduler's own responsibility (background-safe).
+   */
+  readonly refresh: ConnectionRefreshEvidence | null;
+}
+
+/**
+ * The coverage conditions that represent an outstanding gap the disposition must
+ * speak to — the stream is either missing data the run did not establish as
+ * covered (the degrading conditions) or stuck on a terminal source/connector
+ * limitation (`unsupported` / `unavailable`). The accepted-absence conditions
+ * `deferred` and `inventory_only` are deliberately excluded: they owe no further
+ * data by manifest policy, so they carry no outstanding gap and resolve to
+ * `complete`. `complete` and `unknown` are not gaps either.
+ */
+function hasOutstandingGap(coverage: CoverageAxis): boolean {
+  return (
+    coverage === "gaps" ||
+    coverage === "partial" ||
+    coverage === "retryable_gap" ||
+    coverage === "terminal_gap" ||
+    coverage === "unsupported" ||
+    coverage === "unavailable"
+  );
+}
+
+/**
+ * Derive a stream's forward disposition as a pure function of its coverage
+ * condition, gap retryability, open-attention presence, freshness axis, and the
+ * connection's refresh policy. First match wins, and gaps are evaluated before
+ * freshness so a real coverage gap is never masked by staleness:
+ *
+ *   1. outstanding gap + open owner attention             -> `awaiting_owner`
+ *   2. outstanding recoverable detail gap or ordinary
+ *      partial boundary, no attention                     -> `resumable`
+ *   3. outstanding terminal/unsupported gap with no
+ *      recovery path, no attention                        -> `terminal`
+ *   4. no outstanding gap, manual-refresh stale            -> `owner_refresh_due`
+ *   5. no outstanding gap                                  -> `complete`
+ *
+ * `complete` is only reached when the coverage condition itself carries no
+ * outstanding gap — it is never inferred from collected count. A stream whose
+ * considered denominator is unknown carries a non-`complete` coverage condition
+ * upstream, so it cannot reach `complete` here.
+ *
+ * See `define-connector-progress-evidence-contract`.
+ */
+export function deriveForwardDisposition(input: ForwardDispositionInput): ForwardDisposition {
+  if (hasOutstandingGap(input.coverage)) {
+    // Rule 1: a gap blocked on structured owner attention awaits the owner,
+    // regardless of whether the gap would otherwise be retryable. The owner must
+    // act before any run can make progress.
+    if (input.attentionOpen) {
+      return "awaiting_owner";
+    }
+    // Rule 3 (evaluated first within the gap block): a terminal / unsupported /
+    // unavailable condition has no ordinary recovery path and is `terminal`
+    // whatever the retryability flag claims. Sources/connectors must change for
+    // these to collect.
+    if (input.coverage === "terminal_gap" || input.coverage === "unsupported" || input.coverage === "unavailable") {
+      return "terminal";
+    }
+    // Rule 2: a recoverable detail gap or an ordinary partial boundary is filled
+    // by a later run without owner action. `partial` and `gaps` are ordinary
+    // forward-collection boundaries; `retryable_gap` carries an explicit retry
+    // path. An explicitly non-retryable generic gap has no recovery path.
+    if (input.coverage === "partial" || input.coverage === "gaps" || input.gapRetryable) {
+      return "resumable";
+    }
+    return "terminal";
+  }
+
+  // No outstanding gap. Before reaching `complete`, the coverage condition must
+  // itself ESTABLISH completeness — never inferred from collected count. Only
+  // `complete` (proven), `deferred`, and `inventory_only` (owe no further data by
+  // manifest policy) qualify. An `unknown` coverage condition (no declared
+  // considered denominator) is absence of evidence, not proof of completeness:
+  // it can never be `complete` here, so a later run is expected to establish
+  // coverage -> `resumable`. This is the honesty gate the contract requires.
+  if (input.coverage === "unknown") {
+    return "resumable";
+  }
+
+  // Rule 4: a complete stream on a manual-refresh-only connection whose data has
+  // gone stale needs an owner-initiated run — the system will not refresh it on
+  // its own. Coverage stays complete; only the disposition carries the freshness
+  // fact. A schedulable, background-safe stale stream is the scheduler's job and
+  // stays `complete` here (the connection-health projection raises its own
+  // schedulable-stale warning).
+  if (input.freshness === "stale" && isManualRefreshOnly(input.refresh)) {
+    return "owner_refresh_due";
+  }
+
+  // Rule 5: established complete coverage (`complete` / `deferred` /
+  // `inventory_only`) with fresh, unknown, or schedulable-stale freshness ->
+  // `complete`.
+  return "complete";
 }
 
 function backlogClearCondition(
