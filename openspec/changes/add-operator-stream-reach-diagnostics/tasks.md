@@ -42,13 +42,20 @@
 
 ## 5. Tests
 
-- [ ] 5.1 Extend `reference-implementation/test/run-interaction-stream-routes.test.js`:
-  valid beacon emits `run.stream_reach_failed` with sanitized reason + http status
-  and no token/cookie/URL in data; out-of-set reason clamps to `unknown`;
-  pending-interaction mismatch rejected with no emit. (run from `main` worktree)
-- [ ] 5.2 Add or extend a stream-viewer give-up test asserting the probe →
-  reason-specific message mapping and best-effort beacon (beacon failure does not
-  change the message). (run from `main` worktree)
+- [x] 5.1 Extend `reference-implementation/test/run-interaction-stream-routes.test.js`:
+  valid beacon emits `run.stream_reach_failed` with sanitized reason + http status,
+  non-failure status `stream_reach_failed`, and no token/cookie/URL in data
+  (`assertNoRawBackendAuthority`); out-of-set reason clamps to `unknown` + bad
+  http_status drops to null; pending-interaction mismatch rejected (409) with no
+  emit; missing interaction_id rejected (400). 4 new tests; full file 43/43 pass
+  via a temporary `node_modules` symlink from the `main` worktree (removed after).
+- [x] 5.2 The give-up probe→reason→message mapping is covered by the pure
+  `stream-reach-diagnostics.test.ts` (the message is set from the local
+  classification *before* the beacon call, so a beacon failure structurally
+  cannot change it). The React effect wiring (`diagnoseGiveUp`) is thin `fetch`
+  glue over that pure core; full component rendering is not unit-tested in this
+  codebase's stream-viewer test pattern. Owner integration pass: `types:check` +
+  `check` + `build` from `main` with the branch merged.
 
 ## Acceptance checks
 

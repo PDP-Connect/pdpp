@@ -1711,3 +1711,115 @@ test('SSE handler emits keepalive comment pings while idle to prevent timeout', 
     await cancelRun(asUrl, started.run_id, pending.interaction_id);
   });
 });
+
+// ── Stream-reach give-up beacon ──────────────────────────────────────────────
+
+function reachFailureUrl(asUrl, runId) {
+  return `${asUrl}/_ref/runs/${encodeURIComponent(runId)}/run-interaction-stream/reach-failure`;
+}
+
+async function postReachFailure(asUrl, runId, payload) {
+  return fetchJson(reachFailureUrl(asUrl, runId), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+function findReachFailedEvent(timelineBody) {
+  return (timelineBody?.data || []).find((event) => event.event_type === 'run.stream_reach_failed') || null;
+}
+
+test('reach-failure beacon emits run.stream_reach_failed with the typed reason and http status', async () => {
+  await withHarness({}, async ({ asUrl, spotifyManifest }) => {
+    const started = await startRun(asUrl, spotifyManifest.connector_id);
+    const pending = await waitForPendingInteraction(asUrl, started.run_id);
+
+    const beacon = await postReachFailure(asUrl, started.run_id, {
+      interaction_id: pending.interaction_id,
+      reason: 'companion_unavailable',
+      http_status: 410,
+    });
+    assert.equal(beacon.status, 202);
+    assert.equal(beacon.body.object, 'run_interaction_stream_reach_failure');
+    assert.equal(beacon.body.reason, 'companion_unavailable');
+    assert.equal(beacon.body.http_status, 410);
+
+    const timeline = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/timeline`);
+    const event = findReachFailedEvent(timeline.body);
+    assert.ok(event, 'run.stream_reach_failed should appear on the run timeline');
+    assert.equal(event.interaction_id, pending.interaction_id);
+    assert.equal(event.data.reason, 'companion_unavailable');
+    assert.equal(event.data.http_status, 410);
+    // A connector run can succeed even when the operator gave up reaching the
+    // stream, so the diagnostic must not use a run-terminal failure status.
+    assert.notEqual(event.status, 'failed');
+    assert.notEqual(event.status, 'rejected');
+    assert.equal(event.status, 'stream_reach_failed');
+    // No raw backend authority (token, cookie, ws/cdp URL) in the spine data.
+    assertNoRawBackendAuthority(event.data);
+
+    await cancelRun(asUrl, started.run_id, pending.interaction_id);
+  });
+});
+
+test('reach-failure beacon clamps an out-of-set reason to unknown', async () => {
+  await withHarness({}, async ({ asUrl, spotifyManifest }) => {
+    const started = await startRun(asUrl, spotifyManifest.connector_id);
+    const pending = await waitForPendingInteraction(asUrl, started.run_id);
+
+    const beacon = await postReachFailure(asUrl, started.run_id, {
+      interaction_id: pending.interaction_id,
+      reason: 'DROP TABLE runs',
+      http_status: 999_999,
+    });
+    assert.equal(beacon.status, 202);
+    assert.equal(beacon.body.reason, 'unknown');
+    // http_status outside 100-599 is dropped to null rather than recorded.
+    assert.equal(beacon.body.http_status, null);
+
+    const timeline = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/timeline`);
+    const event = findReachFailedEvent(timeline.body);
+    assert.ok(event, 'run.stream_reach_failed should still be emitted');
+    assert.equal(event.data.reason, 'unknown');
+    assert.equal(event.data.http_status, null);
+
+    await cancelRun(asUrl, started.run_id, pending.interaction_id);
+  });
+});
+
+test('reach-failure beacon is rejected when a different interaction is pending', async () => {
+  await withHarness({}, async ({ asUrl, spotifyManifest }) => {
+    const started = await startRun(asUrl, spotifyManifest.connector_id);
+    const pending = await waitForPendingInteraction(asUrl, started.run_id);
+
+    const beacon = await postReachFailure(asUrl, started.run_id, {
+      interaction_id: 'int_not_the_pending_one',
+      reason: 'invalid_token',
+      http_status: 401,
+    });
+    assert.equal(beacon.status, 409);
+    assert.equal(beacon.body.error.code, 'interaction_id_mismatch');
+
+    const timeline = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/timeline`);
+    assert.equal(findReachFailedEvent(timeline.body), null, 'no event for a mismatched interaction');
+
+    await cancelRun(asUrl, started.run_id, pending.interaction_id);
+  });
+});
+
+test('reach-failure beacon requires an interaction_id', async () => {
+  await withHarness({}, async ({ asUrl, spotifyManifest }) => {
+    const started = await startRun(asUrl, spotifyManifest.connector_id);
+    const pending = await waitForPendingInteraction(asUrl, started.run_id);
+
+    const beacon = await postReachFailure(asUrl, started.run_id, {
+      reason: 'session_expired',
+      http_status: 410,
+    });
+    assert.equal(beacon.status, 400);
+    assert.equal(beacon.body.error.code, 'invalid_request');
+
+    await cancelRun(asUrl, started.run_id, pending.interaction_id);
+  });
+});
