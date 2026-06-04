@@ -15,19 +15,20 @@
 
 ## Tranche B: Shared emitDetailCoverage helper (owner-gated)
 
-- [ ] B.1 Add `emitDetailCoverage(ctx, params)` to
+- [x] B.1 Add `emitDetailCoverage(ctx, params)` to
   `packages/polyfill-connectors/src/connector-runtime.ts` with params:
   `stream`, `stateStream`, `requiredKeys`, `hydratedKeys`, and optional
   `gapKeys` and `optionalSkipKeys`.
-- [ ] B.2 Add a unit test in `packages/polyfill-connectors/src/connector-runtime.test.ts`
+- [x] B.2 Add a unit test in `packages/polyfill-connectors/src/connector-runtime.test.ts`
   (or equivalent) verifying the helper emits a valid `DETAIL_COVERAGE` message
   with `reference_only: true` and all required fields present.
-- [ ] B.3 Refactor `makeConversationDetailCoverage` in
+- [x] B.3 Refactor `makeConversationDetailCoverage` in
   `packages/polyfill-connectors/connectors/chatgpt/index.ts` to use
-  `emitDetailCoverage`; confirm the ChatGPT DETAIL_COVERAGE tests still pass.
-- [ ] B.4 Add the contract requirement in `specs/polyfill-runtime/spec.md` that a
-  connector running a list+detail lane SHALL emit `DETAIL_COVERAGE` once per
-  run.
+  the shared `buildDetailCoverageMessage`; confirm the ChatGPT DETAIL_COVERAGE
+  tests still pass.
+- [x] B.4 Confirm the contract requirement in `specs/polyfill-runtime/spec.md`
+  already says a connector running a list+detail lane SHALL emit
+  `DETAIL_COVERAGE` once per run.
 
 ## Acceptance checks
 

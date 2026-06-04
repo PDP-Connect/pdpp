@@ -19,6 +19,7 @@ import { type AdaptiveLaneEvent, createAdaptiveLane, currentAdaptiveLaneRunConte
 import { ensureChatGptSession } from "../../src/auto-login/chatgpt.ts";
 import {
   type BrowserCollectContext,
+  buildDetailCoverageMessage,
   type CollectContext,
   type DetailCoverageMessage,
   type DetailGapMessage,
@@ -1797,16 +1798,13 @@ function makeConversationDetailCoverage(
   convosToSync: ConversationListItem[],
   coverage: ConversationDetailCoverage
 ): DetailCoverageMessage {
-  const gapKeys = coverage.gapKeys;
-  return {
-    type: "DETAIL_COVERAGE",
-    reference_only: true,
-    state_stream: "conversations",
+  return buildDetailCoverageMessage({
     stream: "messages",
-    required_keys: convosToSync.map((c) => c.id),
-    hydrated_keys: coverage.hydratedKeys,
-    ...(gapKeys.length ? { gap_keys: gapKeys } : {}),
-  };
+    stateStream: "conversations",
+    requiredKeys: convosToSync.map((c) => c.id),
+    hydratedKeys: coverage.hydratedKeys,
+    gapKeys: coverage.gapKeys,
+  });
 }
 
 /**

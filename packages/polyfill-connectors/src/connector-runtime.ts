@@ -48,6 +48,7 @@ import { flushAndExitAfterRuntimeAck } from "./connector-exit.ts";
 import type {
   AssistanceCompletionStatus,
   AssistanceRequest,
+  DetailCoverageMessage,
   DetailGapStartEntry,
   EmittedMessage,
   InteractionRequest,
@@ -264,6 +265,58 @@ function makeShapeCheckSkip(
     message,
     diagnostics: { id: data.id, issues, record: data },
   };
+}
+
+/**
+ * Inputs for a per-run detail coverage report. A list+detail connector passes
+ * the keys it considered for detail (`requiredKeys`, the denominator) and the
+ * subset it hydrated (`hydratedKeys`, the numerator), so the console can tell a
+ * partial run from a complete one without inferring it from gaps.
+ */
+export interface DetailCoverageParams {
+  /** Keys for which a DETAIL_GAP was emitted and should be retried next run. */
+  gapKeys?: ReadonlyArray<string | number>;
+  /** Subset of requiredKeys whose detail was fetched and emitted. */
+  hydratedKeys: ReadonlyArray<string | number>;
+  /** Keys skipped by explicit policy, such as selection scope. */
+  optionalSkipKeys?: ReadonlyArray<string | number>;
+  /** Full set of keys considered for detail fetch this run. */
+  requiredKeys: ReadonlyArray<string | number>;
+  /** The list/parent stream whose cursor anchors the detail pass. */
+  stateStream: string;
+  /** The detail stream the coverage report describes. */
+  stream: string;
+}
+
+/**
+ * Build the per-run DETAIL_COVERAGE message a list+detail connector emits once
+ * after its detail lane. Pure: the caller owns when/whether to emit. Empty
+ * optional key sets are omitted so a fully hydrated run carries no gap fields.
+ */
+export function buildDetailCoverageMessage(params: DetailCoverageParams): DetailCoverageMessage {
+  const { stream, stateStream, requiredKeys, hydratedKeys, gapKeys, optionalSkipKeys } = params;
+  return {
+    type: "DETAIL_COVERAGE",
+    reference_only: true,
+    stream,
+    state_stream: stateStream,
+    required_keys: [...requiredKeys],
+    hydrated_keys: [...hydratedKeys],
+    ...(gapKeys?.length ? { gap_keys: [...gapKeys] } : {}),
+    ...(optionalSkipKeys?.length ? { optional_skip_keys: [...optionalSkipKeys] } : {}),
+  };
+}
+
+/**
+ * Thin emit wrapper for connectors adopting the detail coverage contract. `ctx`
+ * is structural so both the collect context and connector-local dependency bags
+ * can use it without importing a heavier runtime type.
+ */
+export function emitDetailCoverage(
+  ctx: { emit: (msg: EmittedMessage) => Promise<void> },
+  params: DetailCoverageParams
+): Promise<void> {
+  return ctx.emit(buildDetailCoverageMessage(params));
 }
 
 export const nowIso = (): string => new Date().toISOString();

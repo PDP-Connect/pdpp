@@ -4,10 +4,12 @@ import type { BrowserContext, Page } from "playwright";
 import {
   type BrowserLaunchSource,
   type BrowserRuntimeVisibility,
+  buildDetailCoverageMessage,
   captureBrowserPage,
   closeBrowserContextPagesExcept,
   closeBrowserPage,
   decorateBrowserManualAction,
+  emitDetailCoverage,
   type InteractionRequest,
   isContextDisconnected,
   makeBrowserInteractionKeepalive,
@@ -15,6 +17,7 @@ import {
   resolveBrowserLaunchSource,
   resolveBrowserRuntimeVisibility,
 } from "./connector-runtime.ts";
+import type { EmittedMessage } from "./connector-runtime-protocol.ts";
 import type { CaptureSession } from "./fixture-capture.ts";
 
 const HEADLESS: BrowserRuntimeVisibility = {
@@ -704,4 +707,96 @@ test("makeTracer.stop() is idempotent — second call does not retry against a d
       process.env.PDPP_TRACE = previousTrace;
     }
   }
+});
+
+test("buildDetailCoverageMessage emits a valid reference-only DETAIL_COVERAGE", () => {
+  const msg = buildDetailCoverageMessage({
+    stream: "messages",
+    stateStream: "conversations",
+    requiredKeys: ["a", "b", "c"],
+    hydratedKeys: ["a", "b"],
+    gapKeys: ["c"],
+  });
+  assert.equal(msg.type, "DETAIL_COVERAGE");
+  assert.equal(msg.reference_only, true);
+  assert.equal(msg.stream, "messages");
+  assert.equal(msg.state_stream, "conversations");
+  assert.deepEqual(msg.required_keys, ["a", "b", "c"]);
+  assert.deepEqual(msg.hydrated_keys, ["a", "b"]);
+  assert.deepEqual(msg.gap_keys, ["c"]);
+  assert.equal("optional_skip_keys" in msg, false);
+});
+
+test("buildDetailCoverageMessage omits empty optional key sets", () => {
+  const msg = buildDetailCoverageMessage({
+    stream: "messages",
+    stateStream: "conversations",
+    requiredKeys: [1, 2],
+    hydratedKeys: [1, 2],
+    gapKeys: [],
+    optionalSkipKeys: [],
+  });
+  assert.deepEqual(msg.required_keys, [1, 2]);
+  assert.deepEqual(msg.hydrated_keys, [1, 2]);
+  assert.equal("gap_keys" in msg, false, "empty gap_keys must be omitted, not []");
+  assert.equal("optional_skip_keys" in msg, false, "empty optional_skip_keys must be omitted, not []");
+});
+
+test("buildDetailCoverageMessage carries optional_skip_keys when present", () => {
+  const msg = buildDetailCoverageMessage({
+    stream: "messages",
+    stateStream: "conversations",
+    requiredKeys: ["a", "b", "c"],
+    hydratedKeys: ["a"],
+    optionalSkipKeys: ["b", "c"],
+  });
+  assert.deepEqual(msg.optional_skip_keys, ["b", "c"]);
+  assert.equal("gap_keys" in msg, false);
+});
+
+test("buildDetailCoverageMessage copies input arrays", () => {
+  const requiredKeys = ["a", "b"];
+  const hydratedKeys = ["a"];
+  const msg = buildDetailCoverageMessage({
+    stream: "messages",
+    stateStream: "conversations",
+    requiredKeys,
+    hydratedKeys,
+  });
+  requiredKeys.push("mutated");
+  hydratedKeys.push("mutated");
+  assert.deepEqual(msg.required_keys, ["a", "b"], "message must not alias caller's requiredKeys array");
+  assert.deepEqual(msg.hydrated_keys, ["a"], "message must not alias caller's hydratedKeys array");
+});
+
+test("emitDetailCoverage forwards exactly one built message to ctx.emit", async () => {
+  const emitted: EmittedMessage[] = [];
+  const ctx = {
+    emit: (msg: EmittedMessage): Promise<void> => {
+      emitted.push(msg);
+      return Promise.resolve();
+    },
+  };
+  await emitDetailCoverage(ctx, {
+    stream: "messages",
+    stateStream: "conversations",
+    requiredKeys: ["a", "b"],
+    hydratedKeys: ["a"],
+    gapKeys: ["b"],
+  });
+  assert.equal(emitted.length, 1);
+  const msg = emitted[0];
+  assert.ok(msg, "exactly one message must be emitted");
+  assert.equal(msg.type, "DETAIL_COVERAGE");
+  assert.deepEqual(
+    msg,
+    buildDetailCoverageMessage({
+      stream: "messages",
+      stateStream: "conversations",
+      requiredKeys: ["a", "b"],
+      hydratedKeys: ["a"],
+      gapKeys: ["b"],
+    }),
+    "emitDetailCoverage must emit precisely what buildDetailCoverageMessage builds"
+  );
 });
