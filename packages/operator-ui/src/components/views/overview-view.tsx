@@ -9,10 +9,12 @@
 import Link from "next/link";
 import { formatSourceForDisplay } from "../../lib/connector-display.ts";
 import type { DatasetSummary, GrantSummary, RunSummary, TraceSummary } from "../../lib/ref-client.ts";
+import { grantRowLabel, traceRowLabel } from "../../lib/summary-row-label.ts";
 import { Timestamp } from "../../ui/timestamp.tsx";
 import { EmptyState } from "../empty-state.tsx";
 import { OverviewHero } from "../overview-hero.tsx";
 import { DataList, PageHeader, Section, StatusBadge } from "../primitives.tsx";
+import { RunRow } from "../run-row.tsx";
 import type { Routes } from "./routes.ts";
 
 export interface OverviewViewData {
@@ -75,7 +77,7 @@ export function AttentionOverviewPlaceholder() {
     <>
       <div className="pdpp-caption mb-8 flex items-center gap-2">
         <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
-        <span className="font-medium text-foreground">Checking failures...</span>
+        <span className="font-medium text-foreground">Checking failures…</span>
         <span className="text-muted-foreground">Failed traces and runs are loading independently.</span>
       </div>
       <div className="grid gap-8 lg:grid-cols-2">
@@ -143,15 +145,25 @@ function FailedOverviewLists({
                   className="block px-3 py-2.5 transition-colors hover:bg-muted/40"
                   href={routes.peek(routes.section.traces, t.trace_id)}
                 >
-                  <div className="flex flex-wrap items-baseline justify-between gap-2">
-                    <code className="pdpp-caption break-all font-medium font-mono text-foreground">{t.trace_id}</code>
-                    <span className="pdpp-caption text-muted-foreground">
+                  <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <span className="truncate font-medium text-foreground">{traceRowLabel(t)}</span>
+                      <StatusBadge status={t.status} />
+                    </div>
+                    <span className="pdpp-caption shrink-0 text-muted-foreground tabular-nums">
                       <Timestamp value={t.last_at} />
                     </span>
                   </div>
-                  <div className="pdpp-caption mt-1 flex flex-wrap items-center gap-2">
-                    <StatusBadge status={t.status} />
-                    <span className="text-muted-foreground">{t.failure?.reason ?? t.kinds.slice(0, 3).join(", ")}</span>
+                  <div className="pdpp-caption mt-0.5 flex flex-wrap items-center gap-x-2 text-muted-foreground">
+                    <code className="break-all font-mono">{t.trace_id}</code>
+                    {(t.failure?.reason ?? t.kinds.slice(0, 3).join(", ")) ? (
+                      <>
+                        <span className="text-muted-foreground/50">·</span>
+                        <span className="text-destructive/90">
+                          {t.failure?.reason ?? t.kinds.slice(0, 3).join(", ")}
+                        </span>
+                      </>
+                    ) : null}
                   </div>
                 </Link>
               </li>
@@ -177,23 +189,7 @@ function FailedOverviewLists({
           <DataList>
             {failedRuns.map((r) => (
               <li key={r.run_id}>
-                <Link
-                  className="block px-3 py-2.5 transition-colors hover:bg-muted/40"
-                  href={routes.peek(routes.section.runs, r.run_id)}
-                >
-                  <div className="flex flex-wrap items-baseline justify-between gap-2">
-                    <code className="pdpp-caption break-all font-medium font-mono text-foreground">{r.run_id}</code>
-                    <span className="pdpp-caption text-muted-foreground">
-                      <Timestamp value={r.last_at} />
-                    </span>
-                  </div>
-                  <div className="pdpp-caption mt-1 flex flex-wrap items-center gap-2">
-                    <StatusBadge status={r.status} />
-                    <span className="text-muted-foreground">
-                      {r.failure_reason ?? (r.source ? formatSourceForDisplay(r.source) : "—")}
-                    </span>
-                  </div>
-                </Link>
+                <RunRow href={routes.peek(routes.section.runs, r.run_id)} run={r} />
               </li>
             ))}
           </DataList>
@@ -222,29 +218,36 @@ export function RecentActivityOverview({ data, routes }: { data: RecentActivityO
           <EmptyState title="No recent grant decisions" />
         ) : (
           <DataList>
-            {data.recentDecisions.map((g) => {
-              const providerSuffix = g.source ? ` · ${formatSourceForDisplay(g.source)}` : "";
-              return (
-                <li key={g.grant_id}>
-                  <Link
-                    className="pdpp-caption grid gap-1 px-3 py-2.5 transition-colors hover:bg-muted/40 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_9rem]"
-                    href={routes.peek(routes.section.grants, g.grant_id)}
-                  >
-                    <code className="break-all font-medium font-mono text-foreground">{g.grant_id}</code>
-                    <span className="min-w-0 truncate text-muted-foreground">
-                      client {g.client_id ?? "—"}
-                      {providerSuffix}
-                    </span>
-                    <span className="pdpp-caption flex items-center gap-2 justify-self-end">
+            {data.recentDecisions.map((g) => (
+              <li key={g.grant_id}>
+                <Link
+                  className="block px-3 py-2.5 transition-colors hover:bg-muted/40"
+                  href={routes.peek(routes.section.grants, g.grant_id)}
+                >
+                  <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <span className="truncate font-medium text-foreground">{grantRowLabel(g)}</span>
                       <StatusBadge status={g.status} />
-                      <span className="text-muted-foreground">
-                        <Timestamp value={g.last_at} />
-                      </span>
+                      {g.client_id ? (
+                        <span className="pdpp-caption truncate text-muted-foreground">client {g.client_id}</span>
+                      ) : null}
+                    </div>
+                    <span className="pdpp-caption shrink-0 text-muted-foreground tabular-nums">
+                      <Timestamp value={g.last_at} />
                     </span>
-                  </Link>
-                </li>
-              );
-            })}
+                  </div>
+                  <div className="pdpp-caption mt-0.5 flex flex-wrap items-center gap-x-2 text-muted-foreground">
+                    <code className="break-all font-mono">{g.grant_id}</code>
+                    {g.source ? (
+                      <>
+                        <span className="text-muted-foreground/50">·</span>
+                        <span>source {formatSourceForDisplay(g.source)}</span>
+                      </>
+                    ) : null}
+                  </div>
+                </Link>
+              </li>
+            ))}
           </DataList>
         )}
       </Section>
@@ -267,22 +270,7 @@ export function RecentActivityOverview({ data, routes }: { data: RecentActivityO
           <DataList>
             {data.recentRuns.map((r) => (
               <li key={r.run_id}>
-                <Link
-                  className="pdpp-caption grid gap-1 px-3 py-2.5 transition-colors hover:bg-muted/40 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_9rem]"
-                  href={routes.peek(routes.section.runs, r.run_id)}
-                >
-                  <code className="break-all font-medium font-mono text-foreground">{r.run_id}</code>
-                  <span className="min-w-0 truncate text-muted-foreground">
-                    {r.source ? formatSourceForDisplay(r.source) : "—"}
-                    {r.failure_reason ? ` · ${r.failure_reason}` : ""}
-                  </span>
-                  <span className="pdpp-caption flex items-center gap-2 justify-self-end">
-                    <StatusBadge status={r.status} />
-                    <span className="text-muted-foreground">
-                      <Timestamp value={r.last_at} />
-                    </span>
-                  </span>
-                </Link>
+                <RunRow href={routes.peek(routes.section.runs, r.run_id)} run={r} />
               </li>
             ))}
           </DataList>
@@ -337,7 +325,7 @@ function StatusStrip({
     );
   }
   return (
-    <div className="pdpp-caption mb-8 flex flex-wrap items-center gap-3 rounded-md border border-destructive/30 border-l-4 border-l-destructive/60 bg-destructive/5 px-4 py-2.5">
+    <div className="pdpp-caption mb-8 flex flex-wrap items-center gap-3 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-2.5 shadow-[inset_3px_0_0_0_color-mix(in_oklab,var(--destructive)_60%,transparent)]">
       <span className="font-medium text-destructive">
         {actionNeeded} recent failure{actionNeeded === 1 ? "" : "s"}
       </span>

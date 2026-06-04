@@ -2,18 +2,18 @@
 
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import {
-  ARTIFACT_LIFECYCLE_VOCABULARY,
   Callout,
-  Section as DashboardSectionPrimitive,
   DataList,
   FilterSummary,
   MetaPill,
   PageHeader,
   Pager,
+  Section as DashboardSectionPrimitive,
   SplitLayout,
   StatusBadge,
   Toolbar,
 } from "@pdpp/operator-ui/components/primitives";
+import { ARTIFACT_LIFECYCLE_VOCABULARY } from "@pdpp/operator-ui/components/status-vocabularies";
 import React, { useEffect, useState } from "react";
 import { ArtifactLink } from "@/components/docs/artifact-link.tsx";
 import { ProsePage } from "@/components/docs/prose-page.tsx";

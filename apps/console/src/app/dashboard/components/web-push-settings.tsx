@@ -1,8 +1,68 @@
 "use client";
 
 import { Section } from "@pdpp/operator-ui/components/primitives";
-import { useEffect, useState } from "react";
+import { useEffect, useReducer, useState } from "react";
 import type { WebPushConfig, WebPushSubscriptionSummary } from "../lib/ref-client.ts";
+
+type SwState = "registered" | "absent" | "unknown" | "unsupported";
+
+// The runtime state for *this* browser/device: whether Web Push is usable, the
+// notification permission, the service-worker registration, and the active push
+// endpoint, plus the human-readable status line. These all change together as
+// the async inspection settles and as the owner enables/disables this device,
+// so they live in one reducer (atomic transitions, no cascading re-renders).
+interface DeviceState {
+  endpoint: string | null;
+  permission: NotificationPermission | "unknown";
+  status: string;
+  swState: SwState;
+  unavailable: string | null;
+}
+
+type DeviceAction =
+  | {
+      type: "supportDetected";
+      permission: NotificationPermission | "unknown";
+      status: string;
+      unavailable: string | null;
+    }
+  | { type: "swState"; swState: SwState; status?: string }
+  | { type: "subscribed"; endpoint: string; status: string }
+  | { type: "disabled"; status: string }
+  | { type: "endpoint"; endpoint: string | null }
+  | { type: "permission"; permission: NotificationPermission | "unknown" }
+  | { type: "status"; status: string };
+
+function deviceReducer(state: DeviceState, action: DeviceAction): DeviceState {
+  switch (action.type) {
+    case "supportDetected":
+      return { ...state, unavailable: action.unavailable, permission: action.permission, status: action.status };
+    case "swState":
+      return action.status === undefined
+        ? { ...state, swState: action.swState }
+        : { ...state, swState: action.swState, status: action.status };
+    case "subscribed":
+      return { ...state, endpoint: action.endpoint, status: action.status };
+    case "disabled":
+      return { ...state, endpoint: null, status: action.status };
+    case "endpoint":
+      return { ...state, endpoint: action.endpoint };
+    case "permission":
+      return { ...state, permission: action.permission };
+    case "status":
+      return { ...state, status: action.status };
+    default:
+      return state;
+  }
+}
+
+const INITIAL_DEVICE_STATE: DeviceState = {
+  endpoint: null,
+  permission: "unknown",
+  status: "Checking this browser…",
+  swState: "unknown",
+  unavailable: null,
+};
 
 function urlBase64ToUint8Array(base64String: string) {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
@@ -108,7 +168,7 @@ function setupStepToneClass(state: DiagnosticState) {
   if (state === "warn") {
     return "border-[color:var(--warning)]/30 bg-[color:var(--warning-wash)] text-foreground";
   }
-  return "border-border/70 bg-background/70 text-foreground";
+  return "border-border bg-muted/40 text-foreground";
 }
 
 function secureContextRow(): DiagnosticRow {
@@ -237,7 +297,7 @@ function deviceStatus({
   }
   if (permission === "unknown" && swState === "unknown") {
     return {
-      title: "Checking this device...",
+      title: "Checking this device…",
       detail: "Inspecting browser permission and subscription state.",
     };
   }
@@ -440,6 +500,50 @@ function buildDiagnostics({
   ];
 }
 
+// Collapsible per-precondition checklist. Presentational: the parent owns the
+// device state and re-inspection, this only renders the rows and the toggle.
+function DiagnosticsDisclosure({
+  diagnostics,
+  expanded,
+  onToggle,
+}: {
+  diagnostics: DiagnosticRow[];
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="mt-4 border-border/60 border-t pt-3">
+      <button
+        aria-controls="web-push-diagnostics"
+        aria-expanded={expanded}
+        className="pdpp-caption text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+        onClick={onToggle}
+        type="button"
+      >
+        {expanded ? "Hide diagnostics" : "Show diagnostics"}
+      </button>
+      {expanded ? (
+        <ul aria-label="Web Push diagnostics" className="mt-3 space-y-1.5" id="web-push-diagnostics">
+          {diagnostics.map((row) => (
+            <li className="pdpp-caption flex items-start gap-2" key={row.label}>
+              <span
+                aria-hidden="true"
+                className={`inline-block w-10 shrink-0 font-mono ${diagnosticToneClass(row.state)}`}
+              >
+                {diagnosticMarker(row.state)}
+              </span>
+              <span className="min-w-0">
+                <span className="font-medium text-foreground">{row.label}</span>
+                <span className="ml-2 text-muted-foreground">{row.detail}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 export function WebPushSettings({
   config,
   subscriptions,
@@ -447,38 +551,37 @@ export function WebPushSettings({
   config: WebPushConfig;
   subscriptions: WebPushSubscriptionSummary[];
 }) {
-  const [status, setStatus] = useState("Checking this browser...");
+  const [device, dispatch] = useReducer(deviceReducer, INITIAL_DEVICE_STATE);
+  const { status, endpoint, unavailable, permission, swState } = device;
   const [busy, setBusy] = useState(false);
-  const [endpoint, setEndpoint] = useState<string | null>(null);
-  const [unavailable, setUnavailable] = useState<string | null>(null);
   const [testStatus, setTestStatus] = useState<string | null>(null);
-  const [permission, setPermission] = useState<NotificationPermission | "unknown">("unknown");
-  const [swState, setSwState] = useState<"registered" | "absent" | "unknown" | "unsupported">("unknown");
   const [showDetails, setShowDetails] = useState(false);
+  const [showSetup, setShowSetup] = useState(false);
 
   async function refreshSubscriptionState() {
     if (!hasNavigatorFeature("serviceWorker")) {
-      setSwState("unsupported");
+      dispatch({ type: "swState", swState: "unsupported" });
       return;
     }
     try {
       const registration = await navigator.serviceWorker.getRegistration("/");
       await registration?.update().catch(() => undefined);
-      setSwState(registration ? "registered" : "absent");
+      dispatch({ type: "swState", swState: registration ? "registered" : "absent" });
       const existing = await registration?.pushManager.getSubscription();
-      setEndpoint(existing?.endpoint ?? null);
+      dispatch({ type: "endpoint", endpoint: existing?.endpoint ?? null });
     } catch {
-      setSwState("unknown");
+      dispatch({ type: "swState", swState: "unknown" });
     }
   }
 
   useEffect(() => {
     const reason = detectSupport(config);
-    setUnavailable(reason);
-    if ("Notification" in window) {
-      setPermission(Notification.permission);
-    }
-    setStatus(reason ? "Unavailable in this browser" : `Permission: ${Notification.permission}`);
+    dispatch({
+      type: "supportDetected",
+      unavailable: reason,
+      permission: "Notification" in window ? Notification.permission : "unknown",
+      status: reason ? "Unavailable in this browser" : `Permission: ${Notification.permission}`,
+    });
     if (reason) {
       return;
     }
@@ -489,21 +592,27 @@ export function WebPushSettings({
         if (cancelled) {
           return;
         }
-        setSwState(registration ? "registered" : "absent");
+        dispatch({ type: "swState", swState: registration ? "registered" : "absent" });
         await registration?.update().catch(() => undefined);
         const existing = await registration?.pushManager.getSubscription();
         if (cancelled) {
           return;
         }
         if (existing) {
-          setEndpoint(existing.endpoint);
-          setStatus("Web Push is enabled for this browser.");
+          dispatch({
+            type: "subscribed",
+            endpoint: existing.endpoint,
+            status: "Web Push is enabled for this browser.",
+          });
         }
       })
       .catch(() => {
         if (!cancelled) {
-          setSwState("unknown");
-          setStatus("Could not inspect this browser's Web Push subscription.");
+          dispatch({
+            type: "swState",
+            swState: "unknown",
+            status: "Could not inspect this browser's Web Push subscription.",
+          });
         }
       });
     return () => {
@@ -519,15 +628,17 @@ export function WebPushSettings({
     setTestStatus(null);
     try {
       const registration = await navigator.serviceWorker.register("/pdpp-dashboard-sw.js");
-      setSwState("registered");
+      dispatch({ type: "swState", swState: "registered" });
       const result = await Notification.requestPermission();
-      setPermission(result);
+      dispatch({ type: "permission", permission: result });
       if (result !== "granted") {
-        setStatus(
-          result === "denied"
-            ? "Permission denied. Enable notifications in browser settings."
-            : "Permission was not granted."
-        );
+        dispatch({
+          type: "status",
+          status:
+            result === "denied"
+              ? "Permission denied. Enable notifications in browser settings."
+              : "Permission was not granted.",
+        });
         return;
       }
       const subscription =
@@ -549,10 +660,13 @@ export function WebPushSettings({
       if (!response.ok) {
         throw await webPushResponseError(response, "Subscription failed");
       }
-      setEndpoint(subscription.endpoint);
-      setStatus("Web Push is enabled for this browser.");
+      dispatch({
+        type: "subscribed",
+        endpoint: subscription.endpoint,
+        status: "Web Push is enabled for this browser.",
+      });
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : "Failed to enable Web Push.");
+      dispatch({ type: "status", status: err instanceof Error ? err.message : "Failed to enable Web Push." });
     } finally {
       setBusy(false);
     }
@@ -560,7 +674,7 @@ export function WebPushSettings({
 
   async function sendTest() {
     setBusy(true);
-    setTestStatus("Sending test notification...");
+    setTestStatus("Sending test notification…");
     try {
       const response = await fetch("/_ref/web-push/test", {
         method: "POST",
@@ -612,10 +726,9 @@ export function WebPushSettings({
           throw await webPushResponseError(response, "Unsubscribe failed");
         }
       }
-      setEndpoint(null);
-      setStatus("Web Push is disabled for this browser.");
+      dispatch({ type: "disabled", status: "Web Push is disabled for this browser." });
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : "Failed to disable Web Push.");
+      dispatch({ type: "status", status: err instanceof Error ? err.message : "Failed to disable Web Push." });
     } finally {
       setBusy(false);
     }
@@ -642,103 +755,182 @@ export function WebPushSettings({
     lastSubscription,
   });
 
+  // Whether this browser is set up and healthy, so the demoted summary line can
+  // wear a calm "enabled" tone and skip pushing a setup CTA.
+  const enabled = matchesThisBrowser && !unavailable;
+  let setupToggleLabel = "Set up notifications";
+  if (showSetup) {
+    setupToggleLabel = "Hide setup";
+  } else if (enabled) {
+    setupToggleLabel = "Manage";
+  }
+
   return (
     <Section
       description="Optional browser-native alerts for pending connector interactions."
       title="Browser notifications"
     >
-      <div className="rounded-lg border border-border/80 bg-card/60 p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <p className="pdpp-body font-medium">{currentDeviceStatus.title}</p>
-            <p className="pdpp-caption mt-1 max-w-3xl text-muted-foreground">{currentDeviceStatus.detail}</p>
-            <p className="pdpp-caption mt-1 max-w-3xl text-muted-foreground">{caveat}</p>
-          </div>
-          <div className="flex gap-2">
+      <div className="rounded-md border border-border bg-card px-4 py-3">
+        {/* Demoted-by-default summary: one quiet status line + a single
+            affordance. The full multi-step setup grid and diagnostics live
+            behind the "Set up notifications" / "Manage" disclosure so this reads
+            as a calm secondary utility rather than the loudest block on the
+            overview. */}
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <p className="pdpp-body flex min-w-0 items-center gap-2">
+            <span
+              aria-hidden="true"
+              className={`size-2 shrink-0 rounded-full ${enabled ? "bg-[color:var(--success)]" : "bg-muted-foreground/50"}`}
+            />
+            <span className="min-w-0 font-medium text-foreground">{currentDeviceStatus.title}</span>
+          </p>
+          <div className="flex shrink-0 items-center gap-2">
+            {enabled || unavailable ? null : (
+              <button
+                className="rounded-md bg-foreground px-3 py-1.5 text-background text-sm disabled:opacity-50"
+                disabled={busy}
+                onClick={enable}
+                type="button"
+              >
+                Enable this device
+              </button>
+            )}
             <button
-              className="rounded-md bg-foreground px-3 py-1.5 text-background text-sm disabled:opacity-50"
-              disabled={busy || Boolean(unavailable)}
-              onClick={enable}
+              aria-controls="web-push-setup"
+              aria-expanded={showSetup}
+              className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted/40"
+              onClick={() => setShowSetup((open) => !open)}
               type="button"
             >
-              Enable this device
-            </button>
-            <button
-              className="rounded-md border border-border px-3 py-1.5 text-sm disabled:opacity-50"
-              disabled={busy || !endpoint}
-              onClick={disable}
-              type="button"
-            >
-              Disable this device
-            </button>
-            <button
-              className="rounded-md border border-border px-3 py-1.5 text-sm disabled:opacity-50"
-              disabled={busy || !endpoint || Boolean(unavailable)}
-              onClick={sendTest}
-              type="button"
-            >
-              Send test notification
+              {setupToggleLabel}
             </button>
           </div>
         </div>
-        <ol className="mt-4 grid gap-2 md:grid-cols-4">
-          {setupSteps.map((step) => (
-            <li className={`rounded-md border px-3 py-2 ${setupStepToneClass(step.state)}`} key={step.label}>
-              <div className="pdpp-caption flex items-center gap-2 font-medium">
-                <span aria-hidden="true" className={`font-mono ${diagnosticToneClass(step.state)}`}>
-                  {diagnosticMarker(step.state)}
-                </span>
-                {step.label}
-              </div>
-              <p className="pdpp-caption mt-1 text-muted-foreground">{step.detail}</p>
-            </li>
-          ))}
-        </ol>
-        <p className="pdpp-caption mt-3 text-muted-foreground">Last check: {status}</p>
-        {testStatus ? <p className="pdpp-caption mt-3 text-muted-foreground">{testStatus}</p> : null}
-        {subscriptions.length > 0 ? (
-          <p className="pdpp-caption mt-3 text-muted-foreground">
-            {subscriptions.length} saved browser subscription{subscriptions.length === 1 ? "" : "s"}. Last status:{" "}
-            {lastSubscription?.last_failure_reason || lastSubscription?.last_success_at || "not used yet"}.
-          </p>
-        ) : null}
 
-        <div className="mt-4 border-border/60 border-t pt-3">
-          <button
-            aria-controls="web-push-diagnostics"
-            aria-expanded={showDetails}
-            className="pdpp-caption text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-            onClick={async () => {
+        {showSetup ? (
+          <WebPushSetupDetails
+            busy={busy}
+            caveat={caveat}
+            detail={currentDeviceStatus.detail}
+            diagnostics={diagnostics}
+            endpoint={endpoint}
+            lastSubscription={lastSubscription}
+            onDisable={disable}
+            onEnable={enable}
+            onTest={sendTest}
+            onToggleDetails={async () => {
               const next = !showDetails;
               setShowDetails(next);
               if (next) {
                 await refreshSubscriptionState();
               }
             }}
-            type="button"
-          >
-            {showDetails ? "Hide diagnostics" : "Show diagnostics"}
-          </button>
-          {showDetails ? (
-            <ul aria-label="Web Push diagnostics" className="mt-3 space-y-1.5" id="web-push-diagnostics">
-              {diagnostics.map((row) => (
-                <li className="pdpp-caption flex items-start gap-2" key={row.label}>
-                  <span
-                    aria-hidden="true"
-                    className={`inline-block w-10 shrink-0 font-mono ${diagnosticToneClass(row.state)}`}
-                  >
-                    {diagnosticMarker(row.state)}
-                  </span>
-                  <span className="min-w-0">
-                    <span className="font-medium text-foreground">{row.label}</span>
-                    <span className="ml-2 text-muted-foreground">{row.detail}</span>
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-        </div>
+            setupSteps={setupSteps}
+            showDetails={showDetails}
+            status={status}
+            subscriptionsCount={subscriptions.length}
+            testStatus={testStatus}
+            unavailable={unavailable}
+          />
+        ) : null}
       </div>
     </Section>
+  );
+}
+
+// The full, on-demand setup surface for a single browser/device: the buttons,
+// the four-step checklist, the live status lines, and the diagnostics
+// disclosure. Kept presentational (the parent owns device state, the async
+// flows, and the disclosure toggles) so WebPushSettings stays a lean
+// orchestrator and this dense block only mounts when the owner opens it.
+function WebPushSetupDetails({
+  detail,
+  caveat,
+  busy,
+  unavailable,
+  endpoint,
+  onEnable,
+  onDisable,
+  onTest,
+  setupSteps,
+  status,
+  testStatus,
+  subscriptionsCount,
+  lastSubscription,
+  diagnostics,
+  showDetails,
+  onToggleDetails,
+}: {
+  detail: string;
+  caveat: string;
+  busy: boolean;
+  unavailable: string | null;
+  endpoint: string | null;
+  onEnable: () => void;
+  onDisable: () => void;
+  onTest: () => void;
+  setupSteps: SetupStep[];
+  status: string;
+  testStatus: string | null;
+  subscriptionsCount: number;
+  lastSubscription: WebPushSubscriptionSummary | undefined;
+  diagnostics: DiagnosticRow[];
+  showDetails: boolean;
+  onToggleDetails: () => void;
+}) {
+  return (
+    <div className="mt-4 border-border/60 border-t pt-4" id="web-push-setup">
+      <p className="pdpp-caption max-w-3xl text-muted-foreground">{detail}</p>
+      <p className="pdpp-caption mt-1 max-w-3xl text-muted-foreground">{caveat}</p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button
+          className="rounded-md bg-foreground px-3 py-1.5 text-background text-sm disabled:opacity-50"
+          disabled={busy || Boolean(unavailable)}
+          onClick={onEnable}
+          type="button"
+        >
+          Enable this device
+        </button>
+        <button
+          className="rounded-md border border-border px-3 py-1.5 text-sm disabled:opacity-50"
+          disabled={busy || !endpoint}
+          onClick={onDisable}
+          type="button"
+        >
+          Disable this device
+        </button>
+        <button
+          className="rounded-md border border-border px-3 py-1.5 text-sm disabled:opacity-50"
+          disabled={busy || !endpoint || Boolean(unavailable)}
+          onClick={onTest}
+          type="button"
+        >
+          Send test notification
+        </button>
+      </div>
+      <ol className="mt-4 grid gap-2 md:grid-cols-4">
+        {setupSteps.map((step) => (
+          <li className={`rounded-md border px-3 py-2 ${setupStepToneClass(step.state)}`} key={step.label}>
+            <div className="pdpp-caption flex items-center gap-2 font-medium">
+              <span aria-hidden="true" className={`font-mono ${diagnosticToneClass(step.state)}`}>
+                {diagnosticMarker(step.state)}
+              </span>
+              {step.label}
+            </div>
+            <p className="pdpp-caption mt-1 text-muted-foreground">{step.detail}</p>
+          </li>
+        ))}
+      </ol>
+      <p className="pdpp-caption mt-3 text-muted-foreground">Last check: {status}</p>
+      {testStatus ? <p className="pdpp-caption mt-3 text-muted-foreground">{testStatus}</p> : null}
+      {subscriptionsCount > 0 ? (
+        <p className="pdpp-caption mt-3 text-muted-foreground">
+          {subscriptionsCount} saved browser subscription{subscriptionsCount === 1 ? "" : "s"}. Last status:{" "}
+          {lastSubscription?.last_failure_reason || lastSubscription?.last_success_at || "not used yet"}.
+        </p>
+      ) : null}
+
+      <DiagnosticsDisclosure diagnostics={diagnostics} expanded={showDetails} onToggle={onToggleDetails} />
+    </div>
   );
 }

@@ -1,11 +1,5 @@
-import {
-  ARTIFACT_LIFECYCLE_VOCABULARY,
-  DataList,
-  MetaPill,
-  PageHeader,
-  Section,
-  StatusBadge,
-} from "@pdpp/operator-ui/components/primitives";
+import { DataList, MetaPill, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
+import { ARTIFACT_LIFECYCLE_VOCABULARY } from "@pdpp/operator-ui/components/status-vocabularies";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { ArtifactLink } from "@/components/docs/artifact-link.tsx";

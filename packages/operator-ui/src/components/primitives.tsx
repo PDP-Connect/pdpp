@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { RUN_LIFECYCLE_VOCABULARY, type StatusTone, type StatusVocabulary } from "./status-vocabularies.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -167,7 +168,15 @@ export function DataList({
   return (
     <ul
       aria-label={ariaLabel}
-      className={`divide-y divide-border/70 border-border/70 border-y ${dense ? "" : ""} ${className}`.trim()}
+      // `pdpp-data-list` is a brand-stylesheet hook (base.css) that owns the
+      // row-separator + outer-rule contrast. It lives in real CSS rather than
+      // dark: utility classes because the console's Tailwind content scan only
+      // covers apps/console/src — utility classes that appear *only* in
+      // operator-ui (e.g. a dark: divider token) never get generated. The CSS
+      // hook also lets the dark surface step the separators up to
+      // --border-strong (charcoal needs the extra contrast) while light keeps
+      // the gentle hairline, in one place.
+      className={`pdpp-data-list divide-y divide-border/70 border-border/70 border-y ${dense ? "" : ""} ${className}`.trim()}
     >
       {children}
     </ul>
@@ -230,49 +239,29 @@ export function MetaPill({ label, value, tone = "neutral" }: { label: string; va
 }
 
 // ─── Status badge ──────────────────────────────────────────────────────────
-// One primitive (the chip), many vocabularies (one per domain).
-// Vocabularies are domain-bound — don't conflate run lifecycle ("started")
-// with artifact authoring states ("in-progress").
+// One primitive (the chip), many vocabularies (one per domain). The tone/
+// vocabulary types and the domain vocabularies themselves live in the sibling
+// `status-vocabularies.ts` module so this component file stays Fast-Refresh
+// clean (component-only exports).
 
-export type StatusTone = "success" | "danger" | "warning" | "neutral";
-
-interface StatusVocabularyEntry {
-  label: string;
-  tone: StatusTone;
-}
-
-export type StatusVocabulary = Record<string, StatusVocabularyEntry>;
-
+// The badge fill rides on a base (light) wash class; the dark-mode fill + ring
+// strengthening and the semantic label COLOR are owned by the brand stylesheet
+// (base.css, keyed off the `data-status-tone` attribute below). Two reasons it
+// is NOT done with `dark:` utility classes here:
+//   1. The console's Tailwind content scan only covers apps/console/src, so a
+//      `dark:` token that appears only in operator-ui never gets generated.
+//   2. The label needs to escape `.pdpp-eyebrow { color: var(--muted-foreground) }`,
+//      which is *unlayered* and so beats any Tailwind `text-*` utility (utilities
+//      live in `@layer utilities`; unlayered rules win the cascade over layered
+//      ones). A real CSS rule of equal-or-greater specificity is the clean fix.
+// On the charcoal dark surface the prior wash-only fills (8–16% alpha) read
+// nearly flat — base.css steps each tone's fill up and adds a same-hue inset
+// ring so a failure is easy to spot in a scannable list.
 const STATUS_BADGE_TONE_CLASSES: Record<StatusTone, string> = {
-  danger: "bg-destructive/10 text-destructive",
-  success: "bg-[color:var(--success-wash)] text-[color:var(--success)]",
-  warning: "bg-[color:var(--warning-wash)] text-[color:var(--warning)]",
-  neutral: "bg-muted text-muted-foreground",
-};
-
-// Run/grant lifecycle: event states of transient operations.
-export const RUN_LIFECYCLE_VOCABULARY: StatusVocabulary = {
-  failed: { label: "failed", tone: "danger" },
-  rejected: { label: "rejected", tone: "danger" },
-  denied: { label: "denied", tone: "danger" },
-  revoked: { label: "revoked", tone: "danger" },
-  cancelled: { label: "cancelled", tone: "danger" },
-  succeeded: { label: "succeeded", tone: "success" },
-  issued: { label: "issued", tone: "success" },
-  token_issued: { label: "token issued", tone: "success" },
-  approved: { label: "approved", tone: "success" },
-  started: { label: "started", tone: "warning" },
-  pending: { label: "pending", tone: "warning" },
-  staged: { label: "staged", tone: "warning" },
-  verification_pending: { label: "verification pending", tone: "warning" },
-  succeeded_with_gaps: { label: "partial", tone: "warning" },
-};
-
-// Change/spec authoring lifecycle: maturity states of durable artifacts.
-export const ARTIFACT_LIFECYCLE_VOCABULARY: StatusVocabulary = {
-  "in-progress": { label: "in progress", tone: "warning" },
-  complete: { label: "complete", tone: "success" },
-  unknown: { label: "no tasks", tone: "neutral" },
+  danger: "bg-destructive/10",
+  success: "bg-[color:var(--success-wash)]",
+  warning: "bg-[color:var(--warning-wash)]",
+  neutral: "bg-muted",
 };
 
 export function StatusBadge({
@@ -288,7 +277,12 @@ export function StatusBadge({
   const toneClass = STATUS_BADGE_TONE_CLASSES[entry.tone];
   return (
     <span
-      className={`pdpp-eyebrow ${inline ? "" : "inline-flex"} rounded-[3px] px-1.5 py-0.5 font-medium tabular-nums ${toneClass}`}
+      // `data-status-tone` lets the brand stylesheet (base.css) own the semantic
+      // label color and the dark-mode fill/ring strengthening — see the
+      // STATUS_BADGE_TONE_CLASSES note for why this can't be `dark:`/`text-*`
+      // utilities here.
+      className={`pdpp-status-badge pdpp-eyebrow ${inline ? "" : "inline-flex"} rounded-[3px] px-1.5 py-0.5 font-medium tabular-nums ${toneClass}`}
+      data-status-tone={entry.tone}
     >
       {entry.label}
     </span>

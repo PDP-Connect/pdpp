@@ -3,6 +3,7 @@ import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/co
 import { type ListWithPeekParams, ListWithPeekView } from "@pdpp/operator-ui/components/views/list-with-peek";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { formatSourceForDisplay } from "@pdpp/operator-ui/lib/connector-display";
+import { grantRowLabel } from "@pdpp/operator-ui/lib/summary-row-label";
 import Link from "next/link";
 import { Button, buttonVariants } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
@@ -34,8 +35,9 @@ interface Params {
 function listHref(params: Params, overrides: Partial<Params> = {}): string {
   const merged = { ...params, ...overrides };
   const qs = Object.entries(merged)
-    .filter(([, v]) => v !== undefined && v !== "")
-    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+    .flatMap(([k, v]) =>
+      v === undefined || v === "" ? [] : [`${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`]
+    )
     .join("&");
   return qs ? `/dashboard/grants?${qs}` : "/dashboard/grants";
 }
@@ -80,7 +82,7 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
   const preHeader = (
     <>
       {params.approval_error ? (
-        <div className="pdpp-caption mb-6 rounded-md border border-destructive/30 border-l-4 border-l-destructive/60 bg-destructive/5 px-4 py-2.5">
+        <div className="pdpp-caption mb-6 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-2.5 shadow-[inset_3px_0_0_0_color-mix(in_oklab,var(--destructive)_60%,transparent)]">
           <span className="font-medium text-destructive">Approval error:</span> <span>{params.approval_error}</span>
         </div>
       ) : null}
@@ -165,13 +167,14 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
 
 function PendingApprovalRow({ approval }: { approval: PendingApproval }) {
   const previewStreams = Array.isArray(approval.grant_preview?.streams)
-    ? approval.grant_preview.streams
-        .map((stream) => (typeof stream === "string" ? stream : stream?.name || ""))
-        .filter(Boolean)
+    ? approval.grant_preview.streams.flatMap((stream) => {
+        const name = typeof stream === "string" ? stream : stream?.name || "";
+        return name ? [name] : [];
+      })
     : [];
 
   return (
-    <div className="grid gap-3 px-3 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+    <div className="grid gap-3 p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
       <div className="min-w-0">
         <div className="flex flex-wrap items-baseline gap-2">
           <code className="pdpp-caption break-all font-medium font-mono text-foreground">{approval.approval_id}</code>
@@ -210,19 +213,30 @@ function GrantRow({ grant, href, peeked }: { grant: GrantSummary; href: string; 
       className={`block px-3 py-2.5 transition-colors ${peeked ? "bg-muted" : "hover:bg-muted/40"}`}
     >
       <Link className="block" href={href} scroll={false}>
-        <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <code className="pdpp-caption break-all font-medium font-mono text-foreground">{grant.grant_id}</code>
-          <div className="flex items-center gap-2">
+        {/* Lead with the source/client + decision; the raw grant id is demoted
+            to a monospace lookup key on the detail line. */}
+        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="truncate font-medium text-foreground">{grantRowLabel(grant)}</span>
             <StatusBadge status={grant.status} />
-            <span className="pdpp-caption text-muted-foreground">
-              <Timestamp value={grant.last_at} />
-            </span>
+            {grant.client_id ? (
+              <span className="pdpp-caption truncate text-muted-foreground">client {grant.client_id}</span>
+            ) : null}
           </div>
+          <span className="pdpp-caption shrink-0 text-muted-foreground tabular-nums">
+            <Timestamp value={grant.last_at} />
+          </span>
         </div>
-        <div className="pdpp-caption mt-1 text-muted-foreground">
-          {grant.event_count} events
-          {grant.client_id ? ` · client ${grant.client_id}` : ""}
-          {grant.source ? ` · source ${formatSourceForDisplay(grant.source)}` : ""}
+        <div className="pdpp-caption mt-0.5 flex flex-wrap items-center gap-x-2 text-muted-foreground">
+          <code className="break-all font-mono">{grant.grant_id}</code>
+          <span className="text-muted-foreground/50">·</span>
+          <span className="tabular-nums">{grant.event_count} events</span>
+          {grant.source ? (
+            <>
+              <span className="text-muted-foreground/50">·</span>
+              <span>source {formatSourceForDisplay(grant.source)}</span>
+            </>
+          ) : null}
         </div>
       </Link>
       {packageHref ? (

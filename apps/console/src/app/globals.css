@@ -1,5 +1,16 @@
 @import "@pdpp/brand/app.css";
 @import "tailwindcss";
+/*
+ * The operator console renders most of its surfaces from the @pdpp/operator-ui
+ * package (overview hero, run/grant/trace lists, primitives), but Tailwind v4's
+ * automatic source detection only scans this app's own tree — so any utility
+ * used *only* in operator-ui (e.g. the hero's two-column
+ * `lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1.9fr)]` and the secondary
+ * `grid-cols-3`) was being purged, collapsing the hero to a single column.
+ * Registering the package as an explicit @source restores those classes. Paths
+ * resolve relative to this CSS file.
+ */
+@source "../../../../packages/operator-ui/src/**/*.{ts,tsx}";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "fumadocs-ui/css/neutral.css";
@@ -32,6 +43,17 @@
   --color-ring: var(--ring);
   --color-success: var(--success);
   --color-warning: var(--warning);
+
+  /*
+   * PDPP radius scale — bridges the brand radius tokens (base.css :root) into
+   * Tailwind v4's `--radius-*` theme namespace so `rounded-sm/md/lg` utilities
+   * resolve to the intentional per-component scale (sm = inputs/cells, md =
+   * cards/buttons, lg = large containers) and existing `var(--radius-md)`
+   * references stay coherent with the utilities.
+   */
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
 
   /*
    * PDPP type scale — size-only tokens matching the .pdpp-* classes in
@@ -80,6 +102,19 @@
     font-family: var(--font-sans);
   }
   html, body { height: 100%; }
+
+  /* Systematic numeric treatment — tabular + lining figures so every amount,
+     count, and timestamp aligns in columns. Scoped to the .pdpp-num utility,
+     explicit [data-numeric] markers, and tables (cells inherit) so prose
+     rendering is untouched; we do NOT force tabular-nums on all text. */
+  .pdpp-num,
+  [data-numeric],
+  table {
+    font-variant-numeric: var(--numeric);
+  }
+  td, th {
+    font-variant-numeric: inherit;
+  }
 }
 
 html {

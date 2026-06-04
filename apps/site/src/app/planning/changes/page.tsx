@@ -1,4 +1,5 @@
-import { ARTIFACT_LIFECYCLE_VOCABULARY, PageHeader, StatusBadge } from "@pdpp/operator-ui/components/primitives";
+import { PageHeader, StatusBadge } from "@pdpp/operator-ui/components/primitives";
+import { ARTIFACT_LIFECYCLE_VOCABULARY } from "@pdpp/operator-ui/components/status-vocabularies";
 import type { Metadata } from "next";
 import { ArtifactLink } from "@/components/docs/artifact-link.tsx";
 import { DocsLayout } from "@/components/docs/docs-layout.tsx";
