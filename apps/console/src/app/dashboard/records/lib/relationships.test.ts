@@ -5,6 +5,7 @@ import {
   advisoryForReason,
   buildRelatedLinks,
   candidateParentStreamsForChild,
+  childHasOneBackLinksFromManifest,
   findParentBackLink,
   parentRelationsForChild,
 } from "./relationships.ts";
@@ -187,4 +188,88 @@ test("child back-link is absent when the child field value is missing or empty",
     { connectionId: "github" }
   );
   assert.equal(empty, null);
+});
+
+// ── childHasOneBackLinksFromManifest ──────────────────────────────────────────
+
+const CHASE_TRANSACTIONS_MANIFEST_STREAM = {
+  name: "transactions",
+  relationships: [
+    { name: "account", stream: "accounts", foreign_key: "account_id", cardinality: "has_one" },
+  ],
+};
+
+test("child-declared has_one links to the parent record detail page", () => {
+  const links = childHasOneBackLinksFromManifest(
+    CHASE_TRANSACTIONS_MANIFEST_STREAM,
+    { id: "1212486749|2026042024323046109400600036029", account_id: "1212486749", amount: -1234 },
+    { connectionId: "cin_029a67a16d8a252f6e3eb896" }
+  );
+  assert.equal(links.length, 1);
+  const link = links[0];
+  assert.ok(link);
+  assert.equal(link.parentStream, "accounts");
+  assert.equal(link.childParentKeyField, "account_id");
+  assert.equal(
+    link.href,
+    "/dashboard/records/cin_029a67a16d8a252f6e3eb896/accounts/1212486749"
+  );
+});
+
+test("child-declared has_one percent-encodes connection, stream, and key value", () => {
+  const links = childHasOneBackLinksFromManifest(
+    { name: "items", relationships: [{ name: "order", stream: "open orders", foreign_key: "order id", cardinality: "has_one" }] },
+    { "order id": "ref/42" },
+    { connectionId: "my conn" }
+  );
+  const link = links[0];
+  assert.ok(link);
+  assert.equal(link.href, "/dashboard/records/my%20conn/open%20orders/ref%2F42");
+});
+
+test("child-declared has_many relationships are ignored by childHasOneBackLinksFromManifest", () => {
+  const links = childHasOneBackLinksFromManifest(
+    {
+      name: "transactions",
+      relationships: [
+        { name: "tags", stream: "tags", foreign_key: "transaction_id", cardinality: "has_many" },
+      ],
+    },
+    { id: "tx1", transaction_id: "tx1" },
+    { connectionId: "conn" }
+  );
+  assert.deepEqual(links, []);
+});
+
+test("unrelated id-looking fields do not link when not covered by a declared has_one", () => {
+  // account_id is NOT declared in this stream's relationships — must not produce a link.
+  const links = childHasOneBackLinksFromManifest(
+    { name: "transactions", relationships: [] },
+    { id: "tx1", account_id: "1212486749" },
+    { connectionId: "conn" }
+  );
+  assert.deepEqual(links, []);
+});
+
+test("child-declared has_one yields no link when foreign_key field is absent from record", () => {
+  const links = childHasOneBackLinksFromManifest(
+    CHASE_TRANSACTIONS_MANIFEST_STREAM,
+    { id: "tx1", memo: "coffee" },
+    { connectionId: "cin" }
+  );
+  assert.deepEqual(links, []);
+});
+
+test("child-declared has_one yields no link when foreign_key value is empty", () => {
+  const links = childHasOneBackLinksFromManifest(
+    CHASE_TRANSACTIONS_MANIFEST_STREAM,
+    { id: "tx1", account_id: "" },
+    { connectionId: "cin" }
+  );
+  assert.deepEqual(links, []);
+});
+
+test("childHasOneBackLinksFromManifest returns empty for undefined manifest stream or record", () => {
+  assert.deepEqual(childHasOneBackLinksFromManifest(undefined, { id: "x" }, { connectionId: "c" }), []);
+  assert.deepEqual(childHasOneBackLinksFromManifest(CHASE_TRANSACTIONS_MANIFEST_STREAM, undefined, { connectionId: "c" }), []);
 });

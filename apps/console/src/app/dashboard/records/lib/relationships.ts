@@ -57,6 +57,8 @@ function recordsBasePath(connectionId: string): string {
 interface ManifestRelationship {
   name: string;
   stream?: string;
+  foreign_key?: string;
+  cardinality?: string;
 }
 interface ManifestStreamShape {
   name: string;
@@ -205,6 +207,46 @@ export function buildRelatedLinks(
     link.advisory = `No related ${cap.name || "record"}.`;
     return link;
   });
+}
+
+/**
+ * Build child → parent links from `has_one` relationships declared on the child
+ * stream's own manifest entry. This covers connectors (like Chase) that declare
+ * `has_one` on the child rather than on a parent with `query.expand`.
+ *
+ * The manifest declaration is the source of truth for relationship structure;
+ * the child record's field value (`foreign_key`) is the parent record's key.
+ * Only `has_one` cardinality is handled here — `has_many` is navigated from the
+ * parent side via `buildRelatedLinks`.
+ *
+ * Returns one `ParentBackLink` per usable declared `has_one` relationship where
+ * the record carries a non-empty string value for the declared `foreign_key`.
+ */
+export function childHasOneBackLinksFromManifest(
+  childManifestStream: ManifestStreamShape | undefined,
+  childRecordData: Record<string, unknown> | undefined,
+  args: { connectionId: string }
+): ParentBackLink[] {
+  if (!(childManifestStream && childRecordData && typeof childRecordData === "object")) {
+    return [];
+  }
+  const base = recordsBasePath(args.connectionId);
+  const out: ParentBackLink[] = [];
+  for (const rel of childManifestStream.relationships ?? []) {
+    if (rel.cardinality !== "has_one" || !rel.stream || !rel.foreign_key) {
+      continue;
+    }
+    const value = childRecordData[rel.foreign_key];
+    if (typeof value !== "string" || value.length === 0) {
+      continue;
+    }
+    out.push({
+      childParentKeyField: rel.foreign_key,
+      parentStream: rel.stream,
+      href: `${base}/${encodeURIComponent(rel.stream)}/${encodeURIComponent(value)}`,
+    });
+  }
+  return out;
 }
 
 /**

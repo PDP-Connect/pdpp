@@ -16,6 +16,7 @@ import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } fr
 import {
   buildRelatedLinks,
   candidateParentStreamsForChild,
+  childHasOneBackLinksFromManifest,
   findParentBackLink,
   parentRelationsForChild,
   type RelatedLink,
@@ -37,6 +38,7 @@ export default async function RecordDetailPage({
   let connectionId = routeId;
   let expandCapabilities: ExpandCapability[] = [];
   let parentRelations: Array<{ parentStream: string; capability: ExpandCapability }> = [];
+  let childManifestStream: { name: string; relationships?: Array<{ name: string; stream?: string; foreign_key?: string; cardinality?: string }> } | undefined;
   try {
     const connection = await resolveConnectionForRecordsRoute(routeId);
     if (!connection) {
@@ -56,6 +58,7 @@ export default async function RecordDetailPage({
     record = recordResult;
     expandCapabilities = Array.isArray(metadataResult?.expand_capabilities) ? metadataResult.expand_capabilities : [];
     const connectorManifest = manifests.find((m) => m.connector_id === connection.connector_id);
+    childManifestStream = connectorManifest?.streams?.find((s) => s.name === streamName) as typeof childManifestStream;
     const parentMetadata = await Promise.all(
       candidateParentStreamsForChild(connectorManifest?.streams, streamName).map(async (parentStream) => {
         const metadata = await getStreamMetadata(connection.connector_id, parentStream, { connectorInstanceId }).catch(
@@ -103,9 +106,20 @@ export default async function RecordDetailPage({
 
   // Parent → child relations declared on THIS (parent) stream.
   const relatedLinks = buildRelatedLinks(expandCapabilities, { connectionId, parentRecordKey: record.id });
-  // Child → parent back-link, when THIS stream is the child of a declared
-  // forward relation and the record carries the parent's key.
-  const parentBackLink = findParentBackLink(streamName, record.data, parentRelations, { connectionId });
+  // Child → parent back-links from two sources:
+  //   1. Parent streams' expand_capabilities (server metadata, covers parent-declared has_many/has_one)
+  //   2. Child's own manifest has_one relationships (covers child-declared has_one like Chase transactions→account)
+  const parentBackLinkFromMeta = findParentBackLink(streamName, record.data, parentRelations, { connectionId });
+  const childHasOneLinks = childHasOneBackLinksFromManifest(childManifestStream, record.data, { connectionId });
+  // Prefer the metadata-derived link; fall back to manifest-derived ones. Deduplicate by parentStream.
+  const seenParentStreams = new Set<string>();
+  const allParentBackLinks = [...(parentBackLinkFromMeta ? [parentBackLinkFromMeta] : []), ...childHasOneLinks].filter(
+    (link) => {
+      if (seenParentStreams.has(link.parentStream)) return false;
+      seenParentStreams.add(link.parentStream);
+      return true;
+    }
+  );
 
   return (
     <DashboardShell active="records">
@@ -132,20 +146,20 @@ export default async function RecordDetailPage({
         </pre>
       </Section>
 
-      {(relatedLinks.length > 0 || parentBackLink) && (
+      {(relatedLinks.length > 0 || allParentBackLinks.length > 0) && (
         <Section title="Related">
           <ul className="space-y-2">
-            {parentBackLink && (
-              <li className="pdpp-caption">
-                <span className="text-muted-foreground">{parentBackLink.parentStream} · </span>
+            {allParentBackLinks.map((backLink) => (
+              <li key={backLink.parentStream} className="pdpp-caption">
+                <span className="text-muted-foreground">{backLink.parentStream} · </span>
                 <Link
                   className="font-mono text-foreground underline underline-offset-2 hover:no-underline"
-                  href={parentBackLink.href}
+                  href={backLink.href}
                 >
-                  {parentBackLink.childParentKeyField} → parent
+                  {backLink.childParentKeyField} → parent
                 </Link>
               </li>
-            )}
+            ))}
             {relatedLinks.map((link) => (
               <RelatedRow key={link.relation} link={link} />
             ))}
