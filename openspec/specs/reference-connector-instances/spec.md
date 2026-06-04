@@ -270,3 +270,110 @@ The reference implementation SHALL keep credential rotation, credential revocati
 - **THEN** the reference SHALL delete the stored credential so no orphaned secret survives the connection
 - **AND** a later ingest SHALL NOT recreate the credential or the connection without an explicit owner re-capture.
 
+### Requirement: Phantom-connection cleanup SHALL accept a legacy default-account id that proves provenance
+
+The reference implementation's operator phantom-connection cleanup (the owner/operator-only, dry-run-default tool that revokes residual zero-record default-account `connector_instances` rows) SHALL NOT refuse to revoke a row solely because its `connector_instance_id` does not match the current deterministic `makeDefaultAccountConnectorInstanceId(owner, connector_id)` value, provided the row independently proves default-account provenance and carries no real evidence.
+
+A row proves default-account provenance when its `source_kind` is `account`, its `source_binding_key` is `default`, its `source_binding_json` is exactly `{ "kind": "default_account" }`, and its `status` is `active`. A row whose `connector_instance_id` does not match the current deterministic value but that proves this provenance is a legacy default-account materialization (minted under an earlier id formula); the cleanup SHALL treat it as a revoke candidate and SHALL disclose the legacy id as an informational note distinct from a current deterministic id.
+
+The cleanup SHALL continue to refuse a row whose source binding is not the default-account marker (a real owner-created connection), regardless of its id and regardless of whether it carries data. The cleanup SHALL continue to refuse any default-account row — current id or legacy id — that carries records, change history, blobs, derived state, version counters, grant connector state, attention records, detail gaps, a load-bearing grant scope, a schedule, an active run, a device source instance, or a stored credential, in both the dry-run plan and the apply-time re-evaluation, and a missing evidence table SHALL fail closed. The revoke SHALL remain the same `connector_instances` soft-flip, and a revoked legacy row SHALL survive subsequent reads without re-materializing.
+
+#### Scenario: A zero-record legacy default-account row is a revoke candidate
+
+- **WHEN** a connection has the default-account provenance markers and an active status, carries no records and no other instance-scoped evidence, is not scoped by any load-bearing grant, and has a `connector_instance_id` that does not match the current deterministic default-account id
+- **THEN** the cleanup SHALL treat the connection as a revoke candidate
+- **AND** the dry-run output SHALL disclose the legacy default-account id as an informational note distinct from a current deterministic id
+- **AND** applying the cleanup SHALL revoke only that `connector_instances` row
+- **AND** a subsequent read SHALL NOT resurrect the revoked row and SHALL NOT materialize a replacement row under the current deterministic id.
+
+#### Scenario: A current deterministic-id candidate carries no legacy-id note
+
+- **WHEN** a zero-record default-account connection whose `connector_instance_id` matches the current deterministic default-account id is a revoke candidate
+- **THEN** the cleanup SHALL NOT attach the legacy-default-account-id note to that candidate.
+
+#### Scenario: A non-default binding with a legacy id stays out of scope
+
+- **WHEN** a connection has a `connector_instance_id` that does not match the current deterministic default-account id and a source binding that is not the default-account marker, even with zero records
+- **THEN** the cleanup SHALL refuse to revoke the connection on default-account-provenance grounds.
+
+#### Scenario: A legacy default-account row with real evidence is refused
+
+- **WHEN** a connection proves default-account provenance and has a legacy `connector_instance_id` but carries any record, load-bearing grant scope, schedule, active run, device source instance, or stored credential
+- **THEN** the cleanup SHALL refuse to revoke the connection
+- **AND** the refusal SHALL cite the evidence, not the legacy id
+- **AND** the refusal SHALL also hold at the apply-time re-evaluation when the evidence appears between the plan and the apply.
+
+### Requirement: Phantom-connection cleanup SHALL distinguish load-bearing grant scope from a display reference
+
+The reference implementation's operator phantom-connection cleanup (the owner/operator-only, dry-run-default tool that revokes residual zero-record default-account `connector_instances` rows) SHALL refuse to revoke a row whose `connector_instance_id` is load-bearing for any active grant's read scope, and SHALL NOT refuse solely because a grant-package member's display reference names the row.
+
+A connection's `connector_instance_id` is load-bearing for grant scope when an active grant pins it through `grant.streams[].connection_id` in the grant body, or names it in the grant's `storage_binding_json`. A `grant_package_members.source_json` reference is NOT load-bearing for grant scope: read fan-in resolves over the connector's currently-active connections and the grant body's pins, never over the member's stored display source.
+
+Cleanup SHALL revoke only the `connector_instances` row (the same soft-flip used by the owner-agent connection revoke). It SHALL NOT revoke, narrow, or rewrite any grant, grant-package member, child grant, or token. All other zero-evidence safety checks — records, change history, blobs, derived state, version counters, attention records, detail gaps, schedules, active runs, device source instances, stored credentials, default-account provenance, deterministic-id self-consistency, and active-only status — SHALL continue to fail closed, in both the dry-run plan and the apply-time re-evaluation, and a missing evidence table SHALL fail closed rather than pass silently.
+
+#### Scenario: A member display reference alone does not block cleanup
+
+- **WHEN** a zero-record default-account connection is referenced only by a grant-package member's `source_json` display reference, with no `grant.streams[].connection_id` pin and no grant `storage_binding_json` naming it
+- **THEN** the cleanup SHALL treat the connection as a revoke candidate
+- **AND** the dry-run output SHALL disclose the grant-package member reference as an informational note on the candidate
+- **AND** applying the cleanup SHALL revoke only that `connector_instances` row
+- **AND** the grant package, its member rows, the member's child grant, and the member's token SHALL remain unchanged.
+
+#### Scenario: A load-bearing grant-scope pin blocks cleanup
+
+- **WHEN** an active grant pins a stream to a connection through `grant.streams[].connection_id`, or names the connection in the grant's `storage_binding_json`
+- **THEN** the cleanup SHALL refuse to revoke that connection
+- **AND** the refusal reason SHALL identify the load-bearing grant scope distinctly from a display reference.
+
+#### Scenario: A stale duplicate connection is cleaned without affecting its data-bearing sibling
+
+- **WHEN** one connector has a stale zero-record default-account connection referenced only by a member display reference and a separate data-bearing connection with its own `connector_instance_id` and non-zero records
+- **THEN** the cleanup SHALL revoke the stale zero-record connection
+- **AND** the data-bearing connection SHALL be skipped because it has records
+- **AND** the data-bearing connection SHALL remain active and SHALL continue to resolve under grant fan-in.
+
+### Requirement: A reference read SHALL NOT persist a connection
+
+A reference-implementation read operation SHALL NOT create, upsert, or otherwise persist a `connector_instances` row. Default-account connection materialization SHALL be demand-driven by collection ingest or grant/connection resolution that genuinely needs a binding for a specific connector; it SHALL NOT be triggered by a dashboard, catalog, or any owner-facing read that merely enumerates connectors.
+
+#### Scenario: Dashboard read on a fresh instance writes no connection rows
+
+- **WHEN** the owner views the connection dashboard on an instance that has registered public connectors but zero configured connections
+- **THEN** the reference SHALL NOT write any `connector_instances` row as a side effect of the read
+- **AND** after the read, the owner's set of `connector_instances` rows SHALL remain empty
+- **AND** the registered connectors SHALL remain discoverable through the connector catalog (the registered `connectors` table and the add-connection surface), which is independent of `connector_instances`.
+
+#### Scenario: Ingest still materializes a default-account connection on demand
+
+- **WHEN** a collection run ingests at least one record batch for a connector that has no configured connection, or a grant/connection resolution requires a binding for that connector
+- **THEN** the reference MAY materialize a single default-account connection for that one connector at that time
+- **AND** this on-demand materialization SHALL remain unaffected by the read-time prohibition above.
+
+### Requirement: Catalog connectors SHALL be distinct from connections in owner projections
+
+Owner-facing reference projections SHALL distinguish a catalog connector (a registered `connector_id` the owner can add) from a connection (a configured `connector_instance_id`). The owner connection projection SHALL list only connections — rows backed by a real `connector_instance_id`. A connector that has no connection SHALL NOT appear in the connection projection as a synthesized or zero-record "active connection"; it remains a catalog connector, surfaced through the connector catalog (the registered `connectors` table and the add-connection surface). Connection lifecycle actions — sync, pause, resume, revoke, delete — SHALL target a connection identified by a `connector_instance_id`; because a catalog connector with no connection is not present in the connection projection, those actions are not offered for it.
+
+#### Scenario: Zero configured connections projects no connections and a complete catalog
+
+- **WHEN** the owner has registered listed connectors and zero configured connections
+- **THEN** the owner connection projection SHALL list zero connections
+- **AND** the registered listed connectors SHALL remain discoverable in the connector catalog (an add-connection surface, independent of `connector_instances`)
+- **AND** no sync, pause, resume, revoke, or delete action SHALL be offered for a catalog connector that has no connection.
+
+#### Scenario: A mix of connected and unconnected connectors
+
+- **WHEN** the owner has one configured connection for connector A and no connection for connector B, where both are registered listed connectors
+- **THEN** connector A SHALL be projected as a connection with its `connector_instance_id`
+- **AND** connector B SHALL NOT appear in the connection projection
+- **AND** connector B SHALL remain available to add through the connector catalog.
+
+### Requirement: Grant resolution SHALL NOT bind to a non-existent connection
+
+Grant and connection resolution SHALL NOT resolve a connector that has no configured connection to a synthesized or phantom binding. When a connector has no connection, resolution SHALL fail closed as "no active connection" rather than returning a fabricated `connector_instance_id`.
+
+#### Scenario: Fan-in resolution for an unconnected connector
+
+- **WHEN** a grant names a connector that has no configured connection and does not pin a specific `connector_instance_id`
+- **THEN** resolution SHALL return no active binding for that connector and SHALL read zero records
+- **AND** it SHALL NOT bind to a default-account row created by an owner-facing read.
+
