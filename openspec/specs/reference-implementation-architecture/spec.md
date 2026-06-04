@@ -8289,3 +8289,262 @@ The `current_activity` stream SHALL use `mutable_state` semantics and SHALL be d
 - **WHEN** a client requests both `transactions` and `current_activity`
 - **THEN** the stream metadata and schemas SHALL make clear that `transactions` is the posted QFX ledger and `current_activity` is volatile UI-visible activity
 
+### Requirement: A configured Postgres runtime SHALL NOT require a persistent SQLite database at startup
+
+The reference implementation SHALL select exactly one runtime persistence
+backend at startup via `resolveStorageBackend()`. When the resolved backend is
+`postgres`, normal `startServer()` startup SHALL NOT depend on opening,
+creating, or migrating a persistent SQLite database. The configured SQLite file
+path (`PDPP_DB_PATH` / `DB_PATH`) SHALL NOT be opened in Postgres mode.
+
+A non-durable in-memory SQLite handle MAY remain available in Postgres mode for
+compatibility with modules that hold a `getDb()` reference, provided it opens no
+file, runs no persistent migration, serves no durable operator read or ingest
+write, and is discarded on shutdown. Postgres SHALL own all runtime persistence
+in Postgres mode.
+
+When the resolved backend is `sqlite`, startup SHALL open and migrate the
+configured persistent SQLite database as the runtime persistence store.
+
+Backend-aware startup steps that persist state — including pre-registered client
+seeding — SHALL execute after the active backend is established, so they
+dispatch to the backend that owns runtime persistence.
+
+#### Scenario: Postgres-mode boot does not open the persistent SQLite file
+- **WHEN** the reference is configured for the Postgres storage backend and starts
+- **THEN** `startServer()` SHALL reach HTTP readiness without opening or migrating the configured persistent SQLite database file
+- **AND** the configured SQLite file path SHALL remain untouched on disk
+- **AND** a persistent SQLite database that would fail to open or migrate SHALL NOT prevent Postgres-mode startup
+
+#### Scenario: Postgres-mode boot seeds pre-registered clients into Postgres
+- **WHEN** the reference starts in Postgres mode with pre-registered public clients configured
+- **THEN** those clients SHALL be persisted to the Postgres backend
+- **AND** they SHALL be readable through the active Postgres-backed client read path after startup
+
+#### Scenario: SQLite-mode boot still owns persistence on the persistent file
+- **WHEN** the reference is configured for the SQLite storage backend and starts
+- **THEN** `startServer()` SHALL open and migrate the configured persistent SQLite database
+- **AND** pre-registered clients SHALL be persisted to and readable from that SQLite database after startup
+
+### Requirement: Both storage backends SHALL have explicit startup smoke coverage
+
+The reference implementation SHALL exercise `startServer()` startup for both the
+SQLite and Postgres backends through focused, repeatable tests, so a change that
+breaks one backend's boot does not pass under the other backend's coverage. The
+Postgres startup smoke MAY be gated on a configured Postgres test endpoint; when
+that endpoint is unavailable the test SHALL register as skipped rather than
+failing, and SHALL NOT be silently absent. When the Postgres startup smoke runs,
+it SHALL use isolated test storage rather than seeding or mutating an operator's
+live proof database.
+
+#### Scenario: SQLite-only startup smoke runs by default
+- **WHEN** the reference test suite runs without a configured Postgres test endpoint
+- **THEN** a SQLite-mode startup smoke test SHALL boot `startServer()`, confirm readiness, and run by default
+- **AND** the Postgres-mode startup smoke test SHALL register as skipped rather than be absent
+
+#### Scenario: Postgres-only startup smoke runs against isolated Postgres storage
+- **WHEN** the reference test suite runs with a configured Postgres test endpoint
+- **THEN** a Postgres-mode startup smoke test SHALL boot `startServer()` against isolated Postgres storage
+- **AND** it SHALL confirm startup reaches readiness without opening the configured persistent SQLite file
+
+### Requirement: Startup migrations are bounded and large data backfills are explicit maintenance
+
+Normal reference startup SHALL perform only bounded, idempotent schema
+migrations. This covers both Postgres-mode startup and the SQLite migration
+runner. Startup SHALL NOT run an unbounded full-table data backfill, and SHALL
+NOT hold a long-running transaction or a table-level lock that blocks owner
+reads of runtime tables such as `spine_events`.
+
+Bounded idempotent schema work is permitted at startup: adding columns,
+creating indexes, dropping superseded columns, and replacing constraints, as
+long as each step is `IF NOT EXISTS`/guarded and does not scan-and-rewrite an
+entire large runtime table.
+
+Backfilling derived or denormalized values across an existing large runtime
+table SHALL be one of: (a) an explicit operator maintenance script run off the
+boot path, or (b) a tiny, capped, non-blocking batch at boot that uses short
+transactions, makes progress without holding reader-blocking locks, and never
+loops over rows it cannot resolve. Option (a) is the default for the disclosure
+spine source columns.
+
+Denormalized cache columns SHALL NOT be treated as the source of truth. When a
+denormalized column (such as `spine_events.source_kind`/`source_id`) is NULL
+for legacy rows, reads that do not filter on that column SHALL still return
+correct results by deriving the value from the canonical payload
+(`spine_events.data_json`) or runtime actor fallback. Dashboards and unfiltered
+correlation summaries SHALL remain honest when legacy denormalized columns are
+NULL.
+
+#### Scenario: Normal Postgres startup does not backfill the spine table
+
+- **WHEN** the reference boots in Postgres mode against a database whose
+  `spine_events` table already has the `source_kind` and `source_id` columns
+- **THEN** startup SHALL NOT issue a full `SELECT` of every `spine_events` row
+  and SHALL NOT issue per-row `UPDATE spine_events SET source_kind …`
+- **AND** startup SHALL complete without holding a transaction that blocks
+  concurrent owner reads of `spine_events`
+
+#### Scenario: Startup still applies bounded schema DDL
+
+- **WHEN** the reference boots against a database whose `spine_events` table
+  lacks the `source_kind`/`source_id` columns or the source index
+- **THEN** startup SHALL add the columns and create the source index
+  idempotently
+- **AND** startup SHALL drop a superseded `provider_id` column if present,
+  without scanning and rewriting the full table for value backfill
+
+#### Scenario: Source backfill is explicit, bounded, and resumable
+
+- **WHEN** an operator runs the spine-source backfill maintenance script
+- **THEN** it SHALL default to dry-run, require direct database access
+  (`PDPP_DATABASE_URL` or `PDPP_TEST_POSTGRES_URL`) as its authorization, and
+  apply writes only with an explicit `--apply` flag
+- **AND** it SHALL select only rows whose source columns are NULL, process them
+  in bounded batches each in its own short transaction, be safe to re-run, and
+  report the count of genuinely-sourceless rows it leaves unresolved rather than
+  reprocessing them on every run
+
+#### Scenario: Reads derive source for NULL legacy rows
+
+- **WHEN** a `spine_events` row has NULL `source_kind`/`source_id` columns but a
+  resolvable source in its `data_json` payload or runtime actor identity
+- **THEN** a correlation summary read that does not filter on source SHALL still
+  surface the correct source for that row
+- **AND** any limitation of source-*filtered* reads over not-yet-backfilled
+  legacy rows SHALL be a documented, operator-repairable condition rather than a
+  behavior that startup silently changes
+
+### Requirement: observation streams for sampled metrics
+
+The reference implementation SHALL support an observation stream class for sampled metrics that change at polling frequency rather than at semantic event frequency.
+
+#### Scenario: observation-stream record key is deterministic and date-scoped
+
+**WHEN** a connector emits an observation record for entity `E` at time `T`,
+**THEN** the record key SHALL be `{entity_id}:{YYYY-MM-DD}` (UTC date derived from `T`),
+**AND** emitting again for the same entity on the same UTC calendar day SHALL produce the same key,
+**AND** emitting on a different UTC calendar day SHALL produce a distinct key that does not overwrite the prior day's record.
+
+#### Scenario: sampled metrics do not version entity records
+
+**WHEN** sampled metric fields (e.g. `followers`, `num_members`) change between runs,
+**THEN** the entity stream record SHALL NOT produce a new version,
+**AND** the observation stream SHALL accumulate a new record for each distinct calendar day on which the metric value was observed.
+
+#### Scenario: entity stream is fingerprinted after metric split
+
+**WHEN** a connector separates sampled metrics from an entity stream,
+**THEN** the entity stream SHALL use a per-record fingerprint gate,
+**AND** the entity record SHALL only re-emit when at least one non-metric identity or structural field changes.
+
+### Requirement: Family-2 observation streams for github/user and slack/channels
+
+The connectors SHALL classify `github/user_stats` and `slack/channel_stats` as Family-2 append-keyed observation streams with date-scoped composite keys.
+
+#### Scenario: github/user_stats accumulates a daily time series
+
+**WHEN** the GitHub connector runs on consecutive days with different `followers` values,
+**THEN** `user_stats` SHALL contain one record per day with key `{user_id}:{YYYY-MM-DD}`,
+**AND** each record SHALL carry the `followers`, `following`, `public_repos`, and `public_gists` values observed on that day.
+
+#### Scenario: slack/channel_stats accumulates a daily time series
+
+**WHEN** the Slack connector runs on consecutive days with different `num_members` values,
+**THEN** `channel_stats` SHALL contain one record per day with key `{channel_id}:{YYYY-MM-DD}`,
+**AND** each record SHALL carry the `num_members` value observed on that day.
+
+#### Scenario: same-day re-runs are idempotent for observation streams
+
+**WHEN** the connector runs twice on the same UTC calendar day with identical metric values,
+**THEN** both runs SHALL produce the same record key and the same record content,
+**AND** no additional record version SHALL be created beyond what the runtime's byte-equivalence check produces.
+
+### Requirement: Family-2 observation streams for usaa/accounts and usaa/credit_card_billing balances
+
+The USAA connector SHALL classify `usaa/account_stats` and
+`usaa/credit_card_billing_stats` as Family-2 append-keyed observation streams
+with date-scoped composite keys, projecting the point-in-time balance metrics out
+of the `usaa/accounts` and `usaa/credit_card_billing` entity streams. The entity
+streams SHALL retain identity and settings fields only and SHALL each remain
+gated by a per-record fingerprint so a balance-only change does not version the
+entity record. Because both entity streams are full dashboard scans, their
+fingerprint cursors SHALL continue to prune entities absent from the current
+scan.
+
+#### Scenario: account balances accumulate a daily time series
+
+**WHEN** the USAA connector observes an account with balance values on a given UTC calendar day,
+**THEN** `account_stats` SHALL contain a record with key `{account_id}:{YYYY-MM-DD}`,
+**AND** the record SHALL carry the `balance_cents` and `available_balance_cents` values observed that day,
+**AND** an observation on a later UTC day SHALL append a distinct record rather than overwrite the prior day's record.
+
+#### Scenario: credit-card balances accumulate a daily time series
+
+**WHEN** the USAA connector observes a credit card with billing values on a given UTC calendar day,
+**THEN** `credit_card_billing_stats` SHALL contain a record with key `{card_id}:{YYYY-MM-DD}`,
+**AND** the record SHALL carry the `current_balance_cents`, `available_credit_cents`, `cash_rewards_cents`, `billing_status`, and `minimum_payment_met` values observed that day.
+
+#### Scenario: a balance-only change does not version the entity record
+
+**WHEN** an account's or card's balance changes between runs but no identity or settings field changes,
+**THEN** the corresponding entity stream SHALL NOT emit a new record version for that account or card,
+**AND** the corresponding `_stats` stream SHALL record the new value for the observed calendar day.
+
+#### Scenario: an identity or settings change versions the entity record once
+
+**WHEN** an account's `name`/`status` or a card's `credit_limit_cents`, `annual_percent_rate`, `cash_advance_apr`, `account_nickname`, or `card_holders` changes,
+**THEN** the corresponding entity stream SHALL emit exactly one new record version for that account or card.
+
+#### Scenario: a disappeared entity is pruned on the full scan
+
+**WHEN** a previously observed account or card is absent from the current dashboard scan,
+**THEN** the entity fingerprint cursor SHALL prune that entity so a later re-appearance re-emits the entity record,
+**AND** the entity's prior `_stats` records SHALL be retained as history and SHALL NOT be pruned.
+
+#### Scenario: same-day re-runs are idempotent for the observation streams
+
+**WHEN** the connector runs twice on the same UTC calendar day with identical balances for an account or card,
+**THEN** both runs SHALL produce the same `_stats` record key and content,
+**AND** no additional record version SHALL be created beyond what the runtime byte-equivalence check produces.
+
+### Requirement: Family-2 observation stream for ynab/accounts balances
+
+The YNAB connector SHALL classify `ynab/account_stats` as a Family-2
+append-keyed observation stream with a date-scoped composite key, projecting the
+point-in-time balance metrics out of the `ynab/accounts` entity stream. The
+`accounts` entity stream SHALL retain identity and settings fields only and
+SHALL be gated by a per-record fingerprint so a balance-only change does not
+version the entity record. The split SHALL preserve YNAB `server_knowledge`
+delta-sync.
+
+#### Scenario: account balances accumulate a daily time series
+
+**WHEN** the YNAB connector observes an account with balance values on a given UTC calendar day,
+**THEN** `account_stats` SHALL contain a record with key `{account_id}:{YYYY-MM-DD}`,
+**AND** the record SHALL carry the `balance`, `cleared_balance`, and `uncleared_balance` values observed that day,
+**AND** an observation on a later UTC day SHALL append a distinct record rather than overwrite the prior day's record.
+
+#### Scenario: a balance-only change does not version the entity record
+
+**WHEN** an account's balance changes between runs but no identity or settings field changes,
+**THEN** the `accounts` entity stream SHALL NOT emit a new record version for that account,
+**AND** the `account_stats` stream SHALL record the new balance for the observed calendar day.
+
+#### Scenario: an identity or settings change versions the entity record once
+
+**WHEN** an account's `name`, `closed`, `note`, debt-detail, or other non-balance settings field changes,
+**THEN** the `accounts` entity stream SHALL emit exactly one new record version for that account.
+
+#### Scenario: delta-sync omission carries the account forward without pruning
+
+**WHEN** a `server_knowledge` delta response omits a previously observed account because it did not change,
+**THEN** the entity fingerprint cursor SHALL carry that account's fingerprint forward into the next STATE write,
+**AND** the cursor SHALL NOT prune the omitted account,
+**AND** an account returned with `deleted: true` SHALL re-emit the entity record as a normal field change.
+
+#### Scenario: same-day re-runs are idempotent for the observation stream
+
+**WHEN** the connector runs twice on the same UTC calendar day with identical balances for an account,
+**THEN** both runs SHALL produce the same `account_stats` record key and content,
+**AND** no additional record version SHALL be created beyond what the runtime byte-equivalence check produces.
+

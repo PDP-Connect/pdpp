@@ -99,15 +99,83 @@ The reference implementation SHALL claim local outbox work using leases with hol
 
 ### Requirement: Local collector health is connection-scoped and inspectable
 
-The reference implementation SHALL expose local collector durable-work health for each configured connection or source instance. Health SHALL include queue depth, stale leases, retry/dead-letter counts, oldest pending work, backlog/gap counts, last acknowledgement, last committed checkpoint, package/protocol version, and device/source-home identity where available.
+The reference implementation SHALL expose local collector durable-work health for each configured connection or source instance. Health SHALL include queue depth, stale leases, retry/dead-letter counts, oldest pending work, backlog/gap counts, last acknowledgement, last committed checkpoint, package/protocol version, and device/source-home identity where available. The health surface SHALL also name a single mutually-exclusive lifecycle state for the connection — one of healthy idle, actively draining, retryable backlog, dead-letter, stale lease, or coverage-diagnostics missing — derived from the durable outbox so a reader does not have to infer the situation from raw counts.
 
 #### Scenario: An owner inspects a local collector connection
 
 - **WHEN** an owner or operator inspects a local collector connection through CLI, logs, dashboard, or reference diagnostics
 - **THEN** the reference implementation SHALL show whether durable work is pending, retrying, leased, stale, dead-lettered, or fully drained
 - **AND** it SHALL scope that health to the configured connection or source instance rather than only to connector type
+- **AND** it SHALL report a single lifecycle state for the connection alongside the raw counts
+
+#### Scenario: A drained connection has never carried a coverage diagnostic
+
+- **WHEN** a local collector connection has durably delivered record work but has never carried a coverage-diagnostics record, and no durable work remains pending, retrying, leased, or dead-lettered
+- **THEN** the health surface SHALL report the connection as coverage-diagnostics missing rather than as healthy idle
+- **AND** it SHALL distinguish that case from a connection that has collected nothing yet
+- **AND** it SHALL point the operator at re-running the collector with its default stream set to emit the coverage diagnostic
+
+#### Scenario: Coverage observation stays bounded on a large or legacy outbox
+
+- **WHEN** the health surface determines whether a connection has carried a coverage-diagnostics record
+- **THEN** it SHALL answer from a payload-light index rather than reparsing retained record payloads, so the determination is bounded regardless of how much retained record data the outbox holds
+- **AND** when the determination cannot be made within a bounded budget — because the outbox predates the index and its unindexed backlog exceeds that budget — it SHALL report coverage observation as unknown rather than perform an unbounded scan
+- **AND** it SHALL NOT report a connection with unknown coverage observation as coverage-diagnostics missing
 
 #### Scenario: Diagnostics are displayed remotely
 
 - **WHEN** durable-work diagnostics are displayed outside the local device
 - **THEN** the reference implementation SHALL avoid leaking raw local secrets, auth files, browser cookies, or unredacted absolute local paths
+
+### Requirement: Local collector deployment posture is mechanically visible
+
+The reference implementation SHALL expose, on the local collector health
+surface, whether the running collector resolves to a published package install
+or to a repository `dist/` development override, so an operator or agent can
+tell published operator-host evidence from local development evidence without a
+manual path-resolution ritual. The posture signal SHALL include the package
+version, a mutually-exclusive classification — published package, repository
+`dist/` override, or unknown — and a flag for the placeholder `0.0.0` version
+that disqualifies a build from being treated as a real published version.
+
+#### Scenario: A published install is inspected
+
+- **WHEN** the running `pdpp-local-collector` resolves to a package installed
+  under `node_modules/@pdpp/local-collector`
+- **THEN** the health surface SHALL classify the deployment posture as a
+  published package
+- **AND** it SHALL report the installed package version alongside the
+  classification
+
+#### Scenario: A repository dist override is inspected
+
+- **WHEN** the running `pdpp-local-collector` resolves to a monorepo checkout's
+  `packages/local-collector` tree rather than a `node_modules` install — for
+  example via `npm link`, a `file:` install, or running the source entrypoint
+  directly
+- **THEN** the health surface SHALL classify the deployment posture as a
+  repository `dist/` override rather than as a published package
+- **AND** `doctor` SHALL treat that posture as a warning that disqualifies the
+  output as published operator-host evidence, not as a hard failure
+- **AND** `doctor` SHALL NOT escalate that posture to its critical severity
+
+#### Scenario: Posture cannot be determined conclusively
+
+- **WHEN** the health surface cannot conclusively determine whether the running
+  collector is a published install or a repository override
+- **THEN** it SHALL report the posture as unknown rather than guessing a
+  published-package classification
+
+#### Scenario: The placeholder version is reported
+
+- **WHEN** the running collector reports the placeholder `0.0.0` version
+- **THEN** the health surface SHALL flag that the version is a placeholder that
+  must not be treated as a real published version
+- **AND** `doctor` SHALL surface that as a warning
+
+#### Scenario: Posture is displayed without leaking local paths
+
+- **WHEN** the deployment posture is displayed, including outside the local
+  device
+- **THEN** the posture signal SHALL convey the module-location classification
+  without emitting an unredacted absolute local path such as a home directory
