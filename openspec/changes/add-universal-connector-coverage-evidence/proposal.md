@@ -62,14 +62,31 @@ authors/connectors; no new runtime semantics are introduced.
 
 None.
 
+## Composition
+
+This change is downstream of `define-connector-progress-evidence-contract`
+(now on `main`). That change defines the per-run Collection Report and
+`forward_disposition` derived by the runtime from existing signals. This change
+ensures the manifest-side input (`coverage_policy`) that feeds the coverage axis
+of that report is schema-visible and validated — so connector authors can
+actually declare it. The two changes are non-overlapping: `define-connector-progress-evidence-contract`
+owns the runtime derivation contract; this change owns the manifest authoring
+contract. No axis definition is reduplicated.
+
 ## Impact
 
 **Tranche A** — contract-only:
 
-- `packages/reference-contract/src/reference/index.ts`: add `coverage_policy`
-  to the manifest stream schema (enum with the five accepted values).
+- `reference-implementation/server/ref-record-utils.ts`: add `coverage_policy`
+  to the `ManifestStreamLike` base type (the shared interface all manifest-stream
+  consumers in the reference implementation extend), with the same enum values
+  as `ManifestStream` in `ref-control.ts`. This is the correct target: the field
+  is a manifest-side declaration read server-side, not a portable collection-profile
+  wire field, so it belongs in the reference-implementation type layer.
 - No connector manifests or runtime code change.
-- Affected tests: reference-contract schema tests must accept the new field.
+- Affected tests: new `coverage-policy-manifest-honesty.test.ts` in
+  `packages/polyfill-connectors/src/` guards enum validity and the
+  required+accepted-coverage contradiction.
 
 **Tranche B** — helper + contract:
 

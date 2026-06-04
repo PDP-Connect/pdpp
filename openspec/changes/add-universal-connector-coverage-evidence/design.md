@@ -20,12 +20,27 @@ producers except a single connector (ChatGPT):
    is inlined with no exports and no shared abstraction. The contract has no
    requirement that list+detail connectors emit this message.
 
+## Relationship to define-connector-progress-evidence-contract
+
+`define-connector-progress-evidence-contract` (merged to `main`) defines the
+per-run Collection Report and per-stream `forward_disposition` that the runtime
+derives from existing signals. That contract is the **consumption** side: it
+specifies how the runtime reads coverage signals and derives a structured report.
+
+This change is the **authoring** side: it ensures the manifest field
+(`coverage_policy`) and the emission helper (`DETAIL_COVERAGE`) that feed into
+that derived report are schema-visible, validated, and accessible to connector
+authors. The two changes are non-overlapping; no axis definition is duplicated.
+
+Sequencing: this change should merge after `define-connector-progress-evidence-contract`
+is on `main` (it already is as of ccdb5d58's branch base).
+
 ## Decision: Two tranches, smallest first
 
-### Tranche A: Promote `coverage_policy` to the reference-contract manifest schema
+### Tranche A: Promote `coverage_policy` to the manifest type layer
 
-The field already exists in runtime logic. Making it part of the reference-
-contract schema is the smallest safe change:
+The field already exists in runtime logic. Promoting it to `ManifestStreamLike`
+(the shared reference-implementation type) is the smallest safe change:
 
 - It costs zero connector edits — the field is optional with a sensible
   implicit default (`collect`).
@@ -92,20 +107,22 @@ questions: `DETAIL_COVERAGE` answers "of the N items I tried, how many worked?"
 while `coverage_policy` answers "does this connector structurally support this
 stream?" Both are needed; neither replaces the other.
 
-## Schema design for coverage_policy in reference-contract
+## Schema design for coverage_policy in ManifestStreamLike
 
-The manifest stream schema currently in `packages/reference-contract/src/
-reference/index.ts` does not expose coverage_policy. The addition:
+`coverage_policy` is a manifest-side field read server-side; it is not a
+portable collection-profile wire field. The correct target is `ManifestStreamLike`
+in `reference-implementation/server/ref-record-utils.ts` — the shared base type
+all manifest-stream consumers in the reference implementation extend. The addition:
 
 ```typescript
-coverage_policy: z.enum([
-  "collect",
-  "deferred",
-  "inventory_only",
-  "unavailable",
-  "unsupported",
-]).optional(),
+coverage_policy?: "collect" | "deferred" | "inventory_only" | "unavailable" | "unsupported";
 ```
+
+`packages/reference-contract/src/reference/index.ts` (the zod-based portable
+schema) was considered but rejected: that package defines the portable collection-
+profile manifest wire contract, whereas `coverage_policy` is consumed exclusively
+by server-side reference logic. Placing it in `ManifestStreamLike` keeps the
+reference/portable boundary intact.
 
 Rationale for including `collect` in the enum (even though it is the implicit
 default): explicit declaration is clearer than absence. A connector that wants
@@ -142,9 +159,10 @@ This is consistent with the existing helper surface in connector-runtime.ts.
 ## Acceptance checks
 
 1. `openspec validate add-universal-connector-coverage-evidence --strict` passes.
-2. Tranche A: `npx tsc --noEmit` (packages/reference-contract) — no errors.
-3. Tranche A: existing reference-contract schema tests pass with the new field
-   present.
+2. Tranche A: `npx tsc --noEmit` (reference-implementation) — no errors on
+   `ref-record-utils.ts` or any consumer of `ManifestStreamLike`.
+3. Tranche A: `node --test` coverage-policy-manifest-honesty.test.ts — 2/2 pass
+   (enum validation + required+accepted contradiction guard).
 4. Tranche B: `emitDetailCoverage` unit test — emits a valid `DETAIL_COVERAGE`
    message; required fields present; optional fields absent when not provided;
    `reference_only: true` always set.
