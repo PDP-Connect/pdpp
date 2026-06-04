@@ -12,6 +12,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -211,6 +212,16 @@ test('findPolicy returns the registered policy for Slack channel_memberships wit
 const POINT_IN_TIME_REAL_FIELD_STREAMS = [
   { connector: 'github', stream: 'user', realField: 'follower/repo/gist counts' },
   { connector: 'slack', stream: 'channels', realField: 'num_members' },
+  // ynab/accounts is the same class: the connector already split its balances
+  // into the append-keyed `account_stats` observation stream
+  // (split-ynab-account-balance-observation-stream), so the current entity
+  // record no longer carries balance/cleared_balance/uncleared_balance. The
+  // retained `accounts` history churns ONLY on those now-removed balance
+  // fields (verified field-diff on the live proof DB: balance, cleared_balance,
+  // uncleared_balance are the sole adjacent-version differences) — genuine
+  // point-in-time observations that are the only surviving copy (the split
+  // streams backfilled nothing). A compaction policy would delete real history.
+  { connector: 'ynab', stream: 'accounts', realField: 'balance/cleared_balance/uncleared_balance' },
 ];
 
 for (const { connector, stream, realField } of POINT_IN_TIME_REAL_FIELD_STREAMS) {
@@ -247,6 +258,74 @@ for (const stream of ['accounts', 'credit_card_billing']) {
     );
   });
 }
+
+// ─── Dashboard mirror in-sync guardrail ──────────────────────────────────
+//
+// The console's version-churn notice classifies each churn row into three
+// dispositions (apps/console/src/app/dashboard/lib/version-churn-summary.ts):
+//   - POINT_IN_TIME_REAL_FIELD_STREAMS — expected retained history, NO policy;
+//   - LOSSLESS_COMPACTION_POLICY_STREAMS — the dry-run command is a real fix;
+//   - everything else — "unclassified", genuinely needs review.
+// Both lists are a MIRROR of this script's truth (the real-field guardrail
+// above and COMPACTION_POLICIES respectively). The console module is browser-
+// bundled TypeScript and cannot import this Node `.mjs` tool (it would pull in
+// `pg`), so the pair-sets are duplicated there. These tests pin the mirror by
+// parsing the console source so a registry change here that is not reflected in
+// the dashboard — which would mis-classify a row (offer a failing command, or
+// alarm on expected history) — fails loudly. We parse rather than import to
+// avoid coupling this server test to the console's build/tsx loader.
+const CONSOLE_SUMMARY_SRC = readFileSync(
+  path.resolve(__dirname, '..', '..', 'apps', 'console', 'src', 'app', 'dashboard', 'lib', 'version-churn-summary.ts'),
+  'utf8',
+);
+
+/** Extract the `const <NAME> ... = [...]`/`new Set([...])` block body as text. */
+function extractDashboardListBlock(src, name) {
+  const start = src.indexOf(name);
+  assert.notEqual(start, -1, `dashboard source must declare ${name}`);
+  const open = src.indexOf('[', start);
+  assert.notEqual(open, -1, `${name} must be an array/Set literal`);
+  let depth = 0;
+  for (let i = open; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === '[') depth += 1;
+    else if (ch === ']') {
+      depth -= 1;
+      if (depth === 0) return src.slice(open, i + 1);
+    }
+  }
+  throw new Error(`unterminated literal for ${name}`);
+}
+
+test('dashboard POINT_IN_TIME_REAL_FIELD_STREAMS mirrors this script\'s real-field guardrail list', () => {
+  const block = extractDashboardListBlock(CONSOLE_SUMMARY_SRC, 'POINT_IN_TIME_REAL_FIELD_STREAMS');
+  // Pull every `{ connector: "x", stream: "y", ... }` pair out of the block.
+  const pairs = [...block.matchAll(/connector:\s*"([^"]+)",\s*stream:\s*"([^"]+)"/g)].map(
+    (m) => `${m[1]}/${m[2]}`,
+  );
+  const dashboardSet = new Set(pairs);
+  const scriptSet = new Set(
+    POINT_IN_TIME_REAL_FIELD_STREAMS.map(({ connector, stream }) => `${connector}/${stream}`),
+  );
+  assert.deepEqual(
+    [...dashboardSet].sort(),
+    [...scriptSet].sort(),
+    'dashboard real-field list and script real-field guardrail must list the same (connector, stream) pairs',
+  );
+});
+
+test('dashboard LOSSLESS_COMPACTION_POLICY_STREAMS mirrors COMPACTION_POLICIES exactly', () => {
+  const block = extractDashboardListBlock(CONSOLE_SUMMARY_SRC, 'LOSSLESS_COMPACTION_POLICY_STREAMS');
+  // The Set is seeded with bare "connector/stream" string literals.
+  const dashboardPairs = new Set([...block.matchAll(/"([a-z0-9-]+\/[a-z0-9_]+)"/g)].map((m) => m[1]));
+  // The script registry's canonical short-name pair set.
+  const scriptPairs = new Set(COMPACTION_POLICIES.map((p) => `${p.connectorIds[0]}/${p.stream}`));
+  assert.deepEqual(
+    [...dashboardPairs].sort(),
+    [...scriptPairs].sort(),
+    'dashboard compaction-policy mirror must list exactly the (connector, stream) pairs registered in COMPACTION_POLICIES',
+  );
+});
 
 test('parseLimitKeys accepts positive integers, rejects everything else', () => {
   assert.equal(parseLimitKeys('1'), 1);

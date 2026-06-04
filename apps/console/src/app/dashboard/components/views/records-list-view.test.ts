@@ -465,3 +465,39 @@ test("version-churn notice tells the owner the dry-run command is read-only and 
   assert.match(src, CHURN_DRY_RUN_READ_ONLY);
   assert.match(src, CHURN_DRY_RUN_NAMES_APPLY);
 });
+
+// ─── Disposition-honest version-churn banner ──────────────────────────────
+//
+// The product bug: the banner alarmed "Review version churn" even when every
+// churning stream was already classified as expected retained point-in-time
+// history. The notice must now be tone- and label-aware: it reads as a warning
+// (amber, "Review version churn") only when something genuinely needs review,
+// and informational ("View breakdown") otherwise. The summary module computes
+// `needsReview`; the view must branch its tone and CTA on it rather than
+// hardcoding the alarm.
+const CHURN_BRANCHES_ON_NEEDS_REVIEW = /summary\.needsReview/;
+const CHURN_CTA_HONEST_WHEN_CLASSIFIED = /needsReview \? "Review version churn →" : "View breakdown →"/;
+// The disclosure must surface a per-row disposition so an operator can see
+// which rows actually need review vs. which are expected history / compaction
+// candidates — the in-table counterpart to the honest headline.
+const CHURN_HAS_DISPOSITION_COLUMN = />\s*Disposition\s*</;
+const CHURN_RENDERS_DISPOSITION_BADGE = /<ChurnDispositionBadge remediation=\{row\.remediation\}/;
+const CHURN_DISPOSITION_NAMES_THREE_BUCKETS =
+  /unclassified:[\s\S]*?lossless_compaction_candidate:[\s\S]*?point_in_time_real_field:/;
+
+test("version-churn banner branches its tone and CTA on whether review is actually needed", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  // The view consumes the module's needsReview verdict instead of always
+  // alarming, and the collapsed CTA reflects it.
+  assert.match(src, CHURN_BRANCHES_ON_NEEDS_REVIEW);
+  assert.match(src, CHURN_CTA_HONEST_WHEN_CLASSIFIED);
+});
+
+test("version-churn disclosure surfaces a per-row disposition with all three buckets", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.match(src, CHURN_HAS_DISPOSITION_COLUMN);
+  assert.match(src, CHURN_RENDERS_DISPOSITION_BADGE);
+  // The badge metadata must name all three remediation buckets so none is
+  // silently dropped from the operator's vocabulary.
+  assert.match(src, CHURN_DISPOSITION_NAMES_THREE_BUCKETS);
+});

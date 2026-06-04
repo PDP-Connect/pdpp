@@ -38,7 +38,11 @@ import { summarizeConnectionHealth } from "../../lib/connection-summary-stats.ts
 import { shouldShowInPrimaryConnections } from "../../lib/records-list-classification.ts";
 import type { RefRecordVersionStatsRow } from "../../lib/ref-client.ts";
 import type { ConnectorOverview, ConnectorRunRef } from "../../lib/rs-client.ts";
-import { buildChurnDrilldownRows, summarizeVersionChurn } from "../../lib/version-churn-summary.ts";
+import {
+  buildChurnDrilldownRows,
+  type ChurnRemediation,
+  summarizeVersionChurn,
+} from "../../lib/version-churn-summary.ts";
 import { ConnectorRow } from "../../records/connector-row.tsx";
 
 /**
@@ -637,9 +641,16 @@ function AddConnectionGuidance({
  * Built on the native `<details>`/`<summary>` disclosure already used by the
  * connection diagnostics block — no client JS, keyboard-activatable, and
  * screen-reader navigable by default. The `<summary>` carries an explicit,
- * button-styled "Review version churn" action so the banner reads as
- * actionable; the `group-open:` Tailwind idiom flips it to "Hide details" when
- * open.
+ * button-styled action so the banner reads as actionable; the `group-open:`
+ * Tailwind idiom flips it to "Hide details" when open.
+ *
+ * Disposition-honest tone: the notice only reads as a warning ("Review version
+ * churn") when at least one row is unclassified and genuinely needs review.
+ * When every churning stream is already classified — a registered lossless
+ * compaction candidate or expected retained point-in-time history — the banner
+ * is informational ("Version churn breakdown"), not an alarm, and the lead copy
+ * says so. Thresholds are untouched; every non-normal row still appears in the
+ * table.
  *
  * This is metadata only: counts come from `/_ref/records/version-stats`,
  * which never returns record payloads. Copy frames the warning as retained
@@ -651,14 +662,20 @@ export function VersionChurnNotice({ rows }: { rows: RefRecordVersionStatsRow[] 
     return null;
   }
   const drilldownRows = buildChurnDrilldownRows(rows);
+  const needsReview = summary.needsReview;
+  // Warning amber only when something genuinely needs review; otherwise a
+  // neutral/border treatment so an owner whose only churn is expected history
+  // is not visually alarmed.
+  const accent = needsReview ? "var(--warning)" : "var(--border)";
   return (
     <details
       aria-label="Record version churn diagnostics"
-      className="group mb-6 border-[color:var(--warning)] border-l-2 bg-[color:var(--warning)]/5"
+      className="group mb-6 border-l-2"
       data-testid="version-churn-notice"
+      style={{ borderLeftColor: `color-mix(in srgb, ${accent} 100%, transparent)` }}
     >
       <summary
-        className="flex cursor-pointer items-start justify-between gap-3 px-4 py-3 text-[color:var(--warning)]"
+        className={`flex cursor-pointer items-start justify-between gap-3 px-4 py-3 ${needsReview ? "text-[color:var(--warning)]" : "text-foreground"}`}
         data-testid="version-churn-review-action"
       >
         <span className="min-w-0">
@@ -667,32 +684,39 @@ export function VersionChurnNotice({ rows }: { rows: RefRecordVersionStatsRow[] 
         </span>
         {/*
          * Explicit, button-styled owner action. The native <summary> is already
-         * keyboard-activatable and toggles the disclosure; styling it as a pill
-         * with a clear "Review version churn" label makes the banner read as
-         * actionable rather than as a static warning the owner cannot act on.
+         * keyboard-activatable and toggles the disclosure. When review is
+         * needed it reads "Review version churn"; when everything is already
+         * classified it reads "View breakdown" so the owner can still inspect
+         * the rows without being told to "review" history that is expected.
          */}
-        <span className="pdpp-caption inline-flex shrink-0 items-center gap-1 self-center whitespace-nowrap rounded-md border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 px-2.5 py-1 font-medium underline-offset-2 group-hover:bg-[color:var(--warning)]/20">
-          <span className="group-open:hidden">Review version churn →</span>
+        <span className="pdpp-caption inline-flex shrink-0 items-center gap-1 self-center whitespace-nowrap rounded-md border border-current/40 bg-current/10 px-2.5 py-1 font-medium underline-offset-2 group-hover:bg-current/20">
+          <span className="group-open:hidden">{needsReview ? "Review version churn →" : "View breakdown →"}</span>
           <span className="hidden group-open:inline">Hide details</span>
         </span>
       </summary>
-      <div className="border-[color:var(--warning)]/30 border-t px-4 py-3">
+      <div className="border-t px-4 py-3" style={{ borderTopColor: `color-mix(in srgb, ${accent} 30%, transparent)` }}>
         <p className="pdpp-caption mb-2 text-muted-foreground">
           These streams retain many historical versions per current record. This is kept{" "}
           <strong className="font-medium text-foreground">change history</strong>, not current data loss — your latest
-          records are intact. There are two reasons a stream churns, and they have different fixes. When a connector
-          re-emits unchanged records (a no-op or run-clock refresh), compacting history is safe and starts with a
-          dry-run maintenance check. When a stream versions on a value that{" "}
-          <strong className="font-medium text-foreground">genuinely changes</strong> (a follower count, a member count),
-          that history is real and must not be compacted — it needs an append-keyed point-in-time redesign instead.
+          records are intact. A churning stream falls into one of three buckets, and they have different fixes. When a
+          connector re-emits unchanged records (a no-op or run-clock refresh) on a stream with a registered policy,
+          compacting history is safe and starts with a dry-run maintenance check. When a stream versions on a value that{" "}
+          <strong className="font-medium text-foreground">genuinely changes</strong> (a follower count, a member count, a
+          balance), that history is real and{" "}
+          <strong className="font-medium text-foreground">expected to grow</strong> — it must not be compacted; the
+          durable fix is an append-keyed point-in-time stream. Only a stream that is neither — an{" "}
+          <strong className="font-medium text-foreground">unclassified</strong> high-churn row — actually needs review.
         </p>
         <p className="pdpp-caption mb-3 text-muted-foreground" data-testid="version-churn-dry-run-safety">
-          Rows that show a command are compaction candidates: the command is the safe place to start because it is{" "}
+          Rows that show a command are safe to start with: the command is{" "}
           <strong className="font-medium text-foreground">read-only</strong> and prints the compaction plan (versions it
-          would remove, bytes it would free) without changing anything. Nothing is removed until you re-run it with{" "}
+          would remove, bytes it would free) without changing anything — for a{" "}
+          <strong className="font-medium text-foreground">compaction candidate</strong> it reports a real plan, and for
+          an <strong className="font-medium text-foreground">unclassified</strong> row it confirms whether a policy even
+          exists. Nothing is removed until you re-run it with{" "}
           <code className="font-mono text-foreground">--apply</code>, which backs up affected rows first. Rows marked{" "}
           <strong className="font-medium text-foreground">not compactable</strong> have no compaction command on purpose
-          — compacting them would delete real history.
+          — compacting them would delete real point-in-time history.
         </p>
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-left">
@@ -703,6 +727,9 @@ export function VersionChurnNotice({ rows }: { rows: RefRecordVersionStatsRow[] 
                 </th>
                 <th className="py-1.5 pr-3 font-medium" scope="col">
                   Risk
+                </th>
+                <th className="py-1.5 pr-3 font-medium" scope="col">
+                  Disposition
                 </th>
                 <th className="py-1.5 pr-3 text-right font-medium" scope="col">
                   Versions / record
@@ -742,6 +769,9 @@ export function VersionChurnNotice({ rows }: { rows: RefRecordVersionStatsRow[] 
                   </td>
                   <td className="py-2 pr-3">
                     <ChurnRiskBadge risk={row.risk} title={row.reasons ?? undefined} />
+                  </td>
+                  <td className="py-2 pr-3">
+                    <ChurnDispositionBadge remediation={row.remediation} />
                   </td>
                   <td className="py-2 pr-3 text-right text-foreground tabular-nums">{row.versionsPerRecord.label}</td>
                   <td
@@ -807,6 +837,42 @@ function ChurnRiskBadge({ risk, title }: { risk: RefRecordVersionStatsRow["risk_
       title={title}
     >
       {risk}
+    </span>
+  );
+}
+
+/**
+ * Per-row remediation disposition: the bucket the row falls into. This is the
+ * in-table counterpart to the disposition-honest headline — it lets an operator
+ * see at a glance which rows actually need review (unclassified) versus which
+ * are expected retained history or known compaction candidates.
+ */
+const CHURN_DISPOSITION_META: Record<ChurnRemediation, { label: string; tone: string; title: string }> = {
+  unclassified: {
+    label: "needs review",
+    tone: "bg-destructive/10 text-destructive",
+    title: "No registered compaction policy and not a known point-in-time stream — investigate as a possible new no-op churn bug or unmodeled real-field stream.",
+  },
+  lossless_compaction_candidate: {
+    label: "compaction candidate",
+    tone: "bg-[color:var(--warning-wash)] text-[color:var(--warning)]",
+    title: "Has a registered, fingerprint-mirrored compaction policy — the dry-run command reports what redundant history it would remove.",
+  },
+  point_in_time_real_field: {
+    label: "expected history",
+    tone: "bg-muted text-muted-foreground",
+    title: "Genuine point-in-time observations (a real field that legitimately changes). Expected retained history — not compactable; the durable fix is an append-keyed point-in-time stream split.",
+  },
+};
+
+function ChurnDispositionBadge({ remediation }: { remediation: ChurnRemediation }) {
+  const meta = CHURN_DISPOSITION_META[remediation];
+  return (
+    <span
+      className={`pdpp-eyebrow inline-flex whitespace-nowrap rounded-[3px] px-1.5 py-0.5 font-medium ${meta.tone}`}
+      title={meta.title}
+    >
+      {meta.label}
     </span>
   );
 }
