@@ -761,6 +761,7 @@ export async function postgresIngestRecord(storageTarget, record) {
     const currentResult = await client.query(
       `SELECT record_json,
               deleted,
+              version,
               COALESCE(octet_length(record_json::text), 0)::bigint AS record_json_bytes,
               ($4::jsonb IS NOT DISTINCT FROM record_json) AS is_identical
        FROM records
@@ -773,8 +774,32 @@ export async function postgresIngestRecord(storageTarget, record) {
     if (op === 'delete' && (!current || current.deleted)) {
       return { kind: 'noop' };
     }
+
+    // Self-heal of an unanchored current row. An unchanged reingest is
+    // normally suppressed (this is what prevented the Slack `workspace`
+    // 31k-version churn). But history pruning by stream-global version cutoff
+    // can remove the only retained `record_changes` anchor for a still-current,
+    // unchanged record (a cold key stranded below the horizon while a hot key
+    // churns the stream forward) — the unresolved_pruned class the offline
+    // repair tool refuses to reconstruct. The source just re-sent a
+    // byte-identical payload, proving the current projection correct, so we
+    // re-anchor it at a NEW stream version rather than the stale existing one
+    // (which would re-prune on the next changed write). Mirrors the SQLite
+    // path in records.js.
+    let selfHeal = false;
     if (op !== 'delete' && current && !current.deleted && current.is_identical) {
-      return { kind: 'noop' };
+      const anchorResult = await client.query(
+        `SELECT 1 FROM record_changes
+          WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3 AND version = $4
+          LIMIT 1`,
+        [connectorInstanceId, stream, recordKey, current.version],
+      );
+      if (anchorResult.rows.length > 0) {
+        // Anchor present → genuine no-op.
+        return { kind: 'noop' };
+      }
+      // Anchor missing → fall through to the changed-write path to re-anchor.
+      selfHeal = true;
     }
 
     const nextVersion = await allocateNextVersion(client, connectorId, connectorInstanceId, stream);
@@ -867,6 +892,7 @@ export async function postgresIngestRecord(storageTarget, record) {
     return {
       kind: 'changed',
       op,
+      selfHeal,
       retainedSizeDelta: {
         connectorInstanceId,
         connectorId,
@@ -881,9 +907,12 @@ export async function postgresIngestRecord(storageTarget, record) {
     };
   });
 
-  return outcome.kind === 'noop'
-    ? { accepted: true, changed: false }
-    : { accepted: true, changed: true, retainedSizeDelta: outcome.retainedSizeDelta };
+  if (outcome.kind === 'noop') {
+    return { accepted: true, changed: false };
+  }
+  const result = { accepted: true, changed: true, retainedSizeDelta: outcome.retainedSizeDelta };
+  if (outcome.selfHeal) result.self_healed = true;
+  return result;
 }
 
 export async function postgresDeleteRecord(storageTarget, stream, recordId) {

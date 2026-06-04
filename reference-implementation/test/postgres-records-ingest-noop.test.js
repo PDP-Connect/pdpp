@@ -159,6 +159,100 @@ if (!POSTGRES_URL) {
     }
   });
 
+  test('postgres unchanged reingest of an UNANCHORED current row self-heals (re-anchors at a new version)', async () => {
+    // Mirrors the SQLite self-heal test in current-projection-recurrence-guard.
+    // Simulate the post-prune orphan directly: a current row whose only
+    // retained `record_changes` anchor was pruned away (version_counter has
+    // advanced past it). A byte-identical reingest must NOT be a silent no-op;
+    // it must re-anchor the current row at a new version so the projection
+    // invariant (current row has a matching latest history row) is restored.
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `pg_heal_${suffix}`;
+    const connectorInstanceId = `cin_pg_heal_${suffix}`;
+    const stream = 'transactions';
+    const recordKey = 'cold';
+    const data = { id: recordKey, amount: 100 };
+
+    initDb(':memory:');
+    await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+
+    try {
+      const storageTarget = { connectorId, connectorInstanceId };
+
+      // Seed the orphan: current row at v1, NO record_changes anchor, and the
+      // stream counter advanced to 9 (a hot key churned the stream past the
+      // retention horizon, pruning cold's v1 anchor).
+      await postgresQuery(
+        `INSERT INTO records
+           (connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version, deleted, deleted_at, cursor_value, primary_key_text)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6, 1, FALSE, NULL, $4, $4)`,
+        [connectorId, connectorInstanceId, stream, recordKey, JSON.stringify(data), '2026-05-26T12:00:00.000Z'],
+      );
+      await postgresQuery(
+        `INSERT INTO version_counter(connector_id, connector_instance_id, stream, max_version)
+         VALUES ($1, $2, $3, 9)`,
+        [connectorId, connectorInstanceId, stream],
+      );
+
+      // Pre: no retained history for the key (orphan / unresolved_pruned).
+      const preHist = await postgresQuery(
+        `SELECT COUNT(*)::int AS c FROM record_changes
+          WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3`,
+        [connectorInstanceId, stream, recordKey],
+      );
+      assert.equal(Number(preHist.rows[0].c), 0, 'cold is orphaned before resync');
+
+      // Source resync of the SAME payload must self-heal.
+      const healed = await postgresIngestRecord(storageTarget, {
+        stream, key: recordKey, data, op: 'upsert',
+        emitted_at: '2026-05-26T12:00:00.000Z',
+      });
+      assert.equal(healed.changed, true, 'unanchored unchanged reingest is not a no-op');
+      assert.equal(healed.self_healed, true, 'flagged as a self-heal');
+
+      // A fresh anchor exists at a NEW head-of-window version (10), and the
+      // current row tracks it. Anchor version equals current.version.
+      const counter = await postgresQuery(
+        `SELECT max_version FROM version_counter WHERE connector_instance_id = $1 AND stream = $2`,
+        [connectorInstanceId, stream],
+      );
+      assert.equal(Number(counter.rows[0].max_version), 10, 'exactly one new version allocated');
+      const cur = await postgresQuery(
+        `SELECT version FROM records WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3`,
+        [connectorInstanceId, stream, recordKey],
+      );
+      assert.equal(Number(cur.rows[0].version), 10, 'current row re-anchored at the new version');
+      const anchor = await postgresQuery(
+        `SELECT version FROM record_changes
+          WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3 AND version = 10`,
+        [connectorInstanceId, stream, recordKey],
+      );
+      assert.equal(anchor.rows.length, 1, 'fresh anchor row appended at the current version');
+
+      // Now the anchor IS present — a second identical reingest is a plain
+      // no-op (no further version churn).
+      const again = await postgresIngestRecord(storageTarget, {
+        stream, key: recordKey, data, op: 'upsert',
+        emitted_at: '2026-05-26T12:00:00.000Z',
+      });
+      assert.equal(again.changed, false, 'anchored unchanged reingest is a no-op');
+      assert.equal(again.self_healed, undefined, 'no self_healed flag on a plain no-op');
+      const counterAfter = await postgresQuery(
+        `SELECT max_version FROM version_counter WHERE connector_instance_id = $1 AND stream = $2`,
+        [connectorInstanceId, stream],
+      );
+      assert.equal(Number(counterAfter.rows[0].max_version), 10, 'no version churn once anchored');
+    } finally {
+      try {
+        await postgresQuery(`DELETE FROM record_changes WHERE connector_instance_id = $1`, [connectorInstanceId]);
+        await postgresQuery(`DELETE FROM records WHERE connector_instance_id = $1`, [connectorInstanceId]);
+        await postgresQuery(`DELETE FROM version_counter WHERE connector_instance_id = $1`, [connectorInstanceId]);
+      } catch {}
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+
   test('postgres re-ingest with whitespace-differing payload still suppressed (jsonb structural equality)', async () => {
     // This pins the equivalence behavior: incoming JSON.stringify produces
     // no whitespace; postgres stores jsonb that round-trips to text with

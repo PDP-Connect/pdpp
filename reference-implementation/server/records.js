@@ -324,9 +324,41 @@ export async function ingestRecord(storageTarget, record) {
       return { kind: 'noop' };
     }
 
-    if (op !== 'delete' && current && !current.deleted && current.record_json === recordJson) {
-      return { kind: 'noop' };
+    // Self-heal of an unanchored current row. An unchanged reingest is
+    // normally a no-op (suppressing it is what keeps re-sent identical
+    // payloads from churning the version space). But history pruning by
+    // stream-global version cutoff can remove the only retained
+    // `record_changes` row for a still-current, unchanged record: a cold
+    // key whose anchor falls below the retention horizon while a hot key
+    // churns the stream forward. The current `records` row then has no
+    // provenance anchor — the exact orphan/unresolved_pruned class the
+    // operator repair tool refuses to reconstruct from the DB alone.
+    //
+    // The ingest path is in a stronger epistemic position than that
+    // offline tool: the source just re-sent the authoritative payload and
+    // it is byte-identical to the current row, so the current projection is
+    // proven correct. We re-anchor it by appending a fresh change row at a
+    // NEW stream version (not the stale existing version, which would land
+    // below the prune horizon and be re-pruned on the very next changed
+    // write). The downstream changed-write delta math is already correct
+    // for an unchanged payload at a new version: the record-count and
+    // current-bytes deltas are zero, and only one history row is appended.
+    const wouldBeUnchangedUpsert = op !== 'delete'
+      && current
+      && !current.deleted
+      && current.record_json === recordJson;
+    if (wouldBeUnchangedUpsert) {
+      const anchor = getOne(
+        referenceQueries.recordsIngestGetRecordChangeAnchor,
+        [connectorInstanceId, stream, recordKey, current.version],
+      );
+      // Anchor present → genuine no-op. Anchor missing → fall through to
+      // the changed-write path below to re-anchor the current row.
+      if (anchor) {
+        return { kind: 'noop' };
+      }
     }
+    const selfHeal = Boolean(wouldBeUnchangedUpsert);
 
     const allocated = execReturningOne(
       referenceQueries.recordsIngestAllocateNextVersion,
@@ -401,7 +433,7 @@ export async function ingestRecord(storageTarget, record) {
       recordHistoryCountDelta: 1 - prunedRowsForDelta,
     });
 
-    return { kind: 'changed', op, version: nextVersion };
+    return { kind: 'changed', op, version: nextVersion, selfHeal };
   });
 
   if (outcome.kind === 'noop') {
@@ -430,7 +462,14 @@ export async function ingestRecord(storageTarget, record) {
     emittedAt: effectiveEmittedAt,
   });
 
-  return { accepted: true, changed: true };
+  // `self_healed` flags the case where the incoming payload was unchanged
+  // but the current row's provenance anchor was missing and had to be
+  // re-appended at a new version. It is purely additive — existing callers
+  // key off `changed` / `accepted` — and lets operators/tests distinguish a
+  // re-anchor from an ordinary content change.
+  const result = { accepted: true, changed: true };
+  if (outcome.selfHeal) result.self_healed = true;
+  return result;
 }
 
 /**

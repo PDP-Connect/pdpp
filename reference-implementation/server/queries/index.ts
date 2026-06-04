@@ -300,6 +300,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   // Records — ingest path: read/write of records, record_changes, version_counter.
   readonly recordsIngestAllocateNextVersion: MutationReturningOneQuery;
   readonly recordsIngestGetCurrentRecordState: ReadOneQuery;
+  readonly recordsIngestGetRecordChangeAnchor: ReadOneQuery;
   readonly recordsIngestGetVersionCounter: ReadOneQuery;
   readonly recordsIngestInsertRecordChangeDeleted: MutationQuery;
   readonly recordsIngestInsertRecordChangeUpsert: MutationQuery;
@@ -695,6 +696,7 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "recordsAggregateStreamsByConnectorInstance",
     // Records — ingest path.
     "recordsIngestGetCurrentRecordState",
+    "recordsIngestGetRecordChangeAnchor",
     "recordsIngestGetVersionCounter",
     "recordsIngestAllocateNextVersion",
     "recordsIngestMarkRecordDeleted",

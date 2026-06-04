@@ -429,3 +429,157 @@ test('a torn bulk delete (record_changes cleared, records left) is caught as unr
     teardown();
   }
 });
+
+// ── 6. Ingest self-heals an unanchored current row ──────────────────────────
+//
+// History pruning by stream-global version cutoff can strand the provenance
+// anchor of a still-current, unchanged record: a cold key written once whose
+// `record_changes` row falls below the retention horizon while a hot key
+// churns the stream forward. The current `records` row survives, but its only
+// retained history row is gone — the unresolved_pruned / orphan class the
+// offline repair tool refuses to reconstruct. Source-backed resync IS able to
+// reconstruct it: when the source re-sends the byte-identical payload, ingest
+// re-anchors the current row at a NEW stream version instead of suppressing
+// the write as a plain no-op. These tests pin that behavior, prove the normal
+// anchored no-op is untouched, and prove the heal is durable through pruning.
+
+function countHistoryRows(cin, recordKey) {
+  return getDb()
+    .prepare(
+      `SELECT COUNT(*) AS c FROM record_changes
+        WHERE connector_instance_id = ? AND stream = ? AND record_key = ?`,
+    )
+    .get(cin, STREAM, recordKey).c;
+}
+
+function readVersionCounter(cin) {
+  const row = getDb()
+    .prepare(`SELECT max_version FROM version_counter WHERE connector_instance_id = ? AND stream = ?`)
+    .get(cin, STREAM);
+  return row ? row.max_version : null;
+}
+
+function readCurrentVersion(cin, recordKey) {
+  const row = getDb()
+    .prepare(`SELECT version FROM records WHERE connector_instance_id = ? AND stream = ? AND record_key = ?`)
+    .get(cin, STREAM, recordKey);
+  return row ? row.version : null;
+}
+
+// Reproduce the hot/cold prune scenario: cold@v1, then `hotWrites` changed
+// writes to a hot key churn the stream past the horizon, pruning cold's anchor.
+async function strandColdAnchor(hotWrites) {
+  await upsert('cold', { v: 1 });
+  for (let i = 0; i < hotWrites; i += 1) {
+    await upsert('hot', { v: i + 2 });
+  }
+}
+
+test('unchanged reingest of an unanchored current row recreates its anchor (self-heal)', async () => {
+  process.env.PDPP_CHANGE_HISTORY_LIMIT = '2';
+  setup();
+  try {
+    await strandColdAnchor(10);
+    const cin = instanceIdFor();
+
+    // Pre-state: cold is orphaned — zero retained history, current still v1,
+    // and the invariant checker flags exactly one unresolved_pruned drift.
+    assert.equal(countHistoryRows(cin, 'cold'), 0, 'cold anchor pruned away');
+    const preDrift = detectCurrentProjectionDrift({ connectorInstanceId: cin, stream: STREAM });
+    assert.equal(preDrift.length, 1);
+    assert.equal(preDrift[0].kind, PROJECTION_MISMATCH_KINDS.UNRESOLVED_PRUNED);
+    assert.equal(preDrift[0].recordKey, 'cold');
+    const counterBefore = readVersionCounter(cin);
+
+    // Source-backed resync: the SAME payload is re-sent. Normally a no-op;
+    // here it must self-heal because the anchor is missing.
+    const result = await upsert('cold', { v: 1 });
+    assert.deepEqual(result, { accepted: true, changed: true, self_healed: true });
+
+    // A fresh anchor now exists at a NEW (head-of-window) version, not the
+    // stale v1 that would re-prune on the next changed write.
+    assert.equal(countHistoryRows(cin, 'cold'), 1, 'cold re-anchored');
+    assert.equal(readVersionCounter(cin), counterBefore + 1, 'heal allocates exactly one new version');
+    assert.equal(readCurrentVersion(cin, 'cold'), counterBefore + 1, 'current row tracks the new anchor');
+
+    // The projection invariant is fully restored.
+    assert.equal(
+      detectCurrentProjectionDrift({ connectorInstanceId: cin, stream: STREAM }).length,
+      0,
+      'self-heal clears the drift',
+    );
+    assertNoCurrentProjectionDrift();
+  } finally {
+    teardown();
+  }
+});
+
+test('unchanged reingest remains a plain no-op when the anchor is present (no version churn)', async () => {
+  // The anti-churn guard: with the anchor intact, an identical reingest must
+  // NOT allocate a version, append history, or report self-heal. (This is the
+  // Slack workspace 31k-version regression the no-op suppression prevents; the
+  // self-heal must not weaken it.)
+  setup();
+  try {
+    await upsert('k', { v: 1 });
+    const cin = instanceIdFor();
+    const counterBefore = readVersionCounter(cin);
+    const historyBefore = countHistoryRows(cin, 'k');
+
+    const result = await upsert('k', { v: 1 });
+    assert.deepEqual(result, { accepted: true, changed: false }, 'no self_healed flag, no change');
+    assert.equal(readVersionCounter(cin), counterBefore, 'version_counter unchanged');
+    assert.equal(countHistoryRows(cin, 'k'), historyBefore, 'no history row appended');
+    assertNoCurrentProjectionDrift();
+  } finally {
+    teardown();
+  }
+});
+
+test('pruning then a full source resync converges the projection to zero drift', async () => {
+  // The honest invariant. When PDPP_CHANGE_HISTORY_LIMIT is smaller than the
+  // number of live keys in a stream, NO single state can anchor every live key
+  // at once — there are more live keys than retained history slots. Healing one
+  // key allocates a version and prunes the tail, which can re-strand another
+  // key. This is a property of the retention horizon, not of the self-heal.
+  //
+  // What the self-heal guarantees is CONVERGENCE under a full source resync:
+  // re-sending every live key (which a real account resync does) re-anchors the
+  // last `min(LIMIT, liveKeys)` keys touched, and the drift that remains only
+  // ever covers keys NOT yet resynced. Once the resync sweep finishes with the
+  // most-recently-written keys, the projection is consistent for every key that
+  // still has a retained anchor, and the only residual is bounded by the
+  // horizon. Here LIMIT >= liveKeys, so a full resync reaches zero drift.
+  process.env.PDPP_CHANGE_HISTORY_LIMIT = '3';
+  setup();
+  try {
+    // Three live keys; one churns the stream past the horizon, stranding the
+    // two cold anchors (LIMIT=3 retains the 3 newest stream versions).
+    await upsert('cold-a', { v: 1 });
+    await upsert('cold-b', { v: 1 });
+    for (let i = 0; i < 12; i += 1) {
+      await upsert('hot', { v: i + 3 });
+    }
+    const cin = instanceIdFor();
+    assert.equal(countHistoryRows(cin, 'cold-a'), 0, 'cold-a stranded');
+    assert.equal(countHistoryRows(cin, 'cold-b'), 0, 'cold-b stranded');
+    const drift = detectCurrentProjectionDrift({ connectorInstanceId: cin, stream: STREAM });
+    assert.equal(drift.length, 2, 'both cold keys orphaned before resync');
+
+    // Full source resync: re-send every live key with its unchanged payload.
+    // The cold keys self-heal; hot is already anchored so it stays a no-op.
+    assert.equal((await upsert('cold-a', { v: 1 })).self_healed, true);
+    assert.equal((await upsert('cold-b', { v: 1 })).self_healed, true);
+    const hotResync = await upsert('hot', { v: 14 });
+    assert.equal(hotResync.changed, false, 'still-anchored hot key resync is a plain no-op');
+
+    // LIMIT=3 retains the 3 newest versions — cold-a, cold-b, and hot anchors
+    // all fit. The full resync converges to zero drift across the store.
+    assert.ok(countHistoryRows(cin, 'cold-a') >= 1);
+    assert.ok(countHistoryRows(cin, 'cold-b') >= 1);
+    assert.ok(countHistoryRows(cin, 'hot') >= 1, 'hot anchor retained within the horizon');
+    assertNoCurrentProjectionDrift();
+  } finally {
+    teardown();
+  }
+});
