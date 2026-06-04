@@ -122,7 +122,7 @@ export default async function RecordsIndexPage() {
         interactive={true}
         overviews={overviews}
         pendingOnDevices={pendingOnDevices}
-        pollerSlot={<RecordsPagePoller enabled={runningCount > 0} />}
+        pollerSlot={<RecordsPagePoller running={runningCount > 0} />}
         routes={dashboardRoutes}
         versionChurnSlot={
           <Suspense fallback={<VersionChurnFallback />}>
