@@ -1,5 +1,5 @@
 /**
- * Tests for connector-cursor-reset.mjs — the owner-gated cursor-reset tool
+ * Tests for connector-cursor-reset.mjs - the owner-gated cursor-reset tool
  * that turns the next incremental run into a full source resync by blanking
  * `connector_state.state_json` for explicit (connector_instance_id, stream)
  * pairs.
@@ -35,7 +35,7 @@ import {
 const { Pool } = pg;
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 
-// ─── Pure units ───────────────────────────────────────────────────────────
+// Pure units
 
 test('parseArgs collects a repeatable --stream, de-duplicating in first-seen order', () => {
   const args = parseArgs([
@@ -70,7 +70,7 @@ test('validateArgs passes for a scoped request', () => {
 
 test('truncateId elides long identifiers but preserves short ones', () => {
   assert.equal(truncateId('issues'), 'issues');
-  assert.equal(truncateId('cin_b110e71fb14fb61450d2d427'), 'cin_b110…d427');
+  assert.equal(truncateId('cin_b110e71fb14fb61450d2d427'), 'cin_b110...d427');
 });
 
 test('sanitizeIdentifierToken lowercases and strips unsafe chars', () => {
@@ -133,7 +133,7 @@ test('formatSummary labels dry-run vs apply and never prints cursor values', () 
   assert.match(applied, /POST \/v1\/owner\/connections/);
 });
 
-// ─── DB integration (Postgres) ─────────────────────────────────────────────
+// DB integration (Postgres)
 
 if (!POSTGRES_URL) {
   test('connector-cursor-reset DB tests (skipped: PDPP_TEST_POSTGRES_URL unset)', { skip: true }, () => {});

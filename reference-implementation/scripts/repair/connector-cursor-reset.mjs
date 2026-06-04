@@ -8,16 +8,16 @@
  * setting `connector_state.state_json` to an empty object (`{}`).
  *
  * Why this tool exists
- * ────────────────────
+ * --------------------
  * Anchor-preserving pruning (records.js / postgres-records.js) makes the
  * `current_*_history` drift classes structurally impossible to CREATE going
  * forward, and ingest self-heals an unanchored current row on the next
  * unchanged re-emit. But a scheduled INCREMENTAL run does not re-emit a cold
- * stranded key: the connector reads its stored cursor (e.g. github issues
+ * stranded key: the connector reads its stored cursor (for example github issues
  * `last_updated_at`) and asks the source only for rows changed since then, so
  * a key whose anchor was pruned before the fix shipped never re-enters the
  * stream and never self-heals. The owner-gated recovery for that residue is a
- * FULL source resync — and the lever that turns an incremental run into a full
+ * FULL source resync - and the lever that turns an incremental run into a full
  * resync is clearing the connector's stored cursor.
  *
  * There is no HTTP route or scheduler hook that resets a cursor; the only
@@ -27,7 +27,7 @@
  * scoped, dry-run by default, and reversible.
  *
  * What it does NOT do
- * ───────────────────
+ * ------------------
  *   - It never triggers a run. After a reset the owner triggers the run
  *     explicitly (POST /v1/owner/connections/:id/run) and then reconciles and
  *     re-scans. Decoupling the reset from the run keeps each step auditable.
@@ -38,7 +38,7 @@
  *     force a full re-scan of every stream and is never the minimal action.
  *
  * Safety model
- * ────────────
+ * ------------
  *   - Default is dry-run. `--apply` is required to write.
  *   - Before any write, the prior `state_json` for every targeted pair is
  *     snapshotted into a backup table (prefix `ccr_backup`) so the operator can
@@ -49,14 +49,14 @@
  *     missing cursor already behaves as "no since filter").
  *
  * Output discipline
- * ─────────────────
+ * -----------------
  * Cursor values are not record payloads, but they can carry source-side
  * timestamps and fingerprints. This tool never prints cursor VALUES. It prints
  * only: the truncated connector-instance id, the stream name, whether a prior
  * cursor existed, and the action taken. The pre-image lives in the backup
  * table for the operator to inspect directly under their own authorization.
  *
- * Authorization is by direct database access — possession of
+ * Authorization is by direct database access - possession of
  * `PDPP_DATABASE_URL` (the same credential that grants owner-level access to
  * the reference Postgres). Postgres-only, matching the sibling repair tools.
  *
@@ -92,13 +92,13 @@ const PG_IDENTIFIER_MAX = 63;
 // restore a pre-reset cursor snapshot.
 export const BACKUP_TABLE_PREFIX = 'ccr_backup';
 
-// ─── Identifier helpers ─────────────────────────────────────────────────
+// Identifier helpers
 
-/** Truncate any identifier for payload-free output (head…tail elision). */
+/** Truncate any identifier for payload-free output (head...tail elision). */
 export function truncateId(value) {
   const s = String(value ?? '');
   if (s.length <= 16) return s;
-  return `${s.slice(0, 8)}…${s.slice(-4)}`;
+  return `${s.slice(0, 8)}...${s.slice(-4)}`;
 }
 
 /**
@@ -144,7 +144,7 @@ export function backupTableName({ connectorInstanceId, streams, stamp }) {
   return name;
 }
 
-// ─── Argument parsing ───────────────────────────────────────────────────
+// Argument parsing
 
 /**
  * Parse argv into { connectorInstanceId, streams[], apply }. `--stream` is
@@ -172,7 +172,7 @@ export function parseArgs(argv) {
 
 /**
  * Validate parsed args. Returns an error string or null. Enforces that an
- * explicit instance id and at least one stream are present — there is no
+ * explicit instance id and at least one stream are present - there is no
  * blanket reset.
  */
 export function validateArgs({ connectorInstanceId, streams }) {
@@ -183,7 +183,7 @@ export function validateArgs({ connectorInstanceId, streams }) {
   return null;
 }
 
-// ─── Reset ──────────────────────────────────────────────────────────────
+// Reset
 
 /**
  * Reset the cursors for the given (connector_instance_id, streams). In dry-run
@@ -271,7 +271,7 @@ export async function runCursorReset({ pool, connectorInstanceId, streams, apply
   return result;
 }
 
-// ─── Output ─────────────────────────────────────────────────────────────
+// Output
 
 export function formatSummary(result) {
   const lines = [];
@@ -281,10 +281,10 @@ export function formatSummary(result) {
       `targeted=${result.streams.length} present=${result.present.length} absent=${result.absent.length}`,
   );
   for (const s of result.present) {
-    lines.push(`  present  ${s}  → ${result.applied ? 'reset to {}' : 'would reset to {}'}`);
+    lines.push(`  present  ${s}  -> ${result.applied ? 'reset to {}' : 'would reset to {}'}`);
   }
   for (const s of result.absent) {
-    lines.push(`  absent   ${s}  → no stored cursor; skipped (already behaves as no-since)`);
+    lines.push(`  absent   ${s}  -> no stored cursor; skipped (already behaves as no-since)`);
   }
   if (result.applied) {
     if (result.failed) {
@@ -302,7 +302,7 @@ export function formatSummary(result) {
   return lines.join('\n');
 }
 
-// ─── CLI ────────────────────────────────────────────────────────────────
+// CLI
 
 const invokedAsScript =
   import.meta.url === `file://${process.argv[1]}` ||
