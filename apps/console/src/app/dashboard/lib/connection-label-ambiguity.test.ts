@@ -15,8 +15,8 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { ConnectorOverview } from "./rs-client.ts";
 import { ambiguousFallbackLabelKeys, hasFallbackLabel, isLabelNeeded } from "./connection-label-ambiguity.ts";
+import type { ConnectorOverview } from "./rs-client.ts";
 
 /** Minimal ConnectorOverview-shaped fixture. */
 function overview({
@@ -30,7 +30,11 @@ function overview({
 }): ConnectorOverview {
   return {
     connectionId,
-    connector: { connector_id: connectorId, ...(displayName === undefined ? {} : { display_name: displayName }), streams: [] },
+    connector: {
+      connector_id: connectorId,
+      ...(displayName === undefined ? {} : { display_name: displayName }),
+      streams: [],
+    },
     connectorDisplayName: connectorId,
     isRunning: false,
     lastRun: null,
@@ -55,29 +59,29 @@ test("a single unnamed connection of a type is NOT label-needed", () => {
 });
 
 test("two unnamed connections of the SAME type are both label-needed", () => {
+  const loneAmazon = overview({ connectorId: "amazon", displayName: "Amazon", connectionId: "cin_amazon" });
   const overviews = [
     overview({ connectorId: "gmail", displayName: "Gmail", connectionId: "cin_gmail_a" }),
     overview({ connectorId: "gmail", connectionId: "cin_gmail_b" }),
-    overview({ connectorId: "amazon", displayName: "Amazon", connectionId: "cin_amazon" }),
+    loneAmazon,
   ];
   const keys = ambiguousFallbackLabelKeys(overviews);
   assert.deepEqual(new Set(keys), new Set(["cin_gmail_a", "cin_gmail_b"]));
   // The lone Amazon is never nagged even when another type is ambiguous.
-  assert.equal(isLabelNeeded(overviews[2]!, keys), false);
+  assert.equal(isLabelNeeded(loneAmazon, keys), false);
 });
 
 test("a renamed connection is never label-needed, and disambiguates its siblings", () => {
   // One Gmail owner-named, one unnamed → the named one is not a fallback at
   // all, so only ONE unnamed Gmail remains. A single unnamed of a type is not
   // ambiguous, so nothing is flagged.
-  const overviews = [
-    overview({ connectorId: "gmail", displayName: "Personal Gmail", connectionId: "cin_gmail_a" }),
-    overview({ connectorId: "gmail", connectionId: "cin_gmail_b" }),
-  ];
+  const namedGmail = overview({ connectorId: "gmail", displayName: "Personal Gmail", connectionId: "cin_gmail_a" });
+  const unnamedGmail = overview({ connectorId: "gmail", connectionId: "cin_gmail_b" });
+  const overviews = [namedGmail, unnamedGmail];
   const keys = ambiguousFallbackLabelKeys(overviews);
   assert.equal(keys.size, 0);
-  assert.equal(hasFallbackLabel(overviews[0]!), false);
-  assert.equal(hasFallbackLabel(overviews[1]!), true);
+  assert.equal(hasFallbackLabel(namedGmail), false);
+  assert.equal(hasFallbackLabel(unnamedGmail), true);
 });
 
 test("three unnamed of a type are all label-needed", () => {

@@ -29,12 +29,12 @@ import {
   staticSecretConnectEntries,
   unsupportedNetworkEntries,
 } from "../../lib/connection-catalog.ts";
+import { ambiguousFallbackLabelKeys } from "../../lib/connection-label-ambiguity.ts";
 import {
   BROWSER_BOUND_RUNBOOK_PATH,
   STATIC_SECRET_ADD_MODALITY,
   UNSUPPORTED_ADD_MODALITIES,
 } from "../../lib/connection-modality.ts";
-import { ambiguousFallbackLabelKeys } from "../../lib/connection-label-ambiguity.ts";
 import { summarizeConnectionHealth } from "../../lib/connection-summary-stats.ts";
 import { shouldShowInPrimaryConnections } from "../../lib/records-list-classification.ts";
 import type { RefRecordVersionStatsRow } from "../../lib/ref-client.ts";
@@ -719,11 +719,11 @@ export function VersionChurnNotice({ rows }: { rows: RefRecordVersionStatsRow[] 
           records are intact. A churning stream falls into one of three buckets, and they have different fixes. When a
           connector re-emits unchanged records (a no-op or run-clock refresh) on a stream with a registered policy,
           compacting history is safe and starts with a dry-run maintenance check. When a stream versions on a value that{" "}
-          <strong className="font-medium text-foreground">genuinely changes</strong> (a follower count, a member count, a
-          balance), that history is real and{" "}
-          <strong className="font-medium text-foreground">expected to grow</strong> — it must not be compacted; the
-          durable fix is an append-keyed point-in-time stream. Only a stream that is neither — an{" "}
-          <strong className="font-medium text-foreground">unclassified</strong> high-churn row — actually needs review.
+          <strong className="font-medium text-foreground">genuinely changes</strong> (a follower count, a member count,
+          a balance), that history is real and <strong className="font-medium text-foreground">expected to grow</strong>{" "}
+          — it must not be compacted; the durable fix is an append-keyed point-in-time stream. Only a stream that is
+          neither — an <strong className="font-medium text-foreground">unclassified</strong> high-churn row — actually
+          needs review.
         </p>
         <p className="pdpp-caption mb-3 text-muted-foreground" data-testid="version-churn-dry-run-safety">
           Rows that show a command are safe to start with: the command is{" "}
@@ -731,8 +731,8 @@ export function VersionChurnNotice({ rows }: { rows: RefRecordVersionStatsRow[] 
           would remove, bytes it would free) without changing anything — for a{" "}
           <strong className="font-medium text-foreground">compaction candidate</strong> it reports a real plan, and for
           an <strong className="font-medium text-foreground">unclassified</strong> row it confirms whether a policy even
-          exists. Nothing is removed until you re-run it with{" "}
-          <code className="font-mono text-foreground">--apply</code>, which backs up affected rows first. Rows marked{" "}
+          exists. Nothing is removed until you re-run it with <code className="font-mono text-foreground">--apply</code>
+          , which backs up affected rows first. Rows marked{" "}
           <strong className="font-medium text-foreground">not compactable</strong> have no compaction command on purpose
           — compacting them would delete real point-in-time history.
         </p>
@@ -869,17 +869,20 @@ const CHURN_DISPOSITION_META: Record<ChurnRemediation, { label: string; tone: st
   unclassified: {
     label: "needs review",
     tone: "bg-destructive/10 text-destructive",
-    title: "No registered compaction policy and not a known point-in-time stream — investigate as a possible new no-op churn bug or unmodeled real-field stream.",
+    title:
+      "No registered compaction policy and not a known point-in-time stream — investigate as a possible new no-op churn bug or unmodeled real-field stream.",
   },
   lossless_compaction_candidate: {
     label: "compaction candidate",
     tone: "bg-[color:var(--warning-wash)] text-[color:var(--warning)]",
-    title: "Has a registered, fingerprint-mirrored compaction policy — the dry-run command reports what redundant history it would remove.",
+    title:
+      "Has a registered, fingerprint-mirrored compaction policy — the dry-run command reports what redundant history it would remove.",
   },
   point_in_time_real_field: {
     label: "expected history",
     tone: "bg-muted text-muted-foreground",
-    title: "Genuine point-in-time observations (a real field that legitimately changes). Expected retained history — not compactable; the durable fix is an append-keyed point-in-time stream split.",
+    title:
+      "Genuine point-in-time observations (a real field that legitimately changes). Expected retained history — not compactable; the durable fix is an append-keyed point-in-time stream split.",
   },
 };
 

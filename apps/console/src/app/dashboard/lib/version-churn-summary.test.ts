@@ -27,6 +27,13 @@ const APPEND_KEYED_RE = /append-keyed/;
 const FOLLOWER_RE = /follower/;
 const NEEDS_REVIEW_RE = /needs review/;
 const NO_REVIEW_NEEDED_RE = /no review needed/;
+const THREE_EXPECTED_RETAINED_RE = /3 expected retained history/;
+const THREE_COMPACTION_CANDIDATES_RE = /3 compaction candidates/;
+const ONE_STREAM_NEEDS_REVIEW_RE = /1 stream need(s)? review/;
+const TWO_STREAMS_NEED_REVIEW_RE = /2 streams need review/;
+const ONE_COMPACTION_CANDIDATE_RE = /1 compaction candidate/;
+const ONE_EXPECTED_RETAINED_RE = /1 expected retained history/;
+const BALANCE_RE = /balance/;
 
 function row(overrides: Partial<RefRecordVersionStatsRow> = {}): RefRecordVersionStatsRow {
   return {
@@ -80,7 +87,7 @@ test("summarizeVersionChurn does NOT say 'needs review' when every row is expect
   assert.equal(summary.needsReview, false);
   assert.doesNotMatch(summary.headline, NEEDS_REVIEW_RE);
   assert.match(summary.headline, NO_REVIEW_NEEDED_RE);
-  assert.match(summary.headline, /3 expected retained history/);
+  assert.match(summary.headline, THREE_EXPECTED_RETAINED_RE);
   assert.equal(summary.dispositions.expectedRetained, 3);
   assert.equal(summary.dispositions.needsReview, 0);
 });
@@ -97,7 +104,7 @@ test("summarizeVersionChurn does NOT say 'needs review' when every row is a regi
   assert.ok(summary);
   assert.equal(summary.needsReview, false);
   assert.doesNotMatch(summary.headline, NEEDS_REVIEW_RE);
-  assert.match(summary.headline, /3 compaction candidates/);
+  assert.match(summary.headline, THREE_COMPACTION_CANDIDATES_RE);
   assert.equal(summary.dispositions.compactionCandidates, 3);
 });
 
@@ -111,7 +118,7 @@ test("summarizeVersionChurn SAYS 'needs review' when at least one row is unclass
   assert.ok(summary);
   assert.equal(summary.needsReview, true);
   assert.match(summary.headline, NEEDS_REVIEW_RE);
-  assert.match(summary.headline, /1 stream need(s)? review/);
+  assert.match(summary.headline, ONE_STREAM_NEEDS_REVIEW_RE);
   assert.equal(summary.dispositions.needsReview, 1);
   assert.equal(summary.dispositions.compactionCandidates, 1);
   assert.equal(summary.dispositions.expectedRetained, 1);
@@ -126,9 +133,9 @@ test("summarizeVersionChurn headline names every non-zero disposition (never sil
   ];
   const summary = summarizeVersionChurn(rows);
   assert.ok(summary);
-  assert.match(summary.headline, /2 streams need review/);
-  assert.match(summary.headline, /1 compaction candidate/);
-  assert.match(summary.headline, /1 expected retained history/);
+  assert.match(summary.headline, TWO_STREAMS_NEED_REVIEW_RE);
+  assert.match(summary.headline, ONE_COMPACTION_CANDIDATE_RE);
+  assert.match(summary.headline, ONE_EXPECTED_RETAINED_RE);
 });
 
 test("summarizeVersionChurn highest signal reflects the first (highest-risk) row", () => {
@@ -351,7 +358,7 @@ test("pointInTimeGuidance names the ynab/accounts balance fields", () => {
   const guidance = pointInTimeGuidance(row({ connector_id: "ynab", stream: "accounts" })) ?? "";
   assert.match(guidance, NOT_COMPACTABLE_RE);
   assert.match(guidance, APPEND_KEYED_RE);
-  assert.match(guidance, /balance/);
+  assert.match(guidance, BALANCE_RE);
 });
 
 test("churnDryRunCommand shell-quotes metadata and omits absent connector id", () => {

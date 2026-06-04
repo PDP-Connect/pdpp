@@ -31,6 +31,8 @@ const LINK_GUARD = /formatted\.actionTarget !== null && formatted\.variant === "
 const PILL_USES_DETAIL_HREF = /href=\{detailHref\}/;
 const PILL_LINKS_RAW_TARGET = /href=\{formatted\.actionTarget\}/;
 const DETAILS_UNAVAILABLE = /Details unavailable/;
+const FRESHNESS_DEVICE_NO_PUSH_TESTID = /data-testid="freshness-device-no-push"/;
+const NO_PUSH_RECEIVED_YET = /no push received yet/;
 
 test("connector-row reads next_action from connection_health and renders a pill", async () => {
   const src = await readFile(ROW_FILE, "utf8");
@@ -353,8 +355,8 @@ test("connector-row freshness line shows both last-checked and last-ingest when 
 
 test("connector-row freshness line shows device-no-push label when device row exists but no timestamps yet", async () => {
   const src = await readFile(ROW_FILE, "utf8");
-  assert.match(src, /data-testid="freshness-device-no-push"/);
-  assert.match(src, /no push received yet/);
+  assert.match(src, FRESHNESS_DEVICE_NO_PUSH_TESTID);
+  assert.match(src, NO_PUSH_RECEIVED_YET);
 });
 
 test("connector-row no longer carries an inline connectionHealthDisplay vocabulary table", async () => {

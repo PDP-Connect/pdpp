@@ -154,10 +154,7 @@ export const LOSSLESS_COMPACTION_POLICY_STREAMS: ReadonlySet<string> = new Set([
  *   It still gets a dry-run command (the read-only script is the safe first
  *   diagnostic step; it will report whether a policy exists).
  */
-export type ChurnRemediation =
-  | "lossless_compaction_candidate"
-  | "point_in_time_real_field"
-  | "unclassified";
+export type ChurnRemediation = "lossless_compaction_candidate" | "point_in_time_real_field" | "unclassified";
 
 /**
  * True when this row is already classified as expected retained history that
@@ -249,21 +246,19 @@ export function churnRowLabel(row: RefRecordVersionStatsRow): string {
 
 /** Per-disposition counts over a churn row set. */
 export interface ChurnDispositionCounts {
-  /** Rows still needing operator review (unclassified high/watch churn). */
-  needsReview: number;
   /** Rows with a registered lossless compaction policy. */
   compactionCandidates: number;
   /** Rows that are expected retained point-in-time / real-field history. */
   expectedRetained: number;
+  /** Rows still needing operator review (unclassified high/watch churn). */
+  needsReview: number;
 }
 
 /**
  * Count the supplied churn rows by remediation disposition. Used both by the
  * headline and (via the view) to decide section framing.
  */
-export function countChurnDispositions(
-  rows: readonly RefRecordVersionStatsRow[]
-): ChurnDispositionCounts {
+export function countChurnDispositions(rows: readonly RefRecordVersionStatsRow[]): ChurnDispositionCounts {
   let needsReviewCount = 0;
   let compactionCandidates = 0;
   let expectedRetained = 0;
@@ -277,6 +272,8 @@ export function countChurnDispositions(
         break;
       case "point_in_time_real_field":
         expectedRetained += 1;
+        break;
+      default:
         break;
     }
   }
