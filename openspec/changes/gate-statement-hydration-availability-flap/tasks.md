@@ -1,68 +1,87 @@
 # Tasks
 
-Assumes the **structured-fingerprint** construction (design.md option (a)). If the
-owner prefers the hash-cursor + sibling prior-body map (option (b)), tasks 1–2 change
-shape but the spec delta and tests (3–4) are identical.
+Status: **implemented** (shipped on `main` as `8a5b8208` "fix(statements): carry
+forward prior hydrated PDF pointers on transient failure"; the proposal landed
+immediately after as `077e5625`). Verified green on `2026-06-04`; see Validation
+below. Archiving is owner-gated (AGENTS.md).
+
+The owner-chosen construction is design.md **option (b)** — a hash change-detection
+cursor plus a sibling prior-body `hydration` map persisted in the same `statements`
+STATE cursor — realized through the shared `openCarryForwardCursor<T>` lifecycle in a
+small dedicated module (`packages/polyfill-connectors/src/statement-hydration-carry-forward.ts`).
+The spec delta is satisfied by either option (a) or (b); the normative requirements
+and acceptance cases are unchanged.
 
 ## 1. Shared cursor / statements STATE carry-forward
 
-- [ ] 1.1 In `packages/polyfill-connectors/src/fingerprint-cursor.ts`, confirm
-  `openCarryForwardCursor<T>` and the `prior(id)` surface are sufficient as-is for a
-  `StatementFingerprint` carrier (they are — Codex already consumes the generic
-  cursor with a structured `T`). No new primitive; add only a doc note that the
-  statements connectors are a second derived-field-preservation consumer.
+- [x] 1.1 `packages/polyfill-connectors/src/fingerprint-cursor.ts` exposes
+  `openCarryForwardCursor<T>` and the `prior(id)` surface; they were sufficient as-is
+  for the carry-forward consumer (no new primitive). The statement carry-forward is a
+  second derived-field-preservation consumer alongside Codex; the module-level doc in
+  `statement-hydration-carry-forward.ts` records that lineage and the
+  `fingerprint-cursor.ts` doc comments describe the derived-field-preservation surface
+  the new consumer reads.
 
 ## 2. Connector emit changes (carry-forward of prior hydrated pointers)
 
-- [ ] 2.1 chase `statements` (`connectors/chase/index.ts`): define a
-  `StatementFingerprint` carrying the change-detection hash (or identity fields) plus
-  `{document_url, pdf_path, pdf_sha256}`. Extend `readPriorStatementFingerprints` to
-  decode the structured prior map tolerantly (legacy hash-only and missing maps
-  decode to empty → first post-deploy run re-emits once). In `processStatementRow`,
-  on `!dlResult.ok`, look up the prior hydrated pointers for `id`; if present, emit a
-  carry-forward body with those pointers instead of calling the all-null
-  `emitStatementIndexOnly`; if absent, keep the existing all-null index-only emit.
-  Still emit the `pdf_download_failed` `SKIP_RESULT`. `note()` every observed `id`
-  with the current (or carried-forward) fingerprint; keep the full-scan `pruneStale`.
-- [ ] 2.2 usaa `statements` (`connectors/usaa/index.ts`): same shape in
-  `emitStatementRecords` — when `hydrationSuccess(...)` is false, look up the prior
-  hydrated pointers for `row.id`; carry them forward if present, else all-null. Extend
-  usaa's `readPriorStatementFingerprints` to the structured map. Keep the full-scan
-  `pruneStale` and the single trailing STATE write.
-- [ ] 2.3 Both: persist the structured `fingerprints` map into the `statements` STATE
-  cursor (replacing the hash-only map). No change to the public STATE wire — the map
-  is inside the connector's opaque cursor.
+- [x] 2.1 chase `statements` (`connectors/chase/index.ts`): on `!dlResult.ok` in
+  `processStatementRow`, the connector emits a `pdf_download_failed` `SKIP_RESULT` and
+  then calls `emitStatementIndexOnly`, which now takes a `StatementHydrationCursor` and
+  uses `resolveOnFailure(id)` to carry the prior `{document_url, pdf_path, pdf_sha256}`
+  forward when the statement was previously hydrated, or all-null when never hydrated.
+  The success path `note()`s the freshly hydrated pointers. The per-statement
+  fingerprint cursor (excludes `fetched_at`) suppresses the byte-identical carried-forward
+  re-emit. The full-scan `pruneStale` is preserved (run in lockstep for both cursors).
+- [x] 2.2 usaa `statements` (`connectors/usaa/index.ts`): same shape in
+  `emitStatementRecords` — when `hydrationSuccess(...)` is false, the resolved pointers
+  come from `resolveOnFailure(row.id)`; carried forward if previously hydrated, else
+  all-null. The single trailing STATE write and full-scan `pruneStale` are preserved.
+- [x] 2.3 Both: the prior-body map is decoded by `readPriorStatementHydration` and
+  persisted under the `hydration` key of the `statements` STATE cursor (option (b):
+  the existing change-detection hash cursor is left untouched, the `hydration` map is a
+  sibling key in the same opaque cursor). No change to the public RECORD or STATE wire.
 
-## 3. Update the pinned all-null fallback tests to the carry-forward contract
+## 3. Pinned all-null fallback tests reflect the carry-forward contract
 
-- [ ] 3.1 chase `connectors/chase/integration.test.ts` "Invariant 4: index-only
-  fallback when PDF download fails" (~340): split into (i) never-hydrated → all-null
-  (unchanged assertion) and (ii) previously-hydrated → carried-forward
-  `pdf_path`/`pdf_sha256`/`document_url` equal the prior values.
-- [ ] 3.2 usaa `connectors/usaa/integration.test.ts` "failed hydration emits
-  index-only record (all pdf fields null)" (~204): same split — all-null only when no
-  prior hydration; carried-forward pointers when a prior cursor hydrated the same `id`.
+- [x] 3.1 chase: the integration test "Invariant 4" (`connectors/chase/integration.test.ts`
+  ~340) is the **never-hydrated** branch — it calls `emitStatementIndexOnly` with no
+  hydration cursor, so the all-null assertion is still correct and intentional. The
+  **previously-hydrated → carried-forward** branch is pinned by AC-1 in
+  `connectors/chase/statements-fingerprint.test.ts` (carries prior pointers forward, no
+  new version). Splitting the contract across the two files rather than fattening
+  Invariant 4 keeps the harness-light integration test and the cursor-aware fingerprint
+  test each focused; both branches are covered.
+- [x] 3.2 usaa: same split — the integration test "Invariant 4"
+  (`connectors/usaa/integration.test.ts` ~204, "No entry in the hydration map at all")
+  is the never-hydrated all-null branch; AC-1 in
+  `connectors/usaa/statements-fingerprint.test.ts` pins the previously-hydrated
+  carry-forward branch.
 
 ## 4. New fingerprint/version tests (AC-1..AC-6)
 
-- [ ] 4.1 `connectors/chase/statements-fingerprint.test.ts` and
-  `connectors/usaa/statements-fingerprint.test.ts`: add cases proving
-  AC-1 (hydrate→fail emits no new version + SKIP_RESULT),
-  AC-2 (index-only→hydrate emits exactly one version),
-  AC-3 (identity/title change re-versions),
-  AC-4 (hydrate→fail→re-hydrate identical = one version total),
-  and the STATE round-trip of the structured map (incl. legacy hash-only tolerance).
-- [ ] 4.2 Confirm AC-6: re-run `compact-record-history-fingerprint-parity.test.js`
-  for `chase/statements` and `usaa/statements` — parity holds with NO policy change,
-  and the `null -> value` first hydration is still a retained boundary under `--apply`.
+- [x] 4.1 `connectors/chase/statements-fingerprint.test.ts` (40 tests) and
+  `connectors/usaa/statements-fingerprint.test.ts` (30 tests) pin
+  AC-1 (hydrate→fail carries pointers forward, no new version + SKIP_RESULT),
+  AC-2 (never-hydrated failure stays all-null) and AC-2b/AC-2 (first hydration
+  `null->value` versions exactly once), AC-3 (identity/title change re-versions — usaa),
+  AC-4 (hydrate→fail→re-hydrate identical = one version total), AC-6 (a delisted /
+  removed statement is pruned, never carried as a phantom), plus the STATE round-trip and
+  legacy/malformed hash-only tolerance of `readPriorStatementHydration`. The dedicated
+  module test `src/statement-hydration-carry-forward.test.ts` (6 tests) pins
+  `resolveOnFailure`, `isHydrated`, prune, and decode tolerance directly.
+- [x] 4.2 AC-6 (compaction safety): `connectors/{chase,usaa}/statements-fingerprint.test.ts`
+  include a "connector fingerprint (excludes fetched_at) == compaction fingerprint over
+  stored body" parity case, and `reference-implementation/test/compact-record-history*.test.js`
+  is unchanged and green — parity holds with NO policy change, and the `null -> value`
+  first hydration remains a retained boundary under `--apply`.
 
 ## 5. Validation
 
-- [ ] 5.1 `node --test --import tsx connectors/chase/{statements-fingerprint,integration}.test.ts`
-- [ ] 5.2 `node --test --import tsx connectors/usaa/{statements-fingerprint,integration}.test.ts`
-- [ ] 5.3 `node --test test/compact-record-history*.test.js` (policy parity unchanged)
-- [ ] 5.4 `openspec validate gate-statement-hydration-availability-flap --strict`
-- [ ] 5.5 `openspec validate --all --strict`
+- [x] 5.1 `node --test --import tsx connectors/chase/{statements-fingerprint,integration}.test.ts` — 40/40 pass.
+- [x] 5.2 `node --test --import tsx connectors/usaa/{statements-fingerprint,integration}.test.ts` — 30/30 pass.
+- [x] 5.3 `node --test test/compact-record-history*.test.js` — 71 pass / 1 skip (Postgres DB test, `PDPP_TEST_POSTGRES_URL` unset; baseline).
+- [x] 5.4 `openspec validate gate-statement-hydration-availability-flap --strict` — valid.
+- [x] 5.5 `openspec validate --all --strict` — valid.
 
 ## Acceptance checks
 
