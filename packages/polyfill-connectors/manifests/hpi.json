@@ -1,0 +1,124 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/hpi",
+  "connector_key": "hpi",
+  "manifest_uri": "https://registry.pdpp.org/connectors/hpi",
+  "version": "0.1.0",
+  "display_name": "HPI (Human Programming Interface)",
+  "runtime_requirements": {
+    "bindings": {
+      "filesystem": {
+        "required": true
+      },
+      "network": {
+        "required": false
+      }
+    },
+    "external_tools": [
+      {
+        "name": "hpi",
+        "license": "MIT",
+        "purpose": "Query karlicoss/HPI personal-data modules as JSON (hpi query my.<module>.<fn> -o json --stream)",
+        "install_hint": "pip install HPI; configure each module's my.config (export_path) on the host. See https://github.com/karlicoss/HPI/blob/master/doc/SETUP.org",
+        "detect": {
+          "command": "hpi --help",
+          "exit_code": 0
+        }
+      }
+    ]
+  },
+  "capabilities": {
+    "human_interaction": [],
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "maximum_staleness_seconds": 604800,
+      "interaction_posture": "none",
+      "rate_limit_sensitivity": "low",
+      "bot_detection_sensitivity": "low",
+      "background_safe": true,
+      "rationale": "HPI reads user-provided exports on disk configured via my.config; refresh cadence follows how often the owner refreshes those exports. No live login, so background runs are safe but only see data as fresh as the on-disk export."
+    },
+    "public_listing": {
+      "listed": false,
+      "status": "needs_human_auth"
+    }
+  },
+  "streams": [
+    {
+      "name": "reddit_saved",
+      "description": "Reddit saved posts and comments, via HPI my.reddit.all.saved (which wraps the user's Reddit export/DAL).",
+      "display": {
+        "label": "Your saved Reddit items (via HPI)",
+        "detail": "Saved posts and comments as HPI returns them: id, subreddit, title/body, created time, permalink."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "subreddit": { "type": ["string", "null"] },
+          "title": { "type": ["string", "null"] },
+          "body": { "type": ["string", "null"] },
+          "url": { "type": ["string", "null"] },
+          "created": { "type": ["string", "null"], "format": "date-time" },
+          "fetched_at": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "created",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    },
+    {
+      "name": "reddit_comments",
+      "description": "Reddit comments authored by the owner, via HPI my.reddit.all.comments.",
+      "display": {
+        "label": "Your Reddit comments (via HPI)",
+        "detail": "Comment id, subreddit, body, created time, permalink."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "subreddit": { "type": ["string", "null"] },
+          "body": { "type": ["string", "null"] },
+          "created": { "type": ["string", "null"], "format": "date-time" },
+          "fetched_at": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "created",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    },
+    {
+      "name": "commits",
+      "description": "Git commits across the owner's repos, via HPI my.coding.commits.commits.",
+      "display": {
+        "label": "Your git commits (via HPI)",
+        "detail": "Commit sha, repo, message, authored/committed timestamps."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "sha": { "type": ["string", "null"] },
+          "repo": { "type": ["string", "null"] },
+          "message": { "type": ["string", "null"] },
+          "committed_dt": { "type": ["string", "null"], "format": "date-time" },
+          "authored_dt": { "type": ["string", "null"], "format": "date-time" },
+          "fetched_at": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "committed_dt",
+      "selection": { "fields": true, "resources": true },
+      "incremental": true
+    }
+  ]
+}
