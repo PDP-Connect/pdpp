@@ -313,8 +313,46 @@ Wants=network-online.target
 Type=oneshot
 EnvironmentFile=/etc/pdpp/local-collector.env
 EnvironmentFile=/etc/pdpp/local-collector.secret
+# Keep the durable outbox on a disk-backed path so undrained backlog survives
+# reboot and a tmpfs /tmp never holds collector state (see "Persistent State
+# And Scratch Paths" above).
+Environment=PDPP_COLLECTOR_QUEUE=/var/lib/pdpp/collector-runner-queue.json
 ExecStart=/usr/bin/pdpp-local-collector run --connector %i
+
+# --- Durable resource limits (do not drop these) --------------------------
+# A collector run scans local source files (for example a very large active
+# Codex session). The connector runtime streams the tail so a healthy run's
+# working set is small, but a future regression, an unusually large source, or
+# a stuck child must not be allowed to consume host memory without bound. These
+# cgroup limits keep one collector run from taking the machine down; the host
+# supervisor — not the package — owns them, so they belong in the unit you
+# install, not only in a manual `systemd-run` wrapper.
+MemoryMax=2G
+MemorySwapMax=0
+OOMPolicy=kill
+OOMScoreAdjust=500
+# Bound the oneshot start operation so a hung connector child cannot run
+# forever. RuntimeMaxSec is ignored for Type=oneshot services, so the effective
+# wall-clock guard for this unit is TimeoutStartSec.
+TimeoutStartSec=900
+# Reap the whole control group (the collector and any connector child it
+# spawned) on stop so nothing is orphaned.
+KillMode=control-group
+KillSignal=SIGTERM
+TimeoutStopSec=30
 ```
+
+`MemoryMax=2G` is a deliberately generous ceiling: a healthy streamed run stays
+far below it, so the cap only fires on a regression or a pathological source.
+`MemorySwapMax=0` is the load-bearing line — without it the cgroup spills to
+swap under pressure and thrashes the whole host instead of failing the one run,
+which is exactly the failure mode an uncapped unit produced (a multi-gigabyte
+service peak that had to be killed by hand). With `MemorySwapMax=0` and
+`OOMPolicy=kill`, the kernel OOM-kills only this run's cgroup; the next
+scheduled run resumes draining the durable outbox. Lower `MemoryMax` for a small
+host or raise it for a host that legitimately collects very large sources, but
+do not remove it. Use `systemd-run --scope -p MemoryMax=2G -p MemorySwapMax=0`
+with the same values when proving a run by hand before installing the unit.
 
 If Node is installed under a user-managed prefix such as `nvm`, do not rely on
 systemd's minimal default `PATH`. Either point `ExecStart` at a wrapper that
@@ -403,6 +441,14 @@ launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/fish.vivid.pdpp.l
 launchctl kickstart -k "gui/$(id -u)/fish.vivid.pdpp.local-collector.claude-code"
 launchctl print "gui/$(id -u)/fish.vivid.pdpp.local-collector.claude-code"
 ```
+
+launchd has no per-job equivalent of systemd's `MemoryMax`/`MemorySwapMax`
+cgroup cap. On macOS the run's memory bound comes from the connector runtime,
+which streams large source files instead of materializing them, so a healthy run
+stays small. If you need a hard ceiling on a macOS host, run the collector under
+a wrapper that sets one (for example a coarse `ulimit -v` in the wrapper script,
+accepting that an address-space limit is blunter than a cgroup memory cap), and
+keep the `StartInterval` long enough that runs do not overlap.
 
 Use one service/timer per connection when a host exports multiple sources. The
 shared reference server distinguishes them by `PDPP_CONNECTION_ID`, not by the
