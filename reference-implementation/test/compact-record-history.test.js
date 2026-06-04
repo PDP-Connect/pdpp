@@ -80,8 +80,11 @@ test('COMPACTION_POLICIES exposes the registered policies (short-name canonical 
     // `fetched_at` is excluded (forward gate added 2026-06-03)
     ['chase', 'statements'],
     ['chase', 'transactions'],
-    // usaa/accounts + usaa/credit_card_billing carry REAL balances; only
-    // the run-clock `fetched_at` is excluded (incidental fix added 2026-06-02)
+    // usaa/accounts + usaa/credit_card_billing post-split carry identity +
+    // settings + run-clock `fetched_at` only (balances/per-cycle metrics moved
+    // to the `_stats` observation streams, split-usaa-account-balance-
+    // observation-streams); only `fetched_at` is excluded. (gate added
+    // 2026-06-02; bodies narrowed by the balance split)
     ['usaa', 'accounts'],
     ['usaa', 'credit_card_billing'],
     ['ynab', 'budgets'],
@@ -241,11 +244,16 @@ for (const { connector, stream, realField } of POINT_IN_TIME_REAL_FIELD_STREAMS)
   });
 }
 
-// USAA `accounts` and `credit_card_billing` are the subtle case: they DO
-// carry real point-in-time fields (balances, APRs, rewards) AND a run-clock
-// `fetched_at`. They are intentionally policied — but the policy must
-// exclude ONLY `fetched_at`. Excluding any real field would suppress real
-// churn. This pins the cut line so a future edit can't widen excludeKeys
+// USAA `accounts` and `credit_card_billing` are the subtle case. Post-split
+// (split-usaa-account-balance-observation-streams) their volatile balance /
+// per-cycle metrics moved to the `_stats` observation streams, so the entity
+// bodies now carry a run-clock `fetched_at` plus: for `accounts`, identity
+// only (id/type/name/last_four/status); for `credit_card_billing`, identity
+// plus real SETTINGS state (credit_limit_cents, APRs, nickname, card_holders)
+// whose changes are legitimate low-rate versions. Either way the policy must
+// exclude ONLY `fetched_at`: excluding any retained body field would suppress
+// real churn (a settings change on the card, an identity change on the
+// account). This pins the cut line so a future edit can't widen excludeKeys
 // past the run clock.
 for (const stream of ['accounts', 'credit_card_billing']) {
   test(`usaa/${stream} compaction policy excludes the run clock only, never a real field`, () => {
