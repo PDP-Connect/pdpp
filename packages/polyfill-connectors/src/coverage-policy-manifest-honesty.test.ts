@@ -19,26 +19,15 @@ import { fileURLToPath } from "node:url";
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const MANIFESTS_DIR = join(PACKAGE_ROOT, "manifests");
 
-const VALID_COVERAGE_POLICIES = new Set([
-  "collect",
-  "deferred",
-  "inventory_only",
-  "unavailable",
-  "unsupported",
-]);
+const VALID_COVERAGE_POLICIES = new Set(["collect", "deferred", "inventory_only", "unavailable", "unsupported"]);
 
 // Accepted-coverage policies: declaring one of these on a required stream is
 // contradictory (the stream is simultaneously load-bearing and accepted-absent).
-const ACCEPTED_COVERAGE_POLICIES = new Set([
-  "deferred",
-  "inventory_only",
-  "unavailable",
-  "unsupported",
-]);
+const ACCEPTED_COVERAGE_POLICIES = new Set(["deferred", "inventory_only", "unavailable", "unsupported"]);
 
 interface ManifestStream {
-  name?: unknown;
   coverage_policy?: unknown;
+  name?: unknown;
   required?: unknown;
   [key: string]: unknown;
 }
@@ -95,7 +84,7 @@ test("connector manifest streams: accepted-coverage policy must not combine with
 
     for (const stream of manifest.streams ?? []) {
       const policy = stream.coverage_policy as string | undefined;
-      if (!policy || !ACCEPTED_COVERAGE_POLICIES.has(policy)) {
+      if (!(policy && ACCEPTED_COVERAGE_POLICIES.has(policy))) {
         continue;
       }
       // `required` defaults to true when absent — so absent is the same as required: true.
@@ -103,7 +92,7 @@ test("connector manifest streams: accepted-coverage policy must not combine with
       if (required !== false) {
         violations.push(
           `${connectorKey}.${String(stream.name)}: coverage_policy="${policy}" with required=${String(required ?? "absent (defaults true)")} ` +
-            `is contradictory — a stream cannot be both load-bearing and accepted-absent. ` +
+            "is contradictory — a stream cannot be both load-bearing and accepted-absent. " +
             `Add "required": false or change coverage_policy to "collect".`
         );
       }
