@@ -48,6 +48,7 @@ import {
 } from "../server/stores/scheduler-store.ts";
 import { browserSurfaceLeaseEnv } from "./browser-surface-leases.ts";
 import { readBrowserSurfaceProfileKey } from "./browser-surface-profile-key.ts";
+import { validateConnectorOptions } from "../../packages/polyfill-connectors/src/validate-connector-options.ts";
 import {
   type BrowserSurfaceReadinessProbe,
   type BrowserSurfaceReadinessProbeResult,
@@ -216,6 +217,7 @@ export interface ActiveRun {
 
 export interface RunNowOptions {
   connectorInstanceId?: string;
+  connector_options?: Record<string, unknown> | null;
   manifest?: ConnectorManifest;
   ownerToken?: string;
   priorityClass?: "owner_interactive" | "scheduled_refresh";
@@ -3227,6 +3229,12 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const key = runtimeKey(connectorId, connectorInstanceId);
     const { manifest, connectorPath } = await validateRunNowPreconditions(connectorId, options, key);
 
+    const optionsValidation = validateConnectorOptions(manifest, options.connector_options);
+    if (!optionsValidation.ok) {
+      const detail = optionsValidation.issues.map((issue) => `${issue.field}: ${issue.reason}`).join("; ");
+      throw new Error(`connector_options validation failed for ${connectorId}: ${detail}`);
+    }
+
     const triggerKind = options.triggerKind ?? "manual";
     const automationMetadata = runAutomationMetadata(readManifestRefreshPolicy(manifest), triggerKind);
     const traceContext =
@@ -3367,6 +3375,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           browserSurfaceEnv,
           staticSecretEnv,
           cancelSignal: cancellation.signal,
+          connector_options: options.connector_options ?? null,
         })
       )
       .catch((err: unknown) => {
