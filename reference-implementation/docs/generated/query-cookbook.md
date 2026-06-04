@@ -146,4 +146,3 @@ Authorized only if the caller holds a grant that includes a record referencing t
 - `404 not_found` — stream or record not found.
 - `404 blob_not_found` — `blob_id` is unknown or stale.
 - `410 cursor_expired` — `changes_since` cursor too old; full re-sync required.
-

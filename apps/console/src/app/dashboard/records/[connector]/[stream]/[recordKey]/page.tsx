@@ -15,6 +15,7 @@ import {
 import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } from "../../../connection-route.ts";
 import {
   buildRelatedLinks,
+  candidateParentStreamsForChild,
   findParentBackLink,
   parentRelationsForChild,
   type RelatedLink,
@@ -46,10 +47,9 @@ export default async function RecordDetailPage({
     connectionId = connection.connection_id;
     const connectorInstanceId = connectorInstanceIdForConnection(connection);
     // Fetch the record, this stream's metadata (for parent → child relations),
-    // and the connector manifest (for the child → parent back-link) together —
-    // no serial round-trips beyond what the page already needed. Metadata /
-    // manifest are best-effort: a relationship-rendering miss must never block
-    // the record view.
+    // and the connector manifest together. The manifest is used only to prune
+    // parent metadata reads; child → parent link semantics come from live
+    // `expand_capabilities`, not fabricated manifest fields.
     const [recordResult, metadataResult, manifests] = await Promise.all([
       getRecord(connection.connector_id, streamName, recordId, { connectorInstanceId }),
       getStreamMetadata(connection.connector_id, streamName, { connectorInstanceId }).catch(() => null),
@@ -58,7 +58,18 @@ export default async function RecordDetailPage({
     record = recordResult;
     expandCapabilities = Array.isArray(metadataResult?.expand_capabilities) ? metadataResult.expand_capabilities : [];
     const connectorManifest = manifests.find((m) => m.connector_id === connection.connector_id);
-    parentRelations = parentRelationsForChild(connectorManifest?.streams, streamName);
+    const parentMetadata = await Promise.all(
+      candidateParentStreamsForChild(connectorManifest?.streams, streamName).map(async (parentStream) => {
+        const metadata = await getStreamMetadata(connection.connector_id, parentStream, { connectorInstanceId }).catch(
+          () => null
+        );
+        return {
+          parentStream,
+          expandCapabilities: Array.isArray(metadata?.expand_capabilities) ? metadata.expand_capabilities : [],
+        };
+      })
+    );
+    parentRelations = parentRelationsForChild(parentMetadata, streamName);
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (

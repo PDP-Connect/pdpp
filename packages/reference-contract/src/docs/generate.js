@@ -242,6 +242,10 @@ function queryCookbook() {
   ].join('\n');
 }
 
+function withSingleTrailingNewline(markdown) {
+  return `${markdown.trimEnd()}\n`;
+}
+
 export function generateDocs() {
   return {
     routes: manifestsToRouteMarkdown(
@@ -266,9 +270,9 @@ async function main() {
   const outDir = resolve(here, '../../../../reference-implementation/docs/generated');
   await mkdir(outDir, { recursive: true });
   const { routes, referenceRoutes, cookbook } = generateDocs();
-  await writeFile(join(outDir, 'reference-routes.md'), `${routes}\n`);
-  await writeFile(join(outDir, 'reference-ref-routes.md'), `${referenceRoutes}\n`);
-  await writeFile(join(outDir, 'query-cookbook.md'), `${cookbook}\n`);
+  await writeFile(join(outDir, 'reference-routes.md'), withSingleTrailingNewline(routes));
+  await writeFile(join(outDir, 'reference-ref-routes.md'), withSingleTrailingNewline(referenceRoutes));
+  await writeFile(join(outDir, 'query-cookbook.md'), withSingleTrailingNewline(cookbook));
   process.stdout.write(`wrote ${outDir}/reference-routes.md\n`);
   process.stdout.write(`wrote ${outDir}/reference-ref-routes.md\n`);
   process.stdout.write(`wrote ${outDir}/query-cookbook.md\n`);

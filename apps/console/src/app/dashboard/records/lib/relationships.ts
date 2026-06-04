@@ -53,10 +53,8 @@ function recordsBasePath(connectionId: string): string {
   return `/dashboard/records/${encodeURIComponent(connectionId)}`;
 }
 
-/** Minimal manifest shapes for deriving declared forward relations. */
+/** Minimal manifest shapes for pruning which parent streams need metadata reads. */
 interface ManifestRelationship {
-  cardinality?: "has_one" | "has_many";
-  foreign_key?: string;
   name: string;
   stream?: string;
 }
@@ -67,39 +65,63 @@ interface ManifestStreamShape {
 }
 
 /**
- * Derive the declared forward relations that point AT `childStream`, from a
- * connector manifest's stream declarations. A relation counts only when it is
- * both declared in a parent stream's `relationships[]` AND enabled in that
- * stream's `query.expand[]` — exactly the pair the server projects into
- * `expand_capabilities`. This is a manifest-declaration source (the only source
- * of truth), never raw payload inspection. Used to draw the child → parent
- * back-link (Decision D6) without issuing N per-stream metadata requests.
+ * Use the local manifest only as a candidate index for parent streams whose
+ * metadata might advertise a relation to `childStream`. The linkable relation
+ * itself is still taken from live `expand_capabilities` via
+ * `parentRelationsForChild`; this helper is a performance filter, not a source
+ * of link semantics.
  */
-export function parentRelationsForChild(
+export function candidateParentStreamsForChild(
   streams: ManifestStreamShape[] | undefined,
   childStream: string
-): Array<{ capability: ExpandCapability; parentStream: string }> {
+): string[] {
   if (!Array.isArray(streams)) {
     return [];
   }
-  const out: Array<{ capability: ExpandCapability; parentStream: string }> = [];
+  const out: string[] = [];
   for (const parent of streams) {
     const enabled = new Set((parent.query?.expand ?? []).map((entry) => entry.name));
     for (const relationship of parent.relationships ?? []) {
       if (relationship.stream !== childStream || !enabled.has(relationship.name)) {
         continue;
       }
-      out.push({
-        parentStream: parent.name,
-        capability: {
-          name: relationship.name,
-          stream: relationship.stream,
-          target_stream: relationship.stream,
-          cardinality: relationship.cardinality === "has_one" ? "has_one" : "has_many",
-          child_parent_key_field: relationship.foreign_key,
-          foreign_key: relationship.foreign_key,
-        },
-      });
+      out.push(parent.name);
+    }
+  }
+  return [...new Set(out)];
+}
+
+interface ParentStreamCapabilities {
+  expandCapabilities?: ExpandCapability[];
+  parentStream: string;
+}
+
+/**
+ * Derive child → parent console links from the parent streams' live
+ * `expand_capabilities` metadata. This is the only relationship source used for
+ * link construction; a local manifest may identify which parent metadata to
+ * fetch, but it must not fabricate `child_parent_key_field` or target-stream
+ * values for links.
+ */
+export function parentRelationsForChild(
+  parentStreams: ParentStreamCapabilities[],
+  childStream: string
+): Array<{ capability: ExpandCapability; parentStream: string }> {
+  const out: Array<{ capability: ExpandCapability; parentStream: string }> = [];
+  for (const parent of parentStreams) {
+    for (const capability of parent.expandCapabilities ?? []) {
+      if (capability.usable !== true) {
+        continue;
+      }
+      const targetStream = capability.target_stream ?? capability.stream;
+      if (targetStream !== childStream) {
+        continue;
+      }
+      const childParentKeyField = capability.child_parent_key_field ?? capability.foreign_key;
+      if (!childParentKeyField) {
+        continue;
+      }
+      out.push({ parentStream: parent.parentStream, capability });
     }
   }
   return out;

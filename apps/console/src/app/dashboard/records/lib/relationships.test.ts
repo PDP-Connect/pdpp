@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExpandCapability } from "../../lib/rs-client.ts";
-import { advisoryForReason, buildRelatedLinks, findParentBackLink, parentRelationsForChild } from "./relationships.ts";
+import {
+  advisoryForReason,
+  buildRelatedLinks,
+  candidateParentStreamsForChild,
+  findParentBackLink,
+  parentRelationsForChild,
+} from "./relationships.ts";
 
 const USER_STATS_CAP: ExpandCapability = {
   name: "user_stats",
@@ -109,7 +115,7 @@ test("child back-link is absent when no declared relation targets the child stre
   assert.equal(link, null);
 });
 
-test("parentRelationsForChild derives only declared+enabled relations pointing at the child", () => {
+test("candidateParentStreamsForChild uses the manifest only to prune parent metadata reads", () => {
   const streams = [
     {
       name: "user",
@@ -129,14 +135,40 @@ test("parentRelationsForChild derives only declared+enabled relations pointing a
     { name: "user_stats" },
   ];
 
-  const forUserStats = parentRelationsForChild(streams, "user_stats");
-  assert.equal(forUserStats.length, 1);
-  assert.equal(forUserStats[0]?.parentStream, "user");
-  assert.equal(forUserStats[0]?.capability.child_parent_key_field, "user_id");
+  assert.deepEqual(candidateParentStreamsForChild(streams, "user_stats"), ["user"]);
+  // `issues` relation is declared but disabled, so no metadata read is needed.
+  assert.deepEqual(candidateParentStreamsForChild(streams, "issues"), []);
+  assert.deepEqual(candidateParentStreamsForChild(undefined, "issues"), []);
+});
 
-  // `issues` relation is declared but disabled, so no parent relation surfaces.
-  assert.deepEqual(parentRelationsForChild(streams, "issues"), []);
-  assert.deepEqual(parentRelationsForChild(undefined, "issues"), []);
+test("parentRelationsForChild derives linkable relations from live expand_capabilities metadata", () => {
+  const relations = parentRelationsForChild(
+    [
+      { parentStream: "user", expandCapabilities: [USER_STATS_CAP] },
+      {
+        parentStream: "repositories",
+        expandCapabilities: [
+          {
+            name: "issues",
+            stream: "issues",
+            target_stream: "issues",
+            cardinality: "has_many",
+            child_parent_key_field: "repository_id",
+            foreign_key: "repository_id",
+            granted: false,
+            usable: false,
+            reason: "related_stream_not_granted",
+          },
+        ],
+      },
+    ],
+    "user_stats"
+  );
+
+  assert.equal(relations.length, 1);
+  assert.equal(relations[0]?.parentStream, "user");
+  assert.equal(relations[0]?.capability.child_parent_key_field, "user_id");
+  assert.deepEqual(parentRelationsForChild([], "user_stats"), []);
 });
 
 test("child back-link is absent when the child field value is missing or empty", () => {

@@ -11,6 +11,7 @@ import {
   computeDefaultColumns,
   deriveAllColumns,
   type ExpandCapability,
+  getStreamMetadata,
   listConnectorManifests,
   queryRecords,
   type RecordsPage,
@@ -21,7 +22,11 @@ import {
   truncate,
 } from "../../../lib/rs-client.ts";
 import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } from "../../connection-route.ts";
-import { findParentBackLink, parentRelationsForChild } from "../../lib/relationships.ts";
+import {
+  candidateParentStreamsForChild,
+  findParentBackLink,
+  parentRelationsForChild,
+} from "../../lib/relationships.ts";
 import { ColumnsMenu } from "./columns-menu.tsx";
 
 export const dynamic = "force-dynamic";
@@ -94,9 +99,19 @@ export default async function StreamPage({
     const connectorManifest = manifests.find((m) => m.connector_id === connectorId);
     const maybeStream = connectorManifest?.streams?.find((s: { name: string }) => s.name === streamName);
     streamManifest = (maybeStream ?? null) as StreamManifest | null;
-    // Declared forward relations pointing AT this stream let a child-record field
-    // link back to its parent (manifest-declared only, never payload-guessed).
-    parentRelations = parentRelationsForChild(connectorManifest?.streams, streamName);
+    // The manifest is used only to prune parent metadata reads. Link semantics
+    // come from the parent streams' live `expand_capabilities`, never from
+    // payload-shaped guesses or fabricated manifest fields.
+    const parentMetadata = await Promise.all(
+      candidateParentStreamsForChild(connectorManifest?.streams, streamName).map(async (parentStream) => {
+        const metadata = await getStreamMetadata(connectorId, parentStream, { connectorInstanceId }).catch(() => null);
+        return {
+          parentStream,
+          expandCapabilities: Array.isArray(metadata?.expand_capabilities) ? metadata.expand_capabilities : [],
+        };
+      })
+    );
+    parentRelations = parentRelationsForChild(parentMetadata, streamName);
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (

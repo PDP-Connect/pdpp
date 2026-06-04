@@ -640,4 +640,3 @@ Enqueue a `pdpp.subscription.test` event for asynchronous delivery to the subscr
 - `403` — Bearer token is authenticated but is neither a `client_grant` authority for an active grant nor a registered `trusted_owner_agent` authority; unregistered owner bearers are rejected.
 - `404` — Subscription not found or not owned by the bearer
 - `409` — Subscription is not in a state that accepts test events (must be `active` or `pending_verification`)
-
