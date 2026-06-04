@@ -520,7 +520,8 @@ test("REVIEWED_COMPACTION_RESIDUE_STREAMS keys match REVIEWED_COMPACTION_RESIDUE
 // lossless_compaction_candidate so the dashboard surfaces growing churn.
 
 test("classifyChurnRow returns reviewed_compaction_residue when last_history_at is before reviewedAt", () => {
-  // Review timestamp for usaa/accounts is 2026-06-04T23:59:59.999Z.
+  // Review timestamp for usaa/accounts is the observed max history write:
+  // 2026-06-03T19:19:53.633Z.
   // last_history_at is one day earlier → within review window → classified.
   assert.equal(
     classifyChurnRow(row({ connector_id: "usaa", stream: "accounts", last_history_at: "2026-06-03T12:00:00.000Z" })),
@@ -538,14 +539,14 @@ test("classifyChurnRow returns reviewed_compaction_residue when last_history_at 
 });
 
 test("classifyChurnRow re-alarms as lossless_compaction_candidate when last_history_at is after reviewedAt", () => {
-  // A history write one second after the review timestamp means new churn
+  // A history write after the review timestamp means new churn
   // has accumulated since the review — should re-alarm, not stay suppressed.
   assert.equal(
-    classifyChurnRow(row({ connector_id: "usaa", stream: "accounts", last_history_at: "2026-06-05T00:00:00.000Z" })),
+    classifyChurnRow(row({ connector_id: "usaa", stream: "accounts", last_history_at: "2026-06-03T19:19:53.634Z" })),
     "lossless_compaction_candidate"
   );
   assert.equal(
-    classifyChurnRow(row({ connector_id: "chase", stream: "statements", last_history_at: "2026-06-05T00:00:00.000Z" })),
+    classifyChurnRow(row({ connector_id: "chase", stream: "statements", last_history_at: "2026-06-03T16:03:36.644Z" })),
     "lossless_compaction_candidate"
   );
   assert.equal(
@@ -577,14 +578,14 @@ test("isExpectedRetainedHistory returns true for reviewed_compaction_residue wit
 
 test("isExpectedRetainedHistory returns false for reviewed_compaction_residue with post-review last_history_at", () => {
   assert.equal(
-    isExpectedRetainedHistory(row({ connector_id: "usaa", stream: "accounts", last_history_at: "2026-06-05T00:00:00.000Z" })),
+    isExpectedRetainedHistory(row({ connector_id: "usaa", stream: "accounts", last_history_at: "2026-06-03T19:19:53.634Z" })),
     false
   );
 });
 
 test("needsReview returns false for reviewed_compaction_residue within review window", () => {
   assert.equal(
-    needsReview(row({ connector_id: "chase", stream: "statements", last_history_at: "2026-06-04T00:00:00.000Z" })),
+    needsReview(row({ connector_id: "chase", stream: "statements", last_history_at: "2026-06-03T16:03:36.643Z" })),
     false
   );
 });

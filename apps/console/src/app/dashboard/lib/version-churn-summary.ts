@@ -153,11 +153,13 @@ export const LOSSLESS_COMPACTION_POLICY_STREAMS: ReadonlySet<string> = new Set([
 export const REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT: ReadonlyMap<string, string> = new Map([
   // These four streams accumulated no-op/run-clock history before the
   // fingerprint fix deployed. The dry-run confirmed removableVersions=0 (no
-  // adjacent identical versions remain to compact). Reviewed 2026-06-04.
-  ["usaa/accounts", "2026-06-04T23:59:59.999Z"],
-  ["usaa/statements", "2026-06-04T23:59:59.999Z"],
-  ["chase/statements", "2026-06-04T23:59:59.999Z"],
-  ["claude-code/sessions", "2026-06-04T23:59:59.999Z"],
+  // adjacent identical versions remain to compact). Values are the observed
+  // max(record_changes.emitted_at) at review time; any later history write
+  // re-alarms the row.
+  ["usaa/accounts", "2026-06-03T19:19:53.633Z"],
+  ["usaa/statements", "2026-06-03T04:23:03.255Z"],
+  ["chase/statements", "2026-06-03T16:03:36.643Z"],
+  ["claude-code/sessions", "2026-06-04T19:15:01.028Z"],
 ]);
 
 /**
