@@ -826,18 +826,40 @@ export async function postgresIngestRecord(storageTarget, record) {
     let prunedBytesForDelta = 0;
     let prunedRowsForDelta = 0;
     if (changeHistoryLimit > 0) {
+      // Anchor preservation: never count, sum, or delete the `record_changes`
+      // row that projects a still-current `records` row for the same key. A
+      // pure stream-version cutoff strands the unchanged current row of a cold
+      // key once OTHER keys advance the per-stream version past its retention
+      // horizon — the live Chase / USAA / reddit / github drift. The SELECT and
+      // the DELETE carry the IDENTICAL `NOT EXISTS` clause so the retained-size
+      // delta accounting matches the rows actually removed. Mirrors the SQLite
+      // `PRUNE_ANCHOR_PRESERVE_CLAUSE` in records.js.
       const pruned = await client.query(
         `SELECT COUNT(*)::bigint AS count,
                 COALESCE(SUM(octet_length(COALESCE(record_json::text, ''))), 0)::bigint AS bytes
-           FROM record_changes
-          WHERE connector_instance_id = $1 AND stream = $2 AND version <= $3`,
+           FROM record_changes rc
+          WHERE rc.connector_instance_id = $1 AND rc.stream = $2 AND rc.version <= $3
+            AND NOT EXISTS (
+              SELECT 1 FROM records r
+               WHERE r.connector_instance_id = rc.connector_instance_id
+                 AND r.stream = rc.stream
+                 AND r.record_key = rc.record_key
+                 AND r.version = rc.version
+            )`,
         [connectorInstanceId, stream, nextVersion - changeHistoryLimit],
       );
       prunedRowsForDelta = Number(pruned.rows[0]?.count || 0);
       prunedBytesForDelta = Number(pruned.rows[0]?.bytes || 0);
       await client.query(
-        `DELETE FROM record_changes
-         WHERE connector_instance_id = $1 AND stream = $2 AND version <= $3`,
+        `DELETE FROM record_changes rc
+         WHERE rc.connector_instance_id = $1 AND rc.stream = $2 AND rc.version <= $3
+           AND NOT EXISTS (
+             SELECT 1 FROM records r
+              WHERE r.connector_instance_id = rc.connector_instance_id
+                AND r.stream = rc.stream
+                AND r.record_key = rc.record_key
+                AND r.version = rc.version
+           )`,
         [connectorInstanceId, stream, nextVersion - changeHistoryLimit],
       );
     }

@@ -156,6 +156,22 @@ function byteLength(value) {
   return value == null ? 0 : Buffer.byteLength(String(value));
 }
 
+// The retained-size delta accounting MUST count/sum exactly the rows the prune
+// DELETE will remove. Both helpers therefore carry the SAME anchor-preserving
+// `NOT EXISTS` clause as `recordsIngestPruneRecordChanges` (see
+// queries/records/ingest/prune-record-changes.sql). If these predicates ever
+// diverge, the retained-size read model would over-report pruned bytes/rows
+// for keys whose anchor we now keep. Kept in lockstep on purpose.
+const PRUNE_ANCHOR_PRESERVE_CLAUSE = `
+  AND NOT EXISTS (
+    SELECT 1
+      FROM records r
+     WHERE r.connector_instance_id = record_changes.connector_instance_id
+       AND r.stream = record_changes.stream
+       AND r.record_key = record_changes.record_key
+       AND r.version = record_changes.version
+  )`;
+
 function getPrunedRecordChangeJsonBytes(connectorInstanceId, stream, versionBefore) {
   const row = getDb()
     .prepare(
@@ -163,7 +179,7 @@ function getPrunedRecordChangeJsonBytes(connectorInstanceId, stream, versionBefo
          FROM record_changes
         WHERE connector_instance_id = ?
           AND stream = ?
-          AND version <= ?`,
+          AND version <= ?${PRUNE_ANCHOR_PRESERVE_CLAUSE}`,
     )
     .get(connectorInstanceId, stream, versionBefore);
   return Number(row?.bytes || 0);
@@ -176,7 +192,7 @@ function getPrunedRecordChangeCount(connectorInstanceId, stream, versionBefore) 
          FROM record_changes
         WHERE connector_instance_id = ?
           AND stream = ?
-          AND version <= ?`,
+          AND version <= ?${PRUNE_ANCHOR_PRESERVE_CLAUSE}`,
     )
     .get(connectorInstanceId, stream, versionBefore);
   return Number(row?.count || 0);

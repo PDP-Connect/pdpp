@@ -231,6 +231,133 @@ test('PDPP_CHANGE_HISTORY_LIMIT pruning never strands the current projection', a
   }
 });
 
+// ── 3b. Multi-key anchor preservation (the live recurrence) ────────────────
+//
+// The single-key test above can NEVER catch the live bug: with one key the
+// per-stream version always equals that key's latest version, so a
+// `version <= nextVersion - limit` cutoff never reaches the anchor. The live
+// Chase / USAA / reddit / github drift required at least two keys — a COLD key
+// written once and never touched again, and a HOT key whose churn advances the
+// per-stream version far past `cold.version + limit`. A pure stream-version
+// cutoff then deletes the cold key's only history row (its anchor), stranding
+// the unchanged current row as `unresolved_pruned`. These tests fail against a
+// stream-cutoff prune and pass only with anchor preservation.
+
+test('pruning preserves a cold-key anchor while a hot key advances the stream past the limit', async () => {
+  process.env.PDPP_CHANGE_HISTORY_LIMIT = '2';
+  setup();
+  try {
+    // Cold key: written once at v1, never touched again. Its current row stays
+    // at v1; its sole anchor is the v1 record_changes row.
+    await upsert('cold', { v: 1 });
+    assertNoCurrentProjectionDrift();
+
+    // Hot key: churn it well past v1 + limit so a naive cutoff
+    // (version <= nextVersion - 2) would sweep the cold anchor away.
+    for (let v = 1; v <= 8; v += 1) {
+      await upsert('hot', { v });
+      // The invariant must hold after EVERY write, not just at the end —
+      // anchor preservation is per-prune, not a post-hoc repair.
+      assertNoCurrentProjectionDrift();
+    }
+
+    const cin = instanceIdFor();
+    // Whole-store check: no class of drift anywhere for this connection.
+    assert.equal(
+      detectCurrentProjectionDrift({ connectorInstanceId: cin, stream: STREAM }).length,
+      0,
+      'cold-key anchor must survive hot-key stream advance',
+    );
+
+    // Bounded-pruning is NOT sacrificed: the cold key keeps exactly its 1
+    // anchor row (not unbounded), and the hot key's history is still bounded at
+    // the retention limit (anchor + at most limit-1 older retained rows).
+    const counts = getDb()
+      .prepare(
+        `SELECT record_key, COUNT(*) AS n
+           FROM record_changes
+          WHERE connector_instance_id = ? AND stream = ?
+          GROUP BY record_key`,
+      )
+      .all(cin, STREAM);
+    const byKey = Object.fromEntries(counts.map((r) => [r.record_key, Number(r.n)]));
+    assert.equal(byKey.cold, 1, 'cold key retains exactly its anchor row');
+    assert.ok(byKey.hot <= 2, `hot key history stays bounded (got ${byKey.hot})`);
+  } finally {
+    teardown();
+  }
+});
+
+test('a cold key DELETED after the stream advances keeps its deleted anchor (no resurrection)', async () => {
+  process.env.PDPP_CHANGE_HISTORY_LIMIT = '2';
+  setup();
+  try {
+    // Cold key lives at v1, then is deleted at v2. After the delete its current
+    // row is a tombstone at v2 and its anchor is the deleted v2 history row.
+    await upsert('cold', { v: 1 });
+    await ingestDelete('cold');
+    // Hot key now advances the stream version far past v2 + limit.
+    for (let v = 1; v <= 10; v += 1) {
+      await upsert('hot', { v });
+      assertNoCurrentProjectionDrift();
+    }
+
+    const cin = instanceIdFor();
+    // The deleted-tombstone anchor must survive: otherwise the cold key would
+    // become an orphan current row (unresolved_pruned) OR — worse — lose the
+    // proof that it is deleted. The (deleted latest, deleted current) state is
+    // consistent, so there must be zero drift.
+    assert.equal(
+      detectCurrentProjectionDrift({ connectorInstanceId: cin, stream: STREAM }).length,
+      0,
+      'deleted cold-key anchor must survive the stream advance',
+    );
+    // Confirm the anchor is the deleted v2 row, still present.
+    const anchor = getDb()
+      .prepare(
+        `SELECT version, deleted FROM record_changes
+          WHERE connector_instance_id = ? AND stream = ? AND record_key = 'cold'`,
+      )
+      .all(cin, STREAM);
+    assert.equal(anchor.length, 1, 'exactly the deleted anchor is retained for the cold key');
+    assert.equal(anchor[0].deleted, 1, 'retained cold anchor is the deleted tombstone');
+  } finally {
+    teardown();
+  }
+});
+
+test('many cold keys all keep their anchors when one hot key advances the stream', async () => {
+  process.env.PDPP_CHANGE_HISTORY_LIMIT = '3';
+  setup();
+  try {
+    // A realistic shape: dozens of keys written once (the long tail of a
+    // transactions stream) plus one key that keeps changing. Every cold key's
+    // anchor must survive regardless of how far the hot key pushes the version.
+    for (let i = 0; i < 40; i += 1) {
+      await upsert(`cold-${i}`, { v: 1 });
+    }
+    for (let v = 1; v <= 30; v += 1) {
+      await upsert('hot', { v });
+    }
+    const cin = instanceIdFor();
+    assert.equal(
+      detectCurrentProjectionDrift({ connectorInstanceId: cin, stream: STREAM }).length,
+      0,
+      'no cold-key anchor may be stranded by the hot key',
+    );
+    // Every cold key keeps exactly one anchor row; total history is bounded
+    // (40 cold anchors + a bounded hot tail), not the full 70-version log.
+    const total = getDb()
+      .prepare(
+        `SELECT COUNT(*) AS n FROM record_changes WHERE connector_instance_id = ? AND stream = ?`,
+      )
+      .get(cin, STREAM);
+    assert.ok(Number(total.n) <= 40 + 3, `history stays bounded (got ${total.n})`);
+  } finally {
+    teardown();
+  }
+});
+
 // ── 4. Bulk scoped-delete success paths leave no drift ──────────────────────
 
 test('deleteAllRecords (per-stream) leaves no drift on success', async () => {
