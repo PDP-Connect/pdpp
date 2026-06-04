@@ -10,9 +10,19 @@
  *      Owner-mode stream-list builds the read grant from the persisted manifest's
  *      stream names (see `rs-read.ts:buildOwnerReadGrantForManifest`), so any
  *      advertised stream the connector never emits becomes a stream-list entry
- *      with no records-read backing. The records page then sees a 404, which is
- *      an honest dashboard outcome (the page handles it gracefully now) but is
- *      not what the contract should advertise.
+ *      with no records-read backing. The records page then sees a 404 — which
+ *      the stream-detail route renders as a bounded "stream not available" panel,
+ *      but the stream-*health* route still rethrows to the segment error boundary
+ *      (see `ri-github-connector-slvp-v1` report: the health page only catches
+ *      `ReferenceServerUnreachableError`). Either way it is not what the contract
+ *      should advertise, so the parity rule below keeps such streams out of the
+ *      manifest in the first place.
+ *
+ *      `commits` and `starred_repos` are the two stream names this instance
+ *      emitted under older connector revisions (the rename was
+ *      `starred_repos` -> `starred`). Both are pinned out of every shipped
+ *      manifest here so the contract can never re-advertise a stream the
+ *      connector does not emit.
  *
  *   2. The shipped polyfill manifest at
  *      `packages/polyfill-connectors/manifests/github.json` declares streams
@@ -129,15 +139,29 @@ test('reference fixture and shipped polyfill manifests share the same connector 
   assert.strictEqual(fixture.connector_key, polyfill.connector_key);
 });
 
-test('reference fixture manifest does not declare a top-level `commits` stream', () => {
-  // Regression pin for ri-github-stream-contract-v1: `commits` is a PR-detail
-  // field on the polyfill connector's `pull_requests` stream
-  // (`commits_count`), not a stream the connector emits as top-level records.
-  // Re-advertising it would re-introduce the fixture/connector mismatch.
-  const fixturePath = join(REPO_ROOT, 'reference-implementation', 'manifests', 'github.json');
-  const streams = manifestStreamNames(fixturePath);
-  assert.ok(
-    !streams.includes('commits'),
-    `Fixture manifest must not advertise a 'commits' stream. Got streams: ${streams.join(', ')}`
-  );
+// Stream names this instance emitted under older GitHub connector revisions
+// and that must never be re-advertised: `commits` (the `ri-github-stream-
+// contract-v1` phantom — really the `commits_count` PR-detail field, never a
+// top-level stream) and `starred_repos` (renamed to `starred`). Re-declaring
+// either re-introduces the manifest/connector mismatch whose live residue
+// `ri-github-connector-slvp-v1` diagnosed: a stream-list entry with no records
+// backing, a 404 on read, and a stale retained-size projection row.
+const RETIRED_GITHUB_STREAM_NAMES = ['commits', 'starred_repos'];
+
+test('no shipped GitHub manifest re-declares a retired phantom stream', () => {
+  const manifestPaths = [
+    join(REPO_ROOT, 'reference-implementation', 'manifests', 'github.json'),
+    join(REPO_ROOT, 'packages', 'polyfill-connectors', 'manifests', 'github.json'),
+  ];
+  for (const manifestPath of manifestPaths) {
+    const streams = manifestStreamNames(manifestPath);
+    const reintroduced = RETIRED_GITHUB_STREAM_NAMES.filter((name) => streams.includes(name));
+    assert.deepStrictEqual(
+      reintroduced,
+      [],
+      `${manifestPath} re-advertises retired phantom stream(s): ${reintroduced.join(', ')}. ` +
+        `These names map to no emission path in the GitHub connector; declaring them re-creates ` +
+        `the orphan stream-list/404/stale-projection bug. Got streams: ${streams.join(', ')}`
+    );
+  }
 });
