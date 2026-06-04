@@ -466,13 +466,33 @@ function readCurrentVersion(cin, recordKey) {
   return row ? row.version : null;
 }
 
-// Reproduce the hot/cold prune scenario: cold@v1, then `hotWrites` changed
-// writes to a hot key churn the stream past the horizon, pruning cold's anchor.
+// Strand a key's anchor directly: delete its retained `record_changes` row(s)
+// while leaving the current `records` row in place. This reproduces the exact
+// post-prune orphan state — a still-current, unchanged record whose provenance
+// anchor is gone — WITHOUT relying on the prune path to strand it. The prune
+// path no longer strands live-key anchors (anchor-preserving prune), so the
+// orphan must be seeded the same way the Postgres self-heal test seeds it
+// (raw delete of the anchor row), not by driving hot-key churn through prune.
+function deleteAnchor(cin, recordKey) {
+  getDb()
+    .prepare(
+      `DELETE FROM record_changes
+        WHERE connector_instance_id = ? AND stream = ? AND record_key = ?`,
+    )
+    .run(cin, STREAM, recordKey);
+}
+
+// Build the hot/cold scenario, then strand cold by deleting its anchor: cold@v1,
+// then `hotWrites` changed writes to a hot key advance the stream counter past
+// the horizon (so the heal's new version is genuinely head-of-window), and
+// finally cold's anchor row is removed directly to simulate the prune that the
+// anchor-preserving guard now (correctly) refuses to perform.
 async function strandColdAnchor(hotWrites) {
   await upsert('cold', { v: 1 });
   for (let i = 0; i < hotWrites; i += 1) {
     await upsert('hot', { v: i + 2 });
   }
+  deleteAnchor(instanceIdFor(), 'cold');
 }
 
 test('unchanged reingest of an unanchored current row recreates its anchor (self-heal)', async () => {
@@ -484,7 +504,7 @@ test('unchanged reingest of an unanchored current row recreates its anchor (self
 
     // Pre-state: cold is orphaned — zero retained history, current still v1,
     // and the invariant checker flags exactly one unresolved_pruned drift.
-    assert.equal(countHistoryRows(cin, 'cold'), 0, 'cold anchor pruned away');
+    assert.equal(countHistoryRows(cin, 'cold'), 0, 'cold anchor stranded away');
     const preDrift = detectCurrentProjectionDrift({ connectorInstanceId: cin, stream: STREAM });
     assert.equal(preDrift.length, 1);
     assert.equal(preDrift[0].kind, PROJECTION_MISMATCH_KINDS.UNRESOLVED_PRUNED);
@@ -536,31 +556,37 @@ test('unchanged reingest remains a plain no-op when the anchor is present (no ve
   }
 });
 
-test('pruning then a full source resync converges the projection to zero drift', async () => {
-  // The honest invariant. When PDPP_CHANGE_HISTORY_LIMIT is smaller than the
-  // number of live keys in a stream, NO single state can anchor every live key
-  // at once — there are more live keys than retained history slots. Healing one
-  // key allocates a version and prunes the tail, which can re-strand another
-  // key. This is a property of the retention horizon, not of the self-heal.
+test('a full source resync converges a multi-key stranded projection to zero drift', async () => {
+  // Convergence under a full source resync. Pre-existing residue (anchors that
+  // were stranded before anchor-preserving prune deployed, or by a torn bulk
+  // delete) leaves several live keys orphaned at once. A real account resync
+  // re-sends every live key; each unanchored key self-heals at a fresh
+  // head-of-window version, and once the sweep covers every live key the
+  // projection is consistent across the store. Here LIMIT >= liveKeys, so the
+  // retention window holds all re-anchored keys and the resync reaches zero
+  // drift.
   //
-  // What the self-heal guarantees is CONVERGENCE under a full source resync:
-  // re-sending every live key (which a real account resync does) re-anchors the
-  // last `min(LIMIT, liveKeys)` keys touched, and the drift that remains only
-  // ever covers keys NOT yet resynced. Once the resync sweep finishes with the
-  // most-recently-written keys, the projection is consistent for every key that
-  // still has a retained anchor, and the only residual is bounded by the
-  // horizon. Here LIMIT >= liveKeys, so a full resync reaches zero drift.
+  // The orphans are seeded directly (raw anchor delete), not via prune churn:
+  // anchor-preserving prune no longer strands a live-key anchor, so the prune
+  // path can no longer manufacture this pre-state. Direct deletion reproduces
+  // the exact residue (current row present, anchor gone) that a pre-fix prune
+  // or a torn bulk delete leaves behind.
   process.env.PDPP_CHANGE_HISTORY_LIMIT = '3';
   setup();
   try {
-    // Three live keys; one churns the stream past the horizon, stranding the
-    // two cold anchors (LIMIT=3 retains the 3 newest stream versions).
+    // Three live keys; a hot key advances the stream counter well past the
+    // horizon so each heal's new version is genuinely head-of-window.
     await upsert('cold-a', { v: 1 });
     await upsert('cold-b', { v: 1 });
     for (let i = 0; i < 12; i += 1) {
       await upsert('hot', { v: i + 3 });
     }
     const cin = instanceIdFor();
+
+    // Strand both cold anchors directly (the prune that used to do this is now
+    // anchor-preserving). hot stays anchored at its latest version.
+    deleteAnchor(cin, 'cold-a');
+    deleteAnchor(cin, 'cold-b');
     assert.equal(countHistoryRows(cin, 'cold-a'), 0, 'cold-a stranded');
     assert.equal(countHistoryRows(cin, 'cold-b'), 0, 'cold-b stranded');
     const drift = detectCurrentProjectionDrift({ connectorInstanceId: cin, stream: STREAM });
@@ -573,8 +599,9 @@ test('pruning then a full source resync converges the projection to zero drift',
     const hotResync = await upsert('hot', { v: 14 });
     assert.equal(hotResync.changed, false, 'still-anchored hot key resync is a plain no-op');
 
-    // LIMIT=3 retains the 3 newest versions — cold-a, cold-b, and hot anchors
-    // all fit. The full resync converges to zero drift across the store.
+    // Anchor-preserving prune keeps every live key's anchor, so cold-a, cold-b,
+    // and hot anchors all survive the heal sweep. The full resync converges to
+    // zero drift across the store.
     assert.ok(countHistoryRows(cin, 'cold-a') >= 1);
     assert.ok(countHistoryRows(cin, 'cold-b') >= 1);
     assert.ok(countHistoryRows(cin, 'hot') >= 1, 'hot anchor retained within the horizon');

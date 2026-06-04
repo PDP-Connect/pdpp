@@ -95,6 +95,88 @@ anchor. The delta therefore stays complete; the only effect is that a client can
 resume from an older point we now actually have the history to honor. The
 single-key cursor-expiry integration test is unaffected (verified green).
 
+## Recovery fix: self-heal unanchored current rows on unchanged reingest
+
+The anchor-preserving prune stops *new* stranding, but it cannot reconstruct a
+current row whose anchor was already pruned before the fix deployed, nor residue
+left by the non-atomic bulk-delete paths. Two mechanisms can restore those rows:
+the offline repair tool (reconstructs from retained history it still holds — but
+refuses the orphan/`unresolved_pruned` class, where there is no retained history
+to reconstruct from), and the **source itself**. When a connector resyncs an
+unanchored key, it re-sends the authoritative byte-identical payload. The repair
+tool cannot prove what the orphan should be; ingest can — the source just told
+it.
+
+So durable ingest gains a self-heal: the unchanged-upsert no-op now fires only
+when the anchor is present.
+
+### Condition
+
+An unanchored current row is exactly the would-be no-op with a missing anchor:
+
+```
+op != 'delete'
+  AND a non-deleted current `records` row exists
+  AND its record_json is byte-identical to the incoming payload   (no-op trigger)
+  AND NO `record_changes` row exists for (cin, stream, key) at version == records.version
+```
+
+The last clause is a single indexed probe on
+`idx_record_changes_record (cin, stream, record_key, version)`
+(`get-record-change-anchor.sql` on SQLite; an inline
+`SELECT 1 FROM record_changes ... LIMIT 1` on Postgres). When the anchor is
+present the no-op is suppressed as before — the anti-churn guard (the Slack
+`workspace` 31k-version regression) is untouched. When it is missing, ingest
+falls through to the normal changed-write path.
+
+### Allocate a NEW version, not insert-at-V
+
+Re-inserting at the stranded version `V` is PK-legal (that slot was this key's,
+freed by pruning) but a band-aid: the prune cutoff is `version <= nextVersion -
+LIMIT`, and the stranded anchor sits *below* the horizon by construction (that is
+why it was pruned). Re-inserting at `V` puts the anchor right back below the
+horizon, where the next changed write to any key re-prunes it. Allocating a new
+head-of-window version `W = max_version + 1` and stamping `records.version = W`
+places the anchor at the top of the retention window, durable for `LIMIT` more
+changed writes. This is the genuine heal, and it is the *opposite* of the offline
+repair tool's choice (which reconciles the current row to the latest retained
+*history* version and allocates no version) — correctly so, because the repair
+tool reconstructs from retained history while ingest reconstructs from the live
+source.
+
+### Delta accounting is correct by construction
+
+The heal routes through the existing changed-write delta math, whose content
+delta happens to be zero for an identical payload at a new version:
+
+- `recordCountDelta = current ? 0 : 1` → **0** (the current row already exists).
+- current-bytes delta = `byteLength(json) − byteLength(current.json)` → **0**.
+- `recordChangesJsonBytesDelta` / `recordHistoryCountDelta` account for the one
+  appended history row and any pruned tail.
+
+Both `applyDatasetSummaryRecordDelta` and `applyRetainedSizeRecordDelta` run in
+the same durable write transaction; Postgres returns the symmetric
+`retainedSizeDelta` (current-bytes 0, count 0). No special-casing was needed.
+
+### Backend symmetry
+
+SQLite (`records.js` `ingestRecord`) and Postgres (`postgres-records.js`
+`postgresIngestRecord`) implement the identical probe-then-fall-through. The PG
+current-state read adds `version` to its `FOR UPDATE` select so the probe runs
+inside the row lock. Both surface an additive `self_healed: true` in the success
+envelope for operator/test observability; existing callers key off
+`changed`/`accepted` and are unaffected.
+
+### Honest limit: horizon < live keys
+
+When `PDPP_CHANGE_HISTORY_LIMIT < (live keys in a stream)`, no single state can
+anchor every live key at once — there are more live keys than retained history
+slots. The guarantee the self-heal provides is **convergence under a full source
+resync**: re-sending every live key re-anchors them, and with `LIMIT >= liveKeys`
+the sweep reaches zero drift. Operators with a small horizon and many live keys
+per stream should size the horizon `>= max live keys per stream`, or rely on a
+full account resync.
+
 ## All-stream payload-free scanner
 
 `record-current-projection-repair.mjs` is per-`(cin, stream)` and collapses
@@ -171,3 +253,9 @@ Three disposition tiers, none auto-applied by this change:
 - Retained-size pruning-boundary test and dataset-summary deltas stay green.
 - `changes_since` cursor-expiry integration test stays green.
 - Scanner classifies all seven classes (unit + real-Postgres end-to-end).
+- An unchanged reingest of an unanchored current row re-anchors at a new
+  head-of-window version (count/payload deltas zero, drift cleared); an
+  unchanged reingest of an *anchored* current row stays a true no-op (no version
+  churn). Proven on SQLite and on real Postgres (throwaway DB).
+- A full source resync converges a multi-key stranded projection to zero drift
+  when `LIMIT >= live keys`.
