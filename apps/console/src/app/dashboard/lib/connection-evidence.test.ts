@@ -716,6 +716,27 @@ test("summarizeSchedule surfaces backoff when applied", () => {
   assert.equal(out.backoffLabel?.includes("3 consecutive failures"), true);
 });
 
+test("summarizeSchedule labels a source-pressure cooldown without inventing failures", () => {
+  // The cross-run source-pressure cooldown sets `backoff_applied: true` with
+  // `reason_class: "source_pressure"` and `consecutive_failures: 0` (the run
+  // succeeded). The label must not read as "0 consecutive failures."
+  const out = summarizeSchedule(
+    baseSchedule({
+      scheduler_backoff: {
+        backoff_applied: true,
+        consecutive_failures: 0,
+        next_run_at: "2026-05-19T13:00:00Z",
+        reason_class: "source_pressure",
+        recommended_health_state: "cooling_off",
+      },
+    })
+  );
+  assert.ok(out);
+  assert.match(out.backoffLabel ?? "", /source pressure/i);
+  assert.match(out.backoffLabel ?? "", /progress retained/i);
+  assert.doesNotMatch(out.backoffLabel ?? "", /failure/i);
+});
+
 test("summarizeSchedule surfaces ineligibility reason without inventing automation", () => {
   const out = summarizeSchedule(baseSchedule({ ineligibility_reason: "browser_runtime_unavailable" }));
   assert.equal(out?.ineligibilityReason, "browser_runtime_unavailable");
@@ -889,6 +910,31 @@ test("deriveConnectionStatusDisplay: blocked connection surfaces dominant condit
   assert.equal(out.title.includes("Reconnect"), true);
 });
 
+test("deriveConnectionStatusDisplay: source-pressure cooling_off reads as catch-up, never a raw token", () => {
+  const out = deriveConnectionStatusDisplay({
+    hasDurableProgress: true,
+    health: snapshot({ state: "cooling_off", reason_code: "source_pressure" }),
+    localDeviceProgress: null,
+  });
+  assert.equal(out.label, "Cooling off");
+  assert.equal(out.tone, "warning");
+  assert.match(out.title, /source pressure/i);
+  assert.match(out.title, /retain/i);
+  // The internal snake_case token must never leak into operator-facing copy.
+  assert.doesNotMatch(out.title, /source_pressure/);
+  assert.doesNotMatch(out.title, /failure/i);
+});
+
+test("deriveConnectionStatusDisplay: failure-backoff cooling_off keeps the retry-wait copy", () => {
+  const out = deriveConnectionStatusDisplay({
+    hasDurableProgress: true,
+    health: snapshot({ state: "cooling_off", reason_code: "scheduler_backoff_active" }),
+    localDeviceProgress: null,
+  });
+  assert.equal(out.label, "Cooling off");
+  assert.match(out.title, /next retry/i);
+});
+
 test("deriveConnectionStatusDisplay: degraded with partial coverage reads as Partial", () => {
   const out = deriveConnectionStatusDisplay({
     hasDurableProgress: true,
@@ -1039,6 +1085,56 @@ test("cooling_off guidance names the next attempt time when known", () => {
   assert.ok(out);
   assert.equal(out?.tone, "warning");
   assert.match(out?.detail ?? "", COOLING_OFF_NEXT_ATTEMPT_RE);
+});
+
+test("cooling_off with no source-pressure reason still reads as failure backoff", () => {
+  // The default `reason_code` is null (a failure-backoff cooldown), so the copy
+  // must remain the failure-detail framing — not source pressure.
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: snapshot({ state: "cooling_off", next_attempt_at: "2026-05-19T13:00:00Z" }),
+    supportsOwnerSync: true,
+  });
+  assert.ok(out);
+  assert.match(out?.detail ?? "", /failure/i);
+  assert.doesNotMatch(out?.detail ?? "", /source/i);
+});
+
+test("source-pressure cooling_off reads as catching up, not a failure", () => {
+  // ChatGPT's large-history catch-up: the run succeeded but deferred the rest as
+  // resumable gaps under upstream throttling. The reference stamps
+  // `reason_code: "source_pressure"`. The guidance must NOT call this a failure
+  // or "scheduler backoff after recent failures," and must say progress is kept.
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: snapshot({
+      state: "cooling_off",
+      reason_code: "source_pressure",
+      next_attempt_at: "2026-05-19T13:00:00Z",
+    }),
+    supportsOwnerSync: true,
+  });
+  assert.ok(out);
+  assert.equal(out?.tone, "warning");
+  assert.match(out?.detail ?? "", COOLING_OFF_NEXT_ATTEMPT_RE);
+  assert.match(out?.detail ?? "", /throttl|source/i);
+  assert.match(out?.detail ?? "", /retain|catch/i);
+  assert.doesNotMatch(out?.detail ?? "", /failure/i);
+  assert.doesNotMatch(out?.label ?? "", /retry/i);
+});
+
+test("source-pressure cooling_off without a next attempt still reads as catching up", () => {
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: snapshot({ state: "cooling_off", reason_code: "source_pressure", next_attempt_at: null }),
+    supportsOwnerSync: true,
+  });
+  assert.ok(out);
+  assert.match(out?.detail ?? "", /throttl|source/i);
+  assert.doesNotMatch(out?.detail ?? "", /failure/i);
 });
 
 test("degraded+partial coverage routes to a coverage review, not a sync", () => {

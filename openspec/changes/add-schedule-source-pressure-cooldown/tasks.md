@@ -37,6 +37,21 @@
 - [x] Biome check clean on changed reference-implementation files.
 - [x] `openspec validate add-schedule-source-pressure-cooldown --strict`.
 
-## 7. Follow-up gate (owner-only)
+## 7. Console consumption of the cooling-off projection
+
+The reference projection now stamps `reason_class: "source_pressure"` /
+`recommended_health_state: "cooling_off"` (task 3). The operator console renders
+that projection, so the dashboard copy must honor the source-pressure
+distinction — otherwise design.md's "the dashboard's existing `cooling_off` pill
+renders honestly" is only half true: the pill existed, but its copy still read as
+a failure. This closes that last mile at the rendering layer. No contract change.
+
+- [x] `coolingOffGuidance` (`apps/console/src/app/dashboard/lib/connection-evidence.ts`) branches on `health.reason_code === "source_pressure"`: a source-pressure cooldown reads as "Catching up — cooling off … source is throttling … captured progress is retained … resumes at <next>", never "scheduler backoff after recent failures." Failure-backoff `cooling_off` copy is unchanged.
+- [x] `summarizeSchedule` backoff label (same file) renders "Cooling off under source pressure · captured progress retained" for a `reason_class: "source_pressure"` cooldown instead of "Backoff applied (source pressure) · 0 consecutive failures."
+- [x] `deriveConnectionStatusDisplay` cooling-off pill tooltip (same file) reads "Catching up under source pressure — captured progress is retained …" for a source-pressure cooldown and never leaks the raw `source_pressure` token; failure-backoff tooltip unchanged.
+- [x] Console tests: source-pressure `cooling_off` guidance + pill (with/without `next_attempt_at`), failure-backoff `cooling_off` unchanged, no raw-token leak, `summarizeSchedule` source-pressure label (`apps/console/src/app/dashboard/lib/connection-evidence.test.ts`).
+- [x] Cross-layer contract test: a `source_pressure` reasonClass backoff with 0 failures yields `state: "cooling_off"` + `reason_code: "source_pressure"` on the health snapshot the console reads (`reference-implementation/test/connection-health.test.js`).
+
+## 8. Follow-up gate (owner-only)
 
 - [ ] One owner-attended, cold-start ChatGPT scheduled-cadence observation: enable a schedule, let one run record pressure gaps, confirm the next automatic tick defers (cooling-off skip + deferred `next_run_at`) and that a later clean/recovered run resumes the normal cadence. Owner-only live action; the governor behavior is proven deterministically by the tests above.

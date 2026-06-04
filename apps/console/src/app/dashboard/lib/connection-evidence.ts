@@ -694,9 +694,17 @@ export function summarizeSchedule(schedule: RefSchedule | null | undefined): Sch
   const backoff = schedule.scheduler_backoff;
   let backoffLabel: string | null = null;
   if (backoff?.backoff_applied) {
-    const reason = backoff.reason_class ? ` (${backoff.reason_class.replace(/[_-]+/g, " ")})` : "";
-    const failures = backoff.consecutive_failures;
-    backoffLabel = `Backoff applied${reason} · ${failures} consecutive failure${failures === 1 ? "" : "s"}`;
+    if (backoff.reason_class === "source_pressure") {
+      // A cross-run source-pressure cooldown is not a failure streak: the run
+      // succeeded and deferred the rest as resumable gaps under upstream
+      // throttling. Naming "N consecutive failures" here (which is 0) would be
+      // misleading. Describe the cooldown honestly instead.
+      backoffLabel = "Cooling off under source pressure · captured progress retained";
+    } else {
+      const reason = backoff.reason_class ? ` (${backoff.reason_class.replace(/[_-]+/g, " ")})` : "";
+      const failures = backoff.consecutive_failures;
+      backoffLabel = `Backoff applied${reason} · ${failures} consecutive failure${failures === 1 ? "" : "s"}`;
+    }
   }
   return {
     enabled: schedule.enabled,
@@ -741,6 +749,17 @@ export function resolveRecordCountDisplay(overview: ConnectorOverview): RecordCo
     title: `${overview.totalRecords.toLocaleString()} records ingested`,
   };
 }
+
+/**
+ * The reason code the reference projects onto a `cooling_off` connection when
+ * the pause is a cross-run **source-pressure cooldown** (the scheduler is
+ * deferring the next automatic attempt because the connection still has pending
+ * retryable source-pressure detail gaps), not a failure streak. It is the
+ * `reason_class` the reference's `mergeBackoffAndCooldown` stamps when the
+ * cooldown governor — not failure back-off — is the sole driver. Connector-
+ * agnostic: any connector that defers work under upstream pressure surfaces it.
+ */
+const SOURCE_PRESSURE_REASON_CODE = "source_pressure";
 
 /**
  * Owner-facing pill for the records row.
@@ -806,13 +825,22 @@ export function deriveConnectionStatusDisplay(input: {
         title: dominant ?? `Owner action required${reason}.`,
         tone: "warning",
       };
-    case "cooling_off":
+    case "cooling_off": {
+      // A source-pressure cooldown is not a retry of a failed run: the run
+      // succeeded and is catching up under throttling. Keep the raw
+      // `source_pressure` token out of the tooltip and frame it as catch-up,
+      // not failure. Failure-backoff cooling-off keeps its existing copy.
+      const coolingTitle =
+        health.reason_code === SOURCE_PRESSURE_REASON_CODE
+          ? "Catching up under source pressure — captured progress is retained and the next attempt is spaced out."
+          : `Waiting before the next retry${reason}.`;
       return {
         label: "Cooling off",
         shape: "diamond",
-        title: dominant ?? `Waiting before the next retry${reason}.`,
+        title: dominant ?? coolingTitle,
         tone: "warning",
       };
+    }
     case "blocked":
       return {
         label: "Blocked",
@@ -966,6 +994,43 @@ function staleFreshnessGuidance(supportsOwnerSync: boolean): NextStepGuidance {
   };
 }
 
+/**
+ * Guidance for the `cooling_off` state.
+ *
+ * Two different governors can put a connection in `cooling_off`:
+ *   1. failure back-off after one or more failed runs, and
+ *   2. the cross-run source-pressure cooldown — a run that *succeeded* but
+ *      deferred the remaining work as resumable gaps under upstream throttling
+ *      (e.g. a large ChatGPT history being caught up slowly).
+ *
+ * These read very differently to an owner. Calling a source-pressure pause
+ * "scheduler backoff after recent failures" is misleading: nothing failed, the
+ * captured progress is retained, and the connection will resume on its own. The
+ * reference distinguishes the two via `reason_code`, so the copy honours that —
+ * source pressure reads as "cooling off, will resume, progress retained," not
+ * "broken." Pure and JSX-free so it stays unit-testable without a browser.
+ */
+function coolingOffGuidance(health: RefConnectionHealthSnapshot): NextStepGuidance {
+  if (health.reason_code === SOURCE_PRESSURE_REASON_CODE) {
+    return {
+      label: "Catching up — cooling off",
+      detail: health.next_attempt_at
+        ? `The source is throttling this connection, so the scheduler is spacing out automatic attempts; the captured progress is retained and it resumes at ${health.next_attempt_at}. Open the connection to see how much is left to catch up.`
+        : "The source is throttling this connection, so the scheduler is spacing out automatic attempts. The captured progress is retained and it resumes on the next scheduled attempt. Open the connection to see how much is left to catch up.",
+      scale: null,
+      tone: "warning",
+    };
+  }
+  return {
+    label: "Wait for the next retry",
+    detail: health.next_attempt_at
+      ? `In scheduler backoff after recent failures; the next automatic attempt is at ${health.next_attempt_at}. Open the connection to see the failure detail.`
+      : "In scheduler backoff after recent failures. Open the connection to see the failure detail and the next attempt time.",
+    scale: null,
+    tone: "warning",
+  };
+}
+
 /** Guidance for the `degraded` state, split by which axis is degraded. */
 function degradedGuidance(health: RefConnectionHealthSnapshot, supportsOwnerSync: boolean): NextStepGuidance {
   if (health.axes.coverage === "gaps" || health.axes.coverage === "partial") {
@@ -1057,14 +1122,7 @@ export function deriveConnectionNextStep(input: {
             tone: "warning",
           };
     case "cooling_off":
-      return {
-        label: "Wait for the next retry",
-        detail: health.next_attempt_at
-          ? `In scheduler backoff after recent failures; the next automatic attempt is at ${health.next_attempt_at}. Open the connection to see the failure detail.`
-          : "In scheduler backoff after recent failures. Open the connection to see the failure detail and the next attempt time.",
-        scale: null,
-        tone: "warning",
-      };
+      return coolingOffGuidance(health);
     case "degraded":
       return degradedGuidance(health, supportsOwnerSync);
     default:

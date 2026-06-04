@@ -243,6 +243,24 @@ test('cooling_off: backoffApplied with sub-threshold streak', () => {
   assert.equal(snap.next_attempt_at, '2026-05-19T01:00:00.000Z');
 });
 
+test('cooling_off: source-pressure cooldown surfaces reason_code source_pressure (no failures)', () => {
+  // Cross-run source-pressure cooldown: the run SUCCEEDED but deferred work
+  // under throttling. The merged backoff carries reasonClass "source_pressure"
+  // with zero consecutive failures. The health snapshot must surface
+  // reason_code: "source_pressure" so the console can render it as catch-up
+  // rather than a failure backoff. This is the cross-layer contract the
+  // operator console's cooling-off copy depends on.
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ latestStatus: 'succeeded' }),
+      backoff: backoff({ consecutiveFailures: 0, reasonClass: 'source_pressure' }),
+    })
+  );
+  assert.equal(snap.state, 'cooling_off');
+  assert.equal(snap.reason_code, 'source_pressure');
+  assert.equal(snap.next_attempt_at, '2026-05-19T01:00:00.000Z');
+});
+
 test('cooling_off: expired retry backoff is not current blocking evidence', () => {
   const snap = computeConnectionHealth(
     input({
