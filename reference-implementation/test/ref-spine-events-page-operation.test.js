@@ -216,6 +216,68 @@ test('ref.spine.events.page leaves non-bearer events untouched', () => {
   assert.equal(envelope.data[0].object_id, 'plain');
 });
 
+test('ref.spine.events.page threads terminal_status onto the run envelope', () => {
+  const envelope = executeRefSpineEventsPage({
+    kind: 'run',
+    id: 'run_term',
+    cursor: null,
+    page: { events: [makeEvent({ run_id: 'run_term' })], truncated: false, next_cursor: null, limit: 10 },
+    terminalStatus: 'cancelled',
+  });
+  assert.equal(envelope.object, 'run_timeline');
+  assert.equal(envelope.terminal_status, 'cancelled');
+});
+
+test('ref.spine.events.page run envelope reports terminal_status null when none supplied', () => {
+  const envelope = executeRefSpineEventsPage({
+    kind: 'run',
+    id: 'run_active',
+    cursor: null,
+    page: { events: [makeEvent({ run_id: 'run_active' })], truncated: false, next_cursor: null, limit: 10 },
+  });
+  assert.equal(envelope.terminal_status, null);
+});
+
+test('ref.spine.events.page terminal_status is window-independent of the page contents', () => {
+  // The terminal class is whatever the host resolved, regardless of whether
+  // the page window contains the terminal event. Here the page carries only
+  // non-terminal events yet the envelope reports the run as completed.
+  const envelope = executeRefSpineEventsPage({
+    kind: 'run',
+    id: 'run_long',
+    cursor: 'page_2_cursor',
+    page: {
+      events: [makeEvent({ event_type: 'run.detail_gap_recorded', run_id: 'run_long' })],
+      truncated: true,
+      next_cursor: 'next',
+      limit: 1,
+    },
+    terminalStatus: 'completed',
+  });
+  assert.equal(envelope.terminal_status, 'completed');
+});
+
+test('ref.spine.events.page forces terminal_status null for trace/grant kinds', () => {
+  const traceEnvelope = executeRefSpineEventsPage({
+    kind: 'trace',
+    id: 'trc_1',
+    cursor: null,
+    page: { events: [makeEvent()], truncated: false, next_cursor: null, limit: 10 },
+    // A host MUST NOT supply this for non-run kinds; even if it leaks in, the
+    // operation forces null (terminal status is a run concept).
+    terminalStatus: 'failed',
+  });
+  assert.equal(traceEnvelope.terminal_status, null);
+
+  const grantEnvelope = executeRefSpineEventsPage({
+    kind: 'grant',
+    id: 'grt_1',
+    cursor: null,
+    page: { events: [], truncated: false, next_cursor: null, limit: 10 },
+  });
+  assert.equal(grantEnvelope.terminal_status, null);
+});
+
 test('redactSpineEventForPublic is independently testable', () => {
   const redacted = redactSpineEventForPublic({
     object_type: 'token',

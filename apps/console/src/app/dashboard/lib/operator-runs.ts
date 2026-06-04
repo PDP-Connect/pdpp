@@ -1,5 +1,8 @@
+import { type CancelRunResult, cancelRunErrorCode, classifyCancelRunResponse } from "./cancel-run-result.ts";
 import { describeError } from "./describe-error.ts";
 import { getAsInternalUrl, ReferenceServerUnreachableError, withOwnerSessionCookie } from "./owner-token.ts";
+
+export type { CancelRunOutcome, CancelRunResult } from "./cancel-run-result.ts";
 
 const DURATION_RE = /^(\d+)(s|m|h|d)?$/i;
 
@@ -324,6 +327,37 @@ export async function reportRunInteractionStreamReachFailure(
     const body = await readBody(response);
     throw new Error(describeError(body, `report stream reach failure failed (${response.status})`));
   }
+}
+
+/**
+ * Owner-cancel a single active run via the owner-session reference route
+ * `POST /_ref/runs/:runId/cancel` (shipped with
+ * `add-owner-run-cancellation-control`). The owner-session cookie is attached
+ * by `fetchAs`/`withOwnerSessionCookie`, matching the route's
+ * `requireOwnerSession` gate.
+ *
+ * The route is non-destructive: it terminals only the named run as
+ * `run.cancelled` and preserves already-collected records, the connection's
+ * schedule, grants, and configuration. This wrapper does NOT change that — it
+ * only requests the cancellation and maps the three documented outcomes to a
+ * typed result so the caller can render outcome-specific copy instead of a
+ * generic throw:
+ *   - `202` → `cancel_requested`
+ *   - `404 no_active_run` → `no_active_run` (run is no longer active)
+ *   - `409 run_already_terminal` → `run_already_terminal` (raced to terminal)
+ *
+ * `ReferenceServerUnreachableError` (thrown by `fetchAs`) propagates unchanged,
+ * exactly as the other run helpers leave it. Any other non-2xx status throws a
+ * described error like the sibling helpers. The pure `(status, body, code)` →
+ * outcome mapping lives in `cancel-run-result.ts` so it can be unit tested
+ * under `node --test` without the server-only fetch helpers.
+ */
+export async function cancelRun(runId: string): Promise<CancelRunResult> {
+  const response = await fetchAs(`/_ref/runs/${encodeURIComponent(runId)}/cancel`, {
+    method: "POST",
+  });
+  const body = await readBody(response);
+  return classifyCancelRunResponse(response.status, body, cancelRunErrorCode(body));
 }
 
 export async function deleteConnectorSchedule(connectorId: string) {

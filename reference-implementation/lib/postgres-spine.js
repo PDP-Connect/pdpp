@@ -195,6 +195,24 @@ async function hasPostgresActiveRunLease(runId) {
   return result.rows.length > 0;
 }
 
+// Postgres mirror of `queries/spine/get-run-terminal-event.sql`: the run's
+// most-recent terminal event (`ORDER BY event_seq DESC LIMIT 1`) over the
+// terminal event types, or `null` when the run has no terminal event. The
+// `LIMIT 1` keeps this independent of the run's event count — it never
+// scans the full event list and never depends on a timeline page window.
+export async function postgresGetRunTerminalEvent(runId) {
+  if (!runId) return null;
+  const result = await postgresQuery(
+    `SELECT event_type, status, data_json::text AS data_json, occurred_at
+     FROM spine_events
+     WHERE run_id = $1 AND event_type = ANY($2::text[])
+     ORDER BY event_seq DESC
+     LIMIT 1`,
+    [runId, RUN_TERMINAL_EVENT_TYPE_LIST],
+  );
+  return result.rows[0] ?? null;
+}
+
 async function summarizeRows(id, rows, aggregate = {}) {
   const events = rows.map(hydrate).filter(Boolean);
   const first = events[0] || {};
