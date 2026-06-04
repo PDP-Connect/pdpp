@@ -532,6 +532,49 @@ function gatherSqliteEvidence(db, id) {
   return { zeroData, grantStorageBindingRefs, grantStreamPinRefs, grantPackageMemberRefs, activity };
 }
 
+// Cap on the off-owner diagnostic rows enumerated in the report. The diagnostic
+// is bounded so a pathological multi-owner table cannot balloon the output; if
+// the cap is hit, the report says so (no-silent-caps rule). The COUNT is always
+// exact regardless of this cap.
+const OFF_OWNER_SAMPLE_LIMIT = 100;
+
+/**
+ * Off-owner diagnostic for SQLite. This cleanup scans exactly ONE owner
+ * (`ownerSubjectId`); a `connector_instances` row belonging to any OTHER subject
+ * is structurally invisible to the scan. In a single-owner reference deployment
+ * such a row is orphaned residue (e.g. a stray seed/migration subject), but the
+ * tool must never silently pretend the table is fully covered. So we count and
+ * sample the off-owner rows and surface them — WITHOUT evaluating or touching
+ * them. The operator decides whether to re-run scoped to that subject
+ * (`PDPP_OWNER_SUBJECT_ID=<subject> ...`). Pure read-only.
+ */
+function offOwnerDiagnosticSqlite(db, ownerSubjectId) {
+  if (!sqliteTableExists(db, 'connector_instances')) {
+    return { count: 0, truncated: false, rows: [] };
+  }
+  const count = sqliteCountRows(
+    db,
+    `SELECT COUNT(*) AS c FROM connector_instances WHERE owner_subject_id IS NOT NULL AND owner_subject_id <> ?`,
+    [ownerSubjectId],
+  );
+  const rows = db
+    .prepare(
+      `SELECT owner_subject_id, connector_id, connector_instance_id, status
+         FROM connector_instances
+        WHERE owner_subject_id IS NOT NULL AND owner_subject_id <> ?
+        ORDER BY owner_subject_id ASC, connector_id ASC, connector_instance_id ASC
+        LIMIT ?`,
+    )
+    .all(ownerSubjectId, OFF_OWNER_SAMPLE_LIMIT)
+    .map((r) => ({
+      owner_subject_id: r.owner_subject_id,
+      connector_id: r.connector_id,
+      connector_instance_id: r.connector_instance_id,
+      status: r.status,
+    }));
+  return { count, truncated: count > rows.length, rows };
+}
+
 /**
  * Evaluate the safety predicate for one instance row against an open SQLite db.
  * Returns { candidate: boolean, reasons: string[], notes: string[] }. Pure
@@ -561,6 +604,7 @@ export function planCleanup({ ownerSubjectId = OWNER_AUTH_DEFAULT_SUBJECT_ID } =
     instances,
     (instance) => evaluated.get(instance.connectorInstanceId).reasons,
     (instance) => evaluated.get(instance.connectorInstanceId).notes,
+    offOwnerDiagnosticSqlite(db, ownerSubjectId),
   );
 }
 
@@ -728,6 +772,42 @@ async function listOwnerInstancesPg(runner, ownerSubjectId, { limit = 5000 } = {
 }
 
 /**
+ * Off-owner diagnostic for Postgres (async sibling of
+ * `offOwnerDiagnosticSqlite`). Counts and samples `connector_instances` rows
+ * belonging to a subject OTHER than the one this scan targets, so a row that the
+ * single-owner scope makes structurally invisible is still surfaced to the
+ * operator rather than silently uncovered. Read-only; never evaluated or
+ * touched. Runs on the same non-bootstrapping pool as the scan, so a missing
+ * `connector_instances` table reports zero off-owner rows rather than creating
+ * the table.
+ */
+async function offOwnerDiagnosticPg(runner, ownerSubjectId) {
+  if (!(await pgTableExists(runner, 'connector_instances'))) {
+    return { count: 0, truncated: false, rows: [] };
+  }
+  const count = await pgCount(
+    runner,
+    `SELECT COUNT(*) AS c FROM connector_instances WHERE owner_subject_id IS NOT NULL AND owner_subject_id <> $1`,
+    [ownerSubjectId],
+  );
+  const r = await runner.query(
+    `SELECT owner_subject_id, connector_id, connector_instance_id, status
+       FROM connector_instances
+      WHERE owner_subject_id IS NOT NULL AND owner_subject_id <> $1
+      ORDER BY owner_subject_id ASC, connector_id ASC, connector_instance_id ASC
+      LIMIT $2`,
+    [ownerSubjectId, OFF_OWNER_SAMPLE_LIMIT],
+  );
+  const rows = r.rows.map((row) => ({
+    owner_subject_id: row.owner_subject_id,
+    connector_id: row.connector_id,
+    connector_instance_id: row.connector_instance_id,
+    status: row.status,
+  }));
+  return { count, truncated: count > rows.length, rows };
+}
+
+/**
  * Evaluate the safety predicate for one instance row against a Postgres
  * query-runner (Pool or transaction Client). Async sibling of
  * `evaluateInstance`. Pure read-only. Exported for testing.
@@ -751,11 +831,13 @@ export async function planCleanupPg({ pool, runner, ownerSubjectId = OWNER_AUTH_
   for (const instance of instances) {
     evaluated.set(instance.connectorInstanceId, await evaluateInstancePg(queryRunner, instance));
   }
+  const otherOwners = await offOwnerDiagnosticPg(queryRunner, ownerSubjectId);
   return buildPlan(
     ownerSubjectId,
     instances,
     (instance) => evaluated.get(instance.connectorInstanceId).reasons,
     (instance) => evaluated.get(instance.connectorInstanceId).notes,
+    otherOwners,
   );
 }
 
@@ -852,7 +934,13 @@ export async function applyRevokePg({ pool, runner, candidates, now = new Date()
 
 // ─── Shared plan/printing ────────────────────────────────────────────────────
 
-function buildPlan(ownerSubjectId, instances, reasonsFor, notesFor = () => []) {
+function buildPlan(
+  ownerSubjectId,
+  instances,
+  reasonsFor,
+  notesFor = () => [],
+  otherOwners = { count: 0, truncated: false, rows: [] },
+) {
   const candidates = [];
   const skipped = [];
   for (const instance of instances) {
@@ -872,15 +960,17 @@ function buildPlan(ownerSubjectId, instances, reasonsFor, notesFor = () => []) {
       skipped.push({ ...entry, reasons });
     }
   }
-  return { ownerSubjectId, scanned: instances.length, candidates, skipped };
+  return { ownerSubjectId, scanned: instances.length, candidates, skipped, otherOwners };
 }
 
 function printHuman(plan, { apply, revoked, skippedAtApply }) {
   const lines = [];
+  const otherOwners = plan.otherOwners || { count: 0, truncated: false, rows: [] };
   lines.push(`owner_subject_id: ${plan.ownerSubjectId}`);
   lines.push(`scanned_connections: ${plan.scanned}`);
   lines.push(`phantom_candidates: ${plan.candidates.length}`);
   lines.push(`skipped: ${plan.skipped.length}`);
+  lines.push(`other_owner_connections: ${otherOwners.count}`);
   lines.push('');
   if (plan.candidates.length > 0) {
     lines.push(apply ? 'REVOKED phantom default-account connections:' : 'WOULD REVOKE (dry-run) phantom default-account connections:');
@@ -905,6 +995,26 @@ function printHuman(plan, { apply, revoked, skippedAtApply }) {
     }
     lines.push('');
   }
+  if (otherOwners.count > 0) {
+    lines.push(
+      `Other-owner connections (NOT scanned — this run targets owner_subject_id='${plan.ownerSubjectId}' only):`,
+    );
+    for (const r of otherOwners.rows) {
+      lines.push(
+        `  - ${r.connector_instance_id}  owner=${r.owner_subject_id}  connector=${r.connector_id}  status=${r.status}`,
+      );
+    }
+    if (otherOwners.truncated) {
+      lines.push(`  ... and ${otherOwners.count - otherOwners.rows.length} more (showing first ${otherOwners.rows.length}).`);
+    }
+    lines.push(
+      "  These rows belong to another subject and are left untouched. In a single-owner reference deployment they are",
+    );
+    lines.push(
+      '  orphaned residue; re-run scoped to that subject to evaluate them: PDPP_OWNER_SUBJECT_ID=<subject> <command>.',
+    );
+    lines.push('');
+  }
   if (apply) {
     lines.push(
       `applied: revoked ${revoked.length} connection(s)` +
@@ -926,6 +1036,7 @@ function emit(plan, { apply, json, revoked, skippedAtApply }) {
           scanned: plan.scanned,
           candidates: plan.candidates,
           skipped: plan.skipped,
+          other_owner_connections: plan.otherOwners || { count: 0, truncated: false, rows: [] },
           revoked,
           skipped_at_apply: skippedAtApply,
         },

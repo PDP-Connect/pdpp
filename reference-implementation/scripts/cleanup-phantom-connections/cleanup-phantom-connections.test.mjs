@@ -1039,6 +1039,88 @@ test('reasonsFromEvidence: a MISSING grants table fails closed for the stream-pi
   assert.equal(missingCount, 1, `grants-table-missing should be emitted exactly once, got ${reasons.join(',')}`);
 });
 
+// ─── Off-owner diagnostic ────────────────────────────────────────────────────
+//
+// The scan targets exactly ONE owner_subject_id. A connector_instances row owned
+// by a DIFFERENT subject (e.g. a stray seed/migration subject in a single-owner
+// reference deployment) is structurally invisible to the scan. It must never be
+// silently uncovered: planCleanup surfaces it under `otherOwners` (count + sample)
+// WITHOUT scanning, evaluating, or revoking it.
+
+test(
+  'off-owner diagnostic: a row owned by another subject is surfaced (not scanned, not a candidate, not skipped, untouched on apply)',
+  withDb(async () => {
+    await registerConnector(listedManifest);
+
+    // The owner's own phantom — a normal in-scope candidate.
+    const ownPhantom = seedPhantom();
+
+    // A row owned by a DIFFERENT subject. Build it directly so its
+    // owner_subject_id differs from the scan owner.
+    const otherOwner = 'owner_other_subject';
+    const store = createSqliteConnectorInstanceStore();
+    const otherInstance = store.upsert({
+      connectorInstanceId: 'cin_offowner000000000000000',
+      ownerSubjectId: otherOwner,
+      connectorId: CONNECTOR_ID,
+      displayName: 'Reddit',
+      status: 'active',
+      sourceKind: 'account',
+      sourceBindingKey: 'default',
+      sourceBinding: { kind: 'default_account' },
+      createdAt: '2026-05-15T12:00:00.000Z',
+      updatedAt: '2026-05-15T12:00:00.000Z',
+    });
+    const otherId = otherInstance.connectorInstanceId;
+
+    const plan = planCleanup({ ownerSubjectId: OWNER });
+
+    // The owner's phantom is the ONLY in-scope candidate.
+    assert.equal(plan.candidates.length, 1, 'only the in-scope phantom is a candidate');
+    assert.equal(plan.candidates[0].connector_instance_id, ownPhantom);
+
+    // The off-owner row is NOT in the scanned sets at all.
+    assert.equal(plan.scanned, 1, 'only the in-scope owner row was scanned');
+    assert.ok(
+      !plan.candidates.some((c) => c.connector_instance_id === otherId),
+      'off-owner row is never a candidate',
+    );
+    assert.ok(
+      !plan.skipped.some((s) => s.connector_instance_id === otherId),
+      'off-owner row is never in the skipped (scanned-but-refused) set',
+    );
+
+    // It IS surfaced under the off-owner diagnostic.
+    assert.equal(plan.otherOwners.count, 1, 'one off-owner connection counted');
+    assert.equal(plan.otherOwners.truncated, false);
+    assert.equal(plan.otherOwners.rows.length, 1);
+    assert.deepEqual(plan.otherOwners.rows[0], {
+      owner_subject_id: otherOwner,
+      connector_id: CONNECTOR_ID,
+      connector_instance_id: otherId,
+      status: 'active',
+    });
+
+    // Applying the plan revokes ONLY the in-scope phantom; the off-owner row is
+    // left completely untouched (the scan never even produced it as a candidate).
+    applyRevoke(plan.candidates);
+    assert.equal(getInstance(ownPhantom).status, 'revoked', 'in-scope phantom revoked');
+    assert.equal(getInstance(otherId).status, 'active', 'off-owner row untouched');
+  }),
+);
+
+test(
+  'off-owner diagnostic: zero off-owner rows reports a clean empty diagnostic',
+  withDb(async () => {
+    await registerConnector(listedManifest);
+    seedPhantom();
+    const plan = planCleanup({ ownerSubjectId: OWNER });
+    assert.equal(plan.otherOwners.count, 0);
+    assert.equal(plan.otherOwners.truncated, false);
+    assert.deepEqual(plan.otherOwners.rows, []);
+  }),
+);
+
 // ─── Import-safety regression ────────────────────────────────────────────────
 //
 // Mirrors `compact-record-history-dry-run-all.test.js`'s `node -e import(...)`
@@ -1485,6 +1567,55 @@ if (!POSTGRES_URL) {
       assert.ok(reasons.includes('P1:not-default-account-provenance'));
       const plan = await planCleanupPg({ pool, ownerSubjectId: owner });
       assert.equal(plan.candidates.length, 0);
+    });
+  });
+
+  test('Postgres off-owner diagnostic: a row owned by another subject is surfaced, not scanned, not revoked', async () => {
+    await withPg(async ({ pool, owner }) => {
+      // The in-scope phantom for `owner`.
+      const ownPhantom = await seedPgPhantom(pool, owner);
+
+      // A row owned by a DIFFERENT subject (same connector FK target).
+      const otherOwner = `${owner}_other`;
+      const otherId = 'cin_pgoffowner0000000000000';
+      await pool.query(
+        `INSERT INTO connector_instances
+           (connector_instance_id, owner_subject_id, connector_id, display_name, status,
+            source_kind, source_binding_key, source_binding_json, created_at, updated_at)
+         VALUES($1, $2, $3, $4, 'active', 'account', 'default', $5::jsonb, $6, $6)`,
+        [otherId, otherOwner, PG_CONNECTOR_ID, 'Reddit', JSON.stringify({ kind: 'default_account' }), '2026-05-15T12:00:00.000Z'],
+      );
+      try {
+        const plan = await planCleanupPg({ pool, ownerSubjectId: owner });
+
+        // Only the in-scope phantom is scanned + a candidate.
+        assert.equal(plan.candidates.length, 1, 'only the in-scope phantom is a candidate');
+        assert.equal(plan.candidates[0].connector_instance_id, ownPhantom);
+        assert.ok(
+          !plan.candidates.some((c) => c.connector_instance_id === otherId),
+          'off-owner row is never a candidate',
+        );
+        assert.ok(
+          !plan.skipped.some((s) => s.connector_instance_id === otherId),
+          'off-owner row is never in the scanned skipped set',
+        );
+
+        // It IS surfaced under the off-owner diagnostic.
+        assert.equal(plan.otherOwners.count, 1, 'one off-owner connection counted');
+        const surfaced = plan.otherOwners.rows.find((r) => r.connector_instance_id === otherId);
+        assert.ok(surfaced, 'off-owner row appears in the diagnostic sample');
+        assert.equal(surfaced.owner_subject_id, otherOwner);
+        assert.equal(surfaced.status, 'active');
+
+        // Applying revokes only the in-scope phantom; the off-owner row is untouched.
+        await applyRevokePg({ pool, candidates: plan.candidates });
+        const store = createPostgresConnectorInstanceStore();
+        assert.equal((await store.get(ownPhantom)).status, 'revoked', 'in-scope phantom revoked');
+        assert.equal((await store.get(otherId)).status, 'active', 'off-owner row untouched');
+      } finally {
+        // Scoped teardown only covers `owner`; remove the other-owner row too.
+        await pool.query(`DELETE FROM connector_instances WHERE connector_instance_id = $1`, [otherId]);
+      }
     });
   });
 
