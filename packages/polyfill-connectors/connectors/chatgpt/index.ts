@@ -158,6 +158,83 @@ const CHATGPT_LONG_SLEEP_PROGRESS_THRESHOLD_MS = 5000;
 // A 429 that DOES carry `Retry-After`, and 502/503/504, keep the full budget:
 // those are honest, server-bounded waits we should respect, not blind hammering.
 const CHATGPT_BARE_429_FAST_OPEN_ATTEMPTS = 3;
+
+// ─── Cumulative 429-density early-stop ───────────────────────────────────
+//
+// The existing upstream-pressure circuit (observedRecoverablePressure) only
+// opens when a SINGLE conversation exhausts its retry budget (a thrown
+// ChatGptRecoverableRetryExhaustedError). That catches the hard-throttled
+// case, but NOT the slow-bleed case the 2026-06-02 429-efficiency audit
+// measured: an account that serves a 429, honors a Retry-After, then SUCCEEDS
+// — over and over. Each conversation "succeeds", so nothing ever throws, yet
+// the run pays ~30–50s of served backoff per conversation and can grind for
+// hours against a pressured account before finishing (or before a later
+// conversation finally exhausts).
+//
+// This density stop counts served 429s ACROSS the run (each one already
+// surfaces to the detail lane as a `rate_limited` cooldown event). Once the
+// cumulative count crosses a conservative threshold, we open the SAME defer
+// circuit the exhaustion path uses: the remaining tail is emitted as resumable
+// DETAIL_GAP records (reason "upstream_pressure"), the cursor still commits the
+// hydrated prefix, and the run exits the hot bucket instead of hammering it for
+// hours. It can only ever make a pressured run defer EARLIER — never retry more
+// — so it is strictly safer than today's behavior.
+//
+// Default 8: at the measured ~30–50s per served 429 that is ~4–7 min of
+// cumulative honored backoff — enough to ride out a brief blip, far short of
+// the multi-hour grind. Owner-tunable via env; set to 0 (or any value < 1) to
+// disable the density stop entirely and fall back to exhaustion-only behavior.
+const CHATGPT_RATE_LIMIT_DENSITY_STOP_DEFAULT = 8;
+const CHATGPT_RATE_LIMIT_DENSITY_STOP_ENV = "PDPP_CHATGPT_DETAIL_RATE_LIMIT_STOP_AFTER";
+
+/**
+ * Resolve the cumulative served-429 count after which the detail lane defers
+ * the remaining conversation tail as upstream_pressure DETAIL_GAP records.
+ * Unset/invalid → the conservative default. An explicit value < 1 disables the
+ * density stop (returns Infinity), preserving exhaustion-only behavior.
+ */
+export function resolveChatGptRateLimitDensityStop(env: NodeJS.ProcessEnv = process.env): number {
+  const trimmed = env[CHATGPT_RATE_LIMIT_DENSITY_STOP_ENV]?.trim();
+  if (trimmed == null || trimmed === "") {
+    return CHATGPT_RATE_LIMIT_DENSITY_STOP_DEFAULT;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed)) {
+    return CHATGPT_RATE_LIMIT_DENSITY_STOP_DEFAULT;
+  }
+  // An explicit non-positive value is the documented disable escape hatch.
+  return parsed < 1 ? Number.POSITIVE_INFINITY : parsed;
+}
+
+/**
+ * Tiny run-scoped accumulator for served 429s. Pure and lane-agnostic so the
+ * stop decision is unit-testable without standing up the adaptive lane: feed it
+ * the lane's `rate_limited` cooldown events, ask `shouldStop()` before each
+ * launch. `threshold` of Infinity (the disable sentinel) never trips.
+ */
+export class ChatGptRateLimitDensityTracker {
+  private rateLimitedCount = 0;
+  readonly threshold: number;
+
+  constructor(threshold: number) {
+    this.threshold = threshold;
+  }
+
+  /** Record one served 429 (a `rate_limited` cooldown reported by the lane). */
+  recordRateLimited(): void {
+    this.rateLimitedCount += 1;
+  }
+
+  get count(): number {
+    return this.rateLimitedCount;
+  }
+
+  /** True once cumulative served 429s have reached the stop threshold. */
+  shouldStop(): boolean {
+    return this.rateLimitedCount >= this.threshold;
+  }
+}
+
 export const CHATGPT_RETRYABLE_ERROR_PATTERN = /ECONN|ETIMEDOUT|fetch failed|429|retry budget exhausted/i;
 const CHATGPT_BACKEND_FETCH_TIMEOUT_ENV = "PDPP_CHATGPT_BACKEND_FETCH_TIMEOUT_MS";
 const CHATGPT_BACKEND_FETCH_TIMEOUT_MS = 45_000;
@@ -1425,6 +1502,11 @@ export async function applyChatGptColdStatePreflight(
 }
 
 interface ConversationDetailPacingOptions {
+  // Cumulative served-429 count after which the lane defers the remaining tail
+  // as upstream_pressure DETAIL_GAP records. Defaults to
+  // resolveChatGptRateLimitDensityStop(); tests inject a small value to exercise
+  // the trip without standing up real backoff.
+  densityStopThreshold?: number;
   random?: () => number;
   sleep?: (ms: number) => Promise<void> | void;
   tuning?: ChatGptDetailLaneTuning;
@@ -1575,6 +1657,27 @@ function makeDeferredConversationDetailGap(
   };
 }
 
+/**
+ * Synthesize the same recoverable-pressure error the per-conversation
+ * exhaustion path throws, so a cumulative-429-density trip opens the EXISTING
+ * upstream-pressure defer circuit (and emits identical DETAIL_GAP shapes)
+ * rather than introducing a parallel deferral mechanism. No HTTP status: the
+ * trip is a run-level density signal, not a single bad response.
+ */
+function makeRateLimitDensityPressureError(observedRateLimited: number): ChatGptRecoverableRetryExhaustedError {
+  return new ChatGptRecoverableRetryExhaustedError(
+    `ChatGPT conversation-detail lane observed ${observedRateLimited} served 429s; deferring remaining details to avoid grinding a pressured account`,
+    {
+      class: "upstream_pressure",
+      networkPressure: {
+        endpoint_route: "/conversation/{id}",
+        error_class: "rate_limit_density",
+        method: "GET",
+      },
+    }
+  );
+}
+
 function makeConversationDetailCoverage(
   convosToSync: ConversationListItem[],
   coverage: ConversationDetailCoverage
@@ -1616,6 +1719,14 @@ export async function runMessagesAndConversationsWithDetail(
   // never fired into a hot bucket.
   const tuning = await applyChatGptColdStatePreflight(deps, convosToSync, requestedTuning);
   const coverage: ConversationDetailCoverage = { gapKeys: [], hydratedKeys: [] };
+  // Cumulative served-429 early-stop. Each `rate_limited` cooldown the lane
+  // surfaces (one per served 429, success-after-backoff included) bumps the
+  // tracker; once it crosses threshold we open the same upstream-pressure
+  // circuit the per-conversation exhaustion path uses. Strictly safer: it can
+  // only defer the tail earlier, never add requests.
+  const densityTracker = new ChatGptRateLimitDensityTracker(
+    pacing.densityStopThreshold ?? resolveChatGptRateLimitDensityStop()
+  );
   let emittedConversationDetailLaneStart = false;
   const lane = createAdaptiveLane<ChatGptFetchResult>({
     name: "chatgpt.conversationDetail",
@@ -1642,6 +1753,12 @@ export async function runMessagesAndConversationsWithDetail(
     random,
     sleep,
     emitProgress: (event) => {
+      // A `cooldown` event with a `rate_limited` outcome is the lane surfacing a
+      // served 429 (reported by the per-request onRetry, whether or not the
+      // request later succeeds). Count it for the cumulative density stop.
+      if (event.type === "cooldown" && event.outcome === "rate_limited") {
+        densityTracker.recordRateLimited();
+      }
       if (event.type === "started") {
         if (emittedConversationDetailLaneStart) {
           return;
@@ -1664,6 +1781,23 @@ export async function runMessagesAndConversationsWithDetail(
       return { status: 404, json: null };
     }
     if (observedRecoverablePressure) {
+      await deps.emit(makeDeferredConversationDetailGap(c, observedRecoverablePressure));
+      coverage.gapKeys.push(c.id);
+      return { deferredDueToPressure: true, status: 0, json: null };
+    }
+    // Cumulative 429-density trip. If the run has already absorbed enough served
+    // 429s, stop launching new detail fetches into the pressured account: open
+    // the upstream-pressure circuit so this and every later conversation defer
+    // as resumable DETAIL_GAP records. Catches the slow-bleed "succeeds after
+    // backoff, over and over, for hours" regime the exhaustion-only circuit
+    // never trips on.
+    if (densityTracker.shouldStop()) {
+      observedRecoverablePressure = makeRateLimitDensityPressureError(densityTracker.count);
+      await deps.emit({
+        type: "PROGRESS",
+        stream: "messages",
+        message: `ChatGPT conversation-detail lane opened upstream-pressure circuit after ${densityTracker.count} served 429s; deferring remaining conversation details as DETAIL_GAP records`,
+      });
       await deps.emit(makeDeferredConversationDetailGap(c, observedRecoverablePressure));
       coverage.gapKeys.push(c.id);
       return { deferredDueToPressure: true, status: 0, json: null };

@@ -55,12 +55,14 @@ import {
   applyChatGptColdStatePreflight,
   CHATGPT_RETRYABLE_ERROR_PATTERN,
   type ChatGptDetailLaneTuning,
+  ChatGptRateLimitDensityTracker,
   ChatGptRecoverableRetryExhaustedError,
   chatGptBackendFetchInBrowser,
   classifyChatGptSourcePressure,
   processConversationDetail,
   resolveChatGptBackendFetchTimeoutMs,
   resolveChatGptDetailLaneTuning,
+  resolveChatGptRateLimitDensityStop,
   runConversationsAndMessagesStreams,
   runCustomGptsStream,
   runCustomInstructionsStream,
@@ -211,6 +213,53 @@ test("resolveChatGptDetailLaneTuning falls back to the frozen default per-knob o
     }),
     { initialConcurrency: 1, maxConcurrency: 1, pauseMinMs: 1500, pauseMaxMs: 3000 }
   );
+});
+
+// ─── Cumulative 429-density early-stop ───────────────────────────────────
+
+test("resolveChatGptRateLimitDensityStop defaults to the conservative threshold when unset", () => {
+  assert.equal(resolveChatGptRateLimitDensityStop({}), 8);
+});
+
+test("resolveChatGptRateLimitDensityStop honors an explicit positive override", () => {
+  assert.equal(resolveChatGptRateLimitDensityStop({ PDPP_CHATGPT_DETAIL_RATE_LIMIT_STOP_AFTER: "3" }), 3);
+});
+
+test("resolveChatGptRateLimitDensityStop disables the stop on a non-positive value (escape hatch)", () => {
+  assert.equal(
+    resolveChatGptRateLimitDensityStop({ PDPP_CHATGPT_DETAIL_RATE_LIMIT_STOP_AFTER: "0" }),
+    Number.POSITIVE_INFINITY
+  );
+  assert.equal(
+    resolveChatGptRateLimitDensityStop({ PDPP_CHATGPT_DETAIL_RATE_LIMIT_STOP_AFTER: "-1" }),
+    Number.POSITIVE_INFINITY
+  );
+});
+
+test("resolveChatGptRateLimitDensityStop falls back to the default on invalid (non-integer) input", () => {
+  assert.equal(resolveChatGptRateLimitDensityStop({ PDPP_CHATGPT_DETAIL_RATE_LIMIT_STOP_AFTER: "abc" }), 8);
+  assert.equal(resolveChatGptRateLimitDensityStop({ PDPP_CHATGPT_DETAIL_RATE_LIMIT_STOP_AFTER: "2.5" }), 8);
+  assert.equal(resolveChatGptRateLimitDensityStop({ PDPP_CHATGPT_DETAIL_RATE_LIMIT_STOP_AFTER: "  " }), 8);
+});
+
+test("ChatGptRateLimitDensityTracker trips only once cumulative 429s reach the threshold", () => {
+  const tracker = new ChatGptRateLimitDensityTracker(3);
+  assert.equal(tracker.shouldStop(), false);
+  tracker.recordRateLimited();
+  tracker.recordRateLimited();
+  assert.equal(tracker.count, 2);
+  assert.equal(tracker.shouldStop(), false, "below threshold must not trip");
+  tracker.recordRateLimited();
+  assert.equal(tracker.count, 3);
+  assert.equal(tracker.shouldStop(), true, "at threshold must trip");
+});
+
+test("ChatGptRateLimitDensityTracker with an Infinity threshold never trips (disabled)", () => {
+  const tracker = new ChatGptRateLimitDensityTracker(Number.POSITIVE_INFINITY);
+  for (let i = 0; i < 1000; i++) {
+    tracker.recordRateLimited();
+  }
+  assert.equal(tracker.shouldStop(), false);
 });
 
 test("chatGptBackendFetchInBrowser aborts a never-resolving backend fetch promptly", async () => {
@@ -867,6 +916,141 @@ test("runMessagesAndConversationsWithDetail: intermediate pressure is bounded an
     laneMessages.some((m) => m.message.includes("sensitive-convo") || m.message.includes("/conversation/")),
     false,
     "lane progress must not expose raw conversation ids or API paths"
+  );
+});
+
+test("runMessagesAndConversationsWithDetail: cumulative 429 density defers the remaining tail as upstream_pressure DETAIL_GAP", async () => {
+  // Slow-bleed regime: each fetch is served a 429, honors a Retry-After, then
+  // SUCCEEDS — so nothing ever throws and the exhaustion-only circuit never
+  // opens. With a density threshold of 2, after two served 429s the lane must
+  // stop launching new detail fetches and defer the rest as resumable gaps.
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      fetchedIds.push(path);
+      // Model production: a served 429 reports rate_limited pressure (the lane
+      // surfaces this as a cooldown event the density tracker counts), sleeps
+      // its own backoff, then the conversation succeeds.
+      await currentAdaptiveLaneRunContext()?.reportPressure({
+        absorbedByRequestWait: true,
+        delayMs: 30_000,
+        kind: "rate_limited",
+        retryAfterMs: 30_000,
+      });
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [
+      makeConvo({ id: "convo-1" }),
+      makeConvo({ id: "convo-2" }),
+      makeConvo({ id: "convo-3" }),
+      makeConvo({ id: "convo-4" }),
+      makeConvo({ id: "convo-5" }),
+    ],
+    makeEmitConversation(deps),
+    { random: () => 0, sleep: () => undefined, densityStopThreshold: 2 }
+  );
+
+  // Two conversations hydrate (each pays its own served 429); the 3rd launch
+  // sees the tracker at threshold and opens the circuit, so convo-3..5 defer
+  // without a fetch.
+  assert.deepEqual(
+    fetchedIds,
+    ["/conversation/convo-1", "/conversation/convo-2"],
+    "no detail fetch is launched once the density stop trips"
+  );
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2"]);
+  assert.deepEqual(coverage.gapKeys, ["convo-3", "convo-4", "convo-5"]);
+
+  const gaps = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP"
+  );
+  assert.deepEqual(
+    gaps.map((g) => g.record_key),
+    ["convo-3", "convo-4", "convo-5"],
+    "every deferred conversation gets a resumable DETAIL_GAP"
+  );
+  assert.equal(
+    gaps.every((g) => g.reason === "upstream_pressure" && g.retryable === true && g.status === "pending"),
+    true,
+    "density-deferred gaps reuse the upstream_pressure, retryable, pending contract"
+  );
+
+  const densityProgress = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> =>
+      m.type === "PROGRESS" &&
+      m.stream === "messages" &&
+      m.message.includes("opened upstream-pressure circuit after") &&
+      m.message.includes("served 429s")
+  );
+  assert.equal(
+    densityProgress.length,
+    1,
+    "the density trip names upstream pressure and the served-429 count exactly once"
+  );
+  assert.equal(
+    densityProgress.some((m) => m.message.includes("convo-") || m.message.includes("/conversation/")),
+    false,
+    "the density-trip progress message must not leak conversation ids or API paths"
+  );
+});
+
+test("runMessagesAndConversationsWithDetail: served 429s below the density threshold do not defer (no over-trigger)", async () => {
+  // Same slow-bleed shape but only one served 429 below a threshold of 5: the
+  // run must hydrate every conversation, proving the stop is not hair-trigger.
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  let firstFetch = true;
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      fetchedIds.push(path);
+      if (firstFetch) {
+        firstFetch = false;
+        await currentAdaptiveLaneRunContext()?.reportPressure({
+          absorbedByRequestWait: true,
+          delayMs: 30_000,
+          kind: "rate_limited",
+          retryAfterMs: 30_000,
+        });
+      }
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "convo-1" }), makeConvo({ id: "convo-2" }), makeConvo({ id: "convo-3" })],
+    makeEmitConversation(deps),
+    { random: () => 0, sleep: () => undefined, densityStopThreshold: 5 }
+  );
+
+  assert.deepEqual(fetchedIds, ["/conversation/convo-1", "/conversation/convo-2", "/conversation/convo-3"]);
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2", "convo-3"]);
+  assert.deepEqual(coverage.gapKeys, []);
+  assert.equal(
+    harness.protocolMessages.some((m) => m.type === "DETAIL_GAP"),
+    false,
+    "no gap should be emitted while served 429s stay below the density threshold"
   );
 });
 
