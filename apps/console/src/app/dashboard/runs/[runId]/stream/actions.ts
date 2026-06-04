@@ -67,12 +67,12 @@ export async function mintStreamSessionAction(input: MintStreamSessionInput): Pr
 }
 
 export interface StreamReachFailureInput {
-  runId: string;
+  /** HTTP status the give-up probe observed, or null when the probe failed. */
+  httpStatus: number | null;
   interactionId: string;
   /** Typed give-up reason from the client classifier; re-clamped here. */
   reason: string;
-  /** HTTP status the give-up probe observed, or null when the probe failed. */
-  httpStatus: number | null;
+  runId: string;
 }
 
 /**

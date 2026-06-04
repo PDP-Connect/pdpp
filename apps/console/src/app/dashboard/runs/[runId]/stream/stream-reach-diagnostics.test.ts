@@ -3,10 +3,12 @@ import { test } from "node:test";
 
 import {
   classifyStreamReachFailure,
-  sanitizeStreamReachReason,
   STREAM_REACH_REASONS,
   type StreamReachReason,
+  sanitizeStreamReachReason,
 } from "./stream-reach-diagnostics.ts";
+
+const RECOVERY_WORDS_RE = /connected|recovered|success/i;
 
 test("401 classifies as invalid_token", () => {
   const { reason } = classifyStreamReachFailure({ probeStatus: 401 });
@@ -64,10 +66,7 @@ test("every reason yields a non-empty operator message that never claims success
     const { reason, troubleMessage } = classifyStreamReachFailure({ probeStatus: status });
     assert.ok(STREAM_REACH_REASONS.includes(reason), `reason ${reason} is in the closed set`);
     assert.ok(troubleMessage.length > 0, "message is non-empty");
-    assert.ok(
-      !/connected|recovered|success/i.test(troubleMessage),
-      `message must not imply recovery: ${troubleMessage}`
-    );
+    assert.ok(!RECOVERY_WORDS_RE.test(troubleMessage), `message must not imply recovery: ${troubleMessage}`);
   }
 });
 

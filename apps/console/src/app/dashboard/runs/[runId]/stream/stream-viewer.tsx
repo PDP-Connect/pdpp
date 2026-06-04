@@ -83,12 +83,7 @@ import {
 } from "@/components/ui/dialog.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { submitRunInteractionAction } from "../actions.ts";
-import {
-  type MintedStreamSession,
-  mintStreamSessionAction,
-  reportStreamReachFailureAction,
-} from "./actions.ts";
-import { classifyStreamReachFailure } from "./stream-reach-diagnostics.ts";
+import { type MintedStreamSession, mintStreamSessionAction, reportStreamReachFailureAction } from "./actions.ts";
 import {
   NEKO_MEDIA_LAYOUT_EVENT,
   type NekoClientConfig,
@@ -103,6 +98,7 @@ import {
   createPlaygroundSeenRegistry,
   type PlaygroundSeenRegistry,
 } from "./playground-event-dedupe.ts";
+import { classifyStreamReachFailure, type StreamReachProbeResult } from "./stream-reach-diagnostics.ts";
 import { sampleVideoSharpnessTelemetry } from "./stream-visual-quality.ts";
 import { STREAMING_UNAVAILABLE_TAG } from "./streaming-protocol.ts";
 
@@ -190,6 +186,39 @@ const MOBILE_USER_AGENT_RE = /Android|iPhone|iPad|iPod|Mobile/i;
 const TRAILING_SLASH_RE = /\/$/;
 const DEFAULT_CLIPBOARD_DIRECTION_POLICY: ClipboardDirectionPolicy = "bidirectional-text";
 const DEFAULT_CLIPBOARD_HELPER_MODE: ClipboardHelperMode = "balanced";
+
+async function readStreamReachProbeCode(probe: Response): Promise<string | null> {
+  try {
+    const body = (await probe.json()) as { error?: { code?: unknown } };
+    const code = body?.error?.code;
+    return typeof code === "string" ? code : null;
+  } catch {
+    return null;
+  }
+}
+
+async function probeStreamReach(url: string | null): Promise<StreamReachProbeResult> {
+  if (!url) {
+    return { probeError: true, probeStatus: null };
+  }
+  const abort = new AbortController();
+  try {
+    const probe = await fetch(url, {
+      cache: "no-store",
+      method: "GET",
+      signal: abort.signal,
+    });
+    return {
+      probeCode: probe.ok ? null : await readStreamReachProbeCode(probe),
+      probeError: false,
+      probeStatus: probe.status,
+    };
+  } catch {
+    return { probeError: true, probeStatus: null };
+  } finally {
+    abort.abort();
+  }
+}
 
 /**
  * Parse a URL into a hostname + pathname display tuple. The protocol is
@@ -2264,47 +2293,15 @@ function StreamStage({
      * diagnostic explains the failure class, it never claims recovery.
      */
     async function diagnoseGiveUp(url: string | null): Promise<void> {
-      let probeStatus: number | null = null;
-      let probeCode: string | null = null;
-      let probeError = false;
-      if (url) {
-        const abort = new AbortController();
-        try {
-          const probe = await fetch(url, {
-            method: "GET",
-            cache: "no-store",
-            signal: abort.signal,
-          });
-          probeStatus = probe.status;
-          if (!probe.ok) {
-            // Only the non-2xx attach responses carry a JSON error body; a 200
-            // would be an open SSE stream we must not drain.
-            try {
-              const body = (await probe.json()) as { error?: { code?: unknown } };
-              const code = body?.error?.code;
-              probeCode = typeof code === "string" ? code : null;
-            } catch {
-              probeCode = null;
-            }
-          }
-        } catch {
-          // The probe never reached the server (DNS/TLS/connection/abort) — the
-          // origin/route/proxy is unreachable rather than a known attach status.
-          probeError = true;
-        } finally {
-          abort.abort();
-        }
-      } else {
-        probeError = true;
-      }
+      const probe = await probeStreamReach(url);
       if (cancelled || !mountedRef.current) {
         return;
       }
-      const { reason, troubleMessage } = classifyStreamReachFailure({ probeStatus, probeCode, probeError });
-      logDebug("stream_reach_failed", { reason, httpStatus: probeStatus });
+      const { reason, troubleMessage } = classifyStreamReachFailure(probe);
+      logDebug("stream_reach_failed", { reason, httpStatus: probe.probeStatus });
       onStatus({ display: "trouble", cause: "network", troubleMessage });
       try {
-        await reportStreamReachFailureAction({ runId, interactionId, reason, httpStatus: probeStatus });
+        await reportStreamReachFailureAction({ httpStatus: probe.probeStatus, interactionId, reason, runId });
       } catch {
         // Best-effort beacon: the operator message is already set from the local
         // classification, so a failed report must not change the UI.
@@ -2335,7 +2332,9 @@ function StreamStage({
           cause: "network",
           troubleMessage: "Couldn't reach the browser stream after several tries.",
         });
-        void diagnoseGiveUp(viewerUrl);
+        diagnoseGiveUp(viewerUrl).catch(() => {
+          // Best-effort diagnostic: the generic give-up message is already shown.
+        });
         return;
       }
       if (preAttachFailures >= TOKEN_DEAD_FAILURE_THRESHOLD) {

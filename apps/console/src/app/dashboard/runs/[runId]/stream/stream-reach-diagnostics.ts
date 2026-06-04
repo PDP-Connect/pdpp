@@ -43,19 +43,13 @@ const STREAM_REACH_MESSAGE: Record<StreamReachReason, string> = {
   invalid_token: "The browser stream link is no longer valid. Start the browser step again.",
   session_consumed: "The browser stream was already opened elsewhere. Start the browser step again.",
   session_expired: "The browser stream link expired. Start the browser step again.",
-  companion_unavailable:
-    "The browser session is no longer running on the server. Start the browser step again.",
+  companion_unavailable: "The browser session is no longer running on the server. Start the browser step again.",
   unreachable_origin:
     "Couldn't reach the browser stream. Check that the reference server is reachable, then try again.",
   unknown: "Couldn't reach the browser stream after several tries.",
 };
 
 export interface StreamReachProbeResult {
-  /**
-   * HTTP status read from the probe `fetch`, or `null` when the probe request
-   * itself failed before any HTTP response was received.
-   */
-  probeStatus: number | null;
   /**
    * `error.code` parsed from the probe response body, when present. Used to
    * split the two distinct 410 cases (`session_expired` vs
@@ -67,6 +61,11 @@ export interface StreamReachProbeResult {
    * i.e. the request never reached the server to produce a status.
    */
   probeError?: boolean;
+  /**
+   * HTTP status read from the probe `fetch`, or `null` when the probe request
+   * itself failed before any HTTP response was received.
+   */
+  probeStatus: number | null;
 }
 
 export interface StreamReachClassification {
@@ -80,9 +79,7 @@ export interface StreamReachClassification {
  * reason outside {@link STREAM_REACH_REASONS}.
  */
 export function sanitizeStreamReachReason(value: unknown): StreamReachReason {
-  return typeof value === "string" && STREAM_REACH_REASON_SET.has(value)
-    ? (value as StreamReachReason)
-    : "unknown";
+  return typeof value === "string" && STREAM_REACH_REASON_SET.has(value) ? (value as StreamReachReason) : "unknown";
 }
 
 /**
@@ -91,9 +88,7 @@ export function sanitizeStreamReachReason(value: unknown): StreamReachReason {
  * evidence supports: an unrecognized status is `unknown`, and a probe that never
  * reached the server is `unreachable_origin`.
  */
-export function classifyStreamReachFailure(
-  probe: StreamReachProbeResult
-): StreamReachClassification {
+export function classifyStreamReachFailure(probe: StreamReachProbeResult): StreamReachClassification {
   const reason = classifyReason(probe);
   return { reason, troubleMessage: STREAM_REACH_MESSAGE[reason] };
 }
