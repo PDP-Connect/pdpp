@@ -52,6 +52,8 @@ test('npm package contents stay narrowly allowlisted', () => {
     'src/package-info.d.ts',
     'src/package-info.js',
     'src/ref/args.js',
+    'src/ref/auth.js',
+    'src/ref/commands/call.js',
     'src/ref/commands/connectors.js',
     'src/ref/commands/event-subscriptions.js',
     'src/ref/commands/grant.js',
