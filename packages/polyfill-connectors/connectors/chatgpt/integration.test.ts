@@ -1496,7 +1496,7 @@ test("runConversationsAndMessagesStreams: one run budget bounds the recovery pas
               { id: "fwd-1", title: "f1", create_time: 1_700_000_300, update_time: 1_700_000_300, current_node: "a1" },
               { id: "fwd-2", title: "f2", create_time: 1_700_000_200, update_time: 1_700_000_200, current_node: "a1" },
             ],
-          } as unknown as ChatGptJson,
+          } as ChatGptJson,
         };
       }
       fetchedIds.push(path);
@@ -1510,14 +1510,14 @@ test("runConversationsAndMessagesStreams: one run budget bounds the recovery pas
         gap_id: "gap-rec-1",
         stream: "messages",
         record_key: "rec-1",
-        reason: "retry_exhausted",
+        status: "pending" as const,
         detail_locator: {
           kind: "chatgpt.conversation",
           conversation_id: "rec-1",
           list_item: { id: "rec-1", title: "r1", create_time: 1_700_000_000, update_time: 1_700_000_000 },
         },
       },
-    ] as unknown as NonNullable<StreamDeps["detailGaps"]>,
+    ] as NonNullable<StreamDeps["detailGaps"]>,
     emit: harness.emit,
     emitRecord: harness.emitRecord,
     progress: (): Promise<void> => Promise.resolve(),

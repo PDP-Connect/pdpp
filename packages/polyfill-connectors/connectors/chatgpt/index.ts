@@ -1814,6 +1814,11 @@ interface ConversationDetailPacingOptions {
   // resolveChatGptRateLimitDensityStop(); tests inject a small value to exercise
   // the trip without standing up real backoff.
   densityStopThreshold?: number;
+  // Maximum number of resumable run-cap DETAIL_GAP rows the pass will
+  // materialize AFTER a fetch/wall-clock cap trips, before stopping iteration.
+  // Tests inject a small value to exercise the halt without a full backlog.
+  // Defaults to resolveChatGptMaxGapMaterializationsPerRun().
+  maxGapMaterializations?: number;
   // Served 429s the run absorbed before this detail pass (list pagination + the
   // non-detail streams). Seeds the density tracker so pre-detail source pressure
   // carries forward. Defaults to the run-scoped accumulator on `deps`; tests
@@ -1828,11 +1833,6 @@ interface ConversationDetailPacingOptions {
   runBudget?: ChatGptRunBudget;
   sleep?: (ms: number) => Promise<void> | void;
   tuning?: ChatGptDetailLaneTuning;
-  // Maximum number of resumable run-cap DETAIL_GAP rows the pass will
-  // materialize AFTER a fetch/wall-clock cap trips, before stopping iteration.
-  // Tests inject a small value to exercise the halt without a full backlog.
-  // Defaults to resolveChatGptMaxGapMaterializationsPerRun().
-  maxGapMaterializations?: number;
 }
 
 interface ConversationDetailCoverage {
@@ -2137,11 +2137,19 @@ export async function runMessagesAndConversationsWithDetail(
   // fetch/wall-clock cap has tripped. Resolved once per pass; consulted only
   // after `runCapDeferReason` is set, so a run with no cap configured never
   // reaches this counter and is byte-for-byte unchanged.
-  const maxGapMaterializations =
-    pacing.maxGapMaterializations ?? resolveChatGptMaxGapMaterializationsPerRun();
+  const maxGapMaterializations = pacing.maxGapMaterializations ?? resolveChatGptMaxGapMaterializationsPerRun();
   let gapMaterializationsAfterCap = 0;
   let observedRecoverablePressure: ChatGptRecoverableRetryExhaustedError | null = null;
   let runCapDeferReason: ChatGptRunCapReason | null = null;
+  async function emitBoundedRunCapGap(c: ConversationListItem): Promise<ChatGptFetchResult> {
+    if (gapMaterializationsAfterCap >= maxGapMaterializations) {
+      return { deferredDueToPressure: true, status: 0, json: null };
+    }
+    gapMaterializationsAfterCap += 1;
+    await deps.emit(makeRunCapDeferredConversationDetailGap(c, runCapDeferReason as ChatGptRunCapReason));
+    coverage.gapKeys.push(c.id);
+    return { deferredDueToPressure: true, status: 0, json: null };
+  }
   await lane.runAll(convosToSync, async (c) => {
     if (!c) {
       return { status: 404, json: null };
@@ -2157,13 +2165,7 @@ export async function runMessagesAndConversationsWithDetail(
     // remaining conversations are not lost: the messages cursor is held back,
     // so they re-appear on the next run and are bounded by the per-run caps.
     if (runCapDeferReason) {
-      if (gapMaterializationsAfterCap >= maxGapMaterializations) {
-        return { deferredDueToPressure: true, status: 0, json: null };
-      }
-      gapMaterializationsAfterCap += 1;
-      await deps.emit(makeRunCapDeferredConversationDetailGap(c, runCapDeferReason));
-      coverage.gapKeys.push(c.id);
-      return { deferredDueToPressure: true, status: 0, json: null };
+      return emitBoundedRunCapGap(c);
     }
     // Cumulative 429-density trip. If the run has already absorbed enough served
     // 429s, stop launching new detail fetches into the pressured account: open
@@ -2196,11 +2198,7 @@ export async function runMessagesAndConversationsWithDetail(
         stream: "messages",
         message: `ChatGPT conversation-detail lane reached its per-run ${capReason === "max_wall_clock" ? "wall-clock" : "detail-count"} cap after ${runBudget.count} hydrated conversation(s); deferring the remaining conversation details as resumable DETAIL_GAP records for the next run`,
       });
-      // Count this first-trip materialization against the post-cap gap limit.
-      gapMaterializationsAfterCap += 1;
-      await deps.emit(makeRunCapDeferredConversationDetailGap(c, capReason));
-      coverage.gapKeys.push(c.id);
-      return { deferredDueToPressure: true, status: 0, json: null };
+      return emitBoundedRunCapGap(c);
     }
     let detail: ChatGptFetchResult;
     try {
