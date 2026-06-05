@@ -61,12 +61,13 @@ overrides the compiled copy with the real revision.
 
 ### Redaction
 
-The agent version carries only: a semantic version string, a short revision
-token (`[0-9a-f]{7,40}` or the literal `source`), and a build timestamp (on the
-local `status`/`doctor` surface, not on the wire string). It SHALL NOT carry a
-filesystem path, home directory, hostname, branch name, token, cookie, or any
-source content. A short commit SHA is public information for an open-source
-repo and is the same identifier already printed by `git log` on `main`.
+The agent version carries only: a semantic version string and a short revision
+token (`[0-9a-f]{7,40}` or the literal `source`). It SHALL NOT carry a filesystem
+path, home directory, hostname, branch name, token, cookie, or any source
+content. The compiled build-info module also records an internal `builtAt`
+timestamp for artifact provenance, but that timestamp is not part of the
+heartbeat string. A short commit SHA is public information for an open-source
+repository and is the same identifier already printed by `git log` on `main`.
 
 ## Mechanism
 
@@ -100,8 +101,8 @@ The committed default is the **source** identity: `0.0.0+source`. Dev runs,
 (after `tsc`, over `dist/`). It will additionally overwrite the compiled
 `dist/polyfill-connectors/src/collector-build-info.js` with a freshly-generated
 module body carrying the real `version` (read from the resolved package.json),
-`revision` (`git rev-parse --short=12 HEAD`, falling back to the
-`PDPP_BUILD_REVISION` env var, then to `source` when neither is available so a
+`revision` (`PDPP_BUILD_REVISION` env override, falling back to
+`git rev-parse --short=12 HEAD`, then to `source` when neither is available so a
 git-less CI build still produces an honest sentinel rather than crashing the
 build), and `builtAt` (the build's ISO timestamp). The override is a full module
 rewrite, not a fragile in-place patch.

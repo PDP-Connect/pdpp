@@ -28,24 +28,23 @@ hand-entered operator text. Because the published package version is the `0.0.0`
 placeholder, the identifier carries a short build revision (a public git
 short-SHA) so the signal distinguishes one build from another even while the
 semantic version is unset. It is redaction-safe by construction: a package
-version plus a short commit hash and a build timestamp, never a filesystem path,
-home directory, token, or source secret.
+version plus a short commit hash, never a filesystem path, home directory,
+token, or source secret.
 
 ## What Changes
 
 - Define, under `local-device-exporter-collection`, that a local collector SHALL
   report a build-derived **agent version** on its heartbeats, populating the
   existing optional `agent_version` wire field. The value SHALL be derived from
-  the running package/artifact (package version plus a short build revision and
-  build timestamp), never from hand-entered operator text.
+  the running package/artifact (package version plus a short build revision),
+  never from hand-entered operator text.
 - Require the agent version to be **honest about provenance**: a built/published
   artifact reports its real build revision; an unbuilt in-repo source run reports
   a stable `source` sentinel rather than guessing a revision. The reference
   SHALL NOT fabricate a revision it cannot derive.
 - Require the agent version to be **redaction-safe**: it SHALL carry only the
-  package version, a short revision token, and a build timestamp, and SHALL NOT
-  carry a filesystem path, home directory, hostname, token, cookie, or any source
-  secret.
+  package version and a short revision token, and SHALL NOT carry a filesystem
+  path, home directory, hostname, token, cookie, or any source secret.
 - Require the owner-facing device-exporter diagnostics to **surface the stored
   `agent_version`** so an owner can read which build a device last reported
   without inspecting build mtimes on the host. The field is additive and
@@ -81,7 +80,9 @@ Removed:
   artifact can report its own revision. A committed source default keeps dev /
   `tsx` / test runs deterministic (they report the `source` sentinel) without a
   dirty working tree; the build overrides the compiled copy with the real
-  revision. No build-hash mechanism existed before this change.
+  revision. The stamped build module also records an internal `builtAt`
+  timestamp, but the heartbeat value remains `version+revision`. No build-hash
+  mechanism existed before this change.
 - The agent version is an owner-only diagnostic and SHALL NOT be exposed to
   grant-scoped clients. It does not alter freshness, coverage, the headline state,
   or the forward disposition; a device with a `null` agent version renders no

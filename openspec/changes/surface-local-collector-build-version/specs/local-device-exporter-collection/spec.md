@@ -16,10 +16,9 @@ SHALL report its real build revision, and an unbuilt in-repo source run SHALL
 report a stable source sentinel rather than a fabricated revision. The reference
 SHALL NOT invent a revision it cannot derive.
 
-The agent version SHALL be redaction-safe: it SHALL carry only a package version,
-a short revision token, and (on local diagnostics) a build timestamp, and SHALL
-NOT carry a filesystem path, home directory, hostname, branch name, token, cookie,
-or any source content.
+The agent version SHALL be redaction-safe: it SHALL carry only a package version
+and a short revision token, and SHALL NOT carry a filesystem path, home
+directory, hostname, branch name, token, cookie, or any source content.
 
 The reported agent version is an owner-only diagnostic. It SHALL NOT be exposed to
 grant-scoped clients, and it SHALL NOT alter the device's freshness, coverage,
