@@ -92,6 +92,28 @@ reads, public `changes_since` responses, grant enforcement, or the
 `PDPP_CHANGE_HISTORY_LIMIT` retention bound itself. Live data mutation of the
 existing `unresolved_pruned` residue is deferred and owner-gated.
 
+## Residual Risks
+
+The forward anchor-preserving prune and the self-heal recovery are
+implemented, tested (multi-key recurrence guards, anti-churn no-op, full-resync
+convergence, real-Postgres parity), and spec'd; the code/test/spec scope of this
+change is complete. The remaining work is owner-only live-data remediation,
+deferred from this change (the §6 tasks). It is preserved here as a residual
+rather than keeping the change pseudo-active on owner-only operations:
+
+- Forward fix prevents new stranding but cannot reconstruct residue already
+  stranded before deploy (live `reddit/submitted` 36 / `github/issues` 66
+  `unresolved_pruned` rows). The owner runs the read-only all-stream scanner
+  against live Postgres to enumerate residue by class (§6.1), repairs
+  `missing_current` / `stale_current` with the existing per-scope `--apply`
+  repair tool (§6.2), and decides per `unverified_*` / `current_*_history` row
+  between source resync and an explicit owner-gated synthetic maintenance anchor
+  (§6.3) — no synthetic anchor is written by code without an owner-reviewed
+  apply path. The `connector-cursor-reset.mjs` resync primitive (§6.5) is the
+  shipped, dry-run-by-default tool for the resync disposition. The
+  `changes_since` self-heal re-emit contract (§6.4) is a separate future change
+  if feed-invisibility is later desired.
+
 ## Capabilities
 
 - Modified: reference-implementation-architecture

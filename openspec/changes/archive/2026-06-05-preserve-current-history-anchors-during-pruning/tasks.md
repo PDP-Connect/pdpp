@@ -70,8 +70,8 @@
   *anchored* current row stays a true no-op, and add a self-heal requirement +
   scenario for the *unanchored* case (re-anchor at a new version, advance
   `version_counter` by one, zero count/payload deltas, drift cleared).
-- [ ] 5.3 `openspec validate preserve-current-history-anchors-during-pruning
-  --strict` passes. (run in validation)
+- [x] 5.3 `openspec validate preserve-current-history-anchors-during-pruning
+  --strict` passes. (verified valid at archive time)
 
 ## 6. Owner-gated follow-ups (deferred, not in this change)
 
