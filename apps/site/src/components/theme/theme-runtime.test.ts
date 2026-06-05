@@ -37,6 +37,10 @@ const SYSTEM_MEDIA = /@media \(prefers-color-scheme: dark\)[\s\S]*html\[data-the
 const EXPLICIT_DARK_SELECTOR = /html\[data-theme="dark"\]/;
 const DATA_THEME_DARK_VARIANT =
   /@custom-variant dark \(&:where\(\.dark, \.dark \*, \[data-theme=dark\], \[data-theme=dark\] \*\)\)/;
+const STATUS_BADGE_FOREGROUND_TOKENS =
+  /--success-badge-foreground:[\s\S]*--warning-badge-foreground:[\s\S]*--danger-badge-foreground:/;
+const STATUS_BADGE_SEMANTIC_COLOR_RULES =
+  /\.pdpp-status-badge\[data-status-tone="success"\]\s*{\s*color: var\(--success-badge-foreground\);[\s\S]*\.pdpp-status-badge\[data-status-tone="danger"\]\s*{\s*color: var\(--danger-badge-foreground\);[\s\S]*\.pdpp-status-badge\[data-status-tone="warning"\]\s*{\s*color: var\(--warning-badge-foreground\);/;
 const COOKIE_SYSTEM_NO_SECURE = /^pdpp-theme=; Path=\/; SameSite=Lax; Max-Age=0$/;
 const COOKIE_SYSTEM_SECURE = /^pdpp-theme=; Path=\/; SameSite=Lax; Max-Age=0; Secure$/;
 const COOKIE_LIGHT_NO_SECURE = /^pdpp-theme=light; Path=\/; SameSite=Lax; Max-Age=31536000$/;
@@ -85,6 +89,12 @@ test("brand CSS supports explicit dark and first-paint system dark without JavaS
   const src = await readFile(BRAND_BASE_FILE, "utf8");
   assert.match(src, EXPLICIT_DARK_SELECTOR);
   assert.match(src, SYSTEM_MEDIA);
+});
+
+test("brand CSS gives status badges dedicated accessible foreground tokens", async () => {
+  const src = await readFile(BRAND_BASE_FILE, "utf8");
+  assert.match(src, STATUS_BADGE_FOREGROUND_TOKENS);
+  assert.match(src, STATUS_BADGE_SEMANTIC_COLOR_RULES);
 });
 
 test("Tailwind dark variant follows explicit dark theme attributes", async () => {

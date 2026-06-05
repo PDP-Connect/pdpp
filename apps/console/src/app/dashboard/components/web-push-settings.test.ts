@@ -83,6 +83,10 @@ const SVG_BRAND_BLUE_PATTERN = /fill="#2c73d9"/;
 const ENABLE_CLEARS_TEST_STATUS_PATTERN = /async function enable\(\)[\s\S]*?setBusy\(true\);\s*setTestStatus\(null\);/;
 const DISABLE_CLEARS_TEST_STATUS_PATTERN =
   /async function disable\(\)[\s\S]*?setBusy\(true\);\s*setTestStatus\(null\);/;
+const WEB_PUSH_SUMMARY_LIVE_REGION_PATTERN =
+  /<p aria-atomic="true" aria-live="polite" className="pdpp-body[^"]+" role="status">/;
+const WEB_PUSH_DETAIL_LIVE_REGION_PATTERN =
+  /<div aria-atomic="true" aria-live="polite" role="status">[\s\S]*?Last check: \{status\}[\s\S]*?\{testStatus \? <p/;
 
 test("WebPushSettings renders unsupported, denied-permission, insecure-context, VAPID, and iOS/PWA caveat states", async () => {
   const src = await readFile(join(HERE, "web-push-settings.tsx"), "utf8");
@@ -187,6 +191,12 @@ test("dashboard Web Push enable and disable clear any stale test-notification st
   const src = await readFile(join(HERE, "web-push-settings.tsx"), "utf8");
   assert.match(src, ENABLE_CLEARS_TEST_STATUS_PATTERN);
   assert.match(src, DISABLE_CLEARS_TEST_STATUS_PATTERN);
+});
+
+test("dashboard Web Push status changes are announced as live status regions", async () => {
+  const src = await readFile(join(HERE, "web-push-settings.tsx"), "utf8");
+  assert.match(src, WEB_PUSH_SUMMARY_LIVE_REGION_PATTERN);
+  assert.match(src, WEB_PUSH_DETAIL_LIVE_REGION_PATTERN);
 });
 
 test("dashboard Web Push actions surface structured endpoint error details", async () => {

@@ -777,7 +777,7 @@ export function WebPushSettings({
             as a calm secondary utility rather than the loudest block on the
             overview. */}
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-          <p className="pdpp-body flex min-w-0 items-center gap-2">
+          <p aria-atomic="true" aria-live="polite" className="pdpp-body flex min-w-0 items-center gap-2" role="status">
             <span
               aria-hidden="true"
               className={`size-2 shrink-0 rounded-full ${enabled ? "bg-[color:var(--success)]" : "bg-muted-foreground/50"}`}
@@ -921,8 +921,10 @@ function WebPushSetupDetails({
           </li>
         ))}
       </ol>
-      <p className="pdpp-caption mt-3 text-muted-foreground">Last check: {status}</p>
-      {testStatus ? <p className="pdpp-caption mt-3 text-muted-foreground">{testStatus}</p> : null}
+      <div aria-atomic="true" aria-live="polite" role="status">
+        <p className="pdpp-caption mt-3 text-muted-foreground">Last check: {status}</p>
+        {testStatus ? <p className="pdpp-caption mt-3 text-muted-foreground">{testStatus}</p> : null}
+      </div>
       {subscriptionsCount > 0 ? (
         <p className="pdpp-caption mt-3 text-muted-foreground">
           {subscriptionsCount} saved browser subscription{subscriptionsCount === 1 ? "" : "s"}. Last status:{" "}
