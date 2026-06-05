@@ -88,7 +88,7 @@
   RECORD/STATE/DONE-only portability floor; and the 2.7 no-field-perturbed golden
   regression). 116/116 collection-profile + 46/46 event-spine + 5/5
   ref-run-timeline-terminal-status green; RI `tsc --noEmit` exit 0.
-- [ ] 2.2b (Tranche C — control-plane projection half) In
+- [x] 2.2b (Tranche C — control-plane projection half) In
   `reference-implementation/server/ref-control.ts`, key the existing coverage
   rollup (`mapCoverageAxis`) and the already-tested pure
   `deriveForwardDisposition()` per stream: read the runtime collection-fact block
@@ -99,6 +99,43 @@
   projection only; derive on read (never frozen at run completion). This extends the
   connection-level `forward_disposition` (2.3a/2.3b) from connection scope to stream
   scope using the same pure helper.
+  Landed in `reference-implementation/server/ref-control.ts`: `extractKnownGapsForRun`
+  generalized to a shared `readRunTerminalEventData()` so `known_gaps` and the new
+  `collection_facts` block ride ONE terminal-event read; `readCollectionFactsFromTerminalData()`
+  parses the block defensively (a malformed/out-of-bounds `considered` re-reads to
+  `null` = `unknown`, never a fabricated denominator) and attaches it as an optional
+  `collection_facts` on `ConnectorRunSummary`. A new pure, exported
+  `buildCollectionReport({collectionFacts, manifestStreams, freshness, attentionOpen,
+  refresh})` derives one `CollectionReportEntry` per in-scope stream (manifest streams
+  ∪ fact streams) with `{stream, collected, considered|"unknown", checkpoint,
+  pending_detail_gaps, skipped, coverage_condition, forward_disposition}`. The
+  per-stream coverage gate (`deriveStreamCoverageCondition`) is the load-bearing new
+  logic: precedence is contradictory-manifest accepted axis → skip (manifest accepted
+  axis, else skip-derived non-`complete` axis) → pending detail gap (`retryable_gap`)
+  → known considered (`partial` if short, else accepted/`complete`) → UNKNOWN
+  CONSIDERED ⇒ accepted/`unknown` (NEVER `complete`). `forward_disposition` reuses the
+  already-live pure `deriveForwardDisposition()` verbatim (no forked taxonomy); the
+  `unknown` → `resumable` honesty back-stop is unchanged. Derived on read at the two
+  assembly points (`listConnectorSummaries` + `getConnectorDetail`) via a shared
+  `projectCollectionReport()` that reads `freshness`/`attentionOpen` from the SAME
+  `connection_health` snapshot the headline uses (`axes.freshness`, `axes.attention !==
+  "none"`) so a stream entry never disagrees with the connection-level disposition or
+  the `needs_attention` pill. Attached as additive `collection_report` on
+  `ConnectorSummary` and `ConnectorDetail`; both routes forward it opaquely (no
+  `additionalProperties:false` contract schema covers these internal projections — the
+  2.3a/2.3b passthrough precedent), so NO new server contract and NO `/v1` exposure.
+  The runtime (`index.js` / `buildRunTerminalData`) is byte-untouched — the 2.7
+  invariant holds; this lane adds zero fields to the terminal event. Tests:
+  `reference-implementation/test/collection-report-projection.test.js` (24 pure
+  cases over `buildCollectionReport` — the 2.4 honesty gate, considered satisfied/short,
+  the five skip→coverage mappings, detail-gap precedence, the manual-refresh seam at
+  stream scope, attention, the 2.6 portability floor, manifest accepted-coverage, and
+  the three absence tolerances) and
+  `reference-implementation/test/collection-report-projection-e2e.test.js` (5 e2e cases
+  driving a real `runConnector` run then reading `GET /_ref/connectors/:id` — 2.2b
+  two-stream, 2.4 honesty end-to-end, 2.6 portable, 2.5 `/v1` isolation negative,
+  derive-on-read). 24/24 + 5/5 green; 117/117 collection-profile + 79/79
+  connection-health + 41/41 acceptance regression green; RI `tsc --noEmit` exit 0.
 - [x] 2.3 Forward-disposition derivation is a pure function of (coverage
   condition, gap retryability, attention presence, freshness axis, refresh policy).
   Unit-test all five branches, including `owner_refresh_due` for manual-refresh
@@ -173,17 +210,41 @@
   field set is a separately-reviewable owner-agent contract change and is not
   needed for the dashboard surface. Strictly additive: RI untouched; console
   typecheck clean, 271/271 dashboard-lib + 27/27 diagnostics tests green.
-- [ ] 2.4 (with Tranche C) Runtime collection-fact block records `considered:
+- [x] 2.4 (with Tranche C) Runtime collection-fact block records `considered:
   unknown` when no connector-declared value exists (the runtime never infers it from
   collected count); prove the projection does NOT derive `complete` for a
   collected-records, no-gaps, no-considered run (the pure helper already returns
   `resumable` for `unknown` coverage — pin it end-to-end through the per-stream
   path).
-- [ ] 2.5 (with Tranche C) Prove neither the runtime collection-fact block nor the
+  Pinned both at unit scope (`collection-report-projection.test.js`: a fact entry
+  with `collected > 0`, no gaps, `considered` absent → `coverage_condition ===
+  "unknown"` and `forward_disposition === "resumable"`, NOT `complete`) and
+  end-to-end (`collection-report-projection-e2e.test.js` "2.4": a real run that
+  collected one record with no declared considered, read back through
+  `GET /_ref/connectors/:id`, asserts the `items` entry is `unknown`/`resumable`
+  and explicitly `!== "complete"` on both axes). The per-stream coverage gate
+  feeds the pure helper `unknown`, and the helper's back-stop refuses `complete`
+  on `unknown` coverage — both guards proven.
+- [x] 2.5 (with Tranche C) Prove neither the runtime collection-fact block nor the
   projection-derived Collection Report appears in grant-scoped `/v1` reads (records,
   search, schema, blobs).
-- [ ] 2.6 (with Tranche C) Prove a portable `RECORD`/`STATE`/`DONE`-only connector
+  Proven by construction + regression: `collection_report` / `collection_facts`
+  live only on the owner-surface `ConnectorSummary` / `ConnectorDetail` types
+  (`ref-control.ts`), never on any `/v1` route. `collection-report-projection-e2e.test.js`
+  "2.5" first asserts the OWNER detail surface DOES carry the report (so the
+  negative is non-vacuous), then reads grant-scoped `/v1/streams/.../records`
+  (×2 shapes), `/v1/schema`, and `/v1/streams` with the bearer token and asserts
+  the raw response body contains NEITHER the substring `collection_report` NOR
+  `collection_facts`, and that no report identifier is returned.
+- [x] 2.6 (with Tranche C) Prove a portable `RECORD`/`STATE`/`DONE`-only connector
   still yields a valid Collection Report with `unknown` axes.
+  Proven at unit scope (a `collected > 0`, no-considered, no-gap, no-skip entry →
+  `considered: "unknown"`, `coverage_condition: "unknown"`, `forward_disposition:
+  "resumable"`, checkpoint preserved) and end-to-end
+  (`collection-report-projection-e2e.test.js` "2.6": a manifest emitting only
+  `RECORD`/`STATE`/`DONE` run through `runConnector`, read back through the detail
+  route, yields a VALID report entry with `unknown` axes — not an error, not
+  `complete`).
 - [x] 2.7 (with Tranche B) Run the reference-implementation runtime test suite;
   confirm no existing terminal-event field, status code, or commit semantic changed
   by the runtime collection-fact block.
@@ -199,10 +260,22 @@
 
 ## 3. Validation
 
-- [ ] 3.1 `openspec validate --all --strict`.
-- [ ] 3.2 Confirm composition with `derive-local-collector-coverage-from-diagnostics`
+- [x] 3.1 `openspec validate --all --strict`.
+  `openspec validate define-connector-progress-evidence-contract --strict` passes
+  ("is valid") and `openspec validate --all --strict` reports 40 passed / 0 failed.
+  Tranche C is code-only in `ref-control.ts` + tests; no spec artifact text changed,
+  so the contract stays valid.
+- [x] 3.2 Confirm composition with `derive-local-collector-coverage-from-diagnostics`
   and `add-local-device-collection-verdict`: the Collection Report is the per-run
   source those projections consume; no axis is redefined.
+  Confirmed: `buildCollectionReport` reuses the existing `CoverageAxis` /
+  `FreshnessAxis` vocabulary and the pure `deriveForwardDisposition()` verbatim — it
+  introduces NO new coverage taxonomy. The local-collector coverage path
+  (`buildCoverageEvidence` → `deriveLocalCoverageAxis`) and the local-device
+  collection verdict (`localDeviceCollection` in `projectConnectorSummaryConnectionHealth`)
+  are untouched; the per-stream report is an additive read over the same axes, so no
+  axis is redefined and the local-collector projections still consume the same
+  vocabulary.
 
 ## 4. Follow-up lanes (NOT this change — sequenced for green-page value)
 

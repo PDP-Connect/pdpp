@@ -22,7 +22,9 @@ import {
   type ConnectionRemoteSurfaceEvidence,
   type CoverageAxis,
   computeConnectionHealth,
+  deriveForwardDisposition,
   deriveOutboxAxisFromHeartbeat,
+  type ForwardDisposition,
   type FreshnessAxis,
   type NextAction,
   type OutboxAxis,
@@ -213,7 +215,47 @@ interface StreamSummary {
   readonly semantics: string | null;
 }
 
+/**
+ * The skip fact the runtime attaches to a `collection_facts` stream entry when
+ * the connector emitted `SKIP_RESULT` for that stream. Carries only the bounded
+ * reason and the recovery action the runtime already redacts onto the known-gap
+ * — never free-text diagnostics.
+ */
+export interface RuntimeCollectionFactSkip {
+  readonly reason: string;
+  readonly recovery_action?: string;
+}
+
+/**
+ * One per-stream entry of the runtime `collection_facts` block (Tranche B). These
+ * are OBJECTIVE run-local facts only: the runtime stamps NO coverage condition or
+ * forward disposition (those are derived on read by `buildCollectionReport`).
+ * `considered` is `null` when the connector declared no considered denominator —
+ * the projection reads `null` as `unknown` and NEVER infers `complete` from
+ * `collected` alone.
+ */
+export interface RuntimeCollectionFact {
+  readonly stream: string;
+  readonly collected: number;
+  readonly considered: number | null;
+  readonly checkpoint: string | null;
+  readonly pending_detail_gaps: number;
+  readonly skipped: RuntimeCollectionFactSkip | null;
+}
+
+/** The runtime `collection_facts` terminal-event block, parsed defensively. */
+export interface RuntimeCollectionFacts {
+  readonly streams: readonly RuntimeCollectionFact[];
+}
+
 interface ConnectorRunSummary {
+  /**
+   * The runtime `collection_facts` block read off this run's terminal event, or
+   * `null` for a run that predates Tranche B, exited before the terminal builder
+   * ran, or carried a malformed block. Source evidence for the derived
+   * `collection_report`; never final coverage truth.
+   */
+  readonly collection_facts: RuntimeCollectionFacts | null;
   readonly event_count: number;
   readonly failure_reason: string | null;
   readonly finished_at: string | null;
@@ -295,6 +337,16 @@ export interface LocalDeviceProgress {
 }
 
 export interface ConnectorSummary {
+  /**
+   * Per-stream Collection Report derived on read from the latest run's runtime
+   * `collection_facts` block plus this connection's freshness / refresh-policy /
+   * attention evidence (`define-connector-progress-evidence-contract`,
+   * Tranche C). Owner/control-plane surface only — never on grant-scoped `/v1`.
+   * Each entry carries a derived coverage condition and forward disposition; a
+   * stream with no declared considered denominator reads `unknown`, never
+   * `complete`. Empty when no in-scope stream universe exists.
+   */
+  readonly collection_report: readonly CollectionReportEntry[];
   readonly connection_health: ConnectionHealthSnapshot;
   readonly connection_id: string;
   readonly connector_display_name: string;
@@ -333,6 +385,8 @@ export interface ConnectorSummary {
 }
 
 export interface ConnectorDetail {
+  /** See {@link ConnectorSummary.collection_report}. Derived on read on the detail surface too. */
+  readonly collection_report: readonly CollectionReportEntry[];
   readonly connection_health: ConnectionHealthSnapshot;
   readonly connection_id: string;
   readonly connector_id: string;
@@ -496,12 +550,17 @@ interface RunTerminalEventRow {
 }
 
 /**
- * Extract `known_gaps` from a run's terminal event without scanning the
- * run's full event list. The single SQL lookup is bounded by the SQL
- * `LIMIT 1` clause; for runs without a terminal event yet (still in
- * progress, or controller_restarted), returns an empty list.
+ * Read a run's terminal-event payload (the `run.completed` / `run.failed` /
+ * `run.cancelled` spine event) without scanning the run's full event list. The
+ * single SQL lookup is bounded by the SQL `LIMIT 1` clause; for runs without a
+ * terminal event yet (still in progress, or controller_restarted), returns
+ * `null`.
+ *
+ * This is the single read both `known_gaps` and the runtime `collection_facts`
+ * block (the Tranche B per-stream fact block) ride on, so the projection reads
+ * the terminal payload once rather than issuing two spine queries.
  */
-async function extractKnownGapsForRun(runId: string): Promise<unknown[]> {
+async function readRunTerminalEventData(runId: string): Promise<Record<string, unknown> | null> {
   const row = isPostgresStorageBackend()
     ? ((
         await postgresQuery(
@@ -518,18 +577,94 @@ async function extractKnownGapsForRun(runId: string): Promise<unknown[]> {
       ).rows[0] as RunTerminalEventRow | undefined)
     : getOne<RunTerminalEventRow>(referenceQueries.spineGetRunTerminalEvent, [runId]);
   if (!row?.data_json) {
-    return [];
+    return null;
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(row.data_json);
   } catch {
-    return [];
+    return null;
   }
-  if (parsed && typeof parsed === "object" && Array.isArray((parsed as Record<string, unknown>).known_gaps)) {
-    return (parsed as { known_gaps: unknown[] }).known_gaps;
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    return parsed as Record<string, unknown>;
+  }
+  return null;
+}
+
+function readKnownGapsFromTerminalData(data: Record<string, unknown> | null): unknown[] {
+  if (data && Array.isArray(data.known_gaps)) {
+    return data.known_gaps;
   }
   return [];
+}
+
+/**
+ * Read the runtime `collection_facts` block (the Tranche B per-stream fact
+ * block) off a terminal-event payload. The runtime attaches only objective,
+ * run-local facts here (collected count, considered-or-`unknown`, checkpoint,
+ * skip, pending-detail-gap count) and stamps NO coverage condition or forward
+ * disposition — those are derived on read by the control-plane projection
+ * (`buildCollectionReport`). Returns `null` for an old run that predates the
+ * block, a `run.failed` that exited before the terminal builder ran, or any
+ * malformed payload — absence reads as "no facts", never as `complete`.
+ */
+function readCollectionFactsFromTerminalData(
+  data: Record<string, unknown> | null
+): RuntimeCollectionFacts | null {
+  if (!data) {
+    return null;
+  }
+  const block = data.collection_facts;
+  if (!block || typeof block !== "object" || Array.isArray(block)) {
+    return null;
+  }
+  const streams = (block as { streams?: unknown }).streams;
+  if (!Array.isArray(streams)) {
+    return null;
+  }
+  const entries: RuntimeCollectionFact[] = [];
+  for (const raw of streams) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      continue;
+    }
+    const entry = raw as Record<string, unknown>;
+    if (typeof entry.stream !== "string" || !entry.stream) {
+      continue;
+    }
+    entries.push({
+      stream: entry.stream,
+      collected: typeof entry.collected === "number" && Number.isFinite(entry.collected) ? entry.collected : 0,
+      // `considered` is OMITTED upstream when unknown. Re-validate defensively:
+      // anything not a safe non-negative integer reads as absent (`unknown`),
+      // never a fabricated denominator. (Spec: "Considered evidence is unreadable".)
+      considered:
+        typeof entry.considered === "number" &&
+        Number.isSafeInteger(entry.considered) &&
+        entry.considered >= 0
+          ? entry.considered
+          : null,
+      checkpoint: typeof entry.checkpoint === "string" ? entry.checkpoint : null,
+      pending_detail_gaps:
+        typeof entry.pending_detail_gaps === "number" && Number.isFinite(entry.pending_detail_gaps)
+          ? entry.pending_detail_gaps
+          : 0,
+      skipped: readCollectionFactSkip(entry.skipped),
+    });
+  }
+  return { streams: entries };
+}
+
+function readCollectionFactSkip(value: unknown): RuntimeCollectionFactSkip | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const skip = value as Record<string, unknown>;
+  const reason = typeof skip.reason === "string" ? skip.reason : null;
+  if (reason === null) {
+    return null;
+  }
+  const recoveryAction = typeof skip.recovery_action === "string" ? skip.recovery_action : null;
+  return { reason, ...(recoveryAction ? { recovery_action: recoveryAction } : {}) };
 }
 
 async function toConnectorRunSummary(summary: SpineSummary | null): Promise<ConnectorRunSummary | null> {
@@ -537,6 +672,7 @@ async function toConnectorRunSummary(summary: SpineSummary | null): Promise<Conn
     return null;
   }
   const runId = summary.id || summary.run_id || null;
+  const terminalData = runId ? await readRunTerminalEventData(runId) : null;
   return {
     run_id: runId || undefined,
     status: summary.status,
@@ -546,7 +682,8 @@ async function toConnectorRunSummary(summary: SpineSummary | null): Promise<Conn
     last_at: summary.last_at,
     event_count: summary.event_count,
     failure_reason: summary.failure?.reason || null,
-    known_gaps: runId ? await extractKnownGapsForRun(runId) : [],
+    known_gaps: readKnownGapsFromTerminalData(terminalData),
+    collection_facts: readCollectionFactsFromTerminalData(terminalData),
   };
 }
 
@@ -1167,6 +1304,229 @@ function buildCoverageEvidence(
     return { axis: localCoverage.axis, requiredButAccepted };
   }
   return { axis: runAxis, requiredButAccepted };
+}
+
+// ─── Per-stream Collection Report (Tranche C — derived on read) ───────────────
+//
+// `buildCollectionReport` is the control-plane projection half of the per-run
+// Collection Report (`define-connector-progress-evidence-contract`). It reads the
+// runtime `collection_facts` block (objective per-stream facts the runtime
+// stamped on the terminal event — collected count, considered-or-`unknown`,
+// checkpoint, skip, pending-detail-gap count) and DERIVES, on read, each stream's
+// coverage condition and forward disposition from those facts plus the
+// connection-level freshness / refresh-policy / open-attention evidence only this
+// layer holds. The runtime never stamped either derived axis; deriving on read
+// keeps the report honest as data ages.
+//
+// The load-bearing honesty mechanism is the per-stream coverage gate: a stream
+// that collected records, recorded no gaps, and declared NO considered
+// denominator reads `unknown` — never `complete`. The pure `deriveForwardDisposition`
+// back-stop then maps `unknown` -> `resumable`, so collected-count alone can never
+// be projected as a completed stream. This is the Collection Report's reason for
+// existing.
+
+/** Considered axis: a known non-negative integer denominator, or `unknown`. */
+type ConsideredAxis = number | "unknown";
+
+/** One derived per-stream Collection Report entry on the owner/control-plane surface. */
+export interface CollectionReportEntry {
+  readonly stream: string;
+  /** Raw per-stream collected count from the runtime fact block (never a verdict). */
+  readonly collected: number;
+  /** Known considered denominator, or `unknown` when the connector declared none. */
+  readonly considered: ConsideredAxis;
+  /** Committed-checkpoint status from the runtime fact block, or `unknown`. */
+  readonly checkpoint: string;
+  /** Count of pending recoverable detail gaps for this stream (locators stay in the detail-gap backlog). */
+  readonly pending_detail_gaps: number;
+  /** The `SKIP_RESULT` fact for this stream, or `null`. */
+  readonly skipped: RuntimeCollectionFactSkip | null;
+  /** Derived coverage condition from the canonical {@link CoverageAxis} vocabulary. */
+  readonly coverage_condition: CoverageAxis;
+  /** Derived forward disposition (what the next run is expected to do on this stream). */
+  readonly forward_disposition: ForwardDisposition;
+}
+
+/**
+ * Map a `SKIP_RESULT` reason / recovery action to a coverage condition that is
+ * consistent with the skip and is NEVER `complete`. A retryable skip (transient
+ * upstream pressure, or a `retry_by_runtime` recovery action) reads `retryable_gap`;
+ * an intentionally-deferred or out-of-scope skip reads `deferred`; an
+ * upstream-unavailable skip reads `unavailable`; a connector-cannot-collect skip
+ * reads `unsupported`; anything else with no recovery path reads `terminal_gap`.
+ * The manifest's declared `coverage_policy` (an accepted-coverage claim) takes
+ * precedence over this inference and is applied by the caller.
+ */
+function mapSkipCoverageCondition(skip: RuntimeCollectionFactSkip): CoverageAxis {
+  const reason = skip.reason.toLowerCase();
+  if (skip.recovery_action === "retry_by_runtime") {
+    return "retryable_gap";
+  }
+  if (/(429|rate|temporar|retry|upstream_pressure|pressure)/.test(reason)) {
+    return "retryable_gap";
+  }
+  if (/(out_of_scope|user_disabled|deferred|paused|postpon)/.test(reason)) {
+    return "deferred";
+  }
+  if (/(unavailable|not_available|blocked|locked|upstream)/.test(reason)) {
+    return "unavailable";
+  }
+  if (/(unsupported|not_supported|capability|incapable)/.test(reason)) {
+    return "unsupported";
+  }
+  return "terminal_gap";
+}
+
+/**
+ * Derive one stream's coverage condition from its runtime fact entry plus the
+ * stream's manifest policy. Precedence (first match wins), mirroring the honesty
+ * order the contract requires:
+ *
+ *   1. contradictory manifest (required AND accepted-absent)  -> the accepted axis
+ *   2. SKIP_RESULT present  -> manifest accepted-coverage axis, else skip-derived axis
+ *   3. pending recoverable detail gap(s)  -> `retryable_gap`
+ *   4. known considered denominator  -> `partial` (collected < considered)
+ *                                        else accepted axis / `complete`
+ *   5. unknown considered denominator (THE HONESTY GATE)  -> accepted axis / `unknown`
+ *
+ * `complete` is reached ONLY when a known considered denominator is satisfied; a
+ * collected-records / no-gaps / no-considered stream reads `unknown`, never
+ * `complete`. Staleness is NEVER encoded here — it is a freshness axis the
+ * disposition speaks to, not a coverage condition.
+ */
+function deriveStreamCoverageCondition(
+  fact: RuntimeCollectionFact,
+  manifestStream: ManifestStream | undefined
+): CoverageAxis {
+  const accepted = readAcceptedCoveragePolicy(manifestStream);
+  // 1. A required stream that also declares an accepted-absent policy is a
+  //    contradictory manifest; surface the accepted axis so it never paints
+  //    green (the connection-level rollup refuses to go healthy for the same
+  //    reason).
+  if (accepted !== null && manifestStream && isRequiredStream(manifestStream)) {
+    return accepted;
+  }
+  // 2. A skip is the connector's explicit statement that it did not collect the
+  //    stream. The manifest's accepted-coverage claim wins; otherwise infer a
+  //    skip-consistent, never-`complete` axis.
+  if (fact.skipped) {
+    return accepted ?? mapSkipCoverageCondition(fact.skipped);
+  }
+  // 3. A pending recoverable detail gap is a retryable boundary.
+  if (fact.pending_detail_gaps > 0) {
+    return "retryable_gap";
+  }
+  // 4. A known considered denominator distinguishes `partial` from covered.
+  if (fact.considered !== null) {
+    if (fact.collected < fact.considered) {
+      return "partial";
+    }
+    // Collected satisfies the considered denominator: covered. A declared
+    // accepted-coverage policy (e.g. `inventory_only`, `deferred`) is the more
+    // precise honest claim than a bare `complete`.
+    return accepted ?? "complete";
+  }
+  // 5. No considered denominator: absence of evidence, NOT proof of completeness.
+  //    A declared accepted-coverage policy is still honest (the manifest owes no
+  //    further data); otherwise the condition is `unknown` — never `complete`.
+  return accepted ?? "unknown";
+}
+
+/**
+ * Build the per-stream Collection Report for a connection: one derived entry per
+ * in-scope stream (the union of the manifest's declared streams and the streams
+ * the runtime fact block reported), each carrying a derived coverage condition and
+ * forward disposition. Pure: a function of the runtime fact block plus the
+ * connection-level freshness / attention / refresh evidence the projection already
+ * assembled. Derived on read — never frozen at run completion.
+ *
+ * Absence tolerances (each reads honestly, never as `complete`):
+ *   - no fact block (old run / failed-early / malformed)  -> one `unknown` entry
+ *     per manifest stream;
+ *   - a manifest stream missing from the fact block        -> honest zero entry
+ *     (`collected: 0`, `considered: unknown`, `checkpoint: unknown`);
+ *   - a malformed `considered`                             -> `unknown` (re-validated
+ *     defensively on read).
+ */
+export function buildCollectionReport(input: {
+  readonly collectionFacts: RuntimeCollectionFacts | null;
+  readonly manifestStreams: readonly ManifestStream[];
+  readonly freshness: FreshnessAxis;
+  readonly attentionOpen: boolean;
+  readonly refresh: ConnectionRefreshEvidence | null;
+}): CollectionReportEntry[] {
+  const factByStream = new Map<string, RuntimeCollectionFact>();
+  for (const fact of input.collectionFacts?.streams ?? []) {
+    if (!factByStream.has(fact.stream)) {
+      factByStream.set(fact.stream, fact);
+    }
+  }
+  const manifestByStream = new Map<string, ManifestStream>();
+  for (const stream of input.manifestStreams) {
+    if (stream && typeof stream.name === "string" && stream.name && !manifestByStream.has(stream.name)) {
+      manifestByStream.set(stream.name, stream);
+    }
+  }
+  // In-scope universe: manifest streams ∪ fact-block streams. A zero-record or
+  // unreported stream is an honest entry, never silently dropped (dropping reads
+  // as "not owed" when it is "unknown").
+  const inScope = new Set<string>([...manifestByStream.keys(), ...factByStream.keys()]);
+  const entries: CollectionReportEntry[] = [];
+  for (const stream of inScope) {
+    const fact: RuntimeCollectionFact = factByStream.get(stream) ?? {
+      stream,
+      collected: 0,
+      considered: null,
+      checkpoint: null,
+      pending_detail_gaps: 0,
+      skipped: null,
+    };
+    const manifestStream = manifestByStream.get(stream);
+    const coverageCondition = deriveStreamCoverageCondition(fact, manifestStream);
+    const forwardDisposition = deriveForwardDisposition({
+      coverage: coverageCondition,
+      gapRetryable: coverageCondition === "retryable_gap",
+      attentionOpen: input.attentionOpen,
+      freshness: input.freshness,
+      refresh: input.refresh,
+    });
+    entries.push({
+      stream,
+      collected: fact.collected,
+      considered: fact.considered === null ? "unknown" : fact.considered,
+      checkpoint: fact.checkpoint ?? "unknown",
+      pending_detail_gaps: fact.pending_detail_gaps,
+      skipped: fact.skipped,
+      coverage_condition: coverageCondition,
+      forward_disposition: forwardDisposition,
+    });
+  }
+  entries.sort((a, b) => (a.stream < b.stream ? -1 : a.stream > b.stream ? 1 : 0));
+  return entries;
+}
+
+/**
+ * Project the per-stream Collection Report from the assembly inputs both the list
+ * and detail surfaces already hold. The disposition's freshness and
+ * open-attention inputs are read from the SAME connection-health snapshot the
+ * headline is built from — `axes.freshness` and `axes.attention` — so a stream
+ * entry's `forward_disposition` never disagrees with the connection-level
+ * `forward_disposition` or the `needs_attention` pill. The refresh evidence is
+ * the same `buildRefreshEvidence(refreshPolicy)` the snapshot used.
+ */
+function projectCollectionReport(input: {
+  readonly lastRun: ConnectorRunSummary | null;
+  readonly connectionHealth: ConnectionHealthSnapshot;
+  readonly manifestStreams: readonly ManifestStream[];
+  readonly refreshPolicy: unknown;
+}): CollectionReportEntry[] {
+  return buildCollectionReport({
+    collectionFacts: input.lastRun?.collection_facts ?? null,
+    manifestStreams: input.manifestStreams,
+    freshness: input.connectionHealth.axes.freshness,
+    attentionOpen: input.connectionHealth.axes.attention !== "none",
+    refresh: buildRefreshEvidence(input.refreshPolicy),
+  });
 }
 
 /** Safe per-store coverage triple read from `coverage_diagnostics` records. */
@@ -2383,7 +2743,14 @@ export async function listConnectorSummaries(
         schedule,
       });
       const connectorDisplayName = manifest.display_name || connectorId;
+      const collectionReport = projectCollectionReport({
+        lastRun,
+        connectionHealth,
+        manifestStreams: manifest.streams ?? [],
+        refreshPolicy,
+      });
       return {
+        collection_report: collectionReport,
         connection_id: connectorInstanceId,
         connection_health: connectionHealth,
         connector_display_name: connectorDisplayName,
@@ -2462,8 +2829,15 @@ export async function getConnectorDetail(
     ),
     schedule,
   });
+  const collectionReport = projectCollectionReport({
+    lastRun,
+    connectionHealth,
+    manifestStreams: manifest.streams ?? [],
+    refreshPolicy,
+  });
   return {
     object: "ref_connector_detail",
+    collection_report: collectionReport,
     connection_id: connectorId,
     connection_health: connectionHealth,
     connector_id: connectorId,
