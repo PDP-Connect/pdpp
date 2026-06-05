@@ -39,11 +39,22 @@
 
 import { type CarryForwardCursor, openCarryForwardCursor } from "./fingerprint-cursor.ts";
 
-/** The three content-addressed PDF pointer fields carried across runs. */
+/** The content-addressed PDF pointer fields plus the positive content
+ *  fingerprint, carried across runs. The blob pointers
+ *  (`document_url`/`pdf_path`/`pdf_sha256`) point at bytes a prior run stored
+ *  and never move; the content fields (`pdf_text_sha256`/`pdf_page_count`) are
+ *  derived from those same bytes, so a previously-hydrated statement that fails
+ *  to re-download this run carries BOTH forward together — otherwise a
+ *  transient failure would drop the content fingerprint and flip the canonical
+ *  exclusion back to conservative for that run, re-versioning an immutable
+ *  statement. Content fields are optional so legacy persisted entries (written
+ *  before this field existed) decode cleanly. */
 export interface StatementHydration {
   document_url: string | null;
   pdf_path: string | null;
   pdf_sha256: string | null;
+  pdf_text_sha256?: string | null;
+  pdf_page_count?: number | null;
 }
 
 /** The all-null index-only triple a never-hydrated statement emits. */
@@ -51,6 +62,8 @@ export const NEVER_HYDRATED: StatementHydration = {
   document_url: null,
   pdf_path: null,
   pdf_sha256: null,
+  pdf_text_sha256: null,
+  pdf_page_count: null,
 };
 
 /** True iff this hydration entry carries a real (non-null) pointer. A prior
@@ -118,10 +131,13 @@ function coerceHydrationEntry(value: unknown): StatementHydration | null {
   }
   const v = value as Record<string, unknown>;
   const str = (x: unknown): string | null => (typeof x === "string" && x.length > 0 ? x : null);
+  const num = (x: unknown): number | null => (typeof x === "number" && Number.isFinite(x) && x > 0 ? x : null);
   return {
     document_url: str(v.document_url),
     pdf_path: str(v.pdf_path),
     pdf_sha256: str(v.pdf_sha256),
+    pdf_text_sha256: str(v.pdf_text_sha256),
+    pdf_page_count: num(v.pdf_page_count),
   };
 }
 

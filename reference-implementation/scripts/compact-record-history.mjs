@@ -133,6 +133,13 @@ const { Pool } = pg;
  *     connector excludes it (a08d7a0a — without exclusion the connector
  *     gate would never fire and the 31k-version workspace churn would
  *     not stop).
+ *   - `resolveExcludeKeys` (optional): a per-record function `(record) =>
+ *     string[]` that computes the exclusion list for each individual record.
+ *     Takes precedence over `excludeKeys` when present. Used by content-gated
+ *     streams (PDF statements) whose exclusion depends on whether the record
+ *     carries a positive content fingerprint. Must mirror the connector-side
+ *     `resolveExcludeFromFingerprint` exactly so a "removable historical
+ *     version" classification matches the connector's "no-op emit".
  *   - `connectorSource`: the connector file the policy mirrors. Pure
  *     documentation; not consumed at runtime.
  *   - `changeModel` (optional): the per-stream change model. Only
@@ -232,13 +239,28 @@ export const COMPACTION_POLICIES = [
     // (pdf_path/pdf_sha256/document_url) are content-addressed (the path
     // embeds the sha256 prefix), so the only field that moved was
     // `fetched_at`. The connector now gates emit through a per-statement
-    // fingerprint cursor with excludeFromFingerprint ["fetched_at"]; this
-    // policy mirrors that exclusion one-for-one.
+    // fingerprint cursor with resolveExcludeFromFingerprint; this policy
+    // mirrors that content-gated rule one-for-one:
+    //   - both content fields present → exclude blob/acquisition-identity
+    //     fields + run clock (lossless: positive content signal remains);
+    //   - either absent → exclude only `fetched_at` (conservative fallback).
+    // Canonical mode enabled: statements are immutable_semantic once
+    // content fields are present; blob churn is the only field movement.
     connectorIds: ['usaa', 'https://registry.pdpp.org/connectors/usaa'],
     stream: 'statements',
     excludeKeys: ['fetched_at'],
+    resolveExcludeKeys: (record) => {
+      const textSha = record.pdf_text_sha256;
+      const pageCount = record.pdf_page_count;
+      return typeof textSha === 'string' && textSha.length > 0 &&
+        typeof pageCount === 'number' && pageCount > 0
+        ? ['pdf_sha256', 'pdf_path', 'document_url', 'fetched_at']
+        : ['fetched_at'];
+    },
+    changeModel: 'immutable_semantic',
+    representativePolicy: 'current',
     connectorSource:
-      'packages/polyfill-connectors/connectors/usaa/index.ts:emitStatementRecords → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
+      'packages/polyfill-connectors/connectors/usaa/index.ts:emitStatementRecords → openFingerprintCursor({resolveExcludeFromFingerprint:statementFingerprintExcludeKeys}) → src/statement-content-fingerprint.ts:statementFingerprintExcludeKeys (canonical)',
   },
   {
     // `accounts` carried a run-clock `fetched_at` and ALL balance fields
@@ -258,17 +280,31 @@ export const COMPACTION_POLICIES = [
     // `statements` (Chase) carried a run-clock `fetched_at`. A statement's
     // identity (id = shortHash(account_reference|date_delivered|title)) is
     // immutable and its hydrated fields (document_url/pdf_path/pdf_sha256)
-    // are content-addressed (the path embeds the sha256), so the only field
-    // that moved between runs was `fetched_at` (~10 versions/record of pure
-    // run-clock churn). The connector now gates emit through a
-    // per-statement fingerprint cursor with excludeFromFingerprint
-    // ["fetched_at"]; this policy mirrors that exclusion one-for-one. This
-    // is the exact shape of the already-registered usaa/statements policy.
+    // are content-addressed (path embeds sha256), and Chase re-encrypts the
+    // PDF per download so pdf_sha256/pdf_path/document_url churn with no
+    // content change. The connector now gates emit through a per-statement
+    // fingerprint cursor with resolveExcludeFromFingerprint; this policy
+    // mirrors that content-gated rule one-for-one:
+    //   - both content fields present → exclude blob/acquisition-identity
+    //     fields + run clock (lossless: positive content signal remains);
+    //   - either absent → exclude only `fetched_at` (conservative fallback).
+    // Canonical mode enabled: RC4 re-encryption churn is the only movement
+    // once content fields are present.
     connectorIds: ['chase', 'https://registry.pdpp.org/connectors/chase'],
     stream: 'statements',
     excludeKeys: ['fetched_at'],
+    resolveExcludeKeys: (record) => {
+      const textSha = record.pdf_text_sha256;
+      const pageCount = record.pdf_page_count;
+      return typeof textSha === 'string' && textSha.length > 0 &&
+        typeof pageCount === 'number' && pageCount > 0
+        ? ['pdf_sha256', 'pdf_path', 'document_url', 'fetched_at']
+        : ['fetched_at'];
+    },
+    changeModel: 'immutable_semantic',
+    representativePolicy: 'current',
     connectorSource:
-      'packages/polyfill-connectors/connectors/chase/index.ts:processStatementRow+emitStatementIndexOnly → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
+      'packages/polyfill-connectors/connectors/chase/index.ts:processStatementRow+emitStatementIndexOnly → openFingerprintCursor({resolveExcludeFromFingerprint:statementFingerprintExcludeKeys}) → src/statement-content-fingerprint.ts:statementFingerprintExcludeKeys (canonical)',
   },
   {
     // `transactions` (Chase) carried a run-clock `fetched_at`. A posted
@@ -783,13 +819,19 @@ function stableStringify(value, exclude) {
 export function selectRemovableVersions(rows, currentVersion, policy, mode = 'audit') {
   if (!rows.length) return [];
 
-  const excludeKeys = policy.excludeKeys || [];
+  const staticExcludeKeys = policy.excludeKeys || [];
+  const resolveExcludeKeys = policy.resolveExcludeKeys;
 
   // Pre-compute fingerprints once per row.
   const enriched = rows.map((r) => ({
     version: Number(r.version),
     deleted: !!r.deleted,
-    fingerprint: r.deleted ? TOMBSTONE_FP : recordFingerprint(r.record_json || {}, excludeKeys),
+    fingerprint: r.deleted
+      ? TOMBSTONE_FP
+      : recordFingerprint(
+          r.record_json || {},
+          resolveExcludeKeys ? resolveExcludeKeys(r.record_json || {}) : staticExcludeKeys,
+        ),
   }));
 
   if (mode === 'canonical') {

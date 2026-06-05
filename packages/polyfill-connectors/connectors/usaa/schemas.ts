@@ -110,11 +110,21 @@ export const statementSchema = z.object({
   document_url: z.url().nullable(),
   // Local file path (file:// URL) or blob reference
   pdf_path: z.string().min(1).max(500).nullable(),
-  // SHA-256 = 64 hex chars
+  // SHA-256 of the RAW PDF bytes = 64 hex chars. Blob content-address, NOT the
+  // content fingerprint — re-encrypted per download, so it churns on no-op
+  // re-fetches.
   pdf_sha256: z
     .string()
     .regex(/^[0-9a-f]{64}$/i, "must be SHA-256 hex")
     .nullable(),
+  // Positive content fingerprint: SHA-256 of the normalized extracted PDF text.
+  // Stable across raw-byte churn; null when text extraction failed/empty.
+  pdf_text_sha256: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/i, "must be SHA-256 hex")
+    .nullable(),
+  // Integer page count from the PDF structure; null when extraction failed.
+  pdf_page_count: z.number().int().positive().nullable(),
   fetched_at: isoTimestamp,
 });
 

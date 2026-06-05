@@ -48,6 +48,10 @@ import {
 } from "../../src/connector-runtime.ts";
 import { attachDownloadQueue } from "../../src/download-queue.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
+import {
+  extractStatementContentFingerprint,
+  statementFingerprintExcludeKeys,
+} from "../../src/statement-content-fingerprint.ts";
 import type { CaptureSession, LocatorProbe } from "../../src/fixture-capture.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { savePlaywrightDownload } from "../../src/playwright-download.ts";
@@ -779,7 +783,14 @@ async function downloadStatementPdf(
     await writeFile(pdfPath, buffer);
   }
 
-  return { ok: true, pdfPath, pdfSha256 };
+  // Positive content fingerprint over the decrypted text + page count. Chase
+  // statement PDFs are RC4-encrypted and re-encrypted per download, so
+  // `pdf_sha256` (and the path/url that embed it) churns with no content
+  // change; this content fingerprint is what makes excluding those blob fields
+  // from the canonical fingerprint lossless. Fail-closed to all-null.
+  const content = await extractStatementContentFingerprint(buffer);
+
+  return { ok: true, pdfPath, pdfSha256, content };
 }
 
 async function capturePageCheckpoint(
@@ -1320,7 +1331,7 @@ export async function emitStatementIndexOnly(
 ): Promise<StatementHydration> {
   const carried: StatementHydration = hydrationCursor
     ? hydrationCursor.resolveOnFailure(id)
-    : { document_url: null, pdf_path: null, pdf_sha256: null };
+    : { document_url: null, pdf_path: null, pdf_sha256: null, pdf_text_sha256: null, pdf_page_count: null };
   const record = {
     id,
     account_id: accountId,
@@ -1330,6 +1341,8 @@ export async function emitStatementIndexOnly(
     document_url: carried.document_url,
     pdf_path: carried.pdf_path,
     pdf_sha256: carried.pdf_sha256,
+    pdf_text_sha256: carried.pdf_text_sha256 ?? null,
+    pdf_page_count: carried.pdf_page_count ?? null,
     fetched_at: deps.emittedAt,
   };
   // Record the resolved pointers (carried or all-null) so the next run's
@@ -1837,14 +1850,20 @@ async function processStatementRow(
       document_url: fileUrl(dlResult.pdfPath),
       pdf_path: dlResult.pdfPath,
       pdf_sha256: dlResult.pdfSha256,
+      pdf_text_sha256: dlResult.content.pdf_text_sha256,
+      pdf_page_count: dlResult.content.pdf_page_count,
       fetched_at: deps.emittedAt,
     };
     // Record this run's fresh hydration so a later run that fails to
-    // re-download can carry these content-addressed pointers forward.
+    // re-download can carry these content-addressed pointers AND the positive
+    // content fingerprint forward (so a transient failure does not drop the
+    // content fields and flip the canonical exclusion back to conservative).
     hydrationCursor?.note(id, {
       document_url: record.document_url,
       pdf_path: record.pdf_path,
       pdf_sha256: record.pdf_sha256,
+      pdf_text_sha256: record.pdf_text_sha256,
+      pdf_page_count: record.pdf_page_count,
     });
     // Gate on a per-statement fingerprint that excludes the run-clock
     // `fetched_at`. A statement's identity (id = hash(account_reference|
@@ -2102,12 +2121,15 @@ if (isMainModule(import.meta.url)) {
 
         // Statements: navigate to Statements & Documents, enumerate rows,
         // download each PDF, emit one record per statement with
-        // content-addressed path. Per-statement fingerprint cursor
-        // (excludes the run-clock `fetched_at`) so an unchanged statement
-        // stops appending a new version every run.
+        // content-addressed path. Content-gated per-statement fingerprint
+        // cursor: when the record carries a positive content fingerprint
+        // (pdf_text_sha256 + pdf_page_count), the blob/acquisition-identity
+        // fields are excluded too, so an RC4 re-encryption re-download with
+        // unchanged content is a no-op; when absent (legacy/index-only) only
+        // `fetched_at` is excluded (conservative fallback).
         if (deps.wantsStatements) {
           const statementsFingerprintCursor = openFingerprintCursor(startState.statements, {
-            excludeFromFingerprint: ["fetched_at"],
+            resolveExcludeFromFingerprint: statementFingerprintExcludeKeys,
             priorFingerprints: readPriorStatementFingerprints(startState),
           });
           // Carry-forward of prior hydrated PDF pointers: seeded from the

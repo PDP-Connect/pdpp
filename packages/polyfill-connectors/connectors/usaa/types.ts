@@ -6,6 +6,7 @@ import type { Locator } from "playwright";
 import type { BodyResponseDiagnostics } from "../../src/browser-artifact-response.ts";
 import type { RecordData } from "../../src/connector-runtime.ts";
 import type { CaptureSession } from "../../src/fixture-capture.ts";
+import type { StatementContentFingerprint } from "../../src/statement-content-fingerprint.ts";
 
 // ─── Statements index row ────────────────────────────────────────────────
 
@@ -89,8 +90,10 @@ export interface StatementRecord extends RecordData {
   document_url: string | null;
   fetched_at: string;
   id: string;
+  pdf_page_count: number | null;
   pdf_path: string | null;
   pdf_sha256: string | null;
+  pdf_text_sha256: string | null;
   title: string | null;
 }
 
@@ -191,6 +194,7 @@ export interface IndexRow extends StatementRow {
 
 export interface HydrationResultSuccess {
   buffer: Buffer;
+  content: StatementContentFingerprint;
   pdfPath: string;
   pdfSha256: string;
 }
@@ -322,6 +326,7 @@ export type DownloadResult = DownloadOk | DownloadFail;
 
 export interface HydratedStatement {
   buffer: Buffer;
+  content: StatementContentFingerprint;
   pdfPath: string;
   pdfSha256: string;
   statement: StatementRow;

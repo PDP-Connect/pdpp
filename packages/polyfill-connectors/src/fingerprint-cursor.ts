@@ -119,6 +119,13 @@ export interface FingerprintCursorOptions {
    *  changed". Without exclusion, the fingerprint would never match across
    *  runs even when the source has not moved. */
   excludeFromFingerprint?: readonly string[];
+  /** Compute the exclusion list per record instead of using one static list.
+   *  Used by content-gated streams (PDF statements) whose exclusion depends on
+   *  whether the record carries a positive content fingerprint: the gate moves
+   *  the boundary between "blob/acquisition churn is a no-op" and "no positive
+   *  signal, stay conservative" on a per-record basis. When provided, this
+   *  takes precedence over `excludeFromFingerprint` for every record. */
+  resolveExcludeFromFingerprint?: (record: Record<string, unknown>) => readonly string[];
   /** Optional pre-decoded prior fingerprint map. Use this when the caller
    *  has already pulled the map out of a non-standard cursor shape. If
    *  omitted, the cursor decodes `priorState` itself with the tolerant
@@ -193,7 +200,8 @@ export function recordFingerprint(record: Record<string, unknown>, excludeKeys: 
  *  The cursor is seeded by copying the prior map into the next map so a
  *  record skipped this run still surfaces in the next STATE write. */
 export function openFingerprintCursor(priorState: unknown, options: FingerprintCursorOptions = {}): FingerprintCursor {
-  const excludeKeys = options.excludeFromFingerprint ?? [];
+  const staticExcludeKeys = options.excludeFromFingerprint ?? [];
+  const resolveExcludeKeys = options.resolveExcludeFromFingerprint;
   const prior = options.priorFingerprints ?? decodePriorFingerprints(priorState);
   // The hashed-record specialization is layer 1 (compute the fingerprint,
   // compare against prior) over the shared `T = string` carry-forward
@@ -210,7 +218,9 @@ export function openFingerprintCursor(priorState: unknown, options: FingerprintC
       if (id.length === 0) {
         return true;
       }
-      const fingerprint = recordFingerprint(data as Record<string, unknown>, excludeKeys);
+      const record = data as Record<string, unknown>;
+      const excludeKeys = resolveExcludeKeys ? resolveExcludeKeys(record) : staticExcludeKeys;
+      const fingerprint = recordFingerprint(record, excludeKeys);
       cursor.note(id, fingerprint);
       return cursor.prior(id) !== fingerprint;
     },

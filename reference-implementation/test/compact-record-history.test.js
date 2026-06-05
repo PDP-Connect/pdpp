@@ -610,11 +610,17 @@ test('COMPACTION_MODES is exactly [audit, canonical] and audit is the default of
   assert.equal(parseMode(true), 'invalid', 'a bare --mode flag (boolean) is invalid');
 });
 
-test('chase/transactions is the ONLY canonical-eligible policy in this slice (task 2.1/2.3)', () => {
+test('canonical-eligible policies are exactly chase/transactions + chase/statements + usaa/statements (task 2.1/2.3)', () => {
   const eligible = COMPACTION_POLICIES.filter(isCanonicalEligible).map(
     (p) => `${p.connectorIds[0]}/${p.stream}`,
   );
-  assert.deepEqual(eligible, ['chase/transactions'], 'exactly one canonical-eligible stream this tranche');
+  // chase/statements and usaa/statements join chase/transactions as canonical-eligible
+  // (add-statement-content-fingerprint — content-gated exclusion makes them immutable_semantic).
+  assert.deepEqual(
+    eligible.sort(),
+    ['chase/statements', 'chase/transactions', 'usaa/statements'].sort(),
+    'exactly these three streams are canonical-eligible',
+  );
 });
 
 test('chase/transactions declares the canonical policy fields exactly (task 2.1)', () => {
@@ -627,17 +633,19 @@ test('chase/transactions declares the canonical policy fields exactly (task 2.1)
   assert.ok(isCanonicalEligible(p));
 });
 
-test('no other Chase/USAA/Amazon/ChatGPT/agent/point-in-time stream is canonical-eligible (task 2.3)', () => {
-  // Every registered policy except chase/transactions must be canonical-INELIGIBLE
-  // (missing both fields). This is the fail-closed guarantee for the whole
-  // registry, pinned so a future edit cannot silently widen canonical scope.
+test('no other stream beyond the three approved canonical policies is canonical-eligible (task 2.3)', () => {
+  // Only these three streams may be canonical-eligible. Every other registered
+  // policy must be canonical-INELIGIBLE (missing both fields). This is the
+  // fail-closed guarantee for the whole registry, pinned so a future edit
+  // cannot silently widen canonical scope.
+  const APPROVED_CANONICAL = new Set(['chase/transactions', 'chase/statements', 'usaa/statements']);
   for (const p of COMPACTION_POLICIES) {
     const pair = `${p.connectorIds[0]}/${p.stream}`;
-    if (pair === 'chase/transactions') continue;
+    if (APPROVED_CANONICAL.has(pair)) continue;
     assert.equal(
       isCanonicalEligible(p),
       false,
-      `${pair} must NOT be canonical-eligible in this slice`,
+      `${pair} must NOT be canonical-eligible`,
     );
     assert.equal(p.changeModel, undefined, `${pair} must not declare changeModel`);
     assert.equal(p.representativePolicy, undefined, `${pair} must not declare representativePolicy`);

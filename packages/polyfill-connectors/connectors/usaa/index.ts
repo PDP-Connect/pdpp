@@ -42,6 +42,7 @@ import {
 } from "../../src/connector-runtime.ts";
 import { attachDownloadQueue, type DownloadQueue } from "../../src/download-queue.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
+import { statementFingerprintExcludeKeys } from "../../src/statement-content-fingerprint.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { readPlaywrightDownloadBufferDetailed } from "../../src/playwright-download.ts";
 import {
@@ -640,11 +641,17 @@ export async function emitStatementRecords(
     // else stay all-null.
     let pointers: StatementHydration;
     if (ok) {
-      pointers = { document_url: fileUrlForPath(ok.pdfPath), pdf_path: ok.pdfPath, pdf_sha256: ok.pdfSha256 };
+      pointers = {
+        document_url: fileUrlForPath(ok.pdfPath),
+        pdf_path: ok.pdfPath,
+        pdf_sha256: ok.pdfSha256,
+        pdf_text_sha256: ok.content.pdf_text_sha256,
+        pdf_page_count: ok.content.pdf_page_count,
+      };
     } else if (hydrationCursor) {
       pointers = hydrationCursor.resolveOnFailure(row.id);
     } else {
-      pointers = { document_url: null, pdf_path: null, pdf_sha256: null };
+      pointers = { document_url: null, pdf_path: null, pdf_sha256: null, pdf_text_sha256: null, pdf_page_count: null };
     }
     coverageRows.push({ id: row.id, isCandidate: shouldParseStatementTitle(row.title), pointers });
     const rec: StatementRecord = {
@@ -656,6 +663,8 @@ export async function emitStatementRecords(
       document_url: pointers.document_url,
       pdf_sha256: pointers.pdf_sha256,
       pdf_path: pointers.pdf_path,
+      pdf_text_sha256: pointers.pdf_text_sha256 ?? null,
+      pdf_page_count: pointers.pdf_page_count ?? null,
       fetched_at: nowIso(),
     };
     // Record the resolved pointers (fresh, carried, or all-null) so the
@@ -1796,6 +1805,7 @@ async function hydratePdfsForIndex(deps: StatementsSubDeps, indexRows: readonly 
       results.set(h.statement.rowIndex, {
         pdfPath: h.pdfPath,
         pdfSha256: h.pdfSha256,
+        content: h.content,
         buffer: h.buffer,
       });
     }
@@ -2319,7 +2329,13 @@ if (isMainModule(import.meta.url)) {
       if ((requested.has("statements") || requested.has("transactions")) && !streamState.sessionDeadMidRun) {
         const statementsFingerprintCursor = requested.has("statements")
           ? openFingerprintCursor(state.statements, {
-              excludeFromFingerprint: ["fetched_at"],
+              // Content-gated: when the record carries a positive content
+              // fingerprint (pdf_text_sha256 + pdf_page_count), the blob/
+              // acquisition-identity fields are excluded too, so an RC4-style
+              // re-encryption re-download with unchanged content is a no-op;
+              // when the content fields are absent (legacy/index-only), only
+              // `fetched_at` is excluded (conservative fallback).
+              resolveExcludeFromFingerprint: statementFingerprintExcludeKeys,
               priorFingerprints: readPriorStatementFingerprints(state),
             })
           : undefined;
