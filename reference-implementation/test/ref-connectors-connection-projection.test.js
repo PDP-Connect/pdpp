@@ -8,6 +8,7 @@ import { closeDb, getDb, initDb } from '../server/db.js';
 import { getConnectorSummaryForRoute, listConnectorSummaries } from '../server/ref-control.ts';
 import { rebuildRetainedSize } from '../server/retained-size-read-model.js';
 import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { getDefaultConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.js';
 
 const CONNECTOR_ID = 'https://test.pdpp.dev/connectors/connection-first-records';
 const WORK_INSTANCE_ID = 'cin_test_connection_first_work';
@@ -287,4 +288,64 @@ test('getConnectorSummaryForRoute returns null when nothing resolves', withTmpDb
   await seedInstances({ sourceKind: 'manual' });
   const scoped = await getConnectorSummaryForRoute('cin_does_not_exist');
   assert.equal(scoped, null);
+}));
+
+// End-to-end proof for `surface-source-pressure-detail-gap-backlog` task 2.3:
+// the snapshot's `detail_gap_backlog.recovered` is populated from the store's
+// reason-scoped count-by-status aggregate (not fabricated, not aliased to
+// pending). This drives the REAL default detail-gap store through
+// `getConnectorDetailGapProjection`, so it proves the store → projection →
+// snapshot wiring, not just the pure derivation (covered separately in
+// connection-health-source-pressure-backlog.test.js).
+test('connection summary surfaces a recovered count from the durable count-by-status aggregate', withTmpDb(async () => {
+  seedConnector();
+  await seedInstances({ sourceKind: 'manual' });
+
+  const gapStore = getDefaultConnectorDetailGapStore();
+  // One still-pending source-pressure gap on the WORK connection...
+  await gapStore.upsertPendingGap({
+    connectorId: CONNECTOR_ID,
+    connectorInstanceId: WORK_INSTANCE_ID,
+    grantId: 'grant_1',
+    stream: 'messages',
+    recordKey: 'pending_conv',
+    reason: 'upstream_pressure',
+  });
+  // ...two recovered source-pressure gaps (across both connections — the count
+  // is connector-wide, matching the pending read's scope)...
+  for (const [instanceId, recordKey] of [
+    [WORK_INSTANCE_ID, 'recovered_conv_1'],
+    [PERSONAL_INSTANCE_ID, 'recovered_conv_2'],
+  ]) {
+    const gap = await gapStore.upsertPendingGap({
+      connectorId: CONNECTOR_ID,
+      connectorInstanceId: instanceId,
+      grantId: 'grant_1',
+      stream: 'messages',
+      recordKey,
+      reason: 'rate_limited',
+    });
+    await gapStore.markGapStatus(gap.gap_id, 'recovered', { runId: 'run_recovery' });
+  }
+  // ...and a recovered NON-source-pressure gap that must NOT inflate the count.
+  const offReason = await gapStore.upsertPendingGap({
+    connectorId: CONNECTOR_ID,
+    connectorInstanceId: WORK_INSTANCE_ID,
+    grantId: 'grant_1',
+    stream: 'messages',
+    recordKey: 'off_reason_conv',
+    reason: 'temporary_unavailable',
+  });
+  await gapStore.markGapStatus(offReason.gap_id, 'recovered', { runId: 'run_recovery' });
+
+  const summaries = await listConnectorSummaries();
+  const work = summaries.find((row) => row.connector_instance_id === WORK_INSTANCE_ID);
+  assert.ok(work, 'work connection projects a summary');
+
+  const backlog = work.connection_health.detail_gap_backlog;
+  assert.notEqual(backlog, null, 'a readable store yields a non-null backlog rollup');
+  assert.equal(backlog.recovered, 2, 'recovered counts only recovered source-pressure gaps, connector-wide');
+  assert.equal(backlog.pending, 1, 'pending is the still-pending source-pressure gap, distinct from recovered');
+  // recovered must be a real count, never aliased to pending.
+  assert.notEqual(backlog.recovered, backlog.pending);
 }));

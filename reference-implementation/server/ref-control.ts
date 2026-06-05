@@ -33,7 +33,10 @@ import {
   type OutboxStalledCause,
   rollupOutboxDiagnosticCounts,
 } from "../runtime/connection-health.ts";
-import type { PendingPressureGap } from "../runtime/scheduler-source-pressure-cooldown.ts";
+import {
+  type PendingPressureGap,
+  SOURCE_PRESSURE_GAP_REASONS,
+} from "../runtime/scheduler-source-pressure-cooldown.ts";
 import { getConnectorManifest } from "./auth.js";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
@@ -303,10 +306,21 @@ interface DetailGapProjection {
    * source-pressure backlog `pending`) is a floor, not an exact total.
    */
   readonly readLimit: number;
+  /**
+   * Exact count of source-pressure detail gaps in the `recovered` status for
+   * this connector, in the same connector-wide + reason scope as the pending
+   * read. `null` when no count-by-status aggregate could be run (the store does
+   * not expose it, or the aggregate failed) — never a fabricated `0`.
+   */
+  readonly recovered: number | null;
   readonly unreliable: boolean;
 }
 
 interface ConnectorDetailGapStoreLike {
+  countGapsByStatusForConnector?: (
+    connectorId: string,
+    options: { status: string; reasons?: readonly string[] | null }
+  ) => Promise<number> | number;
   listPendingGaps(input: {
     connectorId: string;
     connectorInstanceId?: string;
@@ -875,10 +889,47 @@ async function getConnectorDetailGapProjection(
     return {
       gaps,
       readLimit: DETAIL_GAP_PROJECTION_LIMIT,
+      recovered: await getRecoveredSourcePressureGapCount(store, connectorId),
       unreliable: false,
     };
   } catch {
-    return { gaps: [], readLimit: DETAIL_GAP_PROJECTION_LIMIT, unreliable: true };
+    return { gaps: [], readLimit: DETAIL_GAP_PROJECTION_LIMIT, recovered: null, unreliable: true };
+  }
+}
+
+/**
+ * Optional `recovered` count for the source-pressure backlog rollup: an exact,
+ * reason-scoped, connector-wide count of detail gaps that have reached the
+ * `recovered` status. This is the count-by-status analogue of the pending read
+ * — same connector scope, same `SOURCE_PRESSURE_GAP_REASONS` reason scope —
+ * and returns only a scalar integer (no row bodies, locators, or payloads).
+ *
+ * Honest about absence and decoupled from the pending read:
+ *   - `null` when the store does not expose the aggregate (older / mock stores),
+ *     so the rollup reports `recovered: null` (unmeasured) rather than `0`.
+ *   - `null` when the aggregate throws, independently of whether the pending
+ *     read succeeded — a recovered-count failure never flips the pending count
+ *     to unreliable, and a pending-read success never fabricates a recovered 0.
+ */
+async function getRecoveredSourcePressureGapCount(
+  store: ConnectorDetailGapStoreLike,
+  connectorId: string
+): Promise<number | null> {
+  if (typeof store.countGapsByStatusForConnector !== "function") {
+    return null;
+  }
+  try {
+    const recovered = await Promise.resolve(
+      store.countGapsByStatusForConnector(connectorId, {
+        status: "recovered",
+        reasons: [...SOURCE_PRESSURE_GAP_REASONS],
+      })
+    );
+    return typeof recovered === "number" && Number.isFinite(recovered) && recovered >= 0
+      ? Math.floor(recovered)
+      : null;
+  } catch {
+    return null;
   }
 }
 
@@ -2554,6 +2605,14 @@ export function projectConnectorSummaryConnectionHealth(input: {
    */
   readonly pendingDetailGapsReadLimit?: number | null;
   /**
+   * Optional recovered-gap count from the store's reason-scoped
+   * count-by-status aggregate, in the same connector + source-pressure reason
+   * scope as {@link pendingDetailGaps}. `null`/absent when no aggregate was run
+   * (the rollup then reports `recovered: null`, unmeasured — never a fabricated
+   * `0`).
+   */
+  readonly pendingDetailGapsRecovered?: number | null;
+  /**
    * Pre-projected browser-surface evidence for the connection. The list
    * and detail operations read it via
    * {@link getConnectorBrowserSurfaceProjection}; tests pass synthetic
@@ -2636,7 +2695,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
   const detailGapBacklog: ConnectionDetailGapBacklogEvidence = {
     pendingGaps: mapPendingPressureGaps(pendingDetailGaps),
     readLimit: input.pendingDetailGapsReadLimit ?? null,
-    recovered: null,
+    recovered: input.pendingDetailGapsRecovered ?? null,
     unreadable: input.pendingDetailGapsUnreliable === true,
   };
   return computeConnectionHealth({
@@ -2890,6 +2949,7 @@ async function projectConnectorSummaryForInstance(
     outbox: { axis: outbox.axis, cause: outbox.cause },
     pendingDetailGaps: detailGaps.gaps,
     pendingDetailGapsReadLimit: detailGaps.readLimit,
+    pendingDetailGapsRecovered: detailGaps.recovered,
     pendingDetailGapsUnreliable: detailGaps.unreliable,
     refreshPolicy,
     remoteSurface: remoteSurface.evidence,
@@ -3031,6 +3091,7 @@ export async function getConnectorDetail(
     outbox: { axis: outbox.axis, cause: outbox.cause },
     pendingDetailGaps: detailGaps.gaps,
     pendingDetailGapsReadLimit: detailGaps.readLimit,
+    pendingDetailGapsRecovered: detailGaps.recovered,
     pendingDetailGapsUnreliable: detailGaps.unreliable,
     refreshPolicy,
     remoteSurface: remoteSurface.evidence,

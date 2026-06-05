@@ -389,6 +389,98 @@ test('listPendingGapsForConnector returns gaps across every connector instance f
   assert.deepEqual(afterRecovery.map((gap) => gap.gap_id), [home.gap_id]);
 }));
 
+// Reason-scoped count-by-status aggregate backing the source-pressure backlog
+// rollup's optional `recovered` count
+// (`surface-source-pressure-detail-gap-backlog`). It is connector-wide (every
+// instance), exact (a real COUNT(*), never a floor), status-scoped, and
+// reason-scoped to source pressure — the count-by-status analogue of the
+// connector-wide pending read the projection already does.
+async function seedRecoveredCountFixture(store, connectorId) {
+  // Two recovered source-pressure gaps across two different instances...
+  const a = await store.upsertPendingGap({
+    connectorId,
+    connectorInstanceId: 'cin_recovered_a',
+    grantId: 'grant_1',
+    stream: 'messages',
+    recordKey: 'conv_a',
+    reason: 'upstream_pressure',
+  });
+  const b = await store.upsertPendingGap({
+    connectorId,
+    connectorInstanceId: 'cin_recovered_b',
+    grantId: 'grant_1',
+    stream: 'messages',
+    recordKey: 'conv_b',
+    reason: 'rate_limited',
+  });
+  await store.markGapStatus(a.gap_id, 'recovered', { runId: 'run_r1' });
+  await store.markGapStatus(b.gap_id, 'recovered', { runId: 'run_r2' });
+  // ...a recovered gap with a NON-source-pressure reason (must NOT be counted)...
+  const c = await store.upsertPendingGap({
+    connectorId,
+    connectorInstanceId: 'cin_recovered_c',
+    grantId: 'grant_1',
+    stream: 'messages',
+    recordKey: 'conv_c',
+    reason: 'temporary_unavailable',
+  });
+  await store.markGapStatus(c.gap_id, 'recovered', { runId: 'run_r3' });
+  // ...and a still-PENDING source-pressure gap (different status, must NOT be
+  // counted by the recovered aggregate but proves status scoping).
+  await store.upsertPendingGap({
+    connectorId,
+    connectorInstanceId: 'cin_recovered_d',
+    grantId: 'grant_1',
+    stream: 'messages',
+    recordKey: 'conv_d',
+    reason: 'upstream_pressure',
+  });
+}
+
+async function assertRecoveredCountAggregate(store, connectorId) {
+  // Recovered + source-pressure only: a (upstream_pressure) + b (rate_limited).
+  const recovered = await store.countGapsByStatusForConnector(connectorId, {
+    status: 'recovered',
+    reasons: ['rate_limited', 'upstream_pressure'],
+  });
+  assert.equal(recovered, 2, 'counts only recovered source-pressure gaps across every instance');
+
+  // The pending source-pressure gap proves the status filter: it is NOT in the
+  // recovered count, but IS in the pending count (same reason scope).
+  const pending = await store.countGapsByStatusForConnector(connectorId, {
+    status: 'pending',
+    reasons: ['rate_limited', 'upstream_pressure'],
+  });
+  assert.equal(pending, 1, 'status scope excludes recovered rows from the pending count');
+
+  // Without a reason scope, the non-source-pressure recovered gap is included
+  // (3 recovered total: a, b, c) — proving the reason filter is what excludes it
+  // above, not some unrelated narrowing.
+  const recoveredAnyReason = await store.countGapsByStatusForConnector(connectorId, {
+    status: 'recovered',
+  });
+  assert.equal(recoveredAnyReason, 3, 'no reason scope counts every recovered reason');
+
+  // A connector with no rows drains to a real exact 0 (never null/NaN).
+  const empty = await store.countGapsByStatusForConnector('no_such_connector', {
+    status: 'recovered',
+    reasons: ['rate_limited', 'upstream_pressure'],
+  });
+  assert.equal(empty, 0, 'an unmatched connector yields an exact 0, not a fabricated value');
+
+  // Guards the contract by construction: an unsupported status throws.
+  await assert.rejects(
+    () => Promise.resolve(store.countGapsByStatusForConnector(connectorId, { status: 'bogus' })),
+    /Unsupported connector detail gap status/,
+  );
+}
+
+test('countGapsByStatusForConnector returns an exact reason-scoped recovered count across instances', withTempDb(async () => {
+  const store = createSqliteConnectorDetailGapStore();
+  await seedRecoveredCountFixture(store, 'chatgpt');
+  await assertRecoveredCountAggregate(store, 'chatgpt');
+}));
+
 test('sanitizeDetailGapMetadata does not preserve full URLs or secret-bearing fields', () => {
   const sanitized = sanitizeDetailGapMetadata({
     href: 'https://example.test/path/to/private?id=123',
@@ -581,7 +673,34 @@ if (!POSTGRES_URL) {
   test('connector-emitted DETAIL_GAP survives Postgres persistence and reappears in START.detail_gaps (skipped: PDPP_TEST_POSTGRES_URL unset)', {
     skip: true,
   }, () => {});
+  test('countGapsByStatusForConnector returns an exact reason-scoped recovered count (Postgres) (skipped: PDPP_TEST_POSTGRES_URL unset)', {
+    skip: true,
+  }, () => {});
 } else {
+  test('countGapsByStatusForConnector returns an exact reason-scoped recovered count (Postgres)', async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `chatgpt_pg_recovered_${suffix}`;
+
+    initDb(':memory:');
+    await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+
+    try {
+      const store = createPostgresConnectorDetailGapStore();
+      // Same fixture + assertions as the SQLite test: proves backend parity for
+      // the bounded reason-scoped count-by-status aggregate.
+      await seedRecoveredCountFixture(store, connectorId);
+      await assertRecoveredCountAggregate(store, connectorId);
+    } finally {
+      try {
+        await postgresQuery(
+          'DELETE FROM connector_detail_gaps WHERE connector_id = $1',
+          [connectorId],
+        );
+      } catch {}
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
   test('connector-emitted DETAIL_GAP survives Postgres persistence and reappears in START.detail_gaps', async () => {
     const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
     const connectorId = `chatgpt_pg_gap_${suffix}`;

@@ -170,6 +170,32 @@ function firstSqliteRow(sql, params = []) {
   return null;
 }
 
+/**
+ * Coerce a SQL `COUNT(*)` scalar into a finite non-negative integer. SQLite
+ * returns it as a JS number; the Postgres `pg` driver returns a `bigint` as a
+ * string. A NaN / negative / unparseable value throws so the caller can keep
+ * the optional `recovered` rollup `null` (unmeasured) rather than surface a
+ * fabricated count.
+ */
+function coerceCount(value) {
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n) || n < 0) {
+    throw new Error(`connector detail gap count is not a non-negative integer: ${String(value)}`);
+  }
+  return Math.floor(n);
+}
+
+/**
+ * Normalize the reason list for a reason-scoped count. Returns a de-duped array
+ * of non-empty strings, or `null` when no usable reason is supplied (the caller
+ * treats `null` as "no reason scope" and counts every reason).
+ */
+function normalizeReasonScope(reasons) {
+  if (!Array.isArray(reasons)) return null;
+  const out = [...new Set(reasons.filter((reason) => typeof reason === 'string' && reason))];
+  return out.length ? out : null;
+}
+
 export function createSqliteConnectorDetailGapStore() {
   return {
     async upsertPendingGap(input) {
@@ -276,6 +302,27 @@ export function createSqliteConnectorDetailGapStore() {
       return rows.map(rowToGap);
     },
 
+    // Exact reason-scoped count-by-status across every connector instance for a
+    // connector type. The operator-console source-pressure backlog rollup uses
+    // this for its optional `recovered` count: a single bounded aggregate that
+    // returns only a scalar integer (no row bodies, locators, or payloads), in
+    // the same connector-wide + reason scope the `pending` projection reads.
+    // Throws on a malformed count so the caller can keep `recovered` `null`.
+    async countGapsByStatusForConnector(connectorId, { status, reasons = null } = {}) {
+      if (!VALID_STATUSES.has(status)) throw new Error(`Unsupported connector detail gap status: ${status}`);
+      const reasonScope = normalizeReasonScope(reasons);
+      const reasonPlaceholders = reasonScope ? reasonScope.map(() => '?').join(', ') : null;
+      // REVIEWED-DYNAMIC: bounded reason-scoped count-by-status aggregate over
+      // the store-owned detail-gap table; only a scalar count is returned.
+      const row = firstSqliteRow(`
+        SELECT COUNT(*) AS gap_count FROM connector_detail_gaps
+        WHERE connector_id = ?
+          AND status = ?
+          ${reasonScope ? `AND reason IN (${reasonPlaceholders})` : ''}
+      `, [connectorId, status, ...(reasonScope ?? [])]);
+      return coerceCount(row?.gap_count ?? 0);
+    },
+
     async markGapStatus(gapId, status, options = {}) {
       if (!VALID_STATUSES.has(status)) throw new Error(`Unsupported connector detail gap status: ${status}`);
       const now = options.now || nowIso();
@@ -378,6 +425,22 @@ export function createPostgresConnectorDetailGapStore() {
         LIMIT $2
       `, [connectorId, Math.max(1, Math.min(limit, 500))]);
       return result.rows.map(rowToGap);
+    },
+
+    async countGapsByStatusForConnector(connectorId, { status, reasons = null } = {}) {
+      if (!VALID_STATUSES.has(status)) throw new Error(`Unsupported connector detail gap status: ${status}`);
+      const reasonScope = normalizeReasonScope(reasons);
+      // Bounded reason-scoped count-by-status aggregate (Postgres analogue of
+      // the SQLite path). `$3::text[]` is `NULL` when no reason scope is given,
+      // so the predicate counts every reason; otherwise it restricts to the
+      // supplied source-pressure reasons. Only a scalar count is returned.
+      const result = await postgresQuery(`
+        SELECT COUNT(*) AS gap_count FROM connector_detail_gaps
+        WHERE connector_id = $1
+          AND status = $2
+          AND ($3::text[] IS NULL OR reason = ANY($3::text[]))
+      `, [connectorId, status, reasonScope]);
+      return coerceCount(result.rows[0]?.gap_count ?? 0);
     },
 
     async markGapStatus(gapId, status, options = {}) {

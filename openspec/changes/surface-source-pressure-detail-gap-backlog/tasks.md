@@ -5,8 +5,10 @@ implementation lanes it sequenced — projection (§2), contract tests (§3), an
 console consumption (§4) — have since landed at HEAD (`f6251af8`): the projection
 shipped in `07d9d4e4` (`feat(ref-control): surface source-pressure detail
 backlog`) and the console cue in `619276b9` (`feat(console): surface
-source-pressure detail-gap backlog cue`). Only §5 (owner closeout) and one
-explicitly-deferred optional aggregate in §2 remain open.
+source-pressure detail-gap backlog cue`). The previously-deferred optional
+`recovered` aggregate in §2 has since landed too (a backend-parity
+`countGapsByStatusForConnector` on the SQLite and Postgres detail-gap stores,
+wired through the projection). Only §5 (owner closeout) remains open.
 
 ## 1. Spec delta (this lane)
 
@@ -40,10 +42,17 @@ explicitly-deferred optional aggregate in §2 remain open.
 - [x] `null` when the durable gap evidence is unreadable (fail-open, mirroring the
   cooldown probe — `detailGaps.unreliable` is threaded separately into the
   backlog derivation); real `0` when drained; never inferred from record counts.
-- [ ] (Optional, same lane or follow-up) add a bounded reason-scoped
+- [x] (Optional, same lane or follow-up) add a bounded reason-scoped
   count-by-status aggregate to the detail-gap store for the recovered count;
-  leave `recovered` `null` until then. (Deferred this tranche: no
-  count-by-status query exists; `recovered` stays `null`.)
+  leave `recovered` `null` until then. Shipped: `countGapsByStatusForConnector`
+  on both the SQLite and Postgres `connector_detail_gaps` stores — an exact
+  `COUNT(*)` scoped to the connector (every instance, matching the pending
+  read's scope), the `recovered` status, and the `SOURCE_PRESSURE_GAP_REASONS`
+  vocabulary. `getConnectorDetailGapProjection` calls it (guarded: a count
+  failure keeps `recovered` `null` independently of the pending read) and
+  threads it through `pendingDetailGapsRecovered` into the backlog evidence, so
+  `recovered` is now a real exact count when the store exposes the aggregate and
+  `null` (unmeasured) otherwise — never fabricated, never aliased to `pending`.
 - [x] Make the pending count honest about the read bound (exact total or a
   bound-aware floor; resolve the bounded-probe decision recorded in `design.md`).
   Resolved as a `pending_is_floor` boolean keyed on the shared
@@ -56,7 +65,11 @@ explicitly-deferred optional aggregate in §2 remain open.
   drained `0`.
 - [x] Pending is reason-scoped to source pressure and never inferred from
   collected record counts.
-- [x] `recovered` is `null` when not computed.
+- [x] `recovered` is `null` when not computed, and a real exact count when the
+  store's reason-scoped count-by-status aggregate is available (proven
+  end-to-end through the real default store in
+  `ref-connectors-connection-projection.test.js`, and at the store level for
+  both SQLite and Postgres in `connector-detail-gap-store.test.js`).
 - [x] The rollup does not change the headline state, coverage axis, freshness
   axis, forward disposition, or `next_action`.
 - [x] The rollup is exposed for a manual-refresh connector that never reaches
