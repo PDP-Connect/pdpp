@@ -2855,6 +2855,87 @@ test("runMessagesAndConversationsWithDetail: post-cap gap materialization stops 
   assert.deepEqual(coverage.gapKeys, ["convo-3", "convo-4", "convo-5"]);
 });
 
+test("runMessagesAndConversationsWithDetail: post-cap materialization limit STOPS the lane (no idle tail launches)", async () => {
+  // Regression for the 2026-06-05 live hang (run_1780693320152): with a fetch
+  // cap of 10 and a gap-materialization cap of 5, the connector correctly
+  // hydrated 10 conversations and emitted exactly 5 run-cap DETAIL_GAP rows —
+  // then went silent but stayed ACTIVE for >80 min. Root cause: `lane.runAll`
+  // had enqueued the ENTIRE backlog, so after the 5 gap rows the serial lane kept
+  // launching the no-op skip task for every remaining conversation, paying the
+  // 1.5–3s launch delay BEFORE each one. Stopping the FETCHES is not stopping the
+  // RUN.
+  //
+  // This test pins the fix by counting launch delays. The lane's `sleep` is the
+  // launch-gate wait: it fires once per task launch AFTER the first. With the bug
+  // every backlog conversation launches (8 convos → 7 launch delays). With the
+  // fix the lane is cut short the instant the materialization budget is exhausted,
+  // so only the acted-upon prefix launches and the idle tail never does.
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      fetchedIds.push(path);
+      await Promise.resolve();
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  // A launch-delay spy standing in for production's 1.5–3s serial launch gate.
+  // Each call is one idle wait the lane would pay before a task body runs.
+  let launchDelays = 0;
+  const sleepSpy = (): void => {
+    launchDelays += 1;
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [
+      makeConvo({ id: "convo-1" }),
+      makeConvo({ id: "convo-2" }),
+      makeConvo({ id: "convo-3" }),
+      makeConvo({ id: "convo-4" }),
+      makeConvo({ id: "convo-5" }),
+      makeConvo({ id: "convo-6" }),
+      makeConvo({ id: "convo-7" }),
+      makeConvo({ id: "convo-8" }),
+    ],
+    makeEmitConversation(deps),
+    {
+      random: () => 0,
+      sleep: sleepSpy,
+      runBudget: new ChatGptRunBudget({ maxFetches: 2 }),
+      maxGapMaterializations: 3,
+    }
+  );
+
+  // Outputs unchanged from the limit test: 2 fetches, 3 gap rows.
+  assert.deepEqual(fetchedIds, ["/conversation/convo-1", "/conversation/convo-2"]);
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2"]);
+  assert.deepEqual(coverage.gapKeys, ["convo-3", "convo-4", "convo-5"]);
+  const gaps = harness.protocolMessages.filter((m) => m.type === "DETAIL_GAP");
+  assert.equal(gaps.length, 3, "exactly maxGapMaterializations gap rows are emitted");
+
+  // The fix: the lane launches only the acted-upon prefix — convo-1 (no delay,
+  // first launch), convo-2, convo-3, convo-4, convo-5 — then aborts the queued
+  // tail (convo-6..8). That is 5 launches → 4 launch delays. With the pre-fix
+  // "drain the whole backlog" behavior all 8 launch (7 delays). Pinning the exact
+  // count would over-couple to launch accounting; the load-bearing invariant is
+  // that the idle tail (convo-6..8) is NEVER launched, so launch delays stay
+  // well below the all-backlog count.
+  assert.ok(
+    launchDelays <= 4,
+    `lane must stop launching the idle tail once the materialization budget is exhausted (saw ${launchDelays} launch delays; pre-fix drains all 8 conversations → 7)`
+  );
+});
+
 test("runMessagesAndConversationsWithDetail: no-cap run is byte-for-byte unchanged (gap limit never consulted)", async () => {
   // With NO fetch/wall-clock cap, the gap-materialization limit is never
   // reached and all conversations are hydrated normally.

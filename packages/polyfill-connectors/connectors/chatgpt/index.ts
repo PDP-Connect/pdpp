@@ -15,7 +15,13 @@
  */
 
 import type { Page } from "playwright";
-import { type AdaptiveLaneEvent, createAdaptiveLane, currentAdaptiveLaneRunContext } from "../../src/adaptive-lane.ts";
+import {
+  type AdaptiveLane,
+  AdaptiveLaneCancelledError,
+  type AdaptiveLaneEvent,
+  createAdaptiveLane,
+  currentAdaptiveLaneRunContext,
+} from "../../src/adaptive-lane.ts";
 import { ensureChatGptSession } from "../../src/auto-login/chatgpt.ts";
 import {
   type BrowserCollectContext,
@@ -2141,16 +2147,40 @@ export async function runMessagesAndConversationsWithDetail(
   let gapMaterializationsAfterCap = 0;
   let observedRecoverablePressure: ChatGptRecoverableRetryExhaustedError | null = null;
   let runCapDeferReason: ChatGptRunCapReason | null = null;
+  // Once a run-cap trips, we materialize at most `maxGapMaterializations`
+  // resumable DETAIL_GAP rows for the newest slice of the tail, then we must
+  // STOP — not keep walking every remaining backlog conversation. The 2026-06-05
+  // live finding (run_1780693320152): the materialization budget correctly
+  // emitted its 5 gap rows, but `lane.runAll` had already enqueued the entire
+  // ~2,169-conversation work list, so the lane kept launching the no-op skip task
+  // for every remaining conversation — and the serial lane pays a 1.5–3s launch
+  // delay BEFORE each task body runs (adaptive-lane startQueuedTask), so the run
+  // sat idle and active for >80 min emitting nothing until the owner cancelled.
+  //
+  // This abort cuts the work list short the instant the materialization budget is
+  // exhausted: queued-but-not-started lane tasks reject immediately (before their
+  // launch delay), so `runAll` settles right after the last gap row. The unwritten
+  // remainder is not lost — the messages cursor is held back (see
+  // runConversationsAndMessagesStreams), so those conversations re-list and
+  // re-derive on the next run, themselves bounded by the per-run caps. We catch
+  // this specific abort below; any other lane failure still propagates.
+  const tailStopController = new AbortController();
   async function emitBoundedRunCapGap(c: ConversationListItem): Promise<ChatGptFetchResult> {
     if (gapMaterializationsAfterCap >= maxGapMaterializations) {
+      tailStopController.abort();
       return { deferredDueToPressure: true, status: 0, json: null };
     }
     gapMaterializationsAfterCap += 1;
     await deps.emit(makeRunCapDeferredConversationDetailGap(c, runCapDeferReason as ChatGptRunCapReason));
     coverage.gapKeys.push(c.id);
+    // Reaching the limit on THIS row means every later conversation is a pure
+    // skip; stop the lane now so it never launch-delays the idle tail.
+    if (gapMaterializationsAfterCap >= maxGapMaterializations) {
+      tailStopController.abort();
+    }
     return { deferredDueToPressure: true, status: 0, json: null };
   }
-  await lane.runAll(convosToSync, async (c) => {
+  await runLaneUntilTailStopped(lane, convosToSync, tailStopController.signal, async (c) => {
     if (!c) {
       return { status: 404, json: null };
     }
@@ -2240,6 +2270,37 @@ export async function runMessagesAndConversationsWithDetail(
     return detail;
   });
   return coverage;
+}
+
+/**
+ * Run `task` over every item via `lane.runAll`, but treat an abort on
+ * `tailStopSignal` as a CLEAN early stop rather than a failure.
+ *
+ * The bounded-run cap path aborts this signal once it has materialized its full
+ * gap budget: every remaining conversation is then a pure no-op skip, and
+ * draining them through the serial lane would pay a 1.5–3s launch delay per item
+ * (the >80-min idle-active hang seen live in run_1780693320152). Aborting rejects
+ * the queued-but-not-started tasks immediately — before their launch delay — so
+ * `runAll` settles right after the final gap row. Tasks already in flight finish
+ * normally; their results are simply not awaited past the abort.
+ *
+ * Only the abort WE triggered is swallowed. Any other AdaptiveLaneCancelledError
+ * (e.g. an external cancel) or unrelated failure still propagates.
+ */
+async function runLaneUntilTailStopped(
+  lane: AdaptiveLane<ChatGptFetchResult>,
+  items: ConversationListItem[],
+  tailStopSignal: AbortSignal,
+  task: (c: ConversationListItem) => Promise<ChatGptFetchResult>
+): Promise<void> {
+  try {
+    await lane.runAll(items, task, { signal: tailStopSignal });
+  } catch (err) {
+    if (tailStopSignal.aborted && err instanceof AdaptiveLaneCancelledError) {
+      return;
+    }
+    throw err;
+  }
 }
 
 async function recoverPendingConversationDetailGaps(
