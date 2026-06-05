@@ -505,8 +505,16 @@ function deriveSourceInstanceOutboxState(diagnostics: unknown): string {
   return "drained";
 }
 
-function isDrainedHealthyLocalHeartbeat(status: string | null, recordsPending: number | null, outbox: unknown): boolean {
-  return status === "healthy" && (recordsPending == null || recordsPending === 0) && deriveSourceInstanceOutboxState(outbox) === "drained";
+function isDrainedHealthyLocalHeartbeat(
+  status: string | null,
+  recordsPending: number | null,
+  outbox: unknown
+): boolean {
+  return (
+    status === "healthy" &&
+    (recordsPending == null || recordsPending === 0) &&
+    deriveSourceInstanceOutboxState(outbox) === "drained"
+  );
 }
 
 function isLocalCollectorPolicyBudgetStream(stream: string): boolean {
@@ -1325,6 +1333,45 @@ export function mountRefDeviceExporterRevoke(app: AppLike, ctx: MountRefDeviceEx
   );
 }
 
+async function markHeartbeatSourceInstance(input: {
+  ctx: MountRefDeviceExportersContext;
+  deviceId: string;
+  receivedAt: string;
+  req: RouteRequest;
+  res: RouteResponse;
+  source: unknown;
+}): Promise<boolean> {
+  const { ctx, deviceId, receivedAt, req, res, source } = input;
+  const s = source as Record<string, unknown>;
+  const sourceInstanceId = requireNonEmptyString(s.source_instance_id, "source_instance_id");
+  const authorized = await resolveAuthorizedDeviceSource(ctx, req, res, deviceId, sourceInstanceId);
+  if (!authorized) {
+    return false;
+  }
+
+  const status = typeof s.status === "string" ? s.status : null;
+  const recordsPending = typeof s.records_pending === "number" ? s.records_pending : null;
+  const outboxDiagnostics = (s.outbox as unknown) ?? null;
+  await ctx.deviceExporterStore.markSourceInstanceHeartbeat(deviceId, sourceInstanceId, {
+    receivedAt,
+    lastError: ctx.sanitizeDeviceExporterDiagnostic(s.last_error),
+    status,
+    recordsPending,
+    outboxDiagnostics,
+  });
+  if (
+    isDrainedHealthyLocalHeartbeat(status, recordsPending, outboxDiagnostics) &&
+    authorized.connectorInstance.connectorInstanceId
+  ) {
+    await recoverDrainedPolicyBudgetGaps(
+      ctx,
+      authorized.sourceInstance.connectorId,
+      authorized.connectorInstance.connectorInstanceId
+    );
+  }
+  return true;
+}
+
 // POST /_ref/device-exporters/:deviceId/heartbeat
 export function mountRefDeviceExporterHeartbeat(app: AppLike, ctx: MountRefDeviceExportersContext): void {
   app.post(
@@ -1346,31 +1393,9 @@ export function mountRefDeviceExporterHeartbeat(app: AppLike, ctx: MountRefDevic
           lastError: ctx.sanitizeDeviceExporterDiagnostic(body.last_error),
         });
         for (const source of normalizeHeartbeatSourceInstances(body)) {
-          const s = source as Record<string, unknown>;
-          const sourceInstanceId = requireNonEmptyString(s.source_instance_id, "source_instance_id");
-          const authorized = await resolveAuthorizedDeviceSource(ctx, req, res, deviceId, sourceInstanceId);
-          if (!authorized) {
+          const accepted = await markHeartbeatSourceInstance({ ctx, deviceId, receivedAt, req, res, source });
+          if (!accepted) {
             return;
-          }
-          const status = typeof s.status === "string" ? s.status : null;
-          const recordsPending = typeof s.records_pending === "number" ? s.records_pending : null;
-          const outboxDiagnostics = (s.outbox as unknown) ?? null;
-          await ctx.deviceExporterStore.markSourceInstanceHeartbeat(deviceId, sourceInstanceId, {
-            receivedAt,
-            lastError: ctx.sanitizeDeviceExporterDiagnostic(s.last_error),
-            status,
-            recordsPending,
-            outboxDiagnostics,
-          });
-          if (
-            isDrainedHealthyLocalHeartbeat(status, recordsPending, outboxDiagnostics)
-            && authorized.connectorInstance.connectorInstanceId
-          ) {
-            await recoverDrainedPolicyBudgetGaps(
-              ctx,
-              authorized.sourceInstance.connectorId,
-              authorized.connectorInstance.connectorInstanceId
-            );
           }
         }
         res.json({

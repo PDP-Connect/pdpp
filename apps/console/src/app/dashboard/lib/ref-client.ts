@@ -372,10 +372,10 @@ export interface RefCollectionReportEntry {
   collected: number;
   /** Known considered denominator, or `"unknown"` when the connector declared none. */
   considered: number | "unknown";
-  /** Known accounted-for numerator, or `"unknown"` when the connector declared none. */
-  covered?: number | "unknown";
   /** Derived coverage condition, from the same vocabulary as the coverage axis. */
   coverage_condition: RefCoverageAxis;
+  /** Known accounted-for numerator, or `"unknown"` when the connector declared none. */
+  covered?: number | "unknown";
   /** Derived forward disposition (what the next run is expected to do on this stream). */
   forward_disposition: RefForwardDisposition;
   /** Count of pending recoverable detail gaps for this stream. */
@@ -767,9 +767,9 @@ export async function listConnectorSummaries(
   // running the per-connection fan-out for every configured connection. Unscoped
   // callers (records index, schedules, grant request) omit it and get the full
   // list exactly as before.
-  return (await refFetch("/_ref/connectors", { connection: options.connectionRouteId })) as ListResponse<
-    RefConnectorSummary
-  >;
+  return (await refFetch("/_ref/connectors", {
+    connection: options.connectionRouteId,
+  })) as ListResponse<RefConnectorSummary>;
 }
 
 export async function listRecordVersionStats(
