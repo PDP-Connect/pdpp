@@ -22,10 +22,8 @@
 // 90 of them were re-emitted as run-cap DETAIL_GAPs this run and stayed
 // `recovered`.
 //
-// CURRENT STATE: this test asserts the bug reproduces. When the fix lands
-// (preferred: the commit gate counts a `recovered` durable gap as satisfying a
-// required key, since a recovered gap means the detail WAS obtained), flip the
-// final assertions to expect `succeeded` with both state streams committed.
+// The commit gate counts a `recovered` durable gap as satisfying a required key,
+// because a recovered gap means the detail was obtained rather than missing.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
@@ -131,13 +129,7 @@ test('a recovered detail gap re-deferred with the same identity must not fail th
     await closeServer(server);
   }
 
-  // EXPECTED AFTER FIX (flip to this when the commit gate honors recovered gaps):
-  //   assert.equal(thrown, null);
-  //   assert.equal(result.status, 'succeeded');
-  //   assert.equal(result.checkpoint_summary.state_streams_committed, 2);
-  //
-  // CURRENT (documents the live bug):
-  assert.ok(thrown, 'today: the recovered-then-redeferred key fails the run');
-  assert.equal(thrown.failure_reason || thrown.terminal_reason, 'connector_protocol_violation');
-  assert.match(thrown.message, /detail coverage incomplete/);
+  assert.equal(thrown, null);
+  assert.equal(result.status, 'succeeded');
+  assert.equal(result.checkpoint_summary.state_streams_committed, 2);
 });

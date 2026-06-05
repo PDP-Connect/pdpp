@@ -2224,15 +2224,19 @@ export async function runConnector(opts) {
     for (const stateStream of Object.keys(newState)) {
       const coverageEntries = detailCoverageByStateStream.get(stateStream) || [];
       for (const coverage of coverageEntries) {
-        const pendingGapKeys = new Set(
+        const accountedGapKeys = new Set(
           durableDetailGaps
-            .filter((gap) => gap.stream === coverage.stream && gap.status === 'pending' && gap.record_key != null)
+            .filter((gap) => (
+              gap.stream === coverage.stream
+              && (gap.status === 'pending' || gap.status === 'recovered')
+              && gap.record_key != null
+            ))
             .map((gap) => normalizeCoverageKey(gap.record_key)),
         );
         const missingKeys = coverage.requiredKeys.filter((key) => (
           !coverage.hydratedKeys.has(key)
           && !coverage.optionalSkipKeys.has(key)
-          && !pendingGapKeys.has(key)
+          && !accountedGapKeys.has(key)
         ));
         if (!missingKeys.length) continue;
 
