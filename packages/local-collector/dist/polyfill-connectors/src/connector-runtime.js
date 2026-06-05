@@ -39,6 +39,55 @@ function makeShapeCheckSkip(stream, data, issues) {
         diagnostics: { id: data.id, issues, record: data },
     };
 }
+export function buildDetailCoverageMessage(params) {
+    const { stream, stateStream, requiredKeys, hydratedKeys, gapKeys, optionalSkipKeys, considered, covered } = params;
+    return {
+        type: "DETAIL_COVERAGE",
+        reference_only: true,
+        stream,
+        state_stream: stateStream,
+        required_keys: [...requiredKeys],
+        hydrated_keys: [...hydratedKeys],
+        ...(typeof considered === "number" && Number.isInteger(considered) && considered >= 0 ? { considered } : {}),
+        ...(typeof covered === "number" && Number.isInteger(covered) && covered >= 0 ? { covered } : {}),
+        ...(gapKeys?.length ? { gap_keys: [...gapKeys] } : {}),
+        ...(optionalSkipKeys?.length ? { optional_skip_keys: [...optionalSkipKeys] } : {}),
+    };
+}
+export function emitDetailCoverage(ctx, params) {
+    return ctx.emit(buildDetailCoverageMessage(params));
+}
+export function buildDetailGap(params) {
+    const { stream, recordKey, reason, locator, parentStream, listCursor, error } = params;
+    let errorBlocks = {};
+    if (error) {
+        const sharedBlock = {
+            class: error.class,
+            ...(error.httpStatus == null ? {} : { http_status: error.httpStatus }),
+            ...(error.networkPressure == null ? {} : { network_pressure: error.networkPressure }),
+        };
+        errorBlocks = {
+            detail: sharedBlock,
+            last_error: error.message == null ? sharedBlock : { ...sharedBlock, message: error.message },
+        };
+    }
+    return {
+        type: "DETAIL_GAP",
+        stream,
+        ...(parentStream == null ? {} : { parent_stream: parentStream }),
+        record_key: recordKey,
+        status: "pending",
+        reason,
+        detail_locator: locator,
+        ...(listCursor === undefined ? {} : { list_cursor: listCursor }),
+        retryable: true,
+        reference_only: true,
+        ...errorBlocks,
+    };
+}
+export function emitDetailGap(ctx, params) {
+    return ctx.emit(buildDetailGap(params));
+}
 export const nowIso = () => new Date().toISOString();
 export const politeDelay = (ms) => new Promise((r) => setTimeout(r, ms));
 export function runConnector(config) {

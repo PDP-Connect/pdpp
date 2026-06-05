@@ -7,6 +7,7 @@ import { createInterface as createFileReader } from "node:readline";
 import { runConnector } from "../../src/connector-runtime.js";
 import { isMainModule } from "../../src/is-main-module.js";
 import { buildLocalSourceInventory, listDirectoryInventory, openInventoryFingerprintCursor, } from "../../src/local-source-inventory.js";
+import { readBoundedFilePreview } from "../../src/bounded-file-preview.js";
 import { safeTextPreview } from "../../src/safe-text-preview.js";
 import { ATTACHMENT_PREVIEW_CHARS, applyProjectDirScope, BYTES_PER_MB, buildMemoryNoteRecord, buildSkillRecord, buildSlashCommandRecord, extractContent, LINE_PROGRESS_INTERVAL, MESSAGE_CONTENT_PREVIEW_CHARS, makeEmptySessionAccumulator, mergeSessionObservations, parseCsvEnv, parseFrontmatter, SESSION_DIR_PREFIX_RE, TOOL_RESULT_PREVIEW_CHARS, textPreview, widenSessionTimeRange, } from "./parsers.js";
 import { validateRecord } from "./schemas.js";
@@ -222,16 +223,13 @@ export async function emitSessionsFromAccumulators({ emitRecord, requested, sess
         await emitRecord("sessions", { ...session });
     }
 }
-async function emitToolResultFile(args) {
-    let buf;
-    try {
-        buf = await readFile(args.full, "utf8");
-    }
-    catch {
+export async function emitToolResultFile(args) {
+    const bounded = await readBoundedFilePreview(args.full);
+    if (bounded === null) {
         return;
     }
     const rel = args.full.slice(args.toolResultsDir.length + 1);
-    const previewResult = safeTextPreview(buf, TOOL_RESULT_PREVIEW_CHARS);
+    const previewResult = safeTextPreview(bounded.buffer, TOOL_RESULT_PREVIEW_CHARS);
     await args.emitRecord("attachments", {
         id: `tool_result_file:${args.projectDir}/${args.sessionId}/${rel}`,
         session_id: args.sessionId,

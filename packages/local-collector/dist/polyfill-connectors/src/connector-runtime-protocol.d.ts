@@ -70,20 +70,21 @@ export interface AssistanceCompletion {
     message?: string;
     status: AssistanceCompletionStatus;
 }
+export interface DetailGapNetworkPressure {
+    attempt?: number;
+    endpoint_route: string;
+    error_class: string;
+    max_attempts?: number;
+    method: string;
+    retry_after_ms?: number;
+    safe_headers?: Record<string, string | number>;
+    status?: number;
+}
 export interface DetailGapMessage {
     detail?: {
         class?: string;
         http_status?: number;
-        network_pressure?: {
-            attempt?: number;
-            endpoint_route: string;
-            error_class: string;
-            max_attempts?: number;
-            method: string;
-            retry_after_ms?: number;
-            safe_headers?: Record<string, string | number>;
-            status?: number;
-        };
+        network_pressure?: DetailGapNetworkPressure;
     };
     detail_locator: {
         kind: string;
@@ -93,16 +94,7 @@ export interface DetailGapMessage {
         class?: string;
         http_status?: number;
         message?: string;
-        network_pressure?: {
-            attempt?: number;
-            endpoint_route: string;
-            error_class: string;
-            max_attempts?: number;
-            method: string;
-            retry_after_ms?: number;
-            safe_headers?: Record<string, string | number>;
-            status?: number;
-        };
+        network_pressure?: DetailGapNetworkPressure;
     };
     list_cursor?: unknown;
     parent_stream?: string;
@@ -115,6 +107,8 @@ export interface DetailGapMessage {
     type: "DETAIL_GAP";
 }
 export interface DetailCoverageMessage {
+    considered?: number;
+    covered?: number;
     gap_keys?: Array<string | number>;
     hydrated_keys: Array<string | number>;
     optional_skip_keys?: Array<string | number>;

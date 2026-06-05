@@ -97,6 +97,7 @@ export async function runCollectorConnector(config) {
         deviceId: config.deviceId,
         deviceToken: config.deviceToken,
     });
+    let startingHeartbeatSent = false;
     try {
         const recoveredLeases = outbox.recoverExpiredLeases({ sourceInstanceId: config.sourceInstanceId });
         const preScanDrain = await drainCollectorOutbox({
@@ -137,6 +138,7 @@ export async function runCollectorConnector(config) {
             source_instance_id: config.sourceInstanceId,
             status: "starting",
         });
+        startingHeartbeatSent = true;
         const streamResult = await streamConnectorIntoOutbox({
             ...(config.abortSignal ? { abortSignal: config.abortSignal } : {}),
             batchSize: config.batchSize ?? 100,
@@ -214,9 +216,29 @@ export async function runCollectorConnector(config) {
             streamingBufferHighWaterMark: streamResult.bufferHighWaterMark,
         };
     }
+    catch (error) {
+        if (startingHeartbeatSent) {
+            await emitCorrectiveHeartbeatFromOutbox({ client, config, outbox, policy });
+        }
+        throw error;
+    }
     finally {
         outbox.close();
     }
+}
+async function emitCorrectiveHeartbeatFromOutbox(input) {
+    const summary = input.outbox.summary({ sourceInstanceId: input.config.sourceInstanceId });
+    const deadLetterError = buildHeartbeatDeadLetterError(input.outbox, input.config.sourceInstanceId);
+    await safeHeartbeat(input.client, {
+        connector_id: input.config.connector.connector_id,
+        ...(deadLetterError ? { last_error: deadLetterError } : {}),
+        outbox: buildHeartbeatOutboxDiagnostics(summary, {
+            backlogOpen: countOpenBacklogGaps(input.outbox, input.config.sourceInstanceId),
+        }),
+        records_pending: pendingOutboxWorkCount(summary),
+        source_instance_id: input.config.sourceInstanceId,
+        status: heartbeatStatusForSummary(summary, input.policy),
+    });
 }
 async function maybeSkipScanForBacklog(input) {
     if (!hasScanBlockingOutboxWork(input.outbox, input.config.sourceInstanceId, input.policy)) {
