@@ -389,6 +389,50 @@
   (`considered = page totalSeen`, below-cursor item reads `partial`) are
   DELIBERATELY UNCHANGED — that is an incremental window, not a full-sync boundary,
   and its `partial` is the shipped, tested intent (`github/index.test.ts:556`).
+- [x] 4.5 Extend `covered` adoption to the remaining high-confidence
+  fingerprint-suppressed full-sync streams named (and held back) in task 4.4.
+  Each adopter re-enumerates its whole in-scope boundary every run and suppresses
+  unchanged rows via a per-record fingerprint cursor (`shouldEmit` + `pruneStale`),
+  so `collected` is a churn-reduced subset on a steady-state run. Each now declares
+  a self-coverage `DETAIL_COVERAGE` (`stream === state_stream`, empty
+  required/hydrated keys, so it passes `assertDetailCoverageSatisfiedBeforeCommit`
+  with no missing keys) carrying `considered = enumerated boundary` and an
+  objective `covered = emitted + suppressed-because-unchanged`, tallied at the
+  enumeration loop from per-record outcomes and never aliased to the emit count.
+  No runtime/SDK/projection change — these ride the task-4.4 plumbing verbatim.
+  Adopted streams:
+  - YNAB `budgets` (`/budgets` is a full-collection endpoint with no
+    `server_knowledge` delta). Budgets enumeration extracted from `collect()` into
+    an exported `emitBudgetsStream` so the declaration is unit-testable. YNAB's
+    `server_knowledge`-delta streams (`accounts`, `categories`, `payees`,
+    `transactions`, `scheduled_transactions`, `months`) are incremental and are
+    NOT adopted; `account_stats` is an append-keyed observation, not an inventory.
+    `payee_locations` is a full-sync fingerprint stream but enumerated PER BUDGET,
+    so a multi-budget owner would emit several same-stream declarations and the
+    runtime's first-declared-wins lookup would under-count the boundary — deferred.
+  - Chase `accounts` (full dashboard scan) in `emitAccountsStream`, gated on the
+    fingerprint cursor (the legacy no-cursor path declares none). Distinct from the
+    existing transactions→accounts `DETAIL_COVERAGE` (`stream === "transactions"`),
+    so no collision in the per-stream considered/covered lookup. Chase `statements`
+    (full-scan fingerprint with hydration carry-forward) is plausible but its
+    carried-but-unhydrated rows complicate the covered definition — deferred.
+  - USAA `accounts` entity stream (full dashboard scan) in `emitAccountsStream`,
+    gated on `emitEntity && fingerprintCursor`; `account_stats` declares none.
+    USAA `statements` already emits a genuine hydration `DETAIL_COVERAGE` and is
+    left as-is. USAA `transactions` is a partial export window (never pruned) — not
+    a full-sync boundary, NOT adopted. USAA `inbox_messages` / `credit_card_billing`
+    match the shape (and `inbox_messages` has a real pre-gate drop that would make
+    covered < considered) — strong next-slice candidates, deferred to keep this
+    tranche to the three named candidates.
+  Tests: `connectors/ynab/budgets-considered.test.ts`,
+  `connectors/chase/accounts-considered.test.ts`,
+  `connectors/usaa/accounts-considered.test.ts` — each pins fresh (covered ===
+  considered, all emitted), steady-state (covered === considered, collected 0),
+  one-changed (covered === considered, collected 1), covered-not-aliased, and the
+  no-coverage paths (legacy no-cursor; USAA stats-only). polyfill-connectors
+  `tsc --noEmit` exit 0; biome clean on changed files; ynab/chase/usaa 328/0
+  (+13 new); runtime `collection-report-projection.test.js` +
+  `collection-profile.test.js` 149/149 unchanged.
 - [ ] 4.3 Dashboard consumes per-stream report + forward disposition directly;
   deprecate per-connector freshness/gap reconstruction heuristics.
 

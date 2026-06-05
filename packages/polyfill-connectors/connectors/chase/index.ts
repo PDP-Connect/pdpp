@@ -997,6 +997,13 @@ export async function emitAccountsStream(
   filteredAccounts: readonly ChaseAccount[],
   fingerprintCursor?: FingerprintCursor
 ): Promise<void> {
+  // `covered` is the in-boundary accounts this run accounted for: emitted plus
+  // suppressed-because-unchanged. Counted independently at the loop site from
+  // objective per-record outcomes, never aliased to the emitted count — every
+  // dashboard account reaches the gate (the record literal never drops a row),
+  // so a real shortfall could only come from a future pre-gate drop, which
+  // would raise `considered` without raising `covered`.
+  let covered = 0;
   for (const a of filteredAccounts) {
     const record = {
       id: a.internal_id,
@@ -1015,10 +1022,36 @@ export async function emitAccountsStream(
     if (!fingerprintCursor || fingerprintCursor.shouldEmit(record)) {
       await deps.emitRecord("accounts", record);
     }
+    if (fingerprintCursor) {
+      // Emitted or suppressed-unchanged: either way the account was accounted
+      // for. The no-cursor path (legacy callers/tests) declares no coverage.
+      covered += 1;
+    }
   }
   if (!fingerprintCursor) {
     return;
   }
+  // The dashboard scan re-enumerates the full account boundary every run and
+  // suppresses unchanged accounts via the per-record fingerprint, so on a
+  // steady-state run `collected` is a churn-reduced subset (often 0), not a
+  // coverage count. Declare `considered = filteredAccounts.length` (the
+  // enumerated boundary) with the objective `covered` count so the Collection
+  // Report reads `complete` instead of a false `partial`
+  // (define-connector-progress-evidence-contract task 4.4). This self-coverage
+  // message (`stream === state_stream === "accounts"`, empty required/hydrated
+  // keys) is distinct from the transactions→accounts DETAIL_COVERAGE emitted by
+  // `emitTransactionsDetailCoverage` (`stream === "transactions"`), so the two
+  // do not collide in the runtime's per-stream considered/covered lookup.
+  await deps.emit(
+    buildDetailCoverageMessage({
+      stream: "accounts",
+      stateStream: "accounts",
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered: filteredAccounts.length,
+      covered,
+    })
+  );
   // Accounts enumeration is a full dashboard scan: prune fingerprints for
   // accounts no longer present so a re-added account re-emits.
   fingerprintCursor.pruneStale();

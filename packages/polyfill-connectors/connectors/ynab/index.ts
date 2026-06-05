@@ -28,7 +28,13 @@
  * and most-recent month).
  */
 
-import { nowIso, type RecordData, runConnector } from "../../src/connector-runtime.ts";
+import {
+  type CollectContext,
+  emitDetailCoverage,
+  nowIso,
+  type RecordData,
+  runConnector,
+} from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { validateRecord } from "./schemas.ts";
@@ -1168,6 +1174,76 @@ async function collectForBudget(ctx: BudgetCtx): Promise<void> {
   }
 }
 
+/** Inputs for the `budgets` full-sync stream, extracted from `collect()` so the
+ *  considered/covered declaration is unit-testable without the live API. */
+export interface BudgetsStreamDeps {
+  budgets: readonly YnabBudget[];
+  emit: CollectContext["emit"];
+  newState: Record<string, unknown>;
+  state: Record<string, unknown>;
+  trackAndEmit: TrackedEmitRecord;
+}
+
+/**
+ * Emit the `budgets` entity stream. `/budgets` is a full-collection endpoint
+ * with no `server_knowledge` delta, so the run re-enumerates the whole budget
+ * inventory every time and gates each row through a per-record fingerprint
+ * (excluding the two calendar/clock fields, see `BUDGET_FINGERPRINT_EXCLUDE`) so
+ * an unchanged budget is not re-emitted — without this gate each run appended a
+ * new version per budget (~273/budget in the 2026-05-26 churn report).
+ *
+ * Because the run suppresses unchanged rows, on a steady-state run `collected`
+ * is a churn-reduced subset (often 0), not a coverage count. The stream declares
+ * `considered = budgets.length` (the enumerated boundary) alongside an objective
+ * `covered` count — emitted plus suppressed-because-unchanged, tallied at the
+ * loop site from per-record outcomes — so the Collection Report reads `complete`
+ * instead of a false `partial` (define-connector-progress-evidence-contract
+ * task 4.4). `covered` is counted independently from `budgets.length`: a future
+ * malformed-row drop before the gate would raise `considered` without raising
+ * `covered`, leaving an honest `partial`. Empty required/hydrated key sets — a
+ * list stream with no detail-hydration phase, so considered-vs-covered is the
+ * only coverage axis.
+ */
+export async function emitBudgetsStream(deps: BudgetsStreamDeps): Promise<void> {
+  const { budgets, state, newState, emit, trackAndEmit } = deps;
+  const cursor = openBudgetCursor(state);
+  let covered = 0;
+  for (const b of budgets) {
+    const record = budgetRecord(b);
+    if (!cursor.shouldEmit(record)) {
+      // Suppressed because unchanged since the prior run. The budget is still
+      // accounted for as covered — `/budgets` re-enumerated it and the run
+      // deliberately chose not to re-emit it.
+      covered += 1;
+      continue;
+    }
+    await trackAndEmit("budgets", record);
+    covered += 1;
+  }
+  await emitDetailCoverage(
+    { emit },
+    {
+      stream: "budgets",
+      stateStream: "budgets",
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered: budgets.length,
+      covered,
+    }
+  );
+  // `/budgets` is a full-collection endpoint, so any id known to the prior
+  // cursor but absent this run was deleted at the source. Prune so a future
+  // re-creation triggers a fresh emit instead of silently no-opping against a
+  // stale fingerprint.
+  cursor.pruneStale();
+  const budgetsCursor = {
+    fetched_at: nowIso(),
+    fingerprints: cursor.toState(),
+  };
+  await emit({ type: "STATE", stream: "budgets", cursor: budgetsCursor });
+  newState.budgets = budgetsCursor;
+}
+
 if (isMainModule(import.meta.url)) {
   runConnector({
     name: "ynab",
@@ -1224,31 +1300,7 @@ if (isMainModule(import.meta.url)) {
       });
 
       if (requested.has("budgets")) {
-        // Gate each budget through a per-record fingerprint so an unchanged
-        // budget is not re-emitted every run. `/budgets` re-returns the full
-        // collection with no server_knowledge delta, so without this gate
-        // each run appended a new version per budget (~273/budget in the
-        // 2026-05-26 churn report). The two calendar/clock fields are
-        // excluded; see `BUDGET_FINGERPRINT_EXCLUDE`.
-        const cursor = openBudgetCursor(state);
-        for (const b of budgets) {
-          const record = budgetRecord(b);
-          if (!cursor.shouldEmit(record)) {
-            continue;
-          }
-          await trackAndEmit("budgets", record);
-        }
-        // `/budgets` is a full-collection endpoint, so any id known to the
-        // prior cursor but absent this run was deleted at the source. Prune
-        // so a future re-creation triggers a fresh emit instead of silently
-        // no-opping against a stale fingerprint.
-        cursor.pruneStale();
-        const budgetsCursor = {
-          fetched_at: nowIso(),
-          fingerprints: cursor.toState(),
-        };
-        await emit({ type: "STATE", stream: "budgets", cursor: budgetsCursor });
-        newState.budgets = budgetsCursor;
+        await emitBudgetsStream({ budgets, state, newState, emit, trackAndEmit });
       }
 
       for (let budgetOrdinal = 0; budgetOrdinal < budgetIds.length; budgetOrdinal++) {

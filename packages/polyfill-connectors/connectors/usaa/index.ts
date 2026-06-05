@@ -243,11 +243,24 @@ export async function emitAccountsStream(
   const emitEntity = options.emitEntity ?? true;
   const emitStats = options.emitStats ?? false;
   const observedOn = options.observedOn ?? emittedAt.slice(0, 10);
+  // `covered` is the in-boundary accounts this entity run accounted for: emitted
+  // plus suppressed-because-unchanged. Counted independently at the loop site
+  // from objective per-record outcomes, never aliased to the emitted count —
+  // `buildAccountRecord` never drops a row, so every enumerated account reaches
+  // the gate; a future pre-gate drop would raise `considered` (accounts.length)
+  // without raising `covered`, leaving an honest `partial`.
+  let entityCovered = 0;
   for (const a of accounts) {
     if (emitEntity) {
       const rec = buildAccountRecord(a, emittedAt);
       if (!fingerprintCursor || fingerprintCursor.shouldEmit(rec)) {
         await deps.emitRecord("accounts", rec);
+      }
+      // Emitted or suppressed-unchanged: either way the account was accounted
+      // for. Only the fingerprint-gated entity path (not the legacy no-cursor
+      // path) declares coverage below.
+      if (fingerprintCursor) {
+        entityCovered += 1;
       }
     }
     // Observation stream: append-keyed daily balance snapshot, emitted
@@ -276,6 +289,24 @@ export async function emitAccountsStream(
     });
     return;
   }
+  // The dashboard scan re-enumerates the full account boundary every run and
+  // suppresses unchanged accounts via the per-record fingerprint, so on a
+  // steady-state run `collected` is a churn-reduced subset (often 0), not a
+  // coverage count. Declare `considered = accounts.length` (the enumerated
+  // boundary) with the objective `covered` count so the Collection Report reads
+  // `complete` instead of a false `partial`
+  // (define-connector-progress-evidence-contract task 4.4). This self-coverage
+  // message (`stream === state_stream === "accounts"`, empty required/hydrated
+  // keys) describes the entity inventory; `account_stats` is an append-keyed
+  // daily observation, not an inventory, so it declares no denominator.
+  await emitDetailCoverage(deps, {
+    stream: "accounts",
+    stateStream: "accounts",
+    requiredKeys: [],
+    hydratedKeys: [],
+    considered: accounts.length,
+    covered: entityCovered,
+  });
   // Accounts enumeration is a full dashboard scan: prune fingerprints for
   // accounts no longer present so a re-added account re-emits.
   fingerprintCursor.pruneStale();
