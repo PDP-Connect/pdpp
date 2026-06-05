@@ -1,6 +1,8 @@
 // Shapes for the Gmail connector. Extracted from index.ts so parsers.ts
 // and tests can import them without pulling in the IMAP runtime entry.
 
+import type { DetailCoverageMessage } from "../../src/connector-runtime.ts";
+
 export interface StreamRequest {
   name: string;
   resources?: readonly string[];
@@ -73,7 +75,12 @@ export type EmittedMessage =
   | RecordMessage
   | DoneMessage
   | InteractionMessage
-  | SkipResultMessage;
+  | SkipResultMessage
+  // Reference-only per-run detail-coverage report. The runtime already
+  // understands DETAIL_COVERAGE (see connector-runtime-protocol.ts); adding it
+  // to the local union lets `emit()` carry the attachments coverage report
+  // without widening the durable protocol surface.
+  | DetailCoverageMessage;
 
 export interface AttachmentRecord {
   blob_ref: BlobRef | null;

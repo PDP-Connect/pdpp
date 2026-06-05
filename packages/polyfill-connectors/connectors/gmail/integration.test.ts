@@ -32,8 +32,10 @@ import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { mock, test } from "node:test";
 import type { FetchMessageObject, MessageEnvelopeObject, MessageStructureObject } from "imapflow";
+import { buildDetailCoverageMessage } from "../../src/connector-runtime.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
+  type AttachmentDetailCoverage,
   addAttachmentBackfillRecordToSummary,
   createAttachmentBackfillSummary,
   DEFAULT_ATTACHMENT_BACKFILL_WINDOW_UIDS,
@@ -43,9 +45,11 @@ import {
   type FetchedBodies,
   formatAttachmentBackfillSummary,
   type HydrateAttachmentFn,
+  makeAttachmentDetailCoverage,
   makeAttachmentHydrator,
   type PerMessageDeps,
   processMessage,
+  recordAttachmentCoverage,
   redactEmailForProgress,
   resolveAttachmentBackfillWindowUids,
   resolveGmailAddressFromEnv,
@@ -56,7 +60,7 @@ import {
   selectAttachmentBackfillFetchRange,
   validateAttachmentHydrationPreflight,
 } from "./index.ts";
-import type { ProgressMessage, StreamRequest } from "./types.ts";
+import type { AttachmentRecord, ProgressMessage, StreamRequest } from "./types.ts";
 
 interface RecordingHarness {
   deps: PerMessageDeps;
@@ -81,6 +85,7 @@ const defaultFetchBodies: FetchBodiesFn = (): Promise<FetchedBodies> =>
   });
 
 interface HarnessOverrides {
+  attachmentCoverage?: AttachmentDetailCoverage;
   fetchBodies?: FetchBodiesFn;
   hydrateAttachment?: HydrateAttachmentFn;
   nowIso?: () => string;
@@ -98,6 +103,7 @@ function makeHarness(overrides: HarnessOverrides = {}): RecordingHarness {
   const progress: ProgressMessage[] = [];
   const requested = overrides.requested ?? makeRequested(["messages", "attachments"]);
   const deps: PerMessageDeps = {
+    ...(overrides.attachmentCoverage ? { attachmentCoverage: overrides.attachmentCoverage } : {}),
     emitProgress: (m: ProgressMessage): Promise<void> => {
       progress.push(m);
       return Promise.resolve();
@@ -1101,4 +1107,166 @@ test("redactEmailForProgress: non-address input falls back to a constant placeho
   assert.equal(redactEmailForProgress("@no-local.example"), "[redacted-account]");
   assert.equal(redactEmailForProgress("no-domain@"), "[redacted-account]");
   assert.equal(redactEmailForProgress(""), "[redacted-account]");
+});
+
+// ─── Attachments detail-coverage evidence (progress-evidence contract) ───
+//
+// These pin the honest `considered`/hydrated/gap/skip accounting the Gmail
+// connector emits for the `attachments` detail stream. They are the
+// regression guard for the progress-evidence wiring: if the connector stops
+// recording attempted attachments into the coverage accumulator, or
+// misclassifies a hydration outcome, these fail.
+
+/** A single-attachment message keyed `gmmsgid-<n>:1`, for coverage tests. */
+function makeSingleAttachmentMsg(emailId: string): FetchMessageObject {
+  const bodyStructure: MessageStructureObject = {
+    childNodes: [
+      {
+        type: "application/pdf",
+        disposition: "attachment",
+        dispositionParameters: { filename: "doc.pdf" },
+        encoding: "base64",
+        size: 21,
+      },
+    ],
+    type: "multipart/mixed",
+  };
+  return makeMsg({ bodyStructure, emailId });
+}
+
+/**
+ * A fake hydrator that stamps a chosen terminal `hydration_status` onto every
+ * attachment, keyed by the attachment id, so a test can drive each coverage
+ * bucket deterministically without exercising the real download/upload path.
+ */
+function statusStampingHydrator(statusById: Record<string, AttachmentRecord["hydration_status"]>): HydrateAttachmentFn {
+  return (_msg, attachment) =>
+    Promise.resolve({ ...attachment, hydration_status: statusById[attachment.id] ?? attachment.hydration_status });
+}
+
+test("recordAttachmentCoverage: routes each hydration status into the honest bucket", () => {
+  const coverage = makeAttachmentDetailCoverage();
+  const base: Omit<AttachmentRecord, "id" | "hydration_status"> = {
+    blob_ref: null,
+    content_id: null,
+    content_sha256: null,
+    content_type: "application/pdf",
+    encoding: "base64",
+    filename: "doc.pdf",
+    hydration_error: null,
+    is_inline: false,
+    message_id: "m",
+    message_received_at: FROZEN_NOW,
+    part_index: "1",
+    size_bytes: 10,
+  };
+  recordAttachmentCoverage(coverage, { ...base, id: "a:1", hydration_status: "hydrated" });
+  recordAttachmentCoverage(coverage, { ...base, id: "b:1", hydration_status: "failed" });
+  recordAttachmentCoverage(coverage, { ...base, id: "c:1", hydration_status: "too_large" });
+  recordAttachmentCoverage(coverage, { ...base, id: "d:1", hydration_status: "deferred" });
+
+  // Every attempt counts toward the denominator.
+  assert.deepEqual(coverage.requiredKeys, ["a:1", "b:1", "c:1", "d:1"]);
+  // hydrated → numerator; failed → retryable gap; too_large → permanent skip.
+  assert.deepEqual(coverage.hydratedKeys, ["a:1"]);
+  assert.deepEqual(coverage.gapKeys, ["b:1"]);
+  assert.deepEqual(coverage.optionalSkipKeys, ["c:1"]);
+  // `deferred` is considered-but-not-attempted: denominator only, no outcome.
+  assert.ok(!coverage.hydratedKeys.includes("d:1"));
+  assert.ok(!coverage.gapKeys.includes("d:1"));
+  assert.ok(!coverage.optionalSkipKeys.includes("d:1"));
+});
+
+test("processMessage: records an attempted attachment into the coverage accumulator", async () => {
+  const coverage = makeAttachmentDetailCoverage();
+  const { deps } = makeHarness({
+    attachmentCoverage: coverage,
+    hydrateAttachment: statusStampingHydrator({ "gmmsgid-1111:2": "hydrated" }),
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  await processMessage(deps, makeAttachmentMsg());
+
+  assert.deepEqual(coverage.requiredKeys, ["gmmsgid-1111:2"]);
+  assert.deepEqual(coverage.hydratedKeys, ["gmmsgid-1111:2"]);
+  assert.deepEqual(coverage.gapKeys, []);
+  assert.deepEqual(coverage.optionalSkipKeys, []);
+});
+
+test("processMessage: leaves no coverage trace and still emits when no accumulator is wired", async () => {
+  // The accumulator is optional: a pass without one (e.g. attachments not in
+  // scope) must not throw and must still emit the attachment record.
+  const { deps, emitted } = makeHarness({
+    hydrateAttachment: statusStampingHydrator({ "gmmsgid-1111:2": "hydrated" }),
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  await processMessage(deps, makeAttachmentMsg());
+
+  assert.equal(deps.attachmentCoverage, undefined, "no accumulator wired");
+  assert.ok(
+    emitted.some((r) => r.stream === "attachments"),
+    "attachment record still emits without coverage accounting"
+  );
+});
+
+test("emitMessagesPass: accumulates honest coverage across hydrated, gap, and skip outcomes", async () => {
+  const coverage = makeAttachmentDetailCoverage();
+  const { deps, emitted } = makeHarness({
+    attachmentCoverage: coverage,
+    // ok:1 hydrates, bad:1 fails (retryable gap), big:1 is too_large (policy skip).
+    hydrateAttachment: statusStampingHydrator({
+      "ok:1": "hydrated",
+      "bad:1": "failed",
+      "big:1": "too_large",
+    }),
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  await emitMessagesPass(deps, [
+    makeSingleAttachmentMsg("ok"),
+    makeSingleAttachmentMsg("bad"),
+    makeSingleAttachmentMsg("big"),
+  ]);
+
+  // Three attachments attempted → three keys in the denominator.
+  assert.deepEqual(coverage.requiredKeys, ["ok:1", "bad:1", "big:1"]);
+  assert.deepEqual(coverage.hydratedKeys, ["ok:1"]);
+  // failed is a retryable gap; too_large is a permanent by-policy skip.
+  assert.deepEqual(coverage.gapKeys, ["bad:1"]);
+  assert.deepEqual(coverage.optionalSkipKeys, ["big:1"]);
+
+  // Sanity: every attachment record still emitted (coverage is reference-only,
+  // it does not gate record emission).
+  assert.equal(emitted.filter((r) => r.stream === "attachments").length, 3);
+
+  // The honest DETAIL_COVERAGE wire shape the connector builds from this
+  // accumulator: required = denominator, hydrated = numerator, gaps retryable,
+  // skips by-policy, anchored to the `messages` list cursor. reference_only.
+  assert.deepEqual(
+    buildDetailCoverageMessage({
+      stream: "attachments",
+      stateStream: "messages",
+      requiredKeys: coverage.requiredKeys,
+      hydratedKeys: coverage.hydratedKeys,
+      gapKeys: coverage.gapKeys,
+      optionalSkipKeys: coverage.optionalSkipKeys,
+    }),
+    {
+      type: "DETAIL_COVERAGE",
+      reference_only: true,
+      stream: "attachments",
+      state_stream: "messages",
+      required_keys: ["ok:1", "bad:1", "big:1"],
+      hydrated_keys: ["ok:1"],
+      gap_keys: ["bad:1"],
+      optional_skip_keys: ["big:1"],
+    }
+  );
 });
