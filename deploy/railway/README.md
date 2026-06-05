@@ -187,6 +187,26 @@ Local, before any live run (from a main checkout with Docker):
    and RS `authorization_servers[0]` all equal the public origin; no internal
    service name leaks) and the `/dashboard` → `/owner/login` redirect, on the
    real images.
+3. `pnpm railway:sqlite-restart-smoke` — boots the stack on SQLite forced onto
+   the persistent volume, seeds a deterministic record set, force-recreates the
+   reference container, and proves the records and owner login survive on the
+   volume (the local proxy for live step 7). This runs
+   `scripts/railway-mcp-query-smoke.mjs` internally, so it also exercises the
+   anonymous-refusal and scoped-query checks (live steps 5–6) end to end.
+
+The seed + MCP query check can also be run on its own against any running
+composed origin (local or live):
+
+```sh
+node scripts/railway-mcp-query-smoke.mjs --origin <origin> --owner-password "$PDPP_OWNER_PASSWORD"
+```
+
+It seeds a small record set with **no connector run** (it registers a fixture
+manifest and writes records over the owner-gated `POST /v1/ingest/:stream`
+path), asserts that an anonymous `/mcp` request is refused, and proves a scoped
+client grant can `tools/list` and `query_records` those exact records. The
+decision logic it uses is unit-tested offline by
+`node --test scripts/railway-mcp-query-smoke.test.mjs`.
 
 Live go/no-go on Railway:
 
@@ -204,9 +224,14 @@ Live go/no-go on Railway:
    session passes.
 6. The hosted MCP endpoint at the public `/mcp` refuses anonymous access and
    completes `tools/list` for a scoped grant; one scoped record query returns
-   data from a small hand-imported record set (no connector run).
+   data from a small hand-imported record set (no connector run). Run
+   `node scripts/railway-mcp-query-smoke.mjs --origin https://<your-console-domain> --owner-password "$PDPP_OWNER_PASSWORD"`
+   against the live origin to drive and assert this end to end.
 7. Restart the `reference` service; the owner login and the stored records
-   survive; re-run the query.
+   survive; re-run the query. Re-run the step-6 script with `--no-seed` after the
+   restart to confirm the records are still returned without re-writing them.
+   (The local `pnpm railway:sqlite-restart-smoke` is the rehearsal of this on
+   the SQLite-on-volume option.)
 
 ## Rollback and cleanup
 
@@ -236,5 +261,12 @@ already browser-free.
 - [`.env.docker.example`](../../.env.docker.example) — the full Docker env block.
 - [`scripts/docker-smoke.sh`](../../scripts/docker-smoke.sh) — the composed-origin
   smoke that stands in for the live metadata/owner-gating checks.
+- [`scripts/railway-mcp-query-smoke.mjs`](../../scripts/railway-mcp-query-smoke.mjs) —
+  deterministic record seed (no connector run) + scripted external MCP query
+  (anonymous refusal + scoped `query_records`); the proxy for live steps 5–6.
+- [`scripts/railway-sqlite-restart-smoke.sh`](../../scripts/railway-sqlite-restart-smoke.sh) —
+  SQLite-on-volume restart-survival smoke; the proxy for live step 7.
+- [`scripts/check-railway-deploy-env.mjs`](../../scripts/check-railway-deploy-env.mjs) —
+  the offline env-contract preflight (live step 1).
 - [`docs/voice-and-framing.md`](../../docs/voice-and-framing.md) — the voice this
   doc follows.
