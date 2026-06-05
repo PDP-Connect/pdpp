@@ -10,6 +10,11 @@ import { notFound } from "next/navigation";
 import { buttonVariants } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
+import {
+  formatStreamCollectionFacts,
+  indexCollectionReportByStream,
+  type StreamCollectionFacts,
+} from "../../lib/collection-report.ts";
 import { derivePrimaryRowAction, type PrimaryRowAction } from "../../lib/connection-evidence.ts";
 import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import {
@@ -34,6 +39,7 @@ import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } fr
 import { findManifestForConnectorId } from "../lib/relationships.ts";
 import { ConnectionDiagnostics } from "./connection-diagnostics.tsx";
 import { RenameConnection } from "./rename-connection.tsx";
+import { StreamCollectionFactsLine } from "./stream-collection-facts.tsx";
 import { SyncNowButton } from "./sync-now-button.tsx";
 
 export const dynamic = "force-dynamic";
@@ -41,6 +47,14 @@ export const dynamic = "force-dynamic";
 const RECENT_RUNS_LIMIT = 10;
 
 interface ConnectorPageModel {
+  /**
+   * Per-stream collection facts derived from the connection summary's
+   * `collection_report`, keyed by stream name. Empty when the reference did not
+   * return a report (a reference predating
+   * `define-connector-progress-evidence-contract`), so the Streams section
+   * renders exactly as before in that case.
+   */
+  collectionFactsByStream: Map<string, StreamCollectionFacts>;
   connectionHealth: RefConnectionHealthSnapshot | null;
   connectionId: string;
   /**
@@ -161,6 +175,14 @@ async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageMod
   const overview = toConnectorOverview(summary, streams);
   const recentRuns = runsResp.data ?? [];
   const totalRecords = streams.reduce((sum, s) => sum + s.record_count, 0);
+  // Per-stream collection facts from the reference's derived `collection_report`
+  // (absent on references predating the field → empty map → Streams section
+  // renders unchanged). Indexed by stream name to join with the resource-server
+  // stream list below.
+  const collectionFactsByStream = new Map<string, StreamCollectionFacts>();
+  for (const [stream, entry] of indexCollectionReportByStream(summary.collection_report)) {
+    collectionFactsByStream.set(stream, formatStreamCollectionFacts(entry));
+  }
   const displayName = formatConnectorNameForDisplay({
     connectorId,
     displayName: manifest.display_name,
@@ -188,6 +210,7 @@ async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageMod
     : (summary.display_name ?? "");
 
   return {
+    collectionFactsByStream,
     connectionHealth: summary.connection_health ?? null,
     connectionId,
     connectorId,
@@ -241,6 +264,7 @@ async function loadConnectorDiagnostics(
 
 function ConnectorPageView({ model }: { model: ConnectorPageModel }) {
   const {
+    collectionFactsByStream,
     connectionHealth,
     connectionId,
     connectorId,
@@ -332,30 +356,47 @@ function ConnectorPageView({ model }: { model: ConnectorPageModel }) {
         sourceInstancesError={sourceInstancesError}
       />
 
-      <Section title={`Streams (${streams.length})`}>
+      <Section
+        description={
+          collectionFactsByStream.size > 0
+            ? "Per-stream collection facts are derived from the latest run. Coverage and next-run disposition reuse the same vocabulary as the connection headline; an unknown denominator reads unknown, never complete."
+            : undefined
+        }
+        title={`Streams (${streams.length})`}
+      >
         {streams.length === 0 ? (
           <p className="pdpp-caption text-muted-foreground italic">{emptyStreamsHint(primaryAction)}</p>
         ) : (
           <DataList>
-            {streams.map((s) => (
-              <li key={s.name}>
-                <Link
-                  className="flex flex-col gap-1 px-3 py-3 transition-colors hover:bg-muted/40 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
-                  href={`/dashboard/records/${encodeURIComponent(connectionId)}/${encodeURIComponent(s.name)}`}
-                >
-                  <span className="pdpp-body break-all font-medium font-mono">{s.name}</span>
-                  <span className="pdpp-caption inline-flex flex-wrap items-baseline gap-x-1 text-muted-foreground tabular-nums">
-                    <span>{s.record_count.toLocaleString()} records</span>
-                    {s.last_updated ? (
-                      <>
-                        <span aria-hidden>·</span>
-                        <Timestamp value={s.last_updated} />
-                      </>
-                    ) : null}
-                  </span>
-                </Link>
-              </li>
-            ))}
+            {streams.map((s) => {
+              const facts = collectionFactsByStream.get(s.name) ?? null;
+              return (
+                <li key={s.name}>
+                  <Link
+                    className={`flex flex-col gap-1 px-3 pt-3 transition-colors hover:bg-muted/40 sm:flex-row sm:items-center sm:justify-between sm:gap-4 ${
+                      facts ? "pb-2" : "pb-3"
+                    }`}
+                    href={`/dashboard/records/${encodeURIComponent(connectionId)}/${encodeURIComponent(s.name)}`}
+                  >
+                    <span className="pdpp-body break-all font-medium font-mono">{s.name}</span>
+                    <span className="pdpp-caption inline-flex flex-wrap items-baseline gap-x-1 text-muted-foreground tabular-nums">
+                      <span>{s.record_count.toLocaleString()} records</span>
+                      {s.last_updated ? (
+                        <>
+                          <span aria-hidden>·</span>
+                          <Timestamp value={s.last_updated} />
+                        </>
+                      ) : null}
+                    </span>
+                  </Link>
+                  {facts ? (
+                    <div className="px-3 pb-3">
+                      <StreamCollectionFactsLine facts={facts} />
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
           </DataList>
         )}
       </Section>

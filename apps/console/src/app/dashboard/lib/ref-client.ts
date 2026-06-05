@@ -351,7 +351,45 @@ export interface RefRecordVersionStatsEnvelope {
   };
 }
 
+/**
+ * One derived per-stream entry on the owner/control-plane Collection Report
+ * (`define-connector-progress-evidence-contract`, Tranche C). Mirrors the
+ * reference's `CollectionReportEntry`, derived on read from the latest run's
+ * runtime `collection_facts` block plus the connection's freshness / refresh /
+ * attention evidence. Owner/control-plane surface only — never on `/v1`.
+ *
+ * The honesty contract the console MUST preserve: `considered` is `"unknown"`
+ * when the connector declared no denominator, and a stream with an unknown
+ * considered denominator reads `coverage_condition: "unknown"`, never
+ * `"complete"`. `collected` is the raw run-local count, never a verdict.
+ */
+export interface RefCollectionReportEntry {
+  /** Committed-checkpoint status from the runtime fact block, or `"unknown"`. */
+  checkpoint: string;
+  /** Raw per-stream collected count from the runtime fact block (never a verdict). */
+  collected: number;
+  /** Known considered denominator, or `"unknown"` when the connector declared none. */
+  considered: number | "unknown";
+  /** Derived coverage condition, from the same vocabulary as the coverage axis. */
+  coverage_condition: RefCoverageAxis;
+  /** Derived forward disposition (what the next run is expected to do on this stream). */
+  forward_disposition: RefForwardDisposition;
+  /** Count of pending recoverable detail gaps for this stream. */
+  pending_detail_gaps: number;
+  /** The runtime `SKIP_RESULT` fact for this stream, or `null`. */
+  skipped: { reason: string; recovery_action?: string } | null;
+  stream: string;
+}
+
 export interface RefConnectorSummary {
+  /**
+   * Per-stream Collection Report derived on read by the reference
+   * (`define-connector-progress-evidence-contract`). Optional on the mirror:
+   * a reference predating the field omits it and the console renders nothing
+   * per stream rather than inventing progress. Forwarded opaquely through
+   * `GET /_ref/connectors`; never exposed on grant-scoped `/v1`.
+   */
+  collection_report?: readonly RefCollectionReportEntry[];
   connection_health: RefConnectionHealthSnapshot;
   connection_id: string;
   connector_display_name?: string;
