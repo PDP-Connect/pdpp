@@ -18,8 +18,11 @@ evidence needed to answer those questions does not all live in one layer:
   or `run.cancelled` spine event payload) a per-stream block carrying only the
   objective, run-local facts it owns at run completion: the stream's **collected**
   count, a **considered** value or `unknown` (never inferred from collected count),
-  the committed **checkpoint** status, the **skip** reason for any `SKIP_RESULT`,
-  and the count of pending recoverable **detail gaps**. The runtime SHALL compose
+  an optional **covered** count or `unknown` (the in-boundary items the run
+  accounted for — emitted plus those it deliberately suppressed as unchanged —
+  never inferred from collected count and never including a weighed-but-dropped
+  item), the committed **checkpoint** status, the **skip** reason for any
+  `SKIP_RESULT`, and the count of pending recoverable **detail gaps**. The runtime SHALL compose
   this block from signals it already receives — `RECORD` counts, `SKIP_RESULT`, the
   reference-only `DETAIL_GAP` and `DETAIL_COVERAGE` signals, and committed `STATE`
   cursors — and SHALL NOT require a new portable wire message from the connector.
@@ -186,6 +189,37 @@ the runtime nor the control-plane projection SHALL infer `complete` from collect
 count alone. The absence of a considered value SHALL read as absence of evidence,
 not as proof of completeness.
 
+A stream that re-enumerates its full source boundary every run and suppresses the
+records it determined to be unchanged (for example a full-sync stream gated by a
+per-record fingerprint) MAY declare, alongside `considered`, an explicit **covered**
+count: the number of in-boundary items the run accounted for, defined as the items
+it emitted plus the items it suppressed because they were unchanged. The covered
+count SHALL be measured at the enumeration site from objective per-record outcomes
+(emitted, or suppressed-because-unchanged) and SHALL NOT be inferred from the
+collected count, and SHALL NOT count an item the run weighed but dropped (a
+malformed record, a record excluded by a boundary filter, or any item not present
+in the source as unchanged). When a connector declares a covered count, the
+control-plane projection SHALL compare the considered denominator against the
+covered count rather than the collected count: a stream whose covered count
+satisfies its considered denominator with no outstanding gap or skip SHALL read
+`complete`, and a stream whose covered count falls short of its considered
+denominator SHALL read `partial`. When a connector declares no covered count, the
+projection SHALL compare the considered denominator against the collected count as
+before. The covered count SHALL be optional evidence only; its absence SHALL NOT
+change the meaning of `considered` for any stream that does not declare it.
+
+#### Scenario: A steady-state full-sync run suppresses only unchanged records
+
+- **WHEN** a connector enumerates a full-sync stream's entire source boundary, emits no records because every in-boundary item was unchanged since the prior run, and declares a considered count equal to the enumerated inventory and a covered count equal to the same inventory (every item accounted for as suppressed-unchanged)
+- **THEN** the Collection Report entry SHALL record the considered value and a `complete` coverage condition
+- **AND** the entry SHALL NOT read `partial` solely because its collected count is below its considered denominator
+
+#### Scenario: A full-sync run that drops a weighed item stays partial
+
+- **WHEN** a connector enumerates a full-sync stream's source boundary and accounts for fewer items as covered (emitted or suppressed-unchanged) than it considered, because it weighed but dropped an item (for example a record that failed shape validation)
+- **THEN** the Collection Report entry SHALL record the considered value and a `partial` coverage condition
+- **AND** the dropped item SHALL NOT be counted as covered, so the covered count SHALL fall short of the considered denominator and the shortfall SHALL remain visible
+
 #### Scenario: A connector declares what it considered
 
 - **WHEN** a connector declares a considered value for a stream (an inventory size, a required-keys set, or an explicit considered count) and collects fewer items than it considered with the remainder recorded as gaps
@@ -225,6 +259,6 @@ update promote an explicit wire contract.
 
 #### Scenario: Report composition avoids secrets
 
-- **WHEN** the runtime bounds connector-authored skip diagnostics, detail-gap locators, or considered values into the collection-fact block, and the control-plane projection derives the Collection Report from it
+- **WHEN** the runtime bounds connector-authored skip diagnostics, detail-gap locators, or considered/covered values into the collection-fact block, and the control-plane projection derives the Collection Report from it
 - **THEN** both layers SHALL apply the same secret-redaction and bounding policy used for `known_gaps` and `SKIP_RESULT.diagnostics`
 - **AND** neither SHALL persist bearer tokens, cookies, secret-bearing URLs, request bodies, or raw private payloads

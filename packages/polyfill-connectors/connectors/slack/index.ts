@@ -529,14 +529,27 @@ export interface StreamDeps {
  * the enumeration site, NEVER the count it chose to emit. When the run emitted
  * every enumerated item the stream reads `complete`; when a weighed item was not
  * emitted (e.g. a record dropped by shape validation) `collected < considered`
- * reads an honest `partial`. A stream that CANNOT know its full inventory for
- * the run — anything fingerprint-suppressed (so `collected` is a churn-reduced
- * subset, not a coverage count), incrementally windowed past an unknowable
- * boundary, or derived per-parent — MUST NOT call this; it leaves `considered`
- * unknown rather than fabricating a denominator that reads as a false
- * partial/complete.
+ * reads an honest `partial`.
+ *
+ * A fingerprint-suppressed full-sync stream re-enumerates its whole boundary
+ * every run and suppresses the records it determined to be unchanged, so
+ * `collected` is a churn-reduced subset, not a coverage count. Such a stream
+ * still has an objective coverage numerator — the items it accounted for: emitted
+ * plus suppressed-because-unchanged — and declares it as the optional `covered`
+ * count (task 4.4). When `covered` is supplied the projection compares
+ * `considered` against `covered` instead of `collected`, so a steady-state run
+ * reads `complete` rather than a false `partial`; a row weighed but dropped is in
+ * neither `collected` nor `covered`, so a real shortfall still reads `partial`.
+ * A stream that cannot know its full inventory for the run — incrementally
+ * windowed past an unknowable boundary, or derived per-parent — MUST NOT call
+ * this; it leaves `considered` unknown rather than fabricating a denominator.
  */
-async function declareListConsidered(deps: StreamDeps, stream: string, considered: number): Promise<void> {
+async function declareListConsidered(
+  deps: StreamDeps,
+  stream: string,
+  considered: number,
+  covered?: number
+): Promise<void> {
   if (!Number.isInteger(considered) || considered < 0) {
     return;
   }
@@ -547,6 +560,7 @@ async function declareListConsidered(deps: StreamDeps, stream: string, considere
       requiredKeys: [],
       hydratedKeys: [],
       considered,
+      ...(typeof covered === "number" && Number.isInteger(covered) && covered >= 0 ? { covered } : {}),
     })
   );
 }
@@ -611,18 +625,55 @@ export const FINGERPRINT_EXCLUDE: Record<FingerprintedStream, readonly string[]>
  * Records without an id pass through unconditionally (they cannot be
  * fingerprinted; the cursor leaves its state alone).
  */
-export function emitWithFingerprint(deps: StreamDeps, stream: FingerprintedStream, record: RecordData): Promise<void> {
+export async function emitWithFingerprint(
+  deps: StreamDeps,
+  stream: FingerprintedStream,
+  record: RecordData
+): Promise<boolean> {
   const cursor = deps.fingerprintCursors.get(stream);
   if (!cursor) {
     // Programmer error: the collect() bootstrap opens a cursor for every
     // fingerprinted stream regardless of whether it was requested, so this
     // branch shouldn't fire. Fall back to a raw emit rather than throw.
-    return deps.emitRecord(stream, record);
+    await deps.emitRecord(stream, record);
+    return true;
   }
   if (!cursor.shouldEmit(record)) {
-    return Promise.resolve();
+    // Suppressed because the record was unchanged since the prior run. The item
+    // is still COVERED — the run accounted for it and confirmed it needs no new
+    // version — so the caller counts it toward the `covered` numerator even
+    // though no RECORD was emitted. This is the line that lets a steady-state
+    // full-sync run read `complete` instead of a false `partial`.
+    return false;
   }
-  return deps.emitRecord(stream, record);
+  await deps.emitRecord(stream, record);
+  return true;
+}
+
+/**
+ * Run a fingerprinted full-sync stream over `rows`, building one record per row
+ * and routing it through {@link emitWithFingerprint}. Returns the objective
+ * coverage counts the Collection Report needs: `considered` is the enumerated row
+ * count (the full source boundary the run weighed) and `covered` is the number of
+ * rows the run accounted for — emitted plus suppressed-because-unchanged. They are
+ * counted independently: a row dropped before reaching the emit helper (a future
+ * malformed-row `continue`) raises `considered` without raising `covered`, so the
+ * shortfall reads an honest `partial` rather than being assumed complete.
+ */
+async function runFingerprintedFullSync<Row>(
+  deps: StreamDeps,
+  stream: FingerprintedStream,
+  rows: readonly Row[],
+  buildRecord: (row: Row) => RecordData
+): Promise<{ considered: number; covered: number }> {
+  let covered = 0;
+  for (const r of rows) {
+    // Every row that reaches the emit helper is covered (emitted or
+    // suppressed-unchanged); `emitWithFingerprint` never drops an enumerated row.
+    await emitWithFingerprint(deps, stream, buildRecord(r));
+    covered += 1;
+  }
+  return { considered: rows.length, covered };
 }
 
 async function runWorkspaceStream(deps: StreamDeps): Promise<void> {
@@ -630,9 +681,10 @@ async function runWorkspaceStream(deps: StreamDeps): Promise<void> {
     deps.db,
     "SELECT ID, TEAM, TEAM_ID, USERNAME, USER_ID, URL, ENTERPRISE_ID, DATA FROM WORKSPACE"
   );
-  for (const r of rows) {
-    await emitWithFingerprint(deps, "workspace", buildWorkspaceRecord(r, deps.emittedAt));
-  }
+  const { considered, covered } = await runFingerprintedFullSync(deps, "workspace", rows, (r) =>
+    buildWorkspaceRecord(r, deps.emittedAt)
+  );
+  await declareListConsidered(deps, "workspace", considered, covered);
 }
 
 export async function runChannelsStream(deps: StreamDeps): Promise<void> {
@@ -647,16 +699,31 @@ export async function runChannelsStream(deps: StreamDeps): Promise<void> {
   `
   );
   const observedOn = deps.emittedAt.slice(0, 10);
+  const wantsChannels = deps.requested.has("channels");
+  let channelsCovered = 0;
   for (const r of rows) {
-    if (deps.requested.has("channels")) {
+    if (wantsChannels) {
       // Entity record: fingerprinted so unchanged structural fields don't re-emit.
+      // Every enumerated channel row is accounted for (emitted or
+      // suppressed-unchanged), so it counts toward the `covered` numerator.
       const entityRec = buildChannelRecord(r);
       await emitWithFingerprint(deps, "channels", entityRec);
+      channelsCovered += 1;
     }
     // Stats record: append-keyed observation (one per channel per day).
     if (deps.requested.has("channel_stats")) {
       await deps.emitRecord("channel_stats", buildChannelStatsRecord(r, observedOn));
     }
+  }
+  // `channels` is a fingerprint-suppressed full-sync stream: it re-enumerates the
+  // whole channel inventory every run and suppresses unchanged rows. Declaring
+  // `considered = rows.length` with `covered = channelsCovered` lets a
+  // steady-state run read `complete` instead of a false `partial`. `channel_stats`
+  // is append-keyed (one observation per channel per day), not an inventory, so it
+  // declares no denominator. The denominators are measured at the query site,
+  // never aliased to the emitted count.
+  if (wantsChannels) {
+    await declareListConsidered(deps, "channels", rows.length, channelsCovered);
   }
 }
 
@@ -667,12 +734,13 @@ async function runChannelMembershipsStream(deps: StreamDeps): Promise<void> {
     SELECT DISTINCT CHANNEL_ID, USER_ID FROM CHANNEL_USER
   `
   );
-  for (const r of rows) {
-    await emitWithFingerprint(deps, "channel_memberships", buildChannelMembershipRecord(r, deps.emittedAt));
-  }
+  const { considered, covered } = await runFingerprintedFullSync(deps, "channel_memberships", rows, (r) =>
+    buildChannelMembershipRecord(r, deps.emittedAt)
+  );
+  await declareListConsidered(deps, "channel_memberships", considered, covered);
 }
 
-async function runUsersStream(deps: StreamDeps): Promise<void> {
+export async function runUsersStream(deps: StreamDeps): Promise<void> {
   const rows = safeAll<UserRow>(
     deps.db,
     `
@@ -682,9 +750,8 @@ async function runUsersStream(deps: StreamDeps): Promise<void> {
       ON m.ID = u.ID AND m.mx = u.CHUNK_ID
   `
   );
-  for (const r of rows) {
-    await emitWithFingerprint(deps, "users", buildUserRecord(r));
-  }
+  const { considered, covered } = await runFingerprintedFullSync(deps, "users", rows, buildUserRecord);
+  await declareListConsidered(deps, "users", considered, covered);
 }
 
 /**
@@ -757,9 +824,8 @@ async function runFilesStream(deps: StreamDeps): Promise<void> {
     WHERE f.MODE != 'quip'
   `
   );
-  for (const r of rows) {
-    await emitWithFingerprint(deps, "files", buildFileRecord(r));
-  }
+  const { considered, covered } = await runFingerprintedFullSync(deps, "files", rows, buildFileRecord);
+  await declareListConsidered(deps, "files", considered, covered);
 }
 
 export async function runCanvasesStream(deps: StreamDeps): Promise<void> {

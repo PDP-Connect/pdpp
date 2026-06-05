@@ -346,6 +346,49 @@
   `collection-profile.test.js` integration case. slack 68/68 + github 27/27 + SDK
   runtime 46/46 + collection-report-projection 30/30; RI + polyfill-connectors
   `tsc --noEmit` exit 0; biome clean on changed files.
+- [x] 4.4 Steady-state semantics: an optional `covered` denominator unblocks
+  `considered` for fingerprint-suppressed full-sync list streams.
+  Problem: the per-stream coverage gate compares `considered` (pre-suppression
+  enumerated count) against `collected` (post-fingerprint emitted count), so a
+  full-sync stream that re-enumerates its whole boundary and suppresses the
+  unchanged records reads a FALSE `partial` on a steady-state run (`collected: 0`,
+  `considered: N`). This is exactly why tasks 4.1/4.2 held back `considered` on
+  every fingerprint-suppressed stream (Slack `workspace`/`users`/`files`/
+  `channels`/`channel_memberships`, and the YNAB/Chase/USAA full-sync streams):
+  declaring the enumerated count would have false-partialed a fully-covered run.
+  Mechanism (additive, no existing field changed): a new optional `covered` count
+  rides the SAME path `considered` already rides — `DETAIL_COVERAGE.covered` on the
+  protocol message and SDK `buildDetailCoverageMessage`/`DetailCoverageParams`,
+  normalized by the runtime's existing `boundConsideredCount` (drop-don't-reject:
+  unsafe/negative/fractional → omitted), tracked in `trackDetailCoverage`, carried
+  on the `run.detail_coverage_declared` spine event, surfaced on the terminal
+  `collection_facts` block by `declaredCoveredForStream` (mirrors
+  `declaredConsideredForStream`, first declared wins, never inferred from
+  collected), parsed defensively in `ref-control.ts` (`covered: number | null`),
+  and read by the gate `deriveStreamCoverageCondition`. Gate change: when `covered`
+  is non-null the gate compares `considered` against `covered`
+  (`covered < considered → partial`, else accepted/`complete`); when `covered` is
+  null the prior `considered`-vs-`collected` comparison is byte-unchanged — so
+  every shipped 4.1/4.2 declarer (none emit `covered`) is unaffected.
+  `covered` = emitted + suppressed-because-unchanged, measured at the enumeration
+  site from objective per-record outcomes; a weighed-but-dropped record is in
+  NEITHER `collected` NOR `covered`, so it still reads `partial` (the Slack-canvas
+  drop guardrail). Connector wired: Slack `FINGERPRINTED_STREAMS` — `emitWithFingerprint`
+  now reports, per stream, whether each record emitted or suppressed-unchanged, and
+  each requested fingerprinted stream declares `considered = covered = enumerated
+  rows` via the existing `declareListConsidered` extended with an optional `covered`
+  argument. A steady-state Slack `users`/`channels`/… run now reads `complete`;
+  a run that drops a malformed row reads `partial` (covered < considered).
+  Tests: `connectors/slack/fingerprint-considered.test.ts` (steady-state covered ===
+  considered; one-changed still covered === considered; dropped row covered <
+  considered; covered measured not aliased), runtime
+  `collection-profile.test.js`/`connector-runtime.test.js` (covered carried through
+  the fact block + builder), and `collection-report-projection.test.js` (gate:
+  covered satisfies considered → `complete`; covered short → `partial`; covered
+  null falls back to collected → prior behavior). GitHub cursor-stop semantics
+  (`considered = page totalSeen`, below-cursor item reads `partial`) are
+  DELIBERATELY UNCHANGED — that is an incremental window, not a full-sync boundary,
+  and its `partial` is the shipped, tested intent (`github/index.test.ts:556`).
 - [ ] 4.3 Dashboard consumes per-stream report + forward disposition directly;
   deprecate per-connector freshness/gap reconstruction heuristics.
 

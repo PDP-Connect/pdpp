@@ -155,6 +155,21 @@ export interface DetailCoverageMessage {
    * enumerated its boundary may declare it with empty key arrays.
    */
   considered?: number;
+  /**
+   * Optional connector-declared `covered` count: how many of the `considered`
+   * in-boundary items the run actually accounted for — the items it emitted plus
+   * the items it deliberately suppressed because they were unchanged (a full-sync
+   * stream gated by a per-record fingerprint). The runtime normalizes it to a
+   * trusted safe non-negative integer or `unknown` and, when present, the
+   * control-plane projection compares `considered` against it instead of the
+   * collected count, so a steady-state run that suppressed every unchanged record
+   * reads `complete` rather than a false `partial`. It MUST be measured at the
+   * enumeration site from objective per-record outcomes and MUST NOT count an item
+   * the run weighed but dropped (a malformed record, a filtered-out item) — a
+   * dropped item is in neither the collected nor the covered count, so it still
+   * reads `partial`. NEVER inferred from the collected count.
+   */
+  covered?: number;
   gap_keys?: Array<string | number>;
   hydrated_keys: Array<string | number>;
   optional_skip_keys?: Array<string | number>;

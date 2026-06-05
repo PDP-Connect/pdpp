@@ -287,6 +287,19 @@ export interface DetailCoverageParams {
    * collected/emitted count — the runtime never infers it from collected.
    */
   considered?: number;
+  /**
+   * Optional explicit `covered` count: how many of the `considered` in-boundary
+   * items the run accounted for — the items it emitted plus the items it
+   * deliberately suppressed as unchanged (a full-sync stream gated by a per-record
+   * fingerprint). When present, the projection compares `considered` against
+   * `covered` instead of the collected count, so a steady-state run that suppressed
+   * every unchanged record reads `complete` rather than a false `partial`. It MUST
+   * be measured at the enumeration site from objective per-record outcomes
+   * (emitted, or suppressed-because-unchanged) and MUST NOT count a weighed-but-
+   * dropped item — a dropped item is in neither the collected nor the covered
+   * count, so it still reads `partial`. Never aliased to the collected count.
+   */
+  covered?: number;
   /** Keys for which a DETAIL_GAP was emitted and should be retried next run. */
   gapKeys?: ReadonlyArray<string | number>;
   /** Subset of requiredKeys whose detail was fetched and emitted. */
@@ -307,7 +320,7 @@ export interface DetailCoverageParams {
  * optional key sets are omitted so a fully hydrated run carries no gap fields.
  */
 export function buildDetailCoverageMessage(params: DetailCoverageParams): DetailCoverageMessage {
-  const { stream, stateStream, requiredKeys, hydratedKeys, gapKeys, optionalSkipKeys, considered } = params;
+  const { stream, stateStream, requiredKeys, hydratedKeys, gapKeys, optionalSkipKeys, considered, covered } = params;
   return {
     type: "DETAIL_COVERAGE",
     reference_only: true,
@@ -319,6 +332,10 @@ export function buildDetailCoverageMessage(params: DetailCoverageParams): Detail
     // The runtime re-validates and drops anything unsafe to `unknown`; omitting
     // it here keeps a no-considered run byte-identical to the prior shape.
     ...(typeof considered === "number" && Number.isInteger(considered) && considered >= 0 ? { considered } : {}),
+    // Same drop-don't-fabricate posture for the optional `covered` count: omitting
+    // it when absent or unsafe keeps a no-covered run byte-identical to the prior
+    // shape, so every existing declarer is unaffected.
+    ...(typeof covered === "number" && Number.isInteger(covered) && covered >= 0 ? { covered } : {}),
     ...(gapKeys?.length ? { gap_keys: [...gapKeys] } : {}),
     ...(optionalSkipKeys?.length ? { optional_skip_keys: [...optionalSkipKeys] } : {}),
   };

@@ -30,6 +30,7 @@ function fact(overrides = {}) {
     stream: 'transactions',
     collected: 0,
     considered: null,
+    covered: null,
     checkpoint: 'committed',
     pending_detail_gaps: 0,
     skipped: null,
@@ -85,6 +86,71 @@ test('considered exceeds collected -> partial / resumable, considered recorded',
   assert.equal(entry.considered, 1145);
   assert.equal(entry.coverage_condition, 'partial');
   assert.equal(entry.forward_disposition, 'resumable');
+});
+
+// ─── 4.4 the covered numerator: steady-state full-sync reads complete ─────────
+//
+// A fingerprint-suppressed full-sync stream enumerates its whole boundary and
+// suppresses unchanged records, so `collected` is a churn-reduced subset. When it
+// declares a `covered` count (emitted + suppressed-unchanged), the gate compares
+// `considered` against `covered`, NOT `collected`. This is the steady-state fix:
+// a run that emitted 0 but accounted for the whole inventory reads `complete`,
+// not a false `partial`. A real drop (covered < considered) still reads `partial`.
+
+test('4.4 steady-state: collected 0 but covered === considered -> complete (NOT a false partial)', () => {
+  // The exact shape a steady-state fingerprint full-sync run produces: it
+  // re-enumerated all 1145 rows, emitted none (all unchanged), and accounted for
+  // every one as suppressed-unchanged.
+  const entries = report([fact({ collected: 0, considered: 1145, covered: 1145 })]);
+  const entry = entryFor(entries, 'transactions');
+  assert.equal(entry.considered, 1145);
+  assert.equal(entry.covered, 1145);
+  assert.equal(entry.collected, 0);
+  // Without the covered numerator the gate would compare considered(1145) against
+  // collected(0) and read a false `partial`. With it, the run is `complete`.
+  assert.equal(entry.coverage_condition, 'complete');
+  assert.equal(entry.forward_disposition, 'complete');
+});
+
+test('4.4 one-changed: collected 1, covered === considered -> complete', () => {
+  const entries = report([fact({ collected: 1, considered: 1145, covered: 1145 })]);
+  const entry = entryFor(entries, 'transactions');
+  assert.equal(entry.covered, 1145);
+  assert.equal(entry.coverage_condition, 'complete');
+});
+
+test('4.4 dropped row: covered < considered -> partial (a weighed-but-dropped item still shows the shortfall)', () => {
+  // The guardrail: a covered count never masks a dropped record. Here the run
+  // enumerated 1145 but accounted for only 1144 (one weighed row dropped before
+  // it could be emitted or suppressed). collected(0) is irrelevant — the gate
+  // reads covered(1144) < considered(1145) and refuses `complete`.
+  const entries = report([fact({ collected: 0, considered: 1145, covered: 1144 })]);
+  const entry = entryFor(entries, 'transactions');
+  assert.equal(entry.considered, 1145);
+  assert.equal(entry.covered, 1144);
+  assert.equal(entry.coverage_condition, 'partial');
+  assert.equal(entry.forward_disposition, 'resumable');
+});
+
+test('4.4 covered absent -> gate falls back to collected (prior behavior byte-unchanged)', () => {
+  // A declarer that emits NO covered count (every shipped 4.1/4.2 declarer) must
+  // behave exactly as before: considered vs collected. covered: null means the
+  // gate ignores it entirely.
+  const satisfied = report([fact({ collected: 1145, considered: 1145, covered: null })]);
+  assert.equal(entryFor(satisfied, 'transactions').coverage_condition, 'complete');
+  assert.equal(entryFor(satisfied, 'transactions').covered, 'unknown');
+
+  const short = report([fact({ collected: 900, considered: 1145, covered: null })]);
+  assert.equal(entryFor(short, 'transactions').coverage_condition, 'partial');
+});
+
+test('4.4 covered satisfies considered while collected is below it -> complete (covered, not collected, is the numerator)', () => {
+  // Explicitly pin that the gate prefers covered over collected when both are
+  // present and they disagree: collected(500) < considered(1000) would be
+  // `partial` on the old path, but covered(1000) === considered → complete.
+  const entries = report([fact({ collected: 500, considered: 1000, covered: 1000 })]);
+  const entry = entryFor(entries, 'transactions');
+  assert.equal(entry.coverage_condition, 'complete');
 });
 
 // ─── skip facts: never complete ───────────────────────────────────────────────

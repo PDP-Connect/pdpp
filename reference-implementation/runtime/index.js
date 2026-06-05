@@ -520,6 +520,11 @@ function normalizeConsideredInDiagnostics(boundedDiagnostics) {
  *   - `considered` is OMITTED (reads `unknown`) unless a trusted declared value
  *     exists; it is NEVER set to `collected`;
  *   - declared `DETAIL_COVERAGE.considered` wins over `required_keys.length`;
+ *   - `covered` (the items the run accounted for: emitted + suppressed-unchanged)
+ *     is OMITTED unless a trusted declared `DETAIL_COVERAGE.covered` exists; it is
+ *     NEVER inferred from `collected`. When present, the projection compares
+ *     `considered` against `covered` so a steady-state full-sync run that
+ *     suppressed every unchanged record reads `complete`, not a false `partial`;
  *   - no `coverage`, `coverage_axis`, `forward_disposition`, `freshness`, or
  *     `refresh` key, on the block or on any entry.
  *
@@ -581,6 +586,22 @@ function buildCollectionFacts({
     return requiredKeysFallback;
   };
 
+  // First declared covered count (DETAIL_COVERAGE.covered) wins, else unknown
+  // (omitted). Mirrors declaredConsideredForStream. The projection compares
+  // `considered` against `covered` when present so a full-sync stream that
+  // suppressed every unchanged record reads `complete`. Never inferred from
+  // collected; there is no required-keys fallback (covered is a run-outcome count,
+  // not a declared key set).
+  const declaredCoveredForStream = (stream) => {
+    for (const entries of detailCoverageByStateStream.values()) {
+      for (const entry of entries) {
+        if (entry?.stream !== stream) continue;
+        if (typeof entry.covered === 'number') return entry.covered;
+      }
+    }
+    return null;
+  };
+
   const skipForStream = (stream) => {
     const gap = knownGaps.find(
       (candidate) => candidate.kind === 'skip_result' && candidate.stream === stream,
@@ -601,6 +622,7 @@ function buildCollectionFacts({
 
   const streams = inScopeStreams.map((stream) => {
     const considered = declaredConsideredForStream(stream);
+    const covered = declaredCoveredForStream(stream);
     const stateStream = streamToStateStream.get(stream) || stream;
     return {
       stream,
@@ -608,6 +630,9 @@ function buildCollectionFacts({
       // Omit when unknown — absence reads as `unknown` downstream; never
       // inferred from collected count.
       ...(considered == null ? {} : { considered }),
+      // Optional covered count (task 4.4): omit when unknown. When present the
+      // projection compares `considered` against this instead of `collected`.
+      ...(covered == null ? {} : { covered }),
       checkpoint: checkpointForStateStream(stateStream),
       pending_detail_gaps: pendingDetailGapsForStream(stream),
       skipped: skipForStream(stream),
@@ -2185,6 +2210,12 @@ export async function runConnector(opts) {
       // the terminal collection-fact block can prefer it over the
       // required_keys.length fallback. null stays `unknown`; never inferred.
       considered: boundConsideredCount(msg.considered),
+      // Optional connector-declared covered count (task 4.4): in-boundary items the
+      // run accounted for (emitted + suppressed-unchanged). Same drop-don't-reject
+      // normalization. null stays `unknown`; the projection compares `considered`
+      // against `covered` when present so a steady-state full-sync run reads
+      // `complete`, never inferred from collected.
+      covered: boundConsideredCount(msg.covered),
     });
     detailCoverageByStateStream.set(msg.state_stream, entries);
   }
@@ -2906,6 +2937,7 @@ export async function runConnector(opts) {
           validateDetailCoverageMessage(msg, scopeByStream);
           trackDetailCoverage(msg);
           const coverageConsidered = boundConsideredCount(msg.considered);
+          const coverageCovered = boundConsideredCount(msg.covered);
           await emitSpineEventTracked({
             event_type: 'run.detail_coverage_declared',
             trace_id: traceContext.trace_id,
@@ -2930,6 +2962,8 @@ export async function runConnector(opts) {
               // Optional connector-declared denominator; omitted (= `unknown`)
               // unless it is a trusted safe non-negative integer.
               ...(coverageConsidered == null ? {} : { considered: coverageConsidered }),
+              // Optional covered count (task 4.4); same omit-unless-trusted posture.
+              ...(coverageCovered == null ? {} : { covered: coverageCovered }),
             },
           });
           onProgress({

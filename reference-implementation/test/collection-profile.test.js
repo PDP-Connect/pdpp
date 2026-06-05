@@ -3224,6 +3224,126 @@ rl.on('line', (line) => {
     }
   });
 
+  await t.test('4.4: a steady-state list-considered DETAIL_COVERAGE carries `covered` onto the spine event AND the terminal facts block', async () => {
+    // The steady-state full-sync shape (task 4.4): a fingerprint-suppressed stream
+    // re-enumerated 5 items, emitted 0 (all unchanged), and declares
+    // `considered: 5` with `covered: 5` (every item accounted for as
+    // suppressed-unchanged). The runtime must carry BOTH the considered AND the
+    // covered count through the spine event and onto the terminal facts block, so
+    // the projection can read covered === considered → complete. `collected` is 0.
+    const manifest = buildMultiStreamManifest('facts-list-covered');
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
+    const asUrl = `http://localhost:${asPort}`;
+
+    const { connectorPath, cleanup } = createTestConnector([
+      // No RECORDs: a steady-state run where every enumerated item was unchanged.
+      {
+        type: 'DETAIL_COVERAGE',
+        reference_only: true,
+        state_stream: 'items',
+        stream: 'items',
+        required_keys: [],
+        hydrated_keys: [],
+        considered: 5,
+        covered: 5,
+      },
+      { type: 'STATE', stream: 'items', cursor: { last: 'i5' } },
+      { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest,
+        scope: { streams: [{ name: 'items' }] },
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+      });
+
+      assert.equal(result.status, 'succeeded', 'empty-key list coverage must not block the run');
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+
+      // Spine event carries covered alongside considered.
+      const coverageEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.detail_coverage_declared');
+      assert.ok(coverageEvent, 'expected run.detail_coverage_declared event');
+      assert.equal(coverageEvent.data.considered, 5, 'considered carried on the spine event');
+      assert.equal(coverageEvent.data.covered, 5, 'covered carried on the spine event');
+
+      // Terminal facts block carries both, with collected 0.
+      const completedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.completed');
+      const facts = completedEvent.data.collection_facts;
+      const items = facts.streams.find((entry) => entry.stream === 'items');
+      assert.ok(items, 'items entry present in the facts block');
+      assert.equal(items.collected, 0, 'collected is 0 — every item was suppressed-unchanged');
+      assert.equal(items.considered, 5, 'considered carried onto the facts block');
+      assert.equal(items.covered, 5, 'covered carried onto the facts block — the numerator the gate uses');
+      assert.equal(items.checkpoint, 'committed', 'the committed STATE still commits');
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
+  await t.test('4.4: a malformed / unsafe DETAIL_COVERAGE.covered is dropped to unknown (omitted), considered preserved', async () => {
+    // Same drop-don't-reject posture as considered: an unsafe covered count never
+    // fabricates a numerator and never fails the run; it is simply omitted, and
+    // the gate falls back to collected for that stream.
+    for (const covered of [-1, 2.5, Number.NaN, Number.POSITIVE_INFINITY, '4', Number.MAX_SAFE_INTEGER + 1]) {
+      const manifest = buildMultiStreamManifest('facts-covered-bad');
+      const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+      const { asPort, rsPort } = server;
+      const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
+      const asUrl = `http://localhost:${asPort}`;
+
+      const { connectorPath, cleanup } = createTestConnector([
+        {
+          type: 'DETAIL_COVERAGE',
+          reference_only: true,
+          state_stream: 'items',
+          stream: 'items',
+          required_keys: [],
+          hydrated_keys: [],
+          considered: 5,
+          covered,
+        },
+        { type: 'STATE', stream: 'items', cursor: { last: 'i5' } },
+        { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+      ]);
+
+      try {
+        const result = await runConnector({
+          connectorPath,
+          connectorId,
+          ownerToken,
+          manifest,
+          scope: { streams: [{ name: 'items' }] },
+          state: null,
+          collectionMode: 'full_refresh',
+          persistState: true,
+          rsUrl: `http://localhost:${rsPort}`,
+          onInteraction: async () => ({}),
+        });
+
+        assert.equal(result.status, 'succeeded', `covered=${String(covered)} must not reject the run`);
+        const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+        const completedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.completed');
+        const items = completedEvent.data.collection_facts.streams.find((entry) => entry.stream === 'items');
+        assert.equal(items.considered, 5, `considered preserved while covered=${String(covered)} dropped`);
+        assert.equal(items.covered, undefined, `covered=${String(covered)} must drop to unknown (omitted)`);
+      } finally {
+        cleanup();
+        await closeServer(server);
+      }
+    }
+  });
+
   await t.test('2.2a: a RECORD/STATE/DONE-only connector still yields a valid facts block with unknown considered (task 2.6 at runtime scope)', async () => {
     // The portability floor: a connector that emits only RECORD/STATE/DONE — no
     // DETAIL_COVERAGE, no SKIP_RESULT — still produces a valid per-stream facts

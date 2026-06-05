@@ -73,6 +73,19 @@ genuinely-missing-but-derivable field (`considered`) so `partial` can be told fr
   when a connector does not declare what it considered, the runtime SHALL record the
   stream's considered value as `unknown`, and neither the runtime nor the
   control-plane projection SHALL infer `complete` from collected count alone.
+- Add an optional **covered** count alongside `considered` so a full-sync stream
+  that re-enumerates its whole boundary every run and suppresses unchanged records
+  (a per-record fingerprint gate) can read `complete` on a steady-state run without
+  fabricating completeness. `covered` is the items the run accounted for — emitted
+  plus suppressed-because-unchanged — measured at the enumeration site from
+  objective per-record outcomes, never inferred from collected count and never
+  counting a weighed-but-dropped item. When declared, the projection compares
+  `considered` against `covered` instead of `collected`; when absent, the prior
+  `considered`-vs-`collected` comparison is unchanged. This removes the latent
+  false-`partial` on fingerprint-suppressed steady-state list streams (the class
+  GitHub/Slack list-considered declarations were held back from in tasks 4.1/4.2)
+  without making `collected < considered` blindly complete: a dropped record is in
+  neither count, so it still reads `partial`.
 - Keep the contract a **reference-implementation projection**, not a new portable
   Collection Profile wire message: it reuses the reference-only `DETAIL_GAP` /
   `DETAIL_COVERAGE` signals under their existing reference-only constraint and the

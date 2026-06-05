@@ -240,6 +240,16 @@ export interface RuntimeCollectionFact {
   readonly stream: string;
   readonly collected: number;
   readonly considered: number | null;
+  /**
+   * Optional connector-declared `covered` count: the in-boundary items the run
+   * accounted for (emitted + suppressed-because-unchanged), or `null` when the
+   * connector declared none. When non-null the coverage gate compares `considered`
+   * against this instead of `collected`, so a steady-state full-sync run that
+   * suppressed every unchanged record reads `complete` rather than a false
+   * `partial`. NEVER inferred from `collected`; a weighed-but-dropped item is in
+   * neither count, so a real shortfall still reads `partial`.
+   */
+  readonly covered: number | null;
   readonly checkpoint: string | null;
   readonly pending_detail_gaps: number;
   readonly skipped: RuntimeCollectionFactSkip | null;
@@ -657,6 +667,15 @@ function readCollectionFactsFromTerminalData(
         Number.isSafeInteger(entry.considered) &&
         entry.considered >= 0
           ? entry.considered
+          : null,
+      // `covered` is OMITTED upstream when unknown. Re-validate defensively the
+      // same way as `considered`: anything not a safe non-negative integer reads
+      // as absent (`null`), never a fabricated covered count.
+      covered:
+        typeof entry.covered === "number" &&
+        Number.isSafeInteger(entry.covered) &&
+        entry.covered >= 0
+          ? entry.covered
           : null,
       checkpoint: typeof entry.checkpoint === "string" ? entry.checkpoint : null,
       pending_detail_gaps:
@@ -1361,6 +1380,13 @@ export interface CollectionReportEntry {
   readonly collected: number;
   /** Known considered denominator, or `unknown` when the connector declared none. */
   readonly considered: ConsideredAxis;
+  /**
+   * Connector-declared `covered` count (in-boundary items accounted for: emitted +
+   * suppressed-because-unchanged), or `unknown` when the connector declared none.
+   * When known it is the numerator the coverage gate compares against `considered`,
+   * so a steady-state full-sync run reads `complete` without a false `partial`.
+   */
+  readonly covered: ConsideredAxis;
   /** Committed-checkpoint status from the runtime fact block, or `unknown`. */
   readonly checkpoint: string;
   /** Count of pending recoverable detail gaps for this stream (locators stay in the detail-gap backlog). */
@@ -1411,7 +1437,7 @@ function mapSkipCoverageCondition(skip: RuntimeCollectionFactSkip): CoverageAxis
  *   1. contradictory manifest (required AND accepted-absent)  -> the accepted axis
  *   2. SKIP_RESULT present  -> manifest accepted-coverage axis, else skip-derived axis
  *   3. pending recoverable detail gap(s)  -> `retryable_gap`
- *   4. known considered denominator  -> `partial` (collected < considered)
+ *   4. known considered denominator  -> `partial` (covered-or-collected < considered)
  *                                        else accepted axis / `complete`
  *   5. unknown considered denominator (THE HONESTY GATE)  -> accepted axis / `unknown`
  *
@@ -1442,12 +1468,21 @@ function deriveStreamCoverageCondition(
   if (fact.pending_detail_gaps > 0) {
     return "retryable_gap";
   }
-  // 4. A known considered denominator distinguishes `partial` from covered.
+  // 4. A known considered denominator distinguishes `partial` from covered. The
+  //    satisfying numerator is the connector-declared `covered` count when present
+  //    (the in-boundary items the run accounted for: emitted +
+  //    suppressed-because-unchanged), otherwise the raw `collected` count. The
+  //    `covered` path is what lets a steady-state full-sync run — which
+  //    re-enumerated its whole boundary and emitted nothing because every record
+  //    was unchanged — read `complete` instead of a false `partial`. It cannot
+  //    mask a dropped record: a weighed-but-dropped item is counted in neither
+  //    `collected` nor `covered`, so a real shortfall still reads `partial`.
   if (fact.considered !== null) {
-    if (fact.collected < fact.considered) {
+    const satisfied = fact.covered ?? fact.collected;
+    if (satisfied < fact.considered) {
       return "partial";
     }
-    // Collected satisfies the considered denominator: covered. A declared
+    // The numerator satisfies the considered denominator: covered. A declared
     // accepted-coverage policy (e.g. `inventory_only`, `deferred`) is the more
     // precise honest claim than a bare `complete`.
     return accepted ?? "complete";
@@ -1503,6 +1538,7 @@ export function buildCollectionReport(input: {
       stream,
       collected: 0,
       considered: null,
+      covered: null,
       checkpoint: null,
       pending_detail_gaps: 0,
       skipped: null,
@@ -1520,6 +1556,7 @@ export function buildCollectionReport(input: {
       stream,
       collected: fact.collected,
       considered: fact.considered === null ? "unknown" : fact.considered,
+      covered: fact.covered === null ? "unknown" : fact.covered,
       checkpoint: fact.checkpoint ?? "unknown",
       pending_detail_gaps: fact.pending_detail_gaps,
       skipped: fact.skipped,
