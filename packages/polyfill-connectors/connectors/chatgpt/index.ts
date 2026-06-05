@@ -44,6 +44,7 @@ import {
   TerminalHttpStatusError,
 } from "../../src/http-retry.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
+import { RunBudget } from "../../src/run-budget.ts";
 import {
   buildConversationRecord,
   buildCustomInstructionsRecord,
@@ -325,62 +326,47 @@ export function resolveChatGptMaxRunWallClockMs(env: NodeJS.ProcessEnv = process
 }
 
 /**
- * Run-scoped budget for the bounded-run cap. Pure and lane-agnostic so the cap
- * decision is unit-testable without standing up the detail lane. One budget is
- * created per run (in `collect()`) and threaded through BOTH the gap-recovery
- * pass and the forward-walk pass so a large recovery backlog plus new
- * conversations are bounded TOGETHER, not per-invocation.
- *
- * `maxFetches` caps hydrated conversation details; `maxWallClockMs` caps elapsed
- * wall-clock since the budget started (lazily anchored on the first
- * `shouldStop()` so an idle run never burns its clock). Either at the disable
- * sentinel (Infinity) is simply never the reason a run stops. `now` is injected
- * for deterministic tests.
+ * Run-scoped budget for the ChatGPT connector's bounded-run cap. Thin adapter
+ * over the shared `RunBudget` that preserves the connector-specific API
+ * (`maxFetches`, `recordDetailFetch`, `reason`) for backward compat with
+ * existing tests and call sites. New code should use `RunBudget` directly.
  */
 export class ChatGptRunBudget {
   readonly maxFetches: number;
   readonly maxWallClockMs: number;
-  private readonly now: () => number;
-  private fetchCount = 0;
-  private startedAt: number | null = null;
+  private readonly inner: RunBudget;
 
   constructor(options: { maxFetches?: number; maxWallClockMs?: number; now?: () => number } = {}) {
     this.maxFetches = options.maxFetches ?? Number.POSITIVE_INFINITY;
     this.maxWallClockMs = options.maxWallClockMs ?? Number.POSITIVE_INFINITY;
-    this.now = options.now ?? Date.now;
+    this.inner = new RunBudget({
+      ...(options.maxFetches == null ? {} : { maxRequests: options.maxFetches }),
+      ...(options.maxWallClockMs == null ? {} : { maxWallClockMs: options.maxWallClockMs }),
+      ...(options.now == null ? {} : { now: options.now }),
+    });
   }
 
   /** Record one hydrated conversation detail against the fetch budget. */
   recordDetailFetch(): void {
-    this.fetchCount += 1;
+    this.inner.recordRequest();
   }
 
   get count(): number {
-    return this.fetchCount;
+    return this.inner.count;
   }
 
   /** Wall-clock spent since the budget was first consulted, in ms. */
   elapsedMs(): number {
-    if (this.startedAt == null) {
-      return 0;
-    }
-    return Math.max(0, this.now() - this.startedAt);
+    return this.inner.elapsedMs();
   }
 
-  /**
-   * True once a cap has been reached. Anchors the wall-clock start on the first
-   * call so the clock measures the detail phase, not setup. Returns a reason tag
-   * (or null) so the trip can be reported precisely without re-deriving which
-   * cap fired.
-   */
+  /** Returns the trip reason or null. Anchors clock on first call. */
   reason(): "max_detail_fetches" | "max_wall_clock" | null {
-    if (this.startedAt == null) {
-      this.startedAt = this.now();
-    }
-    if (this.fetchCount >= this.maxFetches) {
+    const trip = this.inner.tripReason();
+    if (trip === "max_requests") {
       return "max_detail_fetches";
     }
-    if (this.maxWallClockMs !== Number.POSITIVE_INFINITY && this.elapsedMs() >= this.maxWallClockMs) {
+    if (trip === "max_wall_clock") {
       return "max_wall_clock";
     }
     return null;
