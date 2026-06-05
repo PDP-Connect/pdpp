@@ -552,3 +552,50 @@ test("version-churn disclosure surfaces a per-row disposition with all five buck
   // silently dropped from the operator's vocabulary.
   assert.match(src, CHURN_DISPOSITION_NAMES_ALL_BUCKETS);
 });
+
+// ─── version_remediation: the orthogonal next-action cue ───────────────────
+//
+// The disposition makes three watch rows read as "reviewed residue". The
+// remediation cue is what splits them into three distinct next actions —
+// fingerprint pending, migration pending, retention policy — so the notice is
+// rational, not merely less scary. The view must render the server-derived cue
+// (a chip + a guidance line), never re-derive it, and never let it change the
+// needs-review headline.
+const CHURN_RENDERS_REMEDIATION_CHIP = /<ChurnRemediationBadge[\s\S]*?action=\{row\.remediationAction\}/;
+const CHURN_RENDERS_REMEDIATION_CHIP_LABEL = /label=\{row\.remediationChip\}/;
+const CHURN_REMEDIATION_CHIP_GATED = /row\.remediationChip \?[\s\S]*?<ChurnRemediationBadge/;
+const CHURN_RENDERS_REMEDIATION_GUIDANCE = /row\.remediationGuidance/;
+const CHURN_REMEDIATION_GUIDANCE_TESTID = /data-testid="version-churn-remediation-guidance"/;
+// The chip metadata must name all three actionable remediations so the
+// fingerprint-pending vs. migration-pending vs. retention-policy distinction is
+// present in the operator's vocabulary.
+const CHURN_REMEDIATION_NAMES_ALL_ACTIONS =
+  /content_fingerprint_pending:[\s\S]*?owner_migration_pending:[\s\S]*?owner_retention_policy:/;
+// The chip is read from the server field, not re-derived in the browser.
+const CHURN_REMEDIATION_FROM_SERVER_FIELD = /remediationAction: remediationForRow\(row\)/;
+
+test("version-churn disclosure renders the per-row remediation chip from the server field", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.match(src, CHURN_RENDERS_REMEDIATION_CHIP);
+  assert.match(src, CHURN_RENDERS_REMEDIATION_CHIP_LABEL);
+  // The chip only renders when the server supplied a non-none remediation.
+  assert.match(src, CHURN_REMEDIATION_CHIP_GATED);
+  // All three actionable remediations are named in the chip metadata.
+  assert.match(src, CHURN_REMEDIATION_NAMES_ALL_ACTIONS);
+});
+
+test("version-churn disclosure prefers the remediation guidance line for residue/snapshot rows", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  // Both the command-bearing branch (reviewed residue) and the non-compactable
+  // branch (recurring snapshot) surface the remediation guidance.
+  assert.match(src, CHURN_RENDERS_REMEDIATION_GUIDANCE);
+  assert.match(src, CHURN_REMEDIATION_GUIDANCE_TESTID);
+});
+
+test("version-churn remediation cue is read from the server field, not re-derived in the browser", async () => {
+  // The view consumes buildChurnDrilldownRows, which reads remediationForRow —
+  // a straight read of row.version_remediation. Pin that the drilldown builder
+  // sources the chip from the server value rather than a browser classifier.
+  const summarySrc = await readFile(`${HERE}../../lib/version-churn-summary.ts`, "utf8");
+  assert.match(summarySrc, CHURN_REMEDIATION_FROM_SERVER_FIELD);
+});

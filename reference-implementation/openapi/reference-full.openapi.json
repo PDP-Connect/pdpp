@@ -34917,6 +34917,15 @@
                               "lossless_compaction_candidate",
                               "recurring_point_in_time_snapshot"
                             ]
+                          },
+                          "version_remediation": {
+                            "type": "string",
+                            "enum": [
+                              "none",
+                              "content_fingerprint_pending",
+                              "owner_migration_pending",
+                              "owner_retention_policy"
+                            ]
                           }
                         },
                         "required": [
@@ -34935,7 +34944,8 @@
                           "projection_authority",
                           "risk_level",
                           "risk_reasons",
-                          "version_disposition"
+                          "version_disposition",
+                          "version_remediation"
                         ]
                       }
                     },
@@ -35023,6 +35033,9 @@
                         },
                         "disposition_affects_thresholds": {
                           "const": false
+                        },
+                        "remediation_affects_thresholds": {
+                          "const": false
                         }
                       },
                       "required": [
@@ -35033,7 +35046,8 @@
                         "filters",
                         "source",
                         "risk_thresholds",
-                        "disposition_affects_thresholds"
+                        "disposition_affects_thresholds",
+                        "remediation_affects_thresholds"
                       ]
                     },
                     "projection": {

@@ -7,7 +7,7 @@ import {
   isPostgresStorageBackend,
   postgresQuery,
 } from './postgres-storage.js';
-import { classifyVersionDisposition } from './version-disposition.js';
+import { classifyVersionDisposition, classifyVersionRemediation } from './version-disposition.js';
 // COMPACTION_POLICIES is the single source of truth for the "registered
 // compaction policy" signal — the same registry the maintenance tool resolves.
 // `findPolicy` resolves the short, registry-URL, and local-device id forms.
@@ -458,6 +458,15 @@ export async function buildRecordVersionStatsEnvelope({
         lastHistoryAt,
         hasCompactionPolicy: findPolicy(row.connector_id || '', row.stream) != null,
       });
+      // version_remediation is the orthogonal next-action axis, derived from the
+      // disposition just computed plus reference-maintained stream lists. It is
+      // a label only and never re-derives or contradicts the disposition. Like
+      // disposition, NO connector-authored value feeds it.
+      const versionRemediation = classifyVersionRemediation({
+        connectorId: row.connector_id || null,
+        stream: row.stream,
+        versionDisposition,
+      });
       return {
         connector_id: row.connector_id || null,
         connector_instance_id: row.connector_instance_id,
@@ -477,6 +486,7 @@ export async function buildRecordVersionStatsEnvelope({
         risk_level: classification.riskLevel,
         risk_reasons: riskReasons,
         version_disposition: versionDisposition,
+        version_remediation: versionRemediation,
       };
     })
     .filter((row) => (riskFilter ? row.risk_level === riskFilter : true))
@@ -518,6 +528,10 @@ export async function buildRecordVersionStatsEnvelope({
       // explicit so a reader cannot mistake disposition for a threshold
       // override.
       disposition_affects_thresholds: false,
+      // version_remediation is likewise a label, never a threshold knob. It is
+      // derived from the disposition + reference lists and never alters the
+      // numeric risk path. This assertion mirrors the disposition one.
+      remediation_affects_thresholds: false,
     },
     projection: {
       computed_at: projection.computed_at || null,

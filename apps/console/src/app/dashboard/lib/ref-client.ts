@@ -302,6 +302,22 @@ export type RefRecordVersionDisposition =
   | "lossless_compaction_candidate"
   | "recurring_point_in_time_snapshot";
 
+/**
+ * Reference-DERIVED remediation: the operator's available next action for a
+ * churn row's retained history. Orthogonal to `version_disposition` (which says
+ * why the history exists). Computed server-side from the row's disposition plus
+ * reference-controlled stream lists — a connector cannot set or override it. A
+ * label only: it never alters risk or disposition. `none` means this surface
+ * offers no further action (the history is already minimal, an actionable
+ * compaction candidate whose command is shown, or expected recurring history
+ * with no pending owner decision) — not that the history is absent.
+ */
+export type RefRecordVersionRemediation =
+  | "none"
+  | "content_fingerprint_pending"
+  | "owner_migration_pending"
+  | "owner_retention_policy";
+
 export interface RefRecordVersionStatsRow {
   connector_id: string | null;
   connector_instance_id: string;
@@ -318,6 +334,7 @@ export interface RefRecordVersionStatsRow {
   risk_reasons: string[];
   stream: string;
   version_disposition: RefRecordVersionDisposition;
+  version_remediation: RefRecordVersionRemediation;
   versions_per_record: number;
 }
 
@@ -326,6 +343,8 @@ export interface RefRecordVersionStatsEnvelope {
   meta: {
     /** Normative assertion that disposition never alters the risk thresholds. */
     disposition_affects_thresholds: false;
+    /** Normative assertion that remediation never alters the risk thresholds. */
+    remediation_affects_thresholds: false;
     filters: {
       connector_instance_id: string | null;
       risk: RefRecordVersionRisk | null;

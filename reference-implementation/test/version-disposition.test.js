@@ -1,8 +1,9 @@
 /**
- * Unit tests for the pure server-side version_disposition classifier.
+ * Unit tests for the pure server-side version_disposition AND version_remediation
+ * classifiers.
  *
- * These exercise the five-way derivation directly (no DB), pinning the
- * acceptance criteria from the OpenSpec change
+ * The first half exercises the five-way disposition derivation directly (no DB),
+ * pinning the acceptance criteria from the OpenSpec change
  * `add-version-disposition-for-retained-history`:
  *
  *   AC-3 unclassified high/watch → active_defect_or_unclassified
@@ -11,19 +12,31 @@
  *   AC-6 split residual entity stream → point_in_time_retained_history
  *   AC-7 disposition reads only reference signals (no connector-authored value)
  *
- * The disposition is independent of the numeric risk classification — these
- * tests never pass a risk level and the classifier never consults one.
+ * The second half exercises the orthogonal `classifyVersionRemediation`, pinning
+ * the acceptance criteria from `add-version-remediation-disposition` (AC-3..AC-8
+ * there): the statement rows are fingerprint-pending, usaa/accounts is
+ * migration-pending and distinct from them, sessions are retention-policy, every
+ * other row is none, no connector input participates, and remediation never
+ * contradicts the disposition it consumes.
+ *
+ * Both labels are independent of the numeric risk classification — these tests
+ * never pass a risk level and the classifiers never consult one.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
   classifyVersionDisposition,
+  classifyVersionRemediation,
+  CONTENT_FINGERPRINT_PENDING_STREAMS,
   normalizeConnectorId,
+  OWNER_MIGRATION_PENDING_STREAMS,
+  OWNER_RETENTION_POLICY_STREAMS,
   POINT_IN_TIME_REAL_FIELD_STREAMS,
   RECURRING_POINT_IN_TIME_SNAPSHOT_STREAMS,
   REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT,
   VERSION_DISPOSITIONS,
+  VERSION_REMEDIATIONS,
 } from '../server/version-disposition.js';
 
 function oneMillisecondAfter(iso) {
@@ -299,4 +312,256 @@ test('normalizeConnectorId strips registry-URL and local-device forms', () => {
   assert.equal(normalizeConnectorId('https://registry.pdpp.org/connectors/github'), 'github');
   assert.equal(normalizeConnectorId('local-device:claude-code'), 'claude-code');
   assert.equal(normalizeConnectorId(null), null);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// version_remediation — the orthogonal next-action axis
+// (OpenSpec add-version-remediation-disposition)
+//
+//   AC-3 chase/usaa statements → content_fingerprint_pending
+//   AC-4 usaa/accounts → owner_migration_pending (distinct from statements)
+//   AC-5 claude-code/codex sessions → owner_retention_policy
+//   AC-6 candidate / unlisted point-in-time / defect → none
+//   AC-7 remediation reads only reference signals (no connector-authored value)
+//   AC-8 remediation never contradicts disposition (consistency guard)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ─── AC-3 content_fingerprint_pending (the statement rows) ───────────────────
+
+test('classifyVersionRemediation: chase/statements reviewed residue is content_fingerprint_pending (AC-3)', () => {
+  assert.equal(
+    classifyVersionRemediation({
+      connectorId: 'chase',
+      stream: 'statements',
+      versionDisposition: 'reviewed_historical_residue',
+    }),
+    'content_fingerprint_pending',
+  );
+});
+
+test('classifyVersionRemediation: usaa/statements reviewed residue is content_fingerprint_pending (AC-3)', () => {
+  assert.equal(
+    classifyVersionRemediation({
+      connectorId: 'usaa',
+      stream: 'statements',
+      versionDisposition: 'reviewed_historical_residue',
+    }),
+    'content_fingerprint_pending',
+  );
+  // Same answer via the registry-URL connector_id form.
+  assert.equal(
+    classifyVersionRemediation({
+      connectorId: 'https://registry.pdpp.org/connectors/usaa',
+      stream: 'statements',
+      versionDisposition: 'reviewed_historical_residue',
+    }),
+    'content_fingerprint_pending',
+  );
+});
+
+// ─── AC-4 owner_migration_pending (usaa/accounts), distinct from statements ───
+
+test('classifyVersionRemediation: usaa/accounts reviewed residue is owner_migration_pending (AC-4)', () => {
+  const accounts = classifyVersionRemediation({
+    connectorId: 'usaa',
+    stream: 'accounts',
+    versionDisposition: 'reviewed_historical_residue',
+  });
+  assert.equal(accounts, 'owner_migration_pending');
+
+  // Distinct from the statement rows even though both share the
+  // reviewed_historical_residue disposition — the whole point of the axis.
+  const statements = classifyVersionRemediation({
+    connectorId: 'usaa',
+    stream: 'statements',
+    versionDisposition: 'reviewed_historical_residue',
+  });
+  assert.notEqual(accounts, statements);
+});
+
+// ─── AC-5 owner_retention_policy (sessions) ──────────────────────────────────
+
+test('classifyVersionRemediation: sessions recurring snapshots are owner_retention_policy (AC-5)', () => {
+  for (const connectorId of ['claude-code', 'codex', 'local-device:claude-code']) {
+    assert.equal(
+      classifyVersionRemediation({
+        connectorId,
+        stream: 'sessions',
+        versionDisposition: 'recurring_point_in_time_snapshot',
+      }),
+      'owner_retention_policy',
+      `${connectorId}/sessions must be owner_retention_policy`,
+    );
+  }
+});
+
+// ─── AC-6 none defaults ──────────────────────────────────────────────────────
+
+test('classifyVersionRemediation: a lossless_compaction_candidate is always none (AC-6)', () => {
+  assert.equal(
+    classifyVersionRemediation({
+      connectorId: 'gmail',
+      stream: 'labels',
+      versionDisposition: 'lossless_compaction_candidate',
+    }),
+    'none',
+  );
+});
+
+test('classifyVersionRemediation: an unlisted point_in_time_retained_history is none (AC-6)', () => {
+  assert.equal(
+    classifyVersionRemediation({
+      connectorId: 'github',
+      stream: 'user',
+      versionDisposition: 'point_in_time_retained_history',
+    }),
+    'none',
+  );
+});
+
+test('classifyVersionRemediation: active_defect_or_unclassified is always none (AC-6)', () => {
+  assert.equal(
+    classifyVersionRemediation({
+      connectorId: 'mystery',
+      stream: 'widgets',
+      versionDisposition: 'active_defect_or_unclassified',
+    }),
+    'none',
+  );
+});
+
+test('classifyVersionRemediation: a null connector_id is none', () => {
+  assert.equal(
+    classifyVersionRemediation({
+      connectorId: null,
+      stream: 'whatever',
+      versionDisposition: 'reviewed_historical_residue',
+    }),
+    'none',
+  );
+});
+
+// ─── AC-7 anti-self-declaration ──────────────────────────────────────────────
+
+test('classifyVersionRemediation: only reference-controlled inputs participate; payload fields are ignored (AC-7)', () => {
+  // The signature reads connectorId/stream/versionDisposition only. A connector
+  // spreading a hostile self-declared remediation cannot change the answer: an
+  // unlisted stream stays none regardless of the junk fields.
+  const declaredAway = classifyVersionRemediation({
+    connectorId: 'mystery',
+    stream: 'widgets',
+    versionDisposition: 'reviewed_historical_residue',
+    version_remediation: 'none',
+    remediation: 'owner_retention_policy',
+    suppress: true,
+  });
+  assert.equal(declaredAway, 'none', 'a connector cannot self-declare its remediation');
+});
+
+// ─── AC-8 consistency guard (remediation never contradicts disposition) ──────
+
+test('classifyVersionRemediation: owner_retention_policy requires the recurring-snapshot disposition (AC-8)', () => {
+  // A sessions stream is on the retention list, but if its disposition is NOT
+  // recurring_point_in_time_snapshot the guard withholds owner_retention_policy.
+  // (This pairing should never occur in practice — the lists are aligned — but
+  // the guard makes the invariant explicit and regression-pinned.)
+  assert.equal(
+    classifyVersionRemediation({
+      connectorId: 'claude-code',
+      stream: 'sessions',
+      versionDisposition: 'reviewed_historical_residue',
+    }),
+    'none',
+    'retention-policy only applies when the disposition is the recurring snapshot',
+  );
+});
+
+test('classifyVersionRemediation: a candidate/defect on a remediation list cannot be overridden (AC-8)', () => {
+  // Even if a fingerprint-listed stream somehow arrived as a candidate or a
+  // defect, the hard guard keeps it none — its action is already the dry-run
+  // command or "review it".
+  assert.equal(
+    classifyVersionRemediation({
+      connectorId: 'chase',
+      stream: 'statements',
+      versionDisposition: 'lossless_compaction_candidate',
+    }),
+    'none',
+  );
+  assert.equal(
+    classifyVersionRemediation({
+      connectorId: 'usaa',
+      stream: 'accounts',
+      versionDisposition: 'active_defect_or_unclassified',
+    }),
+    'none',
+  );
+});
+
+test('classifyVersionRemediation: migration precedence beats fingerprint when both could match', () => {
+  // usaa/accounts is only on the migration list, but assert the precedence order
+  // directly: migration is checked before fingerprint, so an entry on both lists
+  // would resolve to migration. Pins the documented precedence.
+  assert.equal(OWNER_MIGRATION_PENDING_STREAMS.length >= 1, true);
+  assert.equal(
+    classifyVersionRemediation({
+      connectorId: 'usaa',
+      stream: 'accounts',
+      versionDisposition: 'reviewed_historical_residue',
+    }),
+    'owner_migration_pending',
+  );
+});
+
+// ─── Registry shape invariants for remediation ───────────────────────────────
+
+test('the four remediations are exactly the documented set', () => {
+  assert.deepEqual(
+    [...VERSION_REMEDIATIONS].sort(),
+    ['content_fingerprint_pending', 'none', 'owner_migration_pending', 'owner_retention_policy'],
+  );
+});
+
+test('the remediation lists hold exactly the evidence-named streams', () => {
+  assert.deepEqual(
+    CONTENT_FINGERPRINT_PENDING_STREAMS.map((e) => `${e.connector}/${e.stream}`).sort(),
+    ['chase/statements', 'usaa/statements'],
+  );
+  assert.deepEqual(
+    OWNER_MIGRATION_PENDING_STREAMS.map((e) => `${e.connector}/${e.stream}`).sort(),
+    ['usaa/accounts'],
+  );
+  assert.deepEqual(
+    OWNER_RETENTION_POLICY_STREAMS.map((e) => `${e.connector}/${e.stream}`).sort(),
+    ['claude-code/sessions', 'codex/sessions'],
+  );
+});
+
+test('the owner-retention-policy list is aligned with the recurring-snapshot list', () => {
+  // The guard in classifyVersionRemediation relies on every retention-policy
+  // stream also being a recurring snapshot. Pin that alignment so a future edit
+  // to one list that forgets the other is caught.
+  const recurringKeys = new Set(
+    RECURRING_POINT_IN_TIME_SNAPSHOT_STREAMS.map((e) => `${e.connector}/${e.stream}`),
+  );
+  for (const entry of OWNER_RETENTION_POLICY_STREAMS) {
+    assert.equal(
+      recurringKeys.has(`${entry.connector}/${entry.stream}`),
+      true,
+      `${entry.connector}/${entry.stream} must also be a recurring snapshot`,
+    );
+  }
+});
+
+test('a fingerprint-pending stream is never also migration-pending', () => {
+  const migrationKeys = new Set(
+    OWNER_MIGRATION_PENDING_STREAMS.map((e) => `${e.connector}/${e.stream}`),
+  );
+  for (const entry of CONTENT_FINGERPRINT_PENDING_STREAMS) {
+    assert.equal(
+      migrationKeys.has(`${entry.connector}/${entry.stream}`),
+      false,
+      `${entry.connector}/${entry.stream} cannot be both fingerprint- and migration-pending`,
+    );
+  }
 });
