@@ -5,7 +5,9 @@ import {
   advisoryForReason,
   buildRelatedLinks,
   candidateParentStreamsForChild,
+  childHasOneBackLinkForField,
   childHasOneBackLinksFromManifest,
+  childHasOneLinkFields,
   findManifestForConnectorId,
   findParentBackLink,
   manifestMatchesConnectorId,
@@ -323,6 +325,98 @@ test("childHasOneBackLinksFromManifest returns empty for undefined manifest stre
   assert.deepEqual(
     childHasOneBackLinksFromManifest(CHASE_TRANSACTIONS_MANIFEST_STREAM, undefined, { connectionId: "c" }),
     []
+  );
+});
+
+// ── childHasOneLinkFields / childHasOneBackLinkForField (list-page per-cell) ───
+//
+// The record list page resolves links one cell (column) at a time. These two
+// helpers let it render a child-declared `has_one` foreign-key cell as a link to
+// the parent record — the same affordance the detail page shows — without
+// inspecting undeclared payload fields.
+
+test("childHasOneLinkFields returns only declared has_one foreign-key field names", () => {
+  const fields = childHasOneLinkFields(YNAB_TRANSACTIONS_TWO_ACCOUNT_EDGES);
+  assert.deepEqual([...fields].sort(), ["account_id", "transfer_account_id"]);
+});
+
+test("childHasOneLinkFields ignores has_many and incomplete relations, and tolerates absent input", () => {
+  const fields = childHasOneLinkFields({
+    name: "transactions",
+    relationships: [
+      { name: "tags", stream: "tags", foreign_key: "transaction_id", cardinality: "has_many" },
+      { name: "account", stream: "accounts", cardinality: "has_one" }, // missing foreign_key
+      { name: "owner", foreign_key: "owner_id", cardinality: "has_one" }, // missing stream
+      { name: "category", stream: "categories", foreign_key: "category_id", cardinality: "has_one" },
+    ],
+  });
+  assert.deepEqual([...fields], ["category_id"]);
+  assert.deepEqual([...childHasOneLinkFields(undefined)], []);
+  assert.deepEqual([...childHasOneLinkFields({ name: "x" })], []);
+});
+
+test("childHasOneBackLinkForField links a declared has_one cell to the parent record", () => {
+  const link = childHasOneBackLinkForField(
+    CHASE_TRANSACTIONS_MANIFEST_STREAM,
+    { id: "tx1", account_id: "1212486749", amount: -1234 },
+    "account_id",
+    { connectionId: "cin_chase" }
+  );
+  assert.ok(link);
+  assert.equal(link.parentStream, "accounts");
+  assert.equal(link.childParentKeyField, "account_id");
+  assert.equal(link.href, "/dashboard/records/cin_chase/accounts/1212486749");
+});
+
+test("childHasOneBackLinkForField resolves each field of a two-edges-to-same-parent stream independently", () => {
+  // YNAB transactions: account_id and transfer_account_id are different columns
+  // and resolve to DIFFERENT account records — the list page links each cell.
+  const record = { id: "t1", account_id: "acc-A", transfer_account_id: "acc-B" };
+  const a = childHasOneBackLinkForField(YNAB_TRANSACTIONS_TWO_ACCOUNT_EDGES, record, "account_id", {
+    connectionId: "cin_ynab",
+  });
+  const b = childHasOneBackLinkForField(YNAB_TRANSACTIONS_TWO_ACCOUNT_EDGES, record, "transfer_account_id", {
+    connectionId: "cin_ynab",
+  });
+  assert.equal(a?.href, "/dashboard/records/cin_ynab/accounts/acc-A");
+  assert.equal(b?.href, "/dashboard/records/cin_ynab/accounts/acc-B");
+  assert.notEqual(a?.href, b?.href);
+});
+
+test("childHasOneBackLinkForField percent-encodes connection, parent stream, and value", () => {
+  const link = childHasOneBackLinkForField(
+    {
+      name: "items",
+      relationships: [{ name: "order", stream: "open orders", foreign_key: "order id", cardinality: "has_one" }],
+    },
+    { "order id": "ref/42" },
+    "order id",
+    { connectionId: "my conn" }
+  );
+  assert.equal(link?.href, "/dashboard/records/my%20conn/open%20orders/ref%2F42");
+});
+
+test("childHasOneBackLinkForField returns null for an undeclared field or empty/absent value", () => {
+  // Undeclared field — never a link, even though it looks like a foreign key.
+  assert.equal(
+    childHasOneBackLinkForField(CHASE_TRANSACTIONS_MANIFEST_STREAM, { id: "tx1", merchant_id: "m1" }, "merchant_id", {
+      connectionId: "cin",
+    }),
+    null
+  );
+  // Declared field but empty value.
+  assert.equal(
+    childHasOneBackLinkForField(CHASE_TRANSACTIONS_MANIFEST_STREAM, { id: "tx1", account_id: "" }, "account_id", {
+      connectionId: "cin",
+    }),
+    null
+  );
+  // Declared field but the record does not carry it.
+  assert.equal(
+    childHasOneBackLinkForField(CHASE_TRANSACTIONS_MANIFEST_STREAM, { id: "tx1", memo: "coffee" }, "account_id", {
+      connectionId: "cin",
+    }),
+    null
   );
 });
 

@@ -24,6 +24,8 @@ import {
 import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } from "../../connection-route.ts";
 import {
   candidateParentStreamsForChild,
+  childHasOneBackLinkForField,
+  childHasOneLinkFields,
   findManifestForConnectorId,
   findParentBackLink,
   parentRelationsForChild,
@@ -168,18 +170,40 @@ export default async function StreamPage({
   const nextHref = page.next_cursor ? hrefFor(streamPath, [...trail, page.next_cursor], columnsParam) : null;
   const recordHref = (id: string) => `${streamPath}/${encodeURIComponent(id)}`;
 
-  // Fields on this (child) stream that link back to a parent record. The set of
-  // linkable fields comes only from declared forward relations; a field that
-  // merely looks like a foreign key is never linked.
-  const parentLinkFields = new Set(
+  // Fields on this (child) stream that link a cell back to its parent record.
+  // The linkable set is taken only from declared relations — never from a field
+  // that merely looks like a foreign key — and from two manifest sources, the
+  // same two the record detail page renders:
+  //   1. a parent stream's `expand_capabilities` (`findParentBackLink`); and
+  //   2. this child stream's own declared `has_one` relationships
+  //      (`childHasOneBackLinksFromManifest`), which is the only source for the
+  //      belongs-to edges (Chase/USAA/YNAB transactions → accounts, Slack
+  //      messages → channels/users, …) that the parent-side `expand_capabilities`
+  //      path does not surface.
+  // Without source 2 the list page rendered those foreign-key cells as plain
+  // text even though the same field on the record detail page is a link.
+  const childManifestStream = streamManifest as {
+    name: string;
+    relationships?: Array<{ name: string; stream?: string; foreign_key?: string; cardinality?: string }>;
+  } | null;
+  const expandCapabilityLinkFields = new Set(
     parentRelations
       .map(({ capability }) => capability.child_parent_key_field ?? capability.foreign_key)
       .filter((field): field is string => typeof field === "string")
   );
-  const parentLinkForCell = (record: StreamRecord, column: string) =>
-    parentLinkFields.has(column)
-      ? findParentBackLink(streamName, record.data, parentRelations, { connectionId })
-      : null;
+  const childDeclaredLinkFields = childHasOneLinkFields(childManifestStream ?? undefined);
+  // Resolve a cell to its parent back-link, preferring the `expand_capabilities`
+  // source so a field declared by both sources collapses to one edge exactly as
+  // `mergeParentBackLinks` does on the detail page.
+  const parentLinkForCell = (record: StreamRecord, column: string) => {
+    if (expandCapabilityLinkFields.has(column)) {
+      return findParentBackLink(streamName, record.data, parentRelations, { connectionId });
+    }
+    if (childDeclaredLinkFields.has(column)) {
+      return childHasOneBackLinkForField(childManifestStream ?? undefined, record.data, column, { connectionId });
+    }
+    return null;
+  };
 
   return (
     <DashboardShell active="records">

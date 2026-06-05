@@ -314,6 +314,48 @@ export function childHasOneBackLinksFromManifest(
 }
 
 /**
+ * The set of fields on a child stream that a declared `has_one` relationship
+ * makes into a parent-record link. This is the child-declared analogue of the
+ * `expand_capabilities` parent-link fields the record list page already
+ * resolves per cell; it lets the list page render a child-declared `has_one`
+ * foreign-key cell (Chase `transactions.account_id`, a YNAB transaction's
+ * `account_id`/`transfer_account_id`, Slack `messages.channel_id`, …) as a link
+ * to the parent record's detail page — the same affordance the record detail
+ * page already shows for these edges, just rendered in-place.
+ *
+ * Returns only the field names; the per-cell resolver computes the href from the
+ * record's value via `childHasOneBackLinksFromManifest`, so link semantics stay
+ * in one place and a field with an absent/empty value yields no link.
+ */
+export function childHasOneLinkFields(childManifestStream: ManifestStreamShape | undefined): Set<string> {
+  const fields = new Set<string>();
+  for (const rel of childManifestStream?.relationships ?? []) {
+    if (rel.cardinality === "has_one" && rel.stream && rel.foreign_key) {
+      fields.add(rel.foreign_key);
+    }
+  }
+  return fields;
+}
+
+/**
+ * Resolve a single child-declared `has_one` back-link for one `(record, field)`
+ * cell on the record list page. Returns the `ParentBackLink` for the declared
+ * relation whose `foreign_key` is `field` when the record carries a non-empty
+ * string value there, or `null` otherwise. Built on
+ * `childHasOneBackLinksFromManifest` so the href, encoding, and empty-value
+ * rules are identical to every other child → parent edge.
+ */
+export function childHasOneBackLinkForField(
+  childManifestStream: ManifestStreamShape | undefined,
+  childRecordData: Record<string, unknown> | undefined,
+  field: string,
+  args: { connectionId: string }
+): ParentBackLink | null {
+  const links = childHasOneBackLinksFromManifest(childManifestStream, childRecordData, args);
+  return links.find((link) => link.childParentKeyField === field) ?? null;
+}
+
+/**
  * Stable key identifying a filtered child-list target as `(child stream, filter
  * field)`. The parent key is constant for a given parent detail page, so it is
  * not part of the key. Used to deduplicate a reverse child-declared `has_one`
