@@ -2,11 +2,15 @@
 
 Implementation status (lane `ri-version-disposition-implementation-v1`): the
 server derivation, reference contract, console consumption, and tests are
-implemented and green on this branch. Section 1 (owner acceptance) and task 6.7
-(owner-cookie live probe) remain owner-only. The implementation adopted one
-derivation-rule correction vs. the first draft — disposition #5 keys on an
-explicit recurring-snapshot list with precedence, NOT on "no compaction policy,"
-because the session streams DO carry a policy (see `design.md` correction note).
+implemented and green, merged at `6aacee2d`, and deployed. The live probe (task
+6.7) was performed against the deployed instance by the closeout lane
+`ri-version-churn-watch-closeout-f625-v1` and passed (see that report). The only
+items still open are the two **owner human-acceptance decisions** in Section 1
+(author-location and the disposition #5 name); they are not engineering work.
+The implementation adopted one derivation-rule correction vs. the first draft —
+disposition #5 keys on an explicit recurring-snapshot list with precedence, NOT
+on "no compaction policy," because the session streams DO carry a policy (see
+`design.md` correction note).
 
 ## 1. Owner acceptance (gate)
 
@@ -113,6 +117,17 @@ because the session streams DO carry a policy (see `design.md` correction note).
 - [x] 6.4 `node --import tsx --test apps/console/.../version-churn-summary.test.ts` (+ records-list-view.test.ts) → 65 pass
 - [x] 6.5 reference-contract: `node --test test/*.test.js` → 64 pass; `tsc --noEmit` clean; generated artifacts regenerated + idempotent (`ultracite check` not run in lane — see note)
 - [x] 6.6 `tsc --noEmit` clean for reference-contract, reference-implementation, and console
-- [ ] 6.7 Owner-cookie live probe of `/_ref/records/version-stats` confirms every
+- [x] 6.7 Owner-cookie live probe of `/_ref/records/version-stats` confirms every
       row carries a disposition and the banner reads "no review needed" with the
-      session rows reclassified (owner-gated; do from a deployed instance).
+      session rows reclassified (owner-gated; done from the deployed instance).
+      Discharged by lane `ri-version-churn-watch-closeout-f625-v1`
+      (`tmp/workstreams/ri-version-churn-watch-closeout-f625-v1-report.md`):
+      live owner-cookie probe returned 95 rows / 4 watch / 0 high / 0 needs-review,
+      every row carried a `version_disposition`, the banner read "no review
+      needed," and `claude-code/sessions` classified
+      `recurring_point_in_time_snapshot` (out of the compaction-candidate bucket).
+      Corroborated by a 9/9 deployed-`classifyVersionDisposition` probe (incl. the
+      AC-4 live re-alarm) and a read-only `planCompaction` dry-run showing
+      `removableVersions = 0` on all four watch instances. The probed
+      `version-disposition.js` is byte-identical to HEAD (no change to that module
+      or the version-stats route since the probe).
