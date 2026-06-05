@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { resolveNekoBrowserSurfaceControllerOptions } from '../server/index.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
+const COMPOSE_FILE = `${REPO_ROOT}docker-compose.yml`;
 const OVERLAY_FILE = `${REPO_ROOT}docker-compose.neko.yml`;
 const ENV_EXAMPLE_FILE = `${REPO_ROOT}.env.docker.example`;
 const CHATGPT_CONNECTOR_ID = 'https://registry.pdpp.org/connectors/chatgpt';
@@ -68,6 +69,22 @@ test('n.eko compose overlay uses service DNS instead of reference network namesp
   assert.match(envExample, /PDPP_NEKO_SURFACE_MODE=dynamic/);
   assert.match(envExample, /PDPP_NEKO_SURFACE_CAP=3/);
   assert.match(envExample, /PDPP_NEKO_STATIC_PROFILE_KEY=\n/);
+});
+
+test('ChatGPT large-history guardrails are wired into Docker runtime config', async () => {
+  const [compose, envExample] = await Promise.all([
+    readFile(COMPOSE_FILE, 'utf8'),
+    readFile(ENV_EXAMPLE_FILE, 'utf8'),
+  ]);
+
+  for (const key of [
+    'PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN',
+    'PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS',
+    'PDPP_CHATGPT_DETAIL_RATE_LIMIT_STOP_AFTER',
+  ]) {
+    assert.ok(compose.includes(`${key}: ${'${'}${key}:-}`));
+    assert.match(envExample, new RegExp(`^${key}=`, 'm'));
+  }
 });
 
 test('USAA remains an owner-present managed n.eko connector, not background-safe', async () => {
