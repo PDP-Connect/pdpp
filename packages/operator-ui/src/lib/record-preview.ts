@@ -28,6 +28,7 @@
  * `field_capabilities` consumer, this heuristic extraction is the seam that a
  * declared-schema dispatch would replace.
  */
+import { formatDeclaredAmount } from "./record-field-format.ts";
 import type { DeclaredFieldTypes, RecordKind } from "./record-kind.ts";
 
 /**
@@ -85,28 +86,6 @@ function firstString(data: RecordData, fields: readonly string[], max: number): 
 // A numeric field whose name ends in `cents` is an unambiguous cents amount.
 const CENTS_FIELD_RE = /_cents$|^cents$/;
 
-// Declared presentation types (from `field_capabilities[].type`) that denote a
-// monetary value carried in MINOR units — i.e. integer cents. `currency` is the
-// vocabulary the pilot manifests use (e.g. chase `amount`, documented as
-// "signed amount in cents"); the explicit `*_minor_units` / `cents` aliases
-// future-proof the same intent. A field with one of these declared types is
-// formatted as cents (÷100), independent of its magnitude — which is what makes
-// chase's small `-1245` render as `-$12.45` instead of being mistaken for whole
-// dollars by the magnitude heuristic below.
-const MINOR_UNITS_TYPE_RE = /^(currency|currency_minor_units|minor_units|cents)$/;
-// Declared types denoting MILLI units (thousandths), e.g. YNAB-style amounts.
-// No pilot manifest declares this today, but honoring it lets a connector state
-// its unit explicitly instead of relying on the magnitude heuristic.
-const MILLI_UNITS_TYPE_RE = /^(currency_milliunits|milliunits|milli_units)$/;
-
-function normalizeType(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const trimmed = value.trim().toLowerCase();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
 function formatDollars(n: number): { text: string; positive: boolean } {
   const positive = n >= 0;
   const sign = positive ? "" : "-";
@@ -135,12 +114,10 @@ function extractAmount(
   fieldTypes?: DeclaredFieldTypes | null
 ): { text: string; positive: boolean } | null {
   if (typeof data.amount === "number") {
-    const declared = normalizeType(fieldTypes?.amount);
-    if (declared && MINOR_UNITS_TYPE_RE.test(declared)) {
-      return formatDollars(data.amount / 100);
-    }
-    if (declared && MILLI_UNITS_TYPE_RE.test(declared)) {
-      return formatDollars(data.amount / 1000);
+    // A DECLARED monetary unit wins (chase `amount: currency` → cents).
+    const declared = formatDeclaredAmount(data.amount, fieldTypes?.amount);
+    if (declared) {
+      return declared;
     }
     // No declared unit: keep the legacy magnitude heuristic.
     const n = Math.abs(data.amount) > 10_000 ? data.amount / 1000 : data.amount;
