@@ -444,6 +444,17 @@ test("buildAccountRecord: happy path (entity carries identity/settings only, no 
   assert.equal("available_balance_cents" in rec, false, "entity drops available_balance_cents");
 });
 
+test("buildAccountRecord: external account name strips volatile dashboard freshness suffix", () => {
+  const rec = buildAccountRecord(
+    makeAccount({
+      account_type: "external-account",
+      name: "Chase Sapphire Preferred 9241 as of 14 hours ago $9,212.10 $9,212.10 View Details",
+    }),
+    "2026-04-22T00:00:00Z"
+  );
+  assert.equal(rec.name, "Chase Sapphire Preferred 9241");
+});
+
 test("buildAccountRecord: falls back to hashed raw_text when account_id_raw is null", () => {
   const rec = buildAccountRecord(makeAccount({ account_id_raw: null, raw_text: "abc" }), "t");
   assert.equal(rec.id, "ba7816bf8f01cfea414140de5dae2223");

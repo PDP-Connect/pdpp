@@ -60,6 +60,7 @@ const CREDIT_TXN_LINE_RE = /^(\d{1,2})\/(\d{1,2})\s+(\d{1,2})\/(\d{1,2})\s+(.+?)
 const LAST4_REF_RE = /\*(\d{4})/;
 const MET_RE = /met/i;
 const UNREAD_RE = /UNREAD/i;
+const EXTERNAL_ACCOUNT_FRESHNESS_SUFFIX_RE = /\s+as of\b.*$/i;
 
 // Backfill window tunables (ms). Used by buildCandidateStarts.
 const MS_PER_DAY = 24 * 3600 * 1000;
@@ -534,11 +535,19 @@ export function buildAccountRecord(a: DashboardAccount, fetchedAt: string): Acco
   return {
     id: accountId(a),
     type: a.account_type,
-    name: a.name,
+    name: stableAccountName(a),
     last_four: a.last_four,
     status: "open",
     fetched_at: fetchedAt,
   };
+}
+
+function stableAccountName(a: DashboardAccount): string | null {
+  if (!a.name || a.account_type !== "external-account") {
+    return a.name;
+  }
+  const stable = a.name.replace(EXTERNAL_ACCOUNT_FRESHNESS_SUFFIX_RE, "").trim();
+  return stable || a.name;
 }
 
 /**

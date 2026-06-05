@@ -117,6 +117,37 @@ test("accounts: a balance-only move does NOT re-emit the entity (balance lives o
   assert.equal(run2.emitted.length, 0, "a balance-only move no longer versions the entity record");
 });
 
+test("accounts: external account dashboard freshness text does NOT re-emit the entity", async () => {
+  const account = makeAccount({
+    account_id_raw: "EXT1",
+    account_type: "external-account",
+    name: "Chase Sapphire Preferred 9241 as of 13 hours ago $9,212.10 $9,212.10 View Details",
+    balance_cents: 921_210,
+  });
+  const accounts = [account];
+
+  const run1 = makeHarness();
+  const cursor1 = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
+  await emitAccountsStream(run1.deps, accounts, RUN1_AT, cursor1);
+  assert.equal(run1.emitted.length, 1, "first run emits the external account entity");
+
+  const priorState = nextStateFrom(run1.messages);
+  const run2 = makeHarness();
+  const cursor2 = openAccountsCursor(priorState);
+  await emitAccountsStream(
+    run2.deps,
+    [
+      {
+        ...account,
+        name: "Chase Sapphire Preferred 9241 as of 14 hours ago $9,212.10 $9,212.10 View Details",
+      },
+    ],
+    RUN2_AT,
+    cursor2
+  );
+  assert.equal(run2.emitted.length, 0, "dashboard freshness text is normalized before entity fingerprinting");
+});
+
 test("accounts: a real identity/status move re-emits the entity", async () => {
   const accounts = [makeAccount({ account_id_raw: "A1", name: "USAA CLASSIC CHECKING" })];
 
