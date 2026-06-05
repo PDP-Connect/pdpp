@@ -44,6 +44,35 @@
   `reference-implementation/test/forward-disposition.test.js` (25 cases). Pure +
   additive: no terminal-event wiring yet (that is 2.2), so no existing field,
   status code, or commit semantic changed.
+- [x] 2.3a Wire the pure disposition helper into its first consumer at the
+  connection level: surface a `forward_disposition` field on
+  `ConnectionHealthSnapshot`, derived inside `computeConnectionHealth()` from the
+  evidence it already holds (coverage axis -> `gapRetryable`, the `AttentionClear`
+  condition -> `attentionOpen`, freshness axis, refresh policy). This is the
+  smallest valuable wiring after 2.3: it makes the previously-unconsumed
+  `deriveForwardDisposition()` live on the owner-facing health projection that
+  `ref-control.listConnectorSummaries` already returns, and answers the dashboard
+  question "what is the next run expected to do on this connection?" without a new
+  ledger, a protocol change, or a per-run terminal-event field. The disposition
+  reads attention from the SAME condition the headline does, so it never disagrees
+  with the `needs_attention` pill (attention-blocked gap -> `awaiting_owner`).
+  Landed via a new private `deriveConnectionForwardDisposition()` + additive
+  `forward_disposition` on the snapshot in
+  `reference-implementation/runtime/connection-health.ts`, with
+  `reference-implementation/test/connection-forward-disposition.test.js` (12 cases)
+  proving the input mapping, the manual-refresh seam end to end, the
+  gap-before-freshness ordering, the headline/disposition consistency, the
+  expired-attention negative case, and that an unknown denominator is never
+  projected `complete`. Strictly additive: 79/79 + 41/41 existing connection-health
+  tests stay green, RI typecheck clean, the `connection_health` summary is an
+  internal server type (not a contract schema with `additionalProperties: false`),
+  and the `OwnerConnectionDiagnostics` contract surface is untouched. NOTE: this
+  is the disposition CONSUMER at connection granularity, not the full per-run
+  per-stream Collection Report block (still 2.2). See the v1 report for why 2.2 is
+  not yet objectively narrow (the runtime `index.js` terminal builder has no
+  access to freshness / refresh-policy evidence — that lives in the
+  connection-health projection downstream — so the full per-stream block would
+  require a layering change beyond this tranche).
 - [ ] 2.4 `considered: unknown` when no connector-declared value exists; prove a
   collected-records, no-gaps, no-considered run is NOT projected `complete`.
 - [ ] 2.5 Prove the report is absent from grant-scoped `/v1` reads (records,
@@ -74,13 +103,25 @@
 - Tranche 2 is the only code in this change and is strictly additive. If 2.1–2.7
   cannot all land green, ship the spec (section 1) and record tranche 2 as the
   next implementation lane rather than landing a partial runtime change.
-- Tranche-2 increment landed so far: 2.3 only — the pure `deriveForwardDisposition`
-  helper and its tests. This is the safest possible slice of tranche 2: it adds a
-  new exported pure function plus unit tests and emits nothing new on any spine
-  event, so it cannot perturb an existing terminal-event field, status code, or
-  commit semantic (the 2.7 invariant). It de-risks the wiring lane by proving the
-  disposition logic in isolation. The remaining tranche-2 tasks (2.1 considered
-  input, 2.2 `buildRunTerminalData()` Collection Report block consuming this helper,
-  2.4–2.7 honesty/absence/portability proofs) are the next implementation lane.
+- Tranche-2 increments landed so far: 2.3 (the pure `deriveForwardDisposition`
+  helper and its tests) and 2.3a (wiring that helper into `computeConnectionHealth`
+  so a connection-level `forward_disposition` is surfaced on the health snapshot).
+  Both are strictly additive and emit nothing new on any spine event, so neither
+  perturbs an existing terminal-event field, status code, or commit semantic (the
+  2.7 invariant): 2.3 adds a pure function + unit tests; 2.3a adds one optional
+  snapshot field consumed only by the internal `ConnectorSummary` server type, not
+  by any `additionalProperties: false` contract schema. 2.3a delivers the first
+  real dashboard value — the owner-facing "what will the next run do?" answer on
+  every connection — while staying inside the existing health projection. The
+  remaining tranche-2 tasks (2.1 considered input; 2.2 the per-run, per-stream
+  `buildRunTerminalData()` Collection Report block; 2.4–2.7 honesty / absence /
+  portability proofs) are the next implementation lane. 2.2 specifically is NOT yet
+  objectively narrow: the runtime `index.js` terminal builder has no access to the
+  freshness / refresh-policy evidence the per-stream `forward_disposition` needs
+  (that evidence is assembled downstream in `ref-control` for the connection-health
+  projection), so a faithful per-stream block requires either threading
+  connection-health evidence into the runtime or deriving the per-stream
+  disposition in the projection layer — a layering decision for the owner, not a
+  mechanical wiring step.
 - The detail-gap reference-only constraint is preserved: this change reuses
   `DETAIL_GAP` / `DETAIL_COVERAGE` but does not promote them to portable protocol.

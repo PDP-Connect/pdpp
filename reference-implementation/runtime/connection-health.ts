@@ -503,6 +503,22 @@ export interface ConnectionHealthSnapshot {
   readonly badges: ConnectionBadges;
   readonly conditions: readonly ConnectionHealthCondition[];
   readonly dominant_condition_id: string | null;
+  /**
+   * Connection-level forward disposition: a single owner-facing answer to
+   * "what is the next run expected to do?" derived from the coverage,
+   * gap-retryability, open-attention, freshness, and refresh-policy evidence
+   * the projection already holds. It carries the freshness fact without
+   * re-encoding staleness as a coverage gap (`owner_refresh_due`), keeps a
+   * retryable gap visible even when stale (`resumable`), and reserves
+   * `awaiting_owner` for a real coverage gap blocked on owner attention.
+   *
+   * This is the connection rollup of the per-stream forward disposition the
+   * Collection Report contract defines
+   * (`define-connector-progress-evidence-contract`). It reuses the existing
+   * coverage/freshness/attention/refresh axes — no new ledger, no protocol
+   * change, no new per-run terminal-event field.
+   */
+  readonly forward_disposition: ForwardDisposition;
   readonly last_success_at: string | null;
   /** Non-secret CTA. `null` when the connection does not need attention. */
   readonly next_action: NextAction | null;
@@ -745,7 +761,7 @@ interface ClassificationContext {
 
 type ClassificationStep = (
   ctx: ClassificationContext
-) => Omit<SnapshotArgs, "conditions" | "dominantConditionId" | "supportingConditionIds"> | null;
+) => Omit<SnapshotArgs, "conditions" | "dominantConditionId" | "forwardDisposition" | "supportingConditionIds"> | null;
 
 // Ordered precedence: each step returns a snapshot args object when it claims
 // the verdict, otherwise null and we fall through to the next step. The order
@@ -771,6 +787,7 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
   const badges = projectBadges(input, axes);
   const conditions = projectConditions(input, axes);
   const conditionSet = indexConditions(conditions);
+  const forwardDisposition = deriveConnectionForwardDisposition(input, conditionSet);
   const remoteSurface = projectRemoteSurfaceDetail(input.remoteSurface ?? null);
   const lastSuccessAt = input.run?.lastSuccessAt ?? null;
   const nextAttemptAt = conditionExpired(input.backoff?.nextRunAt ?? null, input.observedAt ?? null)
@@ -787,13 +804,14 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
     remoteSurface,
   };
   const finishWith = (
-    args: Omit<SnapshotArgs, "conditions" | "dominantConditionId" | "supportingConditionIds">
+    args: Omit<SnapshotArgs, "conditions" | "dominantConditionId" | "forwardDisposition" | "supportingConditionIds">
   ): ConnectionHealthSnapshot => {
     const dominantConditionId = pickDominantConditionId(args.state, conditions);
     return snapshot({
       ...args,
       conditions,
       dominantConditionId,
+      forwardDisposition,
       supportingConditionIds: pickSupportingConditionIds(conditions, dominantConditionId),
     });
   };
@@ -1887,6 +1905,53 @@ export function deriveForwardDisposition(input: ForwardDispositionInput): Forwar
   return "complete";
 }
 
+/**
+ * Map the full connection-health input onto the five disposition signals and
+ * derive the connection-level forward disposition. Pure — no I/O, no clock
+ * reads — and intentionally separate from the headline classifier so the
+ * disposition is a faithful function of the same durable evidence rather than
+ * of the headline pill.
+ *
+ * Signal mapping (each is already durable evidence the projection holds):
+ *
+ *   - `coverage`      : the rolled-up coverage axis (`unknown` when absent),
+ *                       which already encodes retryable vs terminal vs
+ *                       accepted-absence. A contradictory manifest that names an
+ *                       accepted axis (`unsupported` / `unavailable`) for a
+ *                       required stream is carried on the axis itself, so it
+ *                       resolves to `terminal` exactly as the per-stream rule
+ *                       intends.
+ *   - `gapRetryable`  : true only for the explicit `retryable_gap` axis. Other
+ *                       gap axes (`partial` / `gaps`) are handled as ordinary
+ *                       forward-collection boundaries by the helper, and
+ *                       `terminal_gap` is terminal regardless of this flag.
+ *   - `attentionOpen` : the SAME signal that drives the `needs_attention`
+ *                       headline — the `AttentionClear` condition is `false`
+ *                       (an open, non-expired structured attention prompt). This
+ *                       keeps the disposition consistent with the pill: an
+ *                       attention-blocked gap is `awaiting_owner` exactly when
+ *                       the headline is `needs_attention`.
+ *   - `freshness`     : the freshness axis (`unknown` when absent).
+ *   - `refresh`       : the manifest refresh-policy evidence, used only to tell
+ *                       a manual-refresh-stale stream (`owner_refresh_due`) from
+ *                       a schedulable-stale one (the scheduler's own job).
+ *
+ * See `define-connector-progress-evidence-contract`.
+ */
+function deriveConnectionForwardDisposition(
+  input: ComputeConnectionHealthInput,
+  conditionSet: ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition>
+): ForwardDisposition {
+  const coverage: CoverageAxis = input.coverage?.axis ?? "unknown";
+  return deriveForwardDisposition({
+    coverage,
+    gapRetryable: coverage === "retryable_gap",
+    attentionOpen: conditionIsFalse(conditionSet, "AttentionClear"),
+    freshness: input.freshness?.axis ?? "unknown",
+    refresh: input.refresh ?? null,
+  });
+}
+
 function backlogClearCondition(
   axes: ConnectionAxes,
   stalledCause: OutboxStalledCause | null
@@ -2169,6 +2234,7 @@ interface SnapshotArgs {
   readonly badges: ConnectionBadges;
   readonly conditions: readonly ConnectionHealthCondition[];
   readonly dominantConditionId: string | null;
+  readonly forwardDisposition: ForwardDisposition;
   readonly lastSuccessAt: string | null;
   readonly nextAction?: NextAction | null;
   readonly nextAttemptAt: string | null;
@@ -2185,6 +2251,7 @@ function snapshot(args: SnapshotArgs): ConnectionHealthSnapshot {
     reason_code: args.reasonCode,
     conditions: args.conditions,
     dominant_condition_id: args.dominantConditionId,
+    forward_disposition: args.forwardDisposition,
     supporting_condition_ids: args.supportingConditionIds,
     last_success_at: args.lastSuccessAt,
     next_action: args.nextAction ?? null,
