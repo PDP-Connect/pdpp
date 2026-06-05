@@ -1,11 +1,13 @@
 ## ADDED Requirements
 
-### Requirement: Polyfill-runtime runs SHALL apply per-provider token-bucket pacing distinct from the run-level request cap
+### Requirement: Polyfill-runtime runs SHALL apply per-provider GCRA-compatible token-bucket pacing distinct from the run-level request cap
 
 SHALL the polyfill-runtime enforce inter-request rate to each provider using a
-per-provider token bucket, separate from any per-run volume cap. The token
-bucket SHALL control the rate at which requests are admitted to a provider;
-the run-level cap SHALL control the total volume of requests per run. These two
+per-provider token bucket compatible with GCRA semantics (ITU-T I.371): credit
+accumulated during idle or paused periods SHALL NOT exceed the burst tolerance
+ceiling, preventing a burst on resume from an idle collector. The token bucket
+SHALL control the rate at which requests are admitted to a provider; the
+run-level cap SHALL control the total volume of requests per run. These two
 controls are orthogonal and both SHALL be in effect when configured.
 
 The pacing token bucket SHALL be per-provider: a slow, rate-limited, or
@@ -28,15 +30,21 @@ unresponsive provider SHALL NOT delay or starve requests to any other provider.
 - **THEN** the runtime SHALL apply backoff only to provider A's token bucket
 - **AND** requests to provider B SHALL continue at provider B's current pacing rate
 
-### Requirement: Polyfill-runtime pacing SHALL apply AIMD adaptive rate adjustment
+### Requirement: Polyfill-runtime pacing SHALL apply rate-based AIMD adaptive fill-rate adjustment
 
 SHALL the polyfill-runtime apply Additive Increase / Multiplicative Decrease
-(AIMD) adjustment to the per-provider fill rate. The fill rate SHALL increase
-additively on successful responses and decrease multiplicatively on throttle
-signals. Error responses — regardless of how quickly they complete — SHALL NOT
-decrease the inter-request delay (one-way error ratchet). Before the first
-response from a provider, the runtime SHALL use a conservative starting delay
-rather than the maximum available rate.
+(AIMD) adjustment to the per-provider token-bucket **fill rate** (the rate at
+which tokens are generated). The fill rate SHALL increase additively on
+successful responses and decrease multiplicatively on throttle signals. This is
+rate-based AIMD — it adjusts the token generation rate, not the number of
+in-flight concurrent requests. Concurrency-limit AIMD (adjusting the maximum
+in-flight request count) is not required by this specification; implementations
+MAY add a concurrency limit as an additional layer but it is not normative.
+
+Error responses — regardless of how quickly they complete — SHALL NOT decrease
+the inter-request delay (one-way error ratchet). Before the first response from
+a provider, the runtime SHALL use a conservative starting delay rather than the
+maximum available rate.
 
 #### Scenario: Throttle signal causes multiplicative fill-rate decrease
 
@@ -202,7 +210,7 @@ violation.
 - **AND** it SHALL NOT add additional delay on top of the header value on the
   first violation of that request
 
-### Requirement: Polyfill-runtime checkpoint advancement SHALL be commit-gated and monotonic
+### Requirement: Polyfill-runtime checkpoint advancement SHALL be commit-gated, monotonic, and slice-aligned
 
 SHALL the polyfill-runtime advance a connector's checkpoint (cursor, bookmark,
 or equivalent state) only after a durable write for the corresponding records
@@ -210,6 +218,18 @@ has been confirmed. The checkpoint SHALL be monotonically non-decreasing. The
 checkpoint at the time a run stops (for any reason, including budget exhaustion)
 SHALL reflect the last position for which a durable write was confirmed, never
 the last attempted position.
+
+The atomic unit of checkpoint advancement is the **slice** — the smallest
+replayable logical partition (one page, one date range, one entity batch). State
+SHALL be persisted after a full slice completes; a mid-slice crash SHALL replay
+that slice from its beginning. Budget checks (request cap, wall-clock deadline,
+retry budget) SHALL be evaluated at slice boundaries, not mid-slice. The runtime
+SHALL NOT attempt to checkpoint a partial slice.
+
+The runtime SHALL prevent concurrent advancement of the same connector's
+checkpoint by two simultaneous runs. An in-flight run SHALL hold an exclusive
+ownership marker for the connector; a second attempt to run the same connector
+SHALL yield until the marker is released.
 
 Provider-issued opaque cursor tokens SHALL be stored as-is. The runtime SHALL
 NOT reconstruct an offset-based cursor from record count or position, as
@@ -241,6 +261,13 @@ between pages.
 - **AND** it SHALL NOT reconstruct a cursor by any formula (page offset, record
   count, or date range) unless the provider has no opaque token and a synthetic
   cursor is the only available checkpoint mechanism
+
+#### Scenario: Concurrent run attempt yields to in-flight run
+
+- **WHEN** a connector run is in progress and holds an exclusive ownership marker
+- **AND** a second run is attempted for the same connector
+- **THEN** the second run SHALL NOT begin collecting or advancing the checkpoint
+- **AND** it SHALL yield until the first run completes and releases the marker
 
 ### Requirement: Polyfill-runtime SHALL separate catch-up and steady-state bookmarks when both modes exist
 

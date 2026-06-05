@@ -26,11 +26,22 @@ Five prior-art lanes synthesized findings from crawler politeness, data-sync
 checkpoint design, retry/circuit-breaker research, rate-control algorithms, and
 queue/lease models. All five converge on the same structural conclusions: two
 orthogonal control axes (inter-request pacing and run-level volume cap), a
-token-bucket pacing primitive, a ratio-based retry budget distinct from the
-per-request attempt count, commit-gated monotonic checkpoint advancement, and
+GCRA/token-bucket pacing primitive (with rate-based AIMD adaptation), a
+ratio-based retry budget distinct from the per-request attempt count,
+commit-gated monotonic checkpoint advancement at slice granularity, and
 wall-clock as an outer safety deadline rather than a rate-control or
 source-pressure signal. (See synthesis report:
-`tmp/workstreams/ri-provider-budget-interim-synthesis-v1-report.md`.)
+`tmp/workstreams/ri-provider-budget-interim-synthesis-v1-report.md` and final
+evidence audit:
+`tmp/workstreams/ri-provider-budget-final-evidence-audit-v1-report.md`.
+
+Note: the interim synthesis stated that the rate-control and checkpoint-queues
+lanes were "not found." Both completed with full reports. The final evidence
+audit confirmed that the structural conclusions hold; the missed lanes raise
+confidence on the slice model (22/25 adversarially verified), name GCRA as the
+precise pacing primitive, clarify that concurrency-limit AIMD is lower-confidence
+than rate-based AIMD, and establish that multi-client shared-credential
+coordination is an unsolved open problem in the surveyed literature.)
 
 The reference implementation currently has no normative requirements covering
 these behaviors. The bounded-run cap landed in the ChatGPT connector
