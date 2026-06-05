@@ -110,3 +110,25 @@ archive time.
 - **Exact-JSON identity compaction policy (`excludeKeys: []`).** Rejected: the
   inventory body is not byte-identical across runs (mtime/size move), so an
   exact-JSON policy would never collapse the churn.
+
+## Residual Risks
+
+- **Owner-only live `--apply` (deferred).** Carried into archive per the
+  AGENTS.md archive rule. The forward inventory gate + the third-family
+  compaction policy are landed and proven offline, so no new churn accumulates.
+  The retained pre-gate residue on the deployed instance — `claude-code/backup_inventory`
+  and `codex/history` redundant history — is cleared by the owner via live
+  `--apply` (or the live `main` release lane) with the per-run
+  `compact_record_history_backup_<runId>` table as the rollback handle. This is
+  residue cleanup, not a correctness gate — the fingerprint-parity test pins
+  `removable == connector no-op`.
+- **Cross-change reconciliation (resolved at this archive).** The
+  "Overlapping-delta note" above stated this delta restates the requirement with
+  only the third policy family on the canonical two-family body and that "the
+  owner folds the union once at archive time." That fold was performed: the
+  canonical `reference-implementation-architecture` requirement now carries the
+  union of all five churn-family deltas — three policy families, the full
+  Family-1 enumeration from the sibling changes, the partial-scan paragraph, this
+  change's full-scan inventory paragraph, and every scenario set. This change's
+  standalone `local-agent-collector-completeness` delta (no sibling collision)
+  was applied as-is. No residual reconciliation remains.

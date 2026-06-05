@@ -117,3 +117,22 @@ projection dirty for rebuild.
   point-in-time stream split or fixture evidence, documented in the lane report.
 - The already-shipped github/user_stats + slack/channel_stats split (separate
   pushed change, pending deploy).
+
+## Residual Risks
+
+- **Owner-only live dry-run → `--apply` (deferred).** Carried into archive per
+  the AGENTS.md archive rule. The procedure is documented above under
+  "Owner-gated live apply (deferred)": the owner dry-runs the `chase/statements`
+  and `chase/transactions` scopes, confirms `removableVersions`, then runs
+  `--apply` with the per-run `compact_record_history_backup_<runId>` table as the
+  rollback handle. This is residue cleanup of historical run-clock churn, not a
+  correctness gate — the forward connector no-op gate and the offline
+  fingerprint-parity tests already pin `removable == connector no-op`.
+- **Cross-change reconciliation (resolved at this archive).** The "Sequencing
+  note for the owner" above anticipated that this delta MODIFIES the same
+  compaction-tool requirement as the other churn-family changes. That
+  reconciliation was performed once at archive time: the canonical
+  `reference-implementation-architecture` requirement was hand-folded to the
+  union of all five deltas (three policy families, full Family-1 enumeration, the
+  partial-scan and inventory paragraphs, and all scenario sets) before archiving
+  the cluster. No residual reconciliation remains.

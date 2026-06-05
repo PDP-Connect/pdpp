@@ -64,6 +64,10 @@
   proven by unit + parity tests.
 - [x] The compaction policy's removable classification equals the connector
   no-op classification — proven by the fingerprint-parity test.
-- [ ] Owner-only: live `--apply` (or the live `main` release lane) clears the
-  retained `claude-code/backup_inventory` and `codex/history` redundant history
-  on the deployed instance. Deferred — no production mutation in this lane.
+- [x] (Owner-only, deferred → Residual Risk at archive) Live `--apply` (or the
+  live `main` release lane) clears the retained `claude-code/backup_inventory`
+  and `codex/history` redundant history on the deployed instance. Deferred — no
+  production mutation in this lane. Recorded as a residual risk in `design.md`
+  per the AGENTS.md archive rule; the offline fingerprint-parity test pins
+  `removable == connector no-op`, so the live step is residue cleanup, not a
+  correctness gate.

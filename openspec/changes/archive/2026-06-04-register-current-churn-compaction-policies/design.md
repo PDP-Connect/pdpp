@@ -96,3 +96,16 @@ own after the projection recomputes from ground truth.
   not a churn-hiding exclusion). usaa/accounts and usaa/credit_card_billing were
   later registered as `fetched_at`-only Family-1 policies (their real balance
   fields are retained as boundaries).
+
+## Residual Risks
+
+- **Owner-only live dry-run → `--apply` (deferred).** Carried into archive per
+  the AGENTS.md archive rule. The procedure is documented above under
+  "Owner-gated live apply (deferred)": the owner dry-runs each
+  `(connector_instance_id, stream)` scope, confirms `removableVersions`, then
+  runs `--apply` with the per-run `compact_record_history_backup_<runId>` table
+  as the rollback handle. This is residue cleanup of historical run-clock churn,
+  not a correctness gate — the forward connector no-op gate and the offline
+  fingerprint-parity tests already pin `removable == connector no-op`, and no
+  public read, `changes_since` response, or grant enforcement depends on the
+  apply.

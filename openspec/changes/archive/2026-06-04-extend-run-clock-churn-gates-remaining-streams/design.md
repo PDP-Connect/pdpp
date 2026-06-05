@@ -90,3 +90,23 @@ lane does not archive.
 
 See tasks.md. All forward-gate, parity, registry-shape, typecheck, and
 `--strict` validation checks pass in this lane; live `--apply` is owner-deferred.
+
+## Residual Risks
+
+- **Owner-only live dry-run → `--apply` (deferred).** Carried into archive per
+  the AGENTS.md archive rule. The owner dry-runs each new scope
+  (`usaa/transactions`, `usaa/inbox_messages`, `chase/current_activity`,
+  `amazon/orders`), confirms `removableVersions`, then runs `--apply` with the
+  per-run `compact_record_history_backup_<runId>` table as the rollback handle.
+  This is residue cleanup of historical run-clock churn, not a correctness gate —
+  the forward connector no-op gates and the offline fingerprint-parity tests
+  already pin `removable == connector no-op`.
+- **Cross-change reconciliation (resolved at this archive).** This delta is the
+  "post-merge superset" named in task 4.1 and the "Compaction policy
+  reconciliation (owner note)" section above. That reconciliation was performed
+  once at archive time: the canonical `reference-implementation-architecture`
+  requirement was hand-folded to the union of all five churn-family deltas — three
+  policy families, the full Family-1 enumeration (this superset plus
+  `slack/channel_memberships`, which only `register-current` carried), the
+  partial-scan and inventory paragraphs, and every scenario set. No residual
+  reconciliation remains.

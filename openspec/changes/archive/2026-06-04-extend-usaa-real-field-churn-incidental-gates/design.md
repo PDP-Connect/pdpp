@@ -115,3 +115,21 @@ one is archived first, reconcile the enumeration by hand.
 - The other report-only streams from the prior change (github/user,
   slack/channels) — those churn on real fields with no run-clock component to
   safely exclude.
+
+## Residual Risks
+
+- **Owner-only live dry-run → `--apply` (deferred).** Carried into archive per
+  the AGENTS.md archive rule. The procedure is documented above under
+  "Owner-gated live apply (deferred)": the owner dry-runs the `usaa/accounts` and
+  `usaa/credit_card_billing` scopes, confirms `removableVersions`, then runs
+  `--apply` with the per-run `compact_record_history_backup_<runId>` table as the
+  rollback handle. This is residue cleanup of historical run-clock churn, not a
+  correctness gate — the forward connector no-op gate and the offline
+  fingerprint-parity tests already pin `removable == connector no-op`.
+- **Cross-change reconciliation (resolved at this archive).** The "Sequencing
+  note for the owner" above anticipated that this delta MODIFIES the same
+  compaction-tool requirement as the other churn-family changes. That
+  reconciliation was performed once at archive time: the canonical
+  `reference-implementation-architecture` requirement was hand-folded to the
+  union of all five deltas before archiving the cluster. No residual
+  reconciliation remains.

@@ -83,7 +83,10 @@
 - [x] `pnpm --dir packages/polyfill-connectors typecheck` — pass.
 - [x] `pnpm --dir reference-implementation typecheck` — pass.
 - [x] `openspec validate extend-run-clock-churn-gates-remaining-streams --strict` — pass.
-- [ ] (Owner-only, deferred) Dry-run each scope against live data, confirm
-  `removableVersions`, then `--apply` with the per-run backup table as the
-  rollback handle. Not run in this lane (no live credentials; no production
-  mutation permitted).
+- [x] (Owner-only, deferred → Residual Risk at archive) Dry-run each scope
+  against live data, confirm `removableVersions`, then `--apply` with the
+  per-run backup table as the rollback handle. Not run in this lane (no live
+  credentials; no production mutation permitted). Recorded as a residual risk in
+  `design.md` per the AGENTS.md archive rule; the offline fingerprint-parity
+  tests pin `removable == connector no-op`, so the live step is residue cleanup,
+  not a correctness gate.
