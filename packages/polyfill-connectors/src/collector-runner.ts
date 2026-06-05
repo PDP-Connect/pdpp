@@ -272,6 +272,128 @@ export interface CollectorAutoPruneResult {
   pruned: number;
 }
 
+/**
+ * Run-time policy for reclaiming the outbox freelist with an in-place `VACUUM`.
+ *
+ * {@link autoPruneSucceededOutbox} DELETEs over-retention `succeeded` rows, but
+ * with `auto_vacuum = NONE` the freed pages stay in the file forever as
+ * freelist — this is why the memory-pressure investigation found a 35 GB local
+ * outbox whose live rows were only ~2 GB (94% freelist). That bloated file is
+ * not a leak in the node heap (the collector's anonymous RSS stays ~100 MB),
+ * but every collector run pulls the outbox pages the kernel touches into the
+ * service cgroup's *file* page cache, so a 35 GB file lets the cgroup's
+ * reclaimable cache climb toward `MemoryHigh` and inflates the reported
+ * `MemoryPeak`. Returning the freelist to the filesystem keeps the on-disk file
+ * — and therefore the cache the cgroup can accumulate from outbox I/O — bounded.
+ *
+ * The auto-compact is deliberately rare and guarded by the caller
+ * ({@link autoCompactOutboxIfBloated}):
+ *
+ * - It runs only when `reclaimableBytes >= minReclaimableBytes`, so a healthy
+ *   small outbox never pays for a whole-file rebuild.
+ * - It runs only on a quiet lane (no `ready`/`leased`/`dead_letter` work),
+ *   mirroring the manual `compact` CLI's refuse-when-unsent guard. `VACUUM` is
+ *   lossless — it copies every row, succeeded or not, so it can never drop
+ *   unsent work — but holding it to a drained lane keeps it a quiet-state
+ *   maintenance op rather than something racing a live drain.
+ *
+ * It changes no cursor, checkpoint, or record semantics: it only returns
+ * already-deleted pages to the OS.
+ */
+export interface CollectorAutoCompactPolicy {
+  /** When false, the run-time auto-compact is skipped entirely. */
+  enabled: boolean;
+  /**
+   * Only rebuild when the outbox freelist is at least this many bytes. The
+   * default is high enough that a healthy outbox never triggers a whole-file
+   * `VACUUM`, but low enough to reclaim long before the file reaches the
+   * tens-of-GB bloat the incident produced.
+   */
+  minReclaimableBytes: number;
+}
+
+export const DEFAULT_COLLECTOR_AUTO_COMPACT_POLICY: Readonly<CollectorAutoCompactPolicy> = Object.freeze({
+  enabled: true,
+  minReclaimableBytes: 512 * 1024 * 1024,
+});
+
+/**
+ * Resolve the effective auto-compact policy from (in increasing precedence) the
+ * built-in default, an explicit run-config override, and environment overrides.
+ * Operators get a no-rebuild override path:
+ *
+ * - `PDPP_COLLECTOR_AUTO_COMPACT=0|false|off|no` disables the run-time compact.
+ * - `PDPP_COLLECTOR_AUTO_COMPACT_MIN_RECLAIM_BYTES=<int>` overrides the byte
+ *   threshold (use `0` to compact whenever any freelist exists).
+ *
+ * Invalid or absent env values fall through to the lower-precedence value
+ * rather than throwing, so a malformed override never breaks a collector run.
+ */
+export function resolveCollectorAutoCompactPolicy(
+  override?: Partial<CollectorAutoCompactPolicy>,
+  env: NodeJS.ProcessEnv = process.env
+): CollectorAutoCompactPolicy {
+  const policy: CollectorAutoCompactPolicy = { ...DEFAULT_COLLECTOR_AUTO_COMPACT_POLICY, ...(override ?? {}) };
+
+  const enabledRaw = env.PDPP_COLLECTOR_AUTO_COMPACT;
+  if (typeof enabledRaw === "string" && enabledRaw.trim() !== "") {
+    policy.enabled = !DISABLED_ENV_VALUES.has(enabledRaw.trim().toLowerCase());
+  }
+
+  const minBytes = parseNonNegativeInt(env.PDPP_COLLECTOR_AUTO_COMPACT_MIN_RECLAIM_BYTES);
+  if (minBytes !== null) {
+    policy.minReclaimableBytes = minBytes;
+  }
+
+  return policy;
+}
+
+/**
+ * Reclaim the outbox freelist with an in-place `VACUUM` when the file is bloated
+ * and the lane is quiet. No-op (and never opens a write transaction) unless all
+ * guards pass, so the common healthy-run path pays only two cheap `PRAGMA`
+ * reads.
+ *
+ * Guards, in order:
+ *   1. Policy disabled → skipped.
+ *   2. Reclaimable freelist below `minReclaimableBytes` → not worth a whole-file
+ *      rebuild this run; the next over-threshold run reclaims it.
+ *   3. Any non-`succeeded` row (`ready`/`leased`/`dead_letter`) present → defer
+ *      so the rebuild stays a quiet-state op, matching the manual CLI guard.
+ *
+ * `VACUUM` is lossless and touches no cursor/checkpoint/record state, so the
+ * only observable effect is a smaller on-disk file (and therefore less outbox
+ * page cache charged to the service cgroup on later runs).
+ */
+export function autoCompactOutboxIfBloated(input: {
+  outbox: Pick<LocalDeviceOutbox, "compact" | "countNonSucceeded" | "pageStats">;
+  policy: CollectorAutoCompactPolicy;
+}): CollectorAutoCompactResult {
+  if (!input.policy.enabled) {
+    return { compacted: false, enabled: false, reason: "disabled", reclaimedBytes: 0 };
+  }
+  const before = input.outbox.pageStats();
+  if (before.reclaimableBytes < input.policy.minReclaimableBytes) {
+    return { compacted: false, enabled: true, reason: "below_threshold", reclaimedBytes: 0 };
+  }
+  if (input.outbox.countNonSucceeded() > 0) {
+    return { compacted: false, enabled: true, reason: "lane_not_quiet", reclaimedBytes: 0 };
+  }
+  const result = input.outbox.compact();
+  return { compacted: true, enabled: true, reason: "compacted", reclaimedBytes: result.reclaimedBytes };
+}
+
+export interface CollectorAutoCompactResult {
+  /** True when a `VACUUM` rebuild actually ran this pass. */
+  compacted: boolean;
+  /** False when the policy disabled the run-time compact (no compact attempted). */
+  enabled: boolean;
+  /** Why the compact ran or was skipped. */
+  reason: "disabled" | "below_threshold" | "lane_not_quiet" | "compacted";
+  /** Bytes returned to the filesystem (0 unless `compacted`). */
+  reclaimedBytes: number;
+}
+
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const REPO_ROOT = join(PACKAGE_ROOT, "..", "..");
 
@@ -312,6 +434,13 @@ export interface CollectorRunConfig {
    * consumption, and between queue drain iterations.
    */
   abortSignal?: AbortSignal;
+  /**
+   * Override the run-time auto-compact (freelist `VACUUM`) of the durable
+   * outbox. Defaults to {@link DEFAULT_COLLECTOR_AUTO_COMPACT_POLICY}; environment
+   * overrides ({@link resolveCollectorAutoCompactPolicy}) take final precedence so
+   * an operator can disable or retune it on a deployed host without a rebuild.
+   */
+  autoCompact?: Partial<CollectorAutoCompactPolicy>;
   /**
    * Override the run-time auto-prune of acknowledged (`succeeded`) outbox
    * rows. Defaults to {@link DEFAULT_COLLECTOR_AUTO_PRUNE_POLICY}; environment
@@ -511,6 +640,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
 
   const policy: CollectorOutboxPolicy = { ...DEFAULT_COLLECTOR_OUTBOX_POLICY, ...(config.outboxPolicy ?? {}) };
   const autoPrunePolicy = resolveCollectorAutoPrunePolicy(config.autoPrune);
+  const autoCompactPolicy = resolveCollectorAutoCompactPolicy(config.autoCompact);
   const holderId = config.collectorHolderId ?? randomUUID();
   const outboxPath = config.outboxPath ?? config.queuePath;
   const outbox = new LocalDeviceOutbox({ path: outboxPath });
@@ -629,6 +759,12 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       policy: autoPrunePolicy,
       sourceInstanceId: config.sourceInstanceId,
     });
+
+    // Reclaim the freelist the prune just left behind when the file is bloated
+    // and the lane is quiet. Lossless rebuild: row counts are unchanged, so
+    // `finalSummary` and the heartbeat below see the same outbox; only the
+    // on-disk file (and the page cache later runs charge to the cgroup) shrinks.
+    autoCompactOutboxIfBloated({ outbox, policy: autoCompactPolicy });
 
     const finalSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
     const recordsPending = pendingOutboxWorkCount(finalSummary);
