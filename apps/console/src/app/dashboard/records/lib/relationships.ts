@@ -1,8 +1,8 @@
 /**
  * Console relationship navigation — pure helpers.
  *
- * Relationships come ONLY from `expand_capabilities` returned by
- * `GET /v1/streams/<s>` (the manifest's declared, grant-scoped relations). The
+ * Relationships come only from declared metadata: `expand_capabilities` returned
+ * by `GET /v1/streams/<s>` and bundled manifest `relationships[]` entries. The
  * console never inspects raw payload fields to guess at links: a field that
  * merely *looks* like a foreign key is plain text unless a declared relation
  * covers it.
@@ -162,10 +162,9 @@ interface ParentStreamCapabilities {
 
 /**
  * Derive child → parent console links from the parent streams' live
- * `expand_capabilities` metadata. This is the only relationship source used for
- * link construction; a local manifest may identify which parent metadata to
- * fetch, but it must not fabricate `child_parent_key_field` or target-stream
- * values for links.
+ * `expand_capabilities` metadata. A local manifest may identify which parent
+ * metadata to fetch, but this helper must not fabricate
+ * `child_parent_key_field` or target-stream values for links.
  */
 export function parentRelationsForChild(
   parentStreams: ParentStreamCapabilities[],
