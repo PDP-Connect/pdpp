@@ -25,6 +25,9 @@ import {
   isExpectedRetainedHistory,
   needsReview,
   pointInTimeGuidance,
+  remediationChipLabel,
+  remediationForRow,
+  remediationGuidance,
   summarizeVersionChurn,
 } from "./version-churn-summary.ts";
 
@@ -64,6 +67,10 @@ function row(overrides: Partial<RefRecordVersionStatsRow> = {}): RefRecordVersio
     risk_reasons: ["versions_per_record_high"],
     stream: "budgets",
     version_disposition: "lossless_compaction_candidate",
+    // Default remediation is `none`; remediation-specific fixtures override it.
+    // The server derives both fields; these fixtures stand in for the route's
+    // already-derived output (the console never re-derives them).
+    version_remediation: "none",
     versions_per_record: 273.75,
     ...overrides,
   };
@@ -416,4 +423,153 @@ test("classifyChurnRow falls back to active_defect_or_unclassified when the fiel
   const { version_disposition: _omitted, ...legacy } = row();
   assert.equal(classifyChurnRow(legacy as RefRecordVersionStatsRow), "active_defect_or_unclassified");
   assert.equal(needsReview(legacy as RefRecordVersionStatsRow), true);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// version_remediation — the orthogonal next-action axis the console consumes
+// (OpenSpec add-version-remediation-disposition, AC-9 console rendering)
+//
+// The console does NOT re-derive remediation — these fixtures set the
+// server-derived `version_remediation` explicitly (exactly what the route
+// returns) and assert the console surfaces it honestly, with distinct copy for
+// fingerprint-pending vs. migration-pending vs. retention-policy.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// The four evidence rows, each carrying the disposition + remediation the server
+// derives for it.
+const fingerprintChaseRow = (o: Partial<RefRecordVersionStatsRow> = {}) =>
+  reviewedRow({
+    connector_id: "chase",
+    stream: "statements",
+    version_remediation: "content_fingerprint_pending",
+    ...o,
+  });
+const fingerprintUsaaRow = (o: Partial<RefRecordVersionStatsRow> = {}) =>
+  reviewedRow({
+    connector_id: "usaa",
+    stream: "statements",
+    version_remediation: "content_fingerprint_pending",
+    ...o,
+  });
+const migrationRow = (o: Partial<RefRecordVersionStatsRow> = {}) =>
+  reviewedRow({
+    connector_id: "usaa",
+    stream: "accounts",
+    version_remediation: "owner_migration_pending",
+    ...o,
+  });
+const retentionRow = (o: Partial<RefRecordVersionStatsRow> = {}) =>
+  recurringRow({
+    connector_id: "claude-code",
+    stream: "sessions",
+    version_remediation: "owner_retention_policy",
+    ...o,
+  });
+
+const FINGERPRINT_PENDING_RE = /[Ff]ingerprint pending/;
+const MIGRATION_PENDING_RE = /[Mm]igration pending/;
+const RETENTION_POLICY_RE = /[Rr]etention policy/;
+const DO_NOT_COMPACT_RE = /[Dd]o not compact/;
+
+test("remediationForRow reads the server field directly (no re-derivation)", () => {
+  assert.equal(remediationForRow(fingerprintChaseRow()), "content_fingerprint_pending");
+  assert.equal(remediationForRow(migrationRow()), "owner_migration_pending");
+  assert.equal(remediationForRow(retentionRow()), "owner_retention_policy");
+  assert.equal(remediationForRow(candidateRow()), "none");
+});
+
+test("remediationForRow falls back to none when the field is absent", () => {
+  const { version_remediation: _omitted, ...legacy } = reviewedRow();
+  assert.equal(remediationForRow(legacy as RefRecordVersionStatsRow), "none");
+});
+
+test("remediationChipLabel is null for a none remediation and a short label otherwise", () => {
+  assert.equal(remediationChipLabel(candidateRow()), null);
+  assert.equal(remediationChipLabel(fingerprintChaseRow()), "fingerprint pending");
+  assert.equal(remediationChipLabel(migrationRow()), "migration pending");
+  assert.equal(remediationChipLabel(retentionRow()), "retention policy");
+});
+
+test("remediationGuidance gives distinct fingerprint-pending vs migration-pending copy", () => {
+  const fingerprint = remediationGuidance(fingerprintChaseRow());
+  const migration = remediationGuidance(migrationRow());
+  assert.ok(fingerprint);
+  assert.ok(migration);
+  assert.match(fingerprint, FINGERPRINT_PENDING_RE);
+  assert.match(migration, MIGRATION_PENDING_RE);
+  // The two reviewed-residue rows must NOT read identically — that is the whole
+  // point of the remediation axis.
+  assert.notEqual(fingerprint, migration);
+  // Fingerprint guidance says compaction frees nothing; migration says do not
+  // compact (the strongest, most distinct signal).
+  assert.match(fingerprint, /compaction frees nothing|frees nothing/);
+  assert.match(migration, DO_NOT_COMPACT_RE);
+});
+
+test("remediationGuidance names the owner retention decision for a recurring snapshot", () => {
+  const guidance = remediationGuidance(retentionRow());
+  assert.ok(guidance);
+  assert.match(guidance, RETENTION_POLICY_RE);
+  // The owner may decline — the copy must say so (it is not a defect).
+  assert.match(guidance, /decline/);
+});
+
+test("remediationGuidance is null for a none remediation", () => {
+  assert.equal(remediationGuidance(candidateRow()), null);
+  assert.equal(remediationGuidance(unclassifiedRow()), null);
+});
+
+test("buildChurnDrilldownRows surfaces the remediation chip, action, and guidance per row", () => {
+  const built = buildChurnDrilldownRows([
+    fingerprintChaseRow(),
+    migrationRow(),
+    retentionRow(),
+    candidateRow(),
+  ]);
+  assert.equal(built.length, 4);
+
+  assert.equal(built[0]?.remediationAction, "content_fingerprint_pending");
+  assert.equal(built[0]?.remediationChip, "fingerprint pending");
+  assert.match(built[0]?.remediationGuidance ?? "", FINGERPRINT_PENDING_RE);
+  // A reviewed-residue row still keeps its read-only dry-run command — the
+  // remediation line augments it, it does not replace it.
+  assert.ok(built[0]?.dryRunCommand);
+
+  assert.equal(built[1]?.remediationAction, "owner_migration_pending");
+  assert.equal(built[1]?.remediationChip, "migration pending");
+  assert.match(built[1]?.remediationGuidance ?? "", MIGRATION_PENDING_RE);
+  assert.ok(built[1]?.dryRunCommand);
+
+  assert.equal(built[2]?.remediationAction, "owner_retention_policy");
+  assert.equal(built[2]?.remediationChip, "retention policy");
+  assert.match(built[2]?.remediationGuidance ?? "", RETENTION_POLICY_RE);
+  // A recurring snapshot is not compactable — no command, guidance instead.
+  assert.equal(built[2]?.dryRunCommand, null);
+
+  // A none-remediation candidate advertises no chip or guidance line, but keeps
+  // its dry-run command (its action lives there).
+  assert.equal(built[3]?.remediationAction, "none");
+  assert.equal(built[3]?.remediationChip, null);
+  assert.equal(built[3]?.remediationGuidance, null);
+  assert.ok(built[3]?.dryRunCommand);
+});
+
+test("remediation never changes the disposition or the needs-review headline", () => {
+  // A fingerprint-pending row is still reviewed residue (not needs-review); a
+  // retention-policy row is still a recurring snapshot. Remediation is additive.
+  assert.equal(classifyChurnRow(fingerprintChaseRow()), "reviewed_historical_residue");
+  assert.equal(needsReview(fingerprintChaseRow()), false);
+  assert.equal(classifyChurnRow(retentionRow()), "recurring_point_in_time_snapshot");
+  assert.equal(needsReview(retentionRow()), false);
+
+  // The "needs review" headline counts ONLY unclassified rows, regardless of any
+  // remediation on the other rows.
+  const summary = summarizeVersionChurn([
+    fingerprintChaseRow(),
+    fingerprintUsaaRow(),
+    migrationRow(),
+    retentionRow(),
+  ]);
+  assert.ok(summary);
+  assert.equal(summary.needsReview, false);
 });

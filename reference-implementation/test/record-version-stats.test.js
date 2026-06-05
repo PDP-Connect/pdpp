@@ -486,6 +486,196 @@ test('AC-7: a connector-authored field in the source row cannot alter version_di
   assert.equal(envelope.data[0].version_disposition, 'active_defect_or_unclassified');
 });
 
+// ─── version_remediation derivation (OpenSpec add-version-remediation-…) ──────
+//
+// The envelope-level companions to the pure-classifier tests in
+// version-disposition.test.js. They prove buildRecordVersionStatsEnvelope wires
+// the orthogonal remediation onto every row, keeps it consistent with the
+// disposition, and never lets it touch the numeric risk path.
+
+// A reviewed-residue ground-truth row for `connector/stream`: its last_history_at
+// sits at the registered review timestamp so the disposition resolves to
+// reviewed_historical_residue (the precondition for the statement/accounts
+// remediations).
+function reviewedResidueGt(connector_id, stream) {
+  const reviewedAt = REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT.get(`${connector_id}/${stream}`);
+  assert.ok(reviewedAt, `expected a reviewed-at entry for ${connector_id}/${stream}`);
+  return {
+    connector_id,
+    connector_instance_id: `cin_${connector_id}_${stream}`,
+    stream,
+    current_record_count: 4,
+    record_history_count: 80,
+    record_key_count: 4,
+    last_current_at: NOW,
+    last_history_at: reviewedAt,
+  };
+}
+
+test('AC-1(remediation): every version-stats row carries a version_remediation enum value', async () => {
+  const envelope = await envelopeFor([
+    dispositionRow({ connector_id: 'github', stream: 'user', connector_instance_id: 'cin_gh' }),
+    dispositionRow({ connector_id: 'gmail', stream: 'labels', connector_instance_id: 'cin_gm' }),
+    dispositionRow({ connector_id: 'mystery', stream: 'widgets', connector_instance_id: 'cin_my' }),
+  ]);
+  const allowed = new Set([
+    'none',
+    'content_fingerprint_pending',
+    'owner_migration_pending',
+    'owner_retention_policy',
+  ]);
+  assert.equal(envelope.data.length, 3);
+  for (const row of envelope.data) {
+    assert.ok('version_remediation' in row, 'each row must carry version_remediation');
+    assert.ok(allowed.has(row.version_remediation), `unexpected remediation ${row.version_remediation}`);
+  }
+});
+
+test('AC-2(remediation): the meta asserts remediation does not affect thresholds', async () => {
+  const envelope = await envelopeFor([dispositionRow()]);
+  assert.equal(envelope.meta.remediation_affects_thresholds, false);
+  // Disposition assertion and thresholds remain byte-identical — remediation is
+  // strictly additive and never disturbs the existing numeric contract.
+  assert.equal(envelope.meta.disposition_affects_thresholds, false);
+  assert.deepEqual(envelope.meta.risk_thresholds, {
+    watch_versions_per_record: 5,
+    high_versions_per_record: 50,
+    high_history_count: 10_000,
+    high_history_versions_per_record: 10,
+  });
+});
+
+test('AC-2(remediation): adding remediation leaves risk_level/risk_reasons/version_disposition unchanged', async () => {
+  // Same fixture as the disposition AC-2: the numeric path and the disposition
+  // are computed exactly as they were before remediation existed.
+  const envelope = await envelopeFor([dispositionRow()]);
+  const row = envelope.data[0];
+  const numeric = classifyRecordVersionChurn({ currentRecordCount: 2, recordHistoryCount: 20_000 });
+  assert.equal(row.risk_level, numeric.riskLevel);
+  assert.deepEqual(row.risk_reasons, numeric.riskReasons);
+  // github/user is a point-in-time split residual → disposition unchanged, and
+  // it is on no remediation list → remediation none.
+  assert.equal(row.version_disposition, 'point_in_time_retained_history');
+  assert.equal(row.version_remediation, 'none');
+});
+
+test('AC-3(remediation): chase/statements and usaa/statements are content_fingerprint_pending', async () => {
+  for (const connector_id of ['chase', 'usaa']) {
+    const gt = reviewedResidueGt(connector_id, 'statements');
+    const envelope = await envelopeFor([projectionRowFor(gt)], [gt]);
+    const row = envelope.data[0];
+    assert.equal(row.version_disposition, 'reviewed_historical_residue');
+    assert.equal(
+      row.version_remediation,
+      'content_fingerprint_pending',
+      `${connector_id}/statements must be content_fingerprint_pending`,
+    );
+  }
+});
+
+test('AC-4(remediation): usaa/accounts is owner_migration_pending, distinct from the statement rows', async () => {
+  const accountsGt = reviewedResidueGt('usaa', 'accounts');
+  const accountsEnv = await envelopeFor([projectionRowFor(accountsGt)], [accountsGt]);
+  const accountsRow = accountsEnv.data[0];
+  assert.equal(accountsRow.version_disposition, 'reviewed_historical_residue');
+  assert.equal(accountsRow.version_remediation, 'owner_migration_pending');
+
+  // Same disposition as the statement rows, different remediation — the row is
+  // distinguishable from a fingerprint-pending residue row.
+  const statementsGt = reviewedResidueGt('usaa', 'statements');
+  const statementsEnv = await envelopeFor([projectionRowFor(statementsGt)], [statementsGt]);
+  assert.equal(statementsEnv.data[0].version_disposition, accountsRow.version_disposition);
+  assert.notEqual(statementsEnv.data[0].version_remediation, accountsRow.version_remediation);
+});
+
+test('AC-5(remediation): claude-code/codex sessions are owner_retention_policy', async () => {
+  for (const connector_id of ['claude-code', 'codex', 'local-device:claude-code']) {
+    const gt = {
+      connector_id,
+      connector_instance_id: 'cin_sessions',
+      stream: 'sessions',
+      current_record_count: 60,
+      record_history_count: 600,
+      record_key_count: 60,
+      last_current_at: NOW,
+      last_history_at: '2027-01-01T00:00:00.000Z',
+    };
+    const envelope = await envelopeFor([projectionRowFor(gt)], [gt]);
+    const row = envelope.data[0];
+    assert.equal(row.version_disposition, 'recurring_point_in_time_snapshot');
+    assert.equal(
+      row.version_remediation,
+      'owner_retention_policy',
+      `${connector_id}/sessions must be owner_retention_policy`,
+    );
+    // The retention-policy row is expected recurring history — its disposition
+    // is NOT active_defect_or_unclassified, so it does not count as needs-review.
+    assert.notEqual(row.version_disposition, 'active_defect_or_unclassified');
+  }
+});
+
+test('AC-6(remediation): candidate / unlisted point-in-time / defect rows are remediation none', async () => {
+  // lossless_compaction_candidate: a policied stream not on any remediation list.
+  const candidate = await envelopeFor([dispositionRow({ connector_id: 'gmail', stream: 'labels' })]);
+  assert.equal(candidate.data[0].version_disposition, 'lossless_compaction_candidate');
+  assert.equal(candidate.data[0].version_remediation, 'none');
+
+  // point_in_time_retained_history not on the migration list.
+  const pointInTime = await envelopeFor([dispositionRow({ connector_id: 'slack', stream: 'channels' })]);
+  assert.equal(pointInTime.data[0].version_disposition, 'point_in_time_retained_history');
+  assert.equal(pointInTime.data[0].version_remediation, 'none');
+
+  // active_defect_or_unclassified.
+  const defect = await envelopeFor([dispositionRow({ connector_id: 'mystery', stream: 'widgets' })]);
+  assert.equal(defect.data[0].version_disposition, 'active_defect_or_unclassified');
+  assert.equal(defect.data[0].version_remediation, 'none');
+});
+
+test('AC-7(remediation): a connector-authored field in the source row cannot alter version_remediation', async () => {
+  // The hostile row both self-declares a remediation AND sits on no list. The
+  // server ignores the declared value and derives none from the disposition.
+  const envelope = await envelopeFor([{
+    ...dispositionRow({ connector_id: 'mystery', stream: 'widgets' }),
+    version_remediation: 'owner_retention_policy',
+    remediation: 'content_fingerprint_pending',
+  }]);
+  assert.equal(envelope.data[0].version_remediation, 'none');
+});
+
+test('AC-8(remediation): owner_retention_policy rows always have the recurring-snapshot disposition', async () => {
+  // Scan a mixed fixture: every row that comes back owner_retention_policy must
+  // also be recurring_point_in_time_snapshot, and no row gets a remediation that
+  // contradicts its disposition.
+  const sessionsGt = {
+    connector_id: 'claude-code',
+    connector_instance_id: 'cin_sessions',
+    stream: 'sessions',
+    current_record_count: 60,
+    record_history_count: 600,
+    record_key_count: 60,
+    last_current_at: NOW,
+    last_history_at: '2027-01-01T00:00:00.000Z',
+  };
+  const statementsGt = reviewedResidueGt('chase', 'statements');
+  const accountsGt = reviewedResidueGt('usaa', 'accounts');
+  const envelope = await envelopeFor(
+    [projectionRowFor(sessionsGt), projectionRowFor(statementsGt), projectionRowFor(accountsGt),
+      dispositionRow({ connector_id: 'mystery', stream: 'widgets', connector_instance_id: 'cin_my' })],
+    [sessionsGt, statementsGt, accountsGt],
+  );
+  for (const row of envelope.data) {
+    if (row.version_remediation === 'owner_retention_policy') {
+      assert.equal(row.version_disposition, 'recurring_point_in_time_snapshot');
+    }
+    if (
+      row.version_disposition === 'active_defect_or_unclassified'
+      || row.version_disposition === 'lossless_compaction_candidate'
+    ) {
+      assert.equal(row.version_remediation, 'none');
+    }
+  }
+});
+
 test('/_ref/records/version-stats reads projection-backed high-churn rows', async () => {
   const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:', ownerAuthPassword: '' });
   try {

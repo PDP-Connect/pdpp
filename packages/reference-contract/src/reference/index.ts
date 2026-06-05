@@ -899,6 +899,21 @@ const RecordVersionStatsRowSchema = {
         "recurring_point_in_time_snapshot",
       ],
     },
+    // Reference-DERIVED remediation (never connector-authored). Orthogonal to
+    // version_disposition: disposition says WHY the history exists, remediation
+    // says WHAT the operator does next. A label only — it never alters
+    // risk_level/risk_reasons/risk_thresholds/version_disposition, and a
+    // connector cannot set or override it. See the consistency rules in
+    // `reference-implementation/server/version-disposition.js`.
+    version_remediation: {
+      type: "string",
+      enum: [
+        "none",
+        "content_fingerprint_pending",
+        "owner_migration_pending",
+        "owner_retention_policy",
+      ],
+    },
   },
   required: [
     "connector_id",
@@ -917,6 +932,7 @@ const RecordVersionStatsRowSchema = {
     "risk_level",
     "risk_reasons",
     "version_disposition",
+    "version_remediation",
   ],
 };
 
@@ -964,6 +980,9 @@ const RecordVersionStatsResponseSchema = {
         // Normative assertion that version_disposition is a label and never
         // alters the numeric risk thresholds above. Always false.
         disposition_affects_thresholds: { const: false },
+        // Normative assertion that version_remediation is likewise a label and
+        // never alters the numeric risk thresholds above. Always false.
+        remediation_affects_thresholds: { const: false },
       },
       required: [
         "returned",
@@ -974,6 +993,7 @@ const RecordVersionStatsResponseSchema = {
         "source",
         "risk_thresholds",
         "disposition_affects_thresholds",
+        "remediation_affects_thresholds",
       ],
     },
     projection: RetainedSizeProjectionSchema,

@@ -22,7 +22,12 @@
  * service promise. See `docs/voice-and-framing.md`.
  */
 import { formatConnectorNameForDisplay } from "@pdpp/operator-ui/lib/connector-display";
-import type { RefRecordVersionDisposition, RefRecordVersionRisk, RefRecordVersionStatsRow } from "./ref-client.ts";
+import type {
+  RefRecordVersionDisposition,
+  RefRecordVersionRemediation,
+  RefRecordVersionRisk,
+  RefRecordVersionStatsRow,
+} from "./ref-client.ts";
 
 /**
  * A churn row's remediation disposition. This is now the same five-way
@@ -118,6 +123,75 @@ function normalizeConnectorId(connectorId: string | null): string | null {
  */
 export function classifyChurnRow(row: RefRecordVersionStatsRow): ChurnRemediation {
   return row.version_disposition ?? "active_defect_or_unclassified";
+}
+
+/**
+ * The row's remediation — the operator's available next action. A straight read
+ * of the reference-derived `version_remediation`; the console never re-derives
+ * it. Orthogonal to the disposition (`classifyChurnRow`): a
+ * `reviewed_historical_residue` row may be `content_fingerprint_pending` (the
+ * statement rows) or `owner_migration_pending` (`usaa/accounts`). Falls back to
+ * `none` only if a row somehow arrives without the field (defensive; the
+ * contract requires it).
+ */
+export function remediationForRow(row: RefRecordVersionStatsRow): RefRecordVersionRemediation {
+  return row.version_remediation ?? "none";
+}
+
+/**
+ * Evidence-grounded operator guidance for each non-`none` remediation. This is a
+ * display-only lookup keyed by the SERVER value — not a browser classifier. The
+ * server has already decided which row is fingerprint-pending vs.
+ * migration-pending vs. retention-policy; this only supplies the operator-voice
+ * copy for that decision. `none` rows carry no remediation line (their action is
+ * already the dry-run command or "review it"), so they are absent from this map.
+ *
+ * Operator voice (this is the owner's own instance state, not a hosted service):
+ * see `docs/voice-and-framing.md`.
+ */
+const REMEDIATION_GUIDANCE: Readonly<Record<Exclude<RefRecordVersionRemediation, "none">, string>> = {
+  content_fingerprint_pending:
+    "Fingerprint pending — the connector is correct on its run clock, but compaction " +
+    "frees nothing here yet: the retained history stays non-minimal until the connector " +
+    "emits a stable content fingerprint (text hash + page count) so the volatile " +
+    "blob-identity fields can be excluded losslessly. The fix is connector work, not " +
+    "compaction.",
+  owner_migration_pending:
+    "Migration pending — this retained history is the sole surviving copy of real " +
+    "pre-split observations. Do not compact: collapsing it before the observations are " +
+    "migrated into their append-keyed home would destroy real history. The next step is " +
+    "an owner-gated backfill, not compaction.",
+  owner_retention_policy:
+    "Retention policy — owner decision. This is expected recurring snapshot history; " +
+    "growth is normal and not a defect. The only open lever is whether to bound the " +
+    "snapshot history, which you may decline.",
+};
+
+/** Short in-table chip label for each remediation. `none` shows no chip. */
+const REMEDIATION_CHIP_LABEL: Readonly<Record<Exclude<RefRecordVersionRemediation, "none">, string>> = {
+  content_fingerprint_pending: "fingerprint pending",
+  owner_migration_pending: "migration pending",
+  owner_retention_policy: "retention policy",
+};
+
+/**
+ * The short remediation chip label for a row, or null when the remediation is
+ * `none` (no next action to advertise from this surface).
+ */
+export function remediationChipLabel(row: RefRecordVersionStatsRow): string | null {
+  const remediation = remediationForRow(row);
+  return remediation === "none" ? null : REMEDIATION_CHIP_LABEL[remediation];
+}
+
+/**
+ * The evidence-grounded remediation guidance line for a row, or null when the
+ * remediation is `none`. This is the line the view prefers for reviewed-residue
+ * and recurring-snapshot rows so they read as distinct next actions
+ * (fingerprint pending vs. migration pending vs. retention policy).
+ */
+export function remediationGuidance(row: RefRecordVersionStatsRow): string | null {
+  const remediation = remediationForRow(row);
+  return remediation === "none" ? null : REMEDIATION_GUIDANCE[remediation];
 }
 
 /**
@@ -325,6 +399,20 @@ export interface ChurnDrilldownRow {
   reasons: string | null;
   /** Remediation disposition (the server-derived version_disposition). */
   remediation: ChurnRemediation;
+  /**
+   * The orthogonal server-derived next-action axis (version_remediation). Names
+   * what the operator does next: a connector content fingerprint, an owner-gated
+   * migration, an owner retention-policy decision, or `none`.
+   */
+  remediationAction: RefRecordVersionRemediation;
+  /** Short in-table chip label for the remediation; null when `none`. */
+  remediationChip: string | null;
+  /**
+   * Evidence-grounded guidance line for the remediation; null when `none`. The
+   * view prefers this over `pointInTimeGuidance` for reviewed-residue and
+   * recurring-snapshot rows so each next action reads distinctly.
+   */
+  remediationGuidance: string | null;
   risk: RefRecordVersionRisk;
   stream: string;
   /** Versions retained per current record — the headline ratio. */
@@ -375,6 +463,9 @@ export function buildChurnDrilldownRows(rows: readonly RefRecordVersionStatsRow[
       risk: row.risk_level,
       stream: row.stream,
       remediation,
+      remediationAction: remediationForRow(row),
+      remediationChip: remediationChipLabel(row),
+      remediationGuidance: remediationGuidance(row),
       // Non-compactable rows have no compaction policy the script resolves (it
       // exits 2), so they carry redesign/expected-history guidance instead of a
       // command. Compaction candidates, reviewed residue, and unclassified rows

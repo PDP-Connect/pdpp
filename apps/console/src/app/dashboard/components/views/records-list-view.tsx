@@ -37,7 +37,7 @@ import {
 } from "../../lib/connection-modality.ts";
 import { summarizeConnectionHealth } from "../../lib/connection-summary-stats.ts";
 import { shouldShowInPrimaryConnections } from "../../lib/records-list-classification.ts";
-import type { RefRecordVersionStatsRow } from "../../lib/ref-client.ts";
+import type { RefRecordVersionRemediation, RefRecordVersionStatsRow } from "../../lib/ref-client.ts";
 import type { ConnectorOverview, ConnectorRunRef } from "../../lib/rs-client.ts";
 import {
   buildChurnDrilldownRows,
@@ -804,7 +804,12 @@ export function VersionChurnNotice({ rows }: { rows: RefRecordVersionStatsRow[] 
                     <ChurnRiskBadge risk={row.risk} title={row.reasons ?? undefined} />
                   </td>
                   <td className="py-2 pr-3">
-                    <ChurnDispositionBadge remediation={row.remediation} />
+                    <div className="flex flex-col items-start gap-1">
+                      <ChurnDispositionBadge remediation={row.remediation} />
+                      {row.remediationChip ? (
+                        <ChurnRemediationBadge action={row.remediationAction} label={row.remediationChip} />
+                      ) : null}
+                    </div>
                   </td>
                   <td className="py-2 pr-3 text-right text-foreground tabular-nums">{row.versionsPerRecord.label}</td>
                   <td
@@ -827,22 +832,46 @@ export function VersionChurnNotice({ rows }: { rows: RefRecordVersionStatsRow[] 
                   </td>
                   <td className="max-w-[28rem] py-2 pl-3">
                     {row.dryRunCommand ? (
-                      <div className="flex items-start gap-1.5">
-                        <code className="block min-w-0 flex-1 whitespace-normal rounded border border-border/70 bg-background px-2 py-1 font-mono text-[0.68rem] text-foreground leading-relaxed">
-                          {row.dryRunCommand}
-                        </code>
-                        <CopyButton
-                          ariaLabel={`Copy dry-run command for ${row.label}`}
-                          className="mt-0.5"
-                          value={row.dryRunCommand}
-                        />
+                      <div className="flex flex-col gap-1.5">
+                        <div className="flex items-start gap-1.5">
+                          <code className="block min-w-0 flex-1 whitespace-normal rounded border border-border/70 bg-background px-2 py-1 font-mono text-[0.68rem] text-foreground leading-relaxed">
+                            {row.dryRunCommand}
+                          </code>
+                          <CopyButton
+                            ariaLabel={`Copy dry-run command for ${row.label}`}
+                            className="mt-0.5"
+                            value={row.dryRunCommand}
+                          />
+                        </div>
+                        {/*
+                         * A reviewed-residue row still shows the read-only dry-run
+                         * command (it is honest and `--apply` is the owner's lever),
+                         * but the remediation line explains that compaction frees
+                         * nothing yet (fingerprint pending) or must not run before a
+                         * migration (migration pending) — the genuinely rational next
+                         * action the command alone does not convey.
+                         */}
+                        {row.remediationGuidance ? (
+                          <p
+                            className="pdpp-caption text-muted-foreground leading-relaxed"
+                            data-testid="version-churn-remediation-guidance"
+                          >
+                            {row.remediationGuidance}
+                          </p>
+                        ) : null}
                       </div>
                     ) : (
                       <p
                         className="pdpp-caption text-muted-foreground leading-relaxed"
                         data-testid="version-churn-not-compactable"
                       >
-                        {row.pointInTimeGuidance ??
+                        {/*
+                         * Non-compactable rows prefer the remediation guidance
+                         * (e.g. a recurring snapshot's owner retention-policy line)
+                         * over the generic point-in-time guidance, then fall back.
+                         */}
+                        {row.remediationGuidance ??
+                          row.pointInTimeGuidance ??
                           "Not compactable — needs an append-keyed point-in-time stream split, not compaction."}
                       </p>
                     )}
@@ -921,6 +950,54 @@ function ChurnDispositionBadge({ remediation }: { remediation: ChurnRemediation 
       title={meta.title}
     >
       {meta.label}
+    </span>
+  );
+}
+
+/**
+ * Per-row remediation chip: the operator's available NEXT ACTION, orthogonal to
+ * the disposition badge. This is what makes three rows that share the
+ * `reviewed_historical_residue` disposition read as three distinct next actions
+ * — a connector content fingerprint, an owner-gated migration, or (for a
+ * recurring snapshot) an owner retention-policy decision. `none` shows no chip,
+ * so this component is only rendered for the three actionable remediations.
+ */
+const CHURN_REMEDIATION_META: Record<
+  Exclude<RefRecordVersionRemediation, "none">,
+  { title: string; tone: string }
+> = {
+  content_fingerprint_pending: {
+    tone: "border border-current/30 bg-current/5 text-muted-foreground",
+    title:
+      "Fingerprint pending — correct on the run clock, but compaction frees nothing here until the connector emits a stable content fingerprint so the volatile blob-identity fields can be excluded losslessly. The fix is connector work, not compaction.",
+  },
+  owner_migration_pending: {
+    tone: "border border-current/30 bg-current/5 text-muted-foreground",
+    title:
+      "Migration pending — this retained history is the sole surviving copy of real pre-split observations. Do not compact: an owner-gated backfill into the append-keyed home must precede any collapse.",
+  },
+  owner_retention_policy: {
+    tone: "border border-current/30 bg-current/5 text-muted-foreground",
+    title:
+      "Retention policy — owner decision. Expected recurring snapshot history; the only open lever is whether to bound its growth, which you may decline.",
+  },
+};
+
+function ChurnRemediationBadge({ action, label }: { action: RefRecordVersionRemediation; label: string }) {
+  // `none` advertises no next action, so it carries no chip. The view only
+  // renders this when a chip label is present, but guard here too so the type
+  // narrows without a non-null assertion.
+  if (action === "none") {
+    return null;
+  }
+  const meta = CHURN_REMEDIATION_META[action];
+  return (
+    <span
+      className={`pdpp-eyebrow inline-flex whitespace-nowrap rounded-[3px] px-1.5 py-0.5 font-medium ${meta.tone}`}
+      data-testid="version-churn-remediation-chip"
+      title={meta.title}
+    >
+      {label}
     </span>
   );
 }
