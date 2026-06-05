@@ -116,11 +116,11 @@ Default public images:
 - `ghcr.io/vana-com/pdpp/reference:main`
 - `ghcr.io/vana-com/pdpp/web:main`
 
-`main` is a moving default-branch build. Stable semantic-release images are
-published as exact version tags such as `1.2.3`, moving minor-series tags such
-as `1.2`, and `latest`. For durable self-hosting, prefer an exact version,
-`sha-*` tag, or digest pin over a moving tag. To build from local source
-instead of pulling public images, run:
+`main` is a moving development tag refreshed by maintainers, not an every-commit
+publish guarantee. While the project is in beta-only release posture, release
+images are published as beta/version tags and `sha-*` tags. For durable
+self-hosting, prefer a pinned version, `sha-*` tag, or digest pin over a moving
+tag. To build from local source instead of pulling public images, run:
 
 ```bash
 pnpm docker:reference:up
@@ -287,11 +287,13 @@ Current Docker connector-support posture:
 | Amazon, Chase, ChatGPT, Reddit, USAA + scaffolded browser-scrapers (Anthropic, Shopify, HEB, Whole Foods, LinkedIn, Meta, Loom, Uber, DoorDash) | Browser-backed; Docker needs the workspace local collector runner on a visible-browser host. | Pair the workspace collector with `pnpm exec pdpp collector enroll`, then run connectors via `pnpm exec pdpp collector run`. | These connectors are not in `@pdpp/local-collector@beta` yet. Inside the provider/control-plane container, headed-browser acquisitions fail closed with `headed_browser_unavailable` (`packages/polyfill-connectors/src/browser-launch.ts:decideContainerHeadedBrowserGate`); browser-backed connectors must run in a local runtime that advertises a `browser` binding. The four "verified" entries are end-to-end maintainer-verified; the rest are scaffolded and need DOM selectors before they're usable. |
 | Spotify, Pocket | Blocked upstream. | n/a | Spotify's OAuth app registration is frozen as of Feb 2026; Pocket sunset 2025-07-08. |
 
-CI builds Docker targets on pull requests without pushing images. On `main`,
-semantic-release creates GitHub releases from Conventional Commits and the same
-release workflow publishes npm beta packages plus stable GHCR tags for both
-Docker targets. Maintainers should make the first published GHCR packages
-public in GitHub's package settings if the registry creates them private.
+CI builds Docker targets on pull requests and Docker-relevant `main` pushes
+without pushing images. In the current beta-only posture, semantic-release
+publishes from the `beta` branch after an owner advances it to include `main`;
+that release workflow publishes npm beta packages plus GHCR beta/version tags
+for both Docker targets. Maintainers can manually refresh moving development
+image tags when needed and should make the first published GHCR packages public
+in GitHub's package settings if the registry creates them private.
 
 Run the reference implementation server:
 
@@ -313,9 +315,11 @@ pnpm reference-implementation:test
 
 ## Releases
 
-Releases are automated with semantic-release on `main`. Commit messages follow
-Conventional Commits: `fix:` creates a patch release, `feat:` creates a minor
-release, and breaking changes create a major release.
+The current release train is beta-only. Publishable work lands on `main`; an
+owner advances `beta` to include `main`, and semantic-release publishes from
+`beta`. Commit messages follow Conventional Commits: `fix:` creates a patch
+prerelease, `feat:` creates a minor prerelease, and breaking changes create a
+major prerelease.
 
 Preview the next release locally:
 
@@ -324,16 +328,15 @@ GITHUB_TOKEN=$(gh auth token) pnpm release:dry-run
 ```
 
 The release workflow validates generated reference-contract artifacts, verifies
-the reference implementation, typechecks the web app, publishes the npm package
-release train, builds both Docker image targets, creates the GitHub release and
-`v${version}` tag, then publishes:
+the reference implementation, typechecks the operator console app, publishes the
+npm beta package release train, builds both Docker image targets, creates the
+GitHub release and `v${version}` tag, then publishes:
 
 - `@pdpp/cli@beta`
 - `@pdpp/local-collector@beta`
 
 - `ghcr.io/vana-com/pdpp/reference:${version}`
-- `ghcr.io/vana-com/pdpp/reference:${major}.${minor}`
-- `ghcr.io/vana-com/pdpp/reference:latest`
+- `ghcr.io/vana-com/pdpp/reference:beta`
 - `ghcr.io/vana-com/pdpp/reference:sha-*`
 - matching `web` tags
 
