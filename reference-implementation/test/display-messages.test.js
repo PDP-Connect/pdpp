@@ -98,6 +98,9 @@ async function reasonsEmittedBy(connectorDir) {
     let lit;
     literal.lastIndex = 0;
     while ((lit = literal.exec(match[1])) !== null) {
+      if (lit[1] === 'reason' && /\[\s*["']reason["']\s*\]/.test(match[1])) {
+        continue;
+      }
       reasons.add(lit[1]);
     }
   }
