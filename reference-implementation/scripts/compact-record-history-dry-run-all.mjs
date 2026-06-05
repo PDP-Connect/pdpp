@@ -59,6 +59,8 @@ import pg from 'pg';
 import {
   COMPACTION_POLICIES,
   findPolicy,
+  isCanonicalEligible,
+  parseMode,
   planCompaction,
 } from './compact-record-history.mjs';
 
@@ -161,12 +163,19 @@ export async function listConnectionsWithPolicies(pool, policies = COMPACTION_PO
  * canonical read-only `planCompaction`; injectable for tests. Never
  * mutates — `planCompaction` is read-only by construction.
  */
-export async function runDryRuns({ pool, scopes, limitKeys = null, planFn = planCompaction }) {
+export async function runDryRuns({ pool, scopes, limitKeys = null, mode = 'audit', planFn = planCompaction }) {
   const rows = [];
   for (const scope of scopes) {
     const policy = scope.policy || findPolicy(scope.connectorId, scope.stream);
     if (!policy) {
       rows.push({ ...scope, error: 'no policy' });
+      continue;
+    }
+    // In canonical mode, only canonical-eligible policies are surveyed; an
+    // ineligible scope would (correctly) throw in planCompaction, so we skip it
+    // with an explicit, non-fatal note rather than a scary error row.
+    if (mode === 'canonical' && !isCanonicalEligible(policy)) {
+      rows.push({ ...scope, error: 'not canonical-eligible (skipped)' });
       continue;
     }
     try {
@@ -176,6 +185,7 @@ export async function runDryRuns({ pool, scopes, limitKeys = null, planFn = plan
         stream: scope.stream,
         policy,
         limitKeys,
+        mode,
       });
       rows.push({ ...scope, plan });
     } catch (err) {
@@ -226,13 +236,18 @@ async function runCli() {
   const explicitConnectorId = args['connector-id'] || null;
   const all = !!args.all;
   const json = !!args.json;
+  const mode = parseMode(args.mode);
   const databaseUrl =
     process.env.PDPP_DATABASE_URL || process.env.PDPP_TEST_POSTGRES_URL || null;
 
   if (!all && !connectorInstanceId) {
     console.error(
-      'usage: compact-record-history-dry-run-all (--connector-instance-id=<id> [--connector-id=<id>] | --all) [--json]',
+      'usage: compact-record-history-dry-run-all (--connector-instance-id=<id> [--connector-id=<id>] | --all) [--mode=audit|canonical] [--json]',
     );
+    process.exit(2);
+  }
+  if (mode === 'invalid') {
+    console.error('--mode must be one of: audit|canonical (default audit)');
     process.exit(2);
   }
   if (!databaseUrl) {
@@ -270,13 +285,14 @@ async function runCli() {
       return;
     }
 
-    const rows = await runDryRuns({ pool, scopes });
+    const rows = await runDryRuns({ pool, scopes, mode });
 
     if (json) {
       console.log(
         JSON.stringify(
           {
-            mode: 'dry-run',
+            run: 'dry-run',
+            mode,
             rows: rows.map((r) => ({
               connector_instance_id: r.connectorInstanceId,
               connector_id: r.connectorId,
@@ -293,7 +309,7 @@ async function runCli() {
         ),
       );
     } else {
-      console.log('compact-record-history-dry-run-all: DRY-RUN (read-only; no rows deleted)\n');
+      console.log(`compact-record-history-dry-run-all: DRY-RUN [${mode} mode] (read-only; no rows deleted)\n`);
       console.log(formatDryRunTable(rows));
       console.log(
         `\ntotal removable versions across surveyed scopes: ${totalRemovableVersions(rows)}`,

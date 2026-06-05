@@ -42,7 +42,32 @@ import {
   recordFingerprint as scriptRecordFingerprint,
 } from '../scripts/compact-record-history.mjs';
 
+/**
+ * Whether a TypeScript loader (tsx) is active in this process. When the suite
+ * is run as the playbook prescribes (`node --test --import tsx …`) this is true
+ * and the canonical helper MUST load — a load failure is then a real drift/break
+ * that fails the suite loudly. Only when NO TS loader is present do we skip,
+ * because Node cannot resolve a bare `.ts` import on its own.
+ *
+ * tsx registers itself on the module customization hooks and sets
+ * `process.env.TSX` / appears in NODE_OPTIONS|--import; we detect it
+ * conservatively from the execArgv/env so a misconfigured run cannot silently
+ * skip the parity check.
+ */
+function tsxLoaderActive() {
+  const execArgv = process.execArgv.join(' ');
+  const nodeOptions = process.env.NODE_OPTIONS || '';
+  return (
+    /\btsx\b/.test(execArgv) ||
+    /\btsx\b/.test(nodeOptions) ||
+    process.env.TSX === '1' ||
+    // tsx ≥ 4 exposes this symbol once its ESM loader is installed.
+    typeof globalThis.__tsx__ !== 'undefined'
+  );
+}
+
 let canonicalRecordFingerprint;
+let canonicalLoadError = null;
 try {
   // Loaded via tsx — the canonical helper lives in TypeScript.
   const mod = await import(
@@ -50,13 +75,30 @@ try {
   );
   canonicalRecordFingerprint = mod.recordFingerprint;
 } catch (err) {
-  // Without tsx the .ts extension cannot be resolved by Node directly.
-  // We skip the suite rather than fail because the pure-helper tests in
-  // compact-record-history.test.js still exercise this implementation
-  // independently.
-  test('compact-record-history fingerprint parity (skipped: tsx unavailable)', { skip: true }, () => {
-    void err;
-  });
+  canonicalLoadError = err;
+}
+
+if (!canonicalRecordFingerprint) {
+  if (tsxLoaderActive()) {
+    // tsx IS active but the canonical helper still failed to load (moved file,
+    // broken export, syntax error). This is the failure mode the playbook's
+    // parity gate exists to catch — fail closed, never silently skip.
+    test('compact-record-history fingerprint parity MUST load the canonical helper under tsx', () => {
+      assert.fail(
+        'tsx loader is active but the canonical recordFingerprint helper could not be loaded ' +
+          'from packages/polyfill-connectors/src/fingerprint-cursor.ts — the parity gate cannot ' +
+          'run, which would let connector/compaction fingerprint drift go undetected. ' +
+          `Underlying load error: ${canonicalLoadError && canonicalLoadError.message ? canonicalLoadError.message : canonicalLoadError}`,
+      );
+    });
+  } else {
+    // No TS loader at all: Node cannot resolve a `.ts` import. The pure-helper
+    // tests in compact-record-history.test.js still cover this implementation
+    // independently, so a skip here is legitimate — but it is announced.
+    test('compact-record-history fingerprint parity (skipped: no tsx loader — run with `node --test --import tsx`)', { skip: true }, () => {
+      void canonicalLoadError;
+    });
+  }
 }
 
 function expectParity(payload, excludeKeys, label) {
@@ -309,6 +351,20 @@ if (canonicalRecordFingerprint) {
     const h1 = scriptRecordFingerprint({ ...base, fetched_at: '2026-04-22T12:00:00.000Z' }, policy.excludeKeys);
     const h2 = scriptRecordFingerprint({ ...base, fetched_at: '2026-05-22T12:00:00.000Z' }, policy.excludeKeys);
     assert.equal(h1, h2, 'fetched_at delta must not change the statements fingerprint');
+  });
+
+  test('parity: chase transactions is canonical-eligible and its exclusions match the connector cursor', () => {
+    // The canonical mode (canonicalize-retained-record-history) binds the
+    // compaction fingerprint to the connector's no-op-emit fingerprint. Pin both
+    // halves here: (1) the policy declares the canonical eligibility fields, and
+    // (2) its excludeKeys are exactly the connector's
+    // TRANSACTION_FINGERPRINT_EXCLUDE_KEYS (["fetched_at","source"]) so the
+    // canonical survivor boundary equals the connector's no-op boundary.
+    const policy = findPolicy('chase', 'transactions');
+    assert.ok(policy);
+    assert.equal(policy.changeModel, 'immutable_semantic');
+    assert.equal(policy.representativePolicy, 'current');
+    assert.deepEqual(policy.excludeKeys, ['fetched_at', 'source']);
   });
 
   test('parity: chase transactions excludes fetched_at/source but a REAL field move is a boundary', () => {

@@ -68,6 +68,20 @@
  *
  * Default is dry-run. Use --apply to actually delete redundant rows.
  *
+ * Modes (--mode, default `audit`):
+ *   - audit     — conservative retention (first observation + current +
+ *                 most-recent-differing-prior per key); the only behavior for
+ *                 every stream unless canonical is explicitly requested.
+ *   - canonical — opt-in stronger convergence for streams whose policy declares
+ *                 `changeModel: "immutable_semantic"` and
+ *                 `representativePolicy: "current"`. Lowers the same-fingerprint
+ *                 retention floor to ONE survivor per semantic run (the current
+ *                 `records.version` row wins its run); preserves every distinct
+ *                 canonical fingerprint boundary, tombstone, and resurrection
+ *                 boundary; never renumbers. Refuses (fails closed) for any
+ *                 ineligible policy. First and only eligible stream this slice:
+ *                 chase/transactions.
+ *
  * Apply safety:
  *   - Per-run backup table `compact_record_history_backup_<runId>` is
  *     created and populated with every row to be deleted, INSIDE the
@@ -121,6 +135,21 @@ const { Pool } = pg;
  *     not stop).
  *   - `connectorSource`: the connector file the policy mirrors. Pure
  *     documentation; not consumed at runtime.
+ *   - `changeModel` (optional): the per-stream change model. Only
+ *     `'immutable_semantic'` opts a stream into canonical mode — it asserts
+ *     that, after the policy exclusions, a record's semantic body never moves
+ *     (every same-key history differs only on excluded run/acquisition
+ *     metadata). Absent (the default) means the stream is audit-only.
+ *   - `representativePolicy` (optional): which row survives a same-fingerprint
+ *     run under canonical mode. Only `'current'` is supported in this slice —
+ *     the `records.version` row wins (authoritative-current-wins), so canonical
+ *     apply never rewrites the `records` table. Absent means audit-only.
+ *
+ * Canonical mode (mode === 'canonical') is legal ONLY for a policy with both
+ * `changeModel: 'immutable_semantic'` and `representativePolicy: 'current'`.
+ * Any other policy fails closed (see `assertCanonicalEligible`). Default mode
+ * is `'audit'`, which ignores both fields and keeps its existing conservative
+ * retention for every policy.
  */
 export const COMPACTION_POLICIES = [
   {
@@ -258,9 +287,27 @@ export const COMPACTION_POLICIES = [
     // transaction (new id) or a real field move is always a fingerprint
     // boundary that survives; only a re-downloaded byte-identical transaction
     // modulo those metadata fields collapses.
+    //
+    // CANONICAL OPT-IN (canonicalize-retained-record-history): chase/transactions
+    // is the first — and, in this slice, only — stream eligible for canonical
+    // mode. A posted Chase transaction is immutable once it posts: its identity
+    // (id = account_id|fitid) and its real fields never move, so the same-key
+    // history can only differ on the excluded run/acquisition metadata
+    // (`fetched_at`, `source`). The copied-data proof shows every current Chase
+    // transaction has exactly one semantic version after that exclusion
+    // (1145/1145 keys, max 1 semantic version per key — see
+    // tmp/workstreams/chase-transaction-immutable-ratio-20260605.md). That
+    // single-semantic-version property is what makes
+    // `changeModel: 'immutable_semantic'` legal here and is asserted by the
+    // convergence regression test. `representativePolicy: 'current'` keeps the
+    // `records.version` row as the survivor for the current same-fingerprint
+    // run (the authoritative-current-wins CDC choice), which avoids any
+    // `records`-table rewrite in this slice.
     connectorIds: ['chase', 'https://registry.pdpp.org/connectors/chase'],
     stream: 'transactions',
     excludeKeys: ['fetched_at', 'source'],
+    changeModel: 'immutable_semantic',
+    representativePolicy: 'current',
     connectorSource:
       'packages/polyfill-connectors/connectors/chase/index.ts:emitTransactionsForAccount → openFingerprintCursor({excludeFromFingerprint:["fetched_at","source"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
   },
@@ -574,8 +621,70 @@ export function findPolicy(connectorId, stream) {
 export function describePolicies() {
   return COMPACTION_POLICIES.map(
     (p) =>
-      `  - ${p.connectorIds[0]}/${p.stream}${p.excludeKeys.length ? ` (excludes ${p.excludeKeys.join(',')})` : ''}`,
+      `  - ${p.connectorIds[0]}/${p.stream}${p.excludeKeys.length ? ` (excludes ${p.excludeKeys.join(',')})` : ''}${isCanonicalEligible(p) ? ' [canonical-eligible]' : ''}`,
   ).join('\n');
+}
+
+// ─── Canonical-mode eligibility ─────────────────────────────────────────
+
+/** The only supported values for the canonical-mode policy fields. A policy
+ *  is canonical-eligible iff it declares BOTH, exactly. */
+export const CANONICAL_CHANGE_MODEL = 'immutable_semantic';
+export const CANONICAL_REPRESENTATIVE_POLICY = 'current';
+
+/** The two compaction modes. `audit` is the default and keeps the existing
+ *  conservative retention; `canonical` lowers the same-fingerprint floor to one
+ *  survivor per semantic run and is gated by `isCanonicalEligible`. */
+export const COMPACTION_MODES = ['audit', 'canonical'];
+
+/**
+ * Parse `--mode`. Returns `'audit'` when unset (the default), the validated
+ * mode string when it is one of COMPACTION_MODES, or the sentinel string
+ * `'invalid'` when present but not a recognized mode. The CLI rejects
+ * `'invalid'` early.
+ */
+export function parseMode(raw) {
+  if (raw == null || raw === '') return 'audit';
+  if (typeof raw === 'boolean') return 'invalid';
+  return COMPACTION_MODES.includes(raw) ? raw : 'invalid';
+}
+
+/**
+ * Whether a policy opts into canonical mode. True ONLY when the policy declares
+ * BOTH `changeModel: 'immutable_semantic'` and `representativePolicy: 'current'`.
+ * A missing or any-other value fails closed (returns false). Pure.
+ */
+export function isCanonicalEligible(policy) {
+  return (
+    !!policy &&
+    policy.changeModel === CANONICAL_CHANGE_MODEL &&
+    policy.representativePolicy === CANONICAL_REPRESENTATIVE_POLICY
+  );
+}
+
+/** List the canonical-eligible policies for operator error messages. */
+export function describeCanonicalEligible() {
+  const eligible = COMPACTION_POLICIES.filter(isCanonicalEligible);
+  if (!eligible.length) return '  (none)';
+  return eligible.map((p) => `  - ${p.connectorIds[0]}/${p.stream}`).join('\n');
+}
+
+/**
+ * Fail-closed gate for a canonical apply/plan. Throws a descriptive Error when
+ * the policy is not canonical-eligible so the caller refuses the canonical run
+ * instead of deleting retained versions. No-op when eligible.
+ */
+export function assertCanonicalEligible(policy, connectorId, stream) {
+  if (isCanonicalEligible(policy)) return;
+  const have = policy
+    ? `changeModel=${JSON.stringify(policy.changeModel ?? null)}, representativePolicy=${JSON.stringify(policy.representativePolicy ?? null)}`
+    : 'no registered policy';
+  throw new Error(
+    `canonical mode refused for connector_id="${connectorId}" stream="${stream}": ` +
+      `canonical compaction requires changeModel="${CANONICAL_CHANGE_MODEL}" and ` +
+      `representativePolicy="${CANONICAL_REPRESENTATIVE_POLICY}" (have: ${have}). ` +
+      `Run without --mode=canonical to use conservative audit-mode retention.`,
+  );
 }
 
 // ─── Fingerprint helper ─────────────────────────────────────────────────
@@ -631,9 +740,10 @@ function stableStringify(value, exclude) {
  *
  * `rows` is an array of `{ version, record_json, deleted }` sorted by
  * `version` ascending. `currentVersion` is the version of the same key
- * in `records`. `policy` provides `excludeKeys`.
+ * in `records`. `policy` provides `excludeKeys`. `mode` is `'audit'`
+ * (the default) or `'canonical'`.
  *
- * Retention rules (design.md §Retention rule):
+ * AUDIT mode (default — design.md §Retention rule, unchanged):
  *
  *   - never remove `currentVersion`;
  *   - never remove a tombstone (`deleted = true`);
@@ -646,9 +756,31 @@ function stableStringify(value, exclude) {
  *   - otherwise remove a non-tombstone whose immediately-prior
  *     surviving row is a non-tombstone with the same fingerprint.
  *
+ * CANONICAL mode (canonicalize-retained-record-history — opt-in, eligible
+ * policies only; the caller MUST have already passed `assertCanonicalEligible`):
+ *
+ *   - keep exactly ONE survivor per maximal same-fingerprint run, where a run
+ *     is bounded by a tombstone or by a fingerprint change;
+ *   - the survivor for the run that contains `currentVersion` is the current
+ *     row itself (authoritative-current-wins); for every other run the survivor
+ *     is that run's first (lowest-version) row, which preserves the distinct
+ *     canonical fingerprint boundary;
+ *   - never remove `currentVersion`;
+ *   - never remove a tombstone;
+ *   - the resurrection boundary — the first non-tombstone immediately after a
+ *     tombstone — is a HARD survivor (pinned even when it shares the current
+ *     run's fingerprint and the current row is later in that run), so a
+ *     tombstone→resurrection transition is never collapsed away;
+ *   - surviving versions are never renumbered.
+ *
+ * The canonical floor is strictly lower than audit's: audit additionally pins
+ * the key's first row and the most-recent-differing-prior even when they share
+ * the current fingerprint, so an immutable same-fingerprint key keeps {first,
+ * current} under audit but {current} under canonical.
+ *
  * Returns an array of versions (numbers) that may be removed.
  */
-export function selectRemovableVersions(rows, currentVersion, policy) {
+export function selectRemovableVersions(rows, currentVersion, policy, mode = 'audit') {
   if (!rows.length) return [];
 
   const excludeKeys = policy.excludeKeys || [];
@@ -659,6 +791,10 @@ export function selectRemovableVersions(rows, currentVersion, policy) {
     deleted: !!r.deleted,
     fingerprint: r.deleted ? TOMBSTONE_FP : recordFingerprint(r.record_json || {}, excludeKeys),
   }));
+
+  if (mode === 'canonical') {
+    return selectRemovableVersionsCanonical(enriched, Number(currentVersion));
+  }
 
   // Locate the current row's fingerprint (if present); used to retain the
   // most recent prior version with a different fingerprint.
@@ -727,6 +863,88 @@ export function selectRemovableVersions(rows, currentVersion, policy) {
   return removable;
 }
 
+/**
+ * Canonical-mode selector. `enriched` is the per-row `{version, deleted,
+ * fingerprint}` array sorted ascending (tombstones carry TOMBSTONE_FP).
+ * `currentVersion` is the `records.version` for the key.
+ *
+ * Keeps one survivor per maximal same-fingerprint run (a run is broken by a
+ * fingerprint change OR a tombstone). The survivor is the current row when the
+ * current row is in the run; otherwise the run's first row — so every distinct
+ * fingerprint boundary, every tombstone, and every resurrection boundary
+ * survives, while redundant same-fingerprint duplicates (including the key's
+ * first row when it shares the current run's fingerprint) are removed.
+ *
+ * The first non-tombstone immediately after a tombstone is additionally pinned
+ * as a HARD survivor (it can never be displaced by a later current row in the
+ * same run), so a tombstone→resurrection transition is preserved exactly.
+ */
+function selectRemovableVersionsCanonical(enriched, currentVersion) {
+  const removable = [];
+
+  let runFingerprint = null; // fingerprint of the run currently open
+  let runSurvivor = null; // the version chosen to survive the open run
+  let runHasCurrent = false; // whether the open run contains the current row
+  let runSurvivorPinned = false; // survivor is a hard pin (resurrection boundary)
+  let afterTombstone = false; // the next non-tombstone is a resurrection boundary
+
+  for (const row of enriched) {
+    // A tombstone is its own boundary: it always survives and closes any open
+    // run. The next non-tombstone is the resurrection boundary and starts a
+    // fresh, hard-pinned run, so it can never be collapsed into a survivor.
+    if (row.deleted) {
+      runFingerprint = null;
+      runSurvivor = null;
+      runHasCurrent = false;
+      runSurvivorPinned = false;
+      afterTombstone = true;
+      continue;
+    }
+
+    const isCurrent = row.version === currentVersion;
+
+    // New run: different fingerprint from the open run (or no open run, e.g.
+    // the first row or the row right after a tombstone). This row is the run's
+    // boundary survivor by default. A run that opens right after a tombstone is
+    // a resurrection boundary and is pinned (never displaced by a later
+    // current row in the same run).
+    if (runSurvivor === null || row.fingerprint !== runFingerprint) {
+      runFingerprint = row.fingerprint;
+      runSurvivor = row.version;
+      runHasCurrent = isCurrent;
+      runSurvivorPinned = afterTombstone;
+      afterTombstone = false;
+      continue;
+    }
+
+    // Continuation of the same-fingerprint run. One of {prior survivor, this
+    // row} must be removed so the run keeps exactly one survivor, UNLESS the
+    // run's survivor is a pinned resurrection boundary — then both the boundary
+    // and the current row survive and only the in-between duplicates drop.
+    if (isCurrent) {
+      if (runSurvivorPinned) {
+        // The resurrection boundary stays pinned; the current row also survives
+        // (it is never removable). Nothing to push.
+        runHasCurrent = true;
+      } else {
+        // Current wins the run: drop the previously-chosen survivor, keep current.
+        if (!runHasCurrent) {
+          removable.push(runSurvivor);
+        }
+        runSurvivor = row.version;
+        runHasCurrent = true;
+      }
+    } else {
+      // Redundant duplicate within the run: remove it, keep the existing
+      // survivor (the run's first row / pinned boundary, or the current row if
+      // already seen — current is never displaced).
+      removable.push(row.version);
+    }
+  }
+
+  return removable;
+}
+
 const TOMBSTONE_FP = '__tombstone__';
 
 // ─── Argv parsing ───────────────────────────────────────────────────────
@@ -761,7 +979,14 @@ function parseArgs(argv) {
 
 // ─── Compaction loop ────────────────────────────────────────────────────
 
-export async function planCompaction({ pool, connectorInstanceId, stream, policy, limitKeys }) {
+export async function planCompaction({ pool, connectorInstanceId, stream, policy, limitKeys, mode = 'audit' }) {
+  // Canonical mode is deny-by-default: refuse before any planning when the
+  // policy is not explicitly eligible, so an ineligible stream can never have
+  // its retained versions selected for canonical deletion.
+  if (mode === 'canonical') {
+    assertCanonicalEligible(policy, policy?.connectorIds?.[0] ?? null, stream);
+  }
+
   // Fetch the current row versions (and connector_id, for consistency).
   const limitClause = limitKeys ? `LIMIT ${Number(limitKeys)}` : '';
   const current = await pool.query(
@@ -790,7 +1015,7 @@ export async function planCompaction({ pool, connectorInstanceId, stream, policy
       [connectorInstanceId, stream, row.record_key],
     );
     scannedVersions += history.rows.length;
-    const removable = selectRemovableVersions(history.rows, row.version, policy);
+    const removable = selectRemovableVersions(history.rows, row.version, policy, mode);
     if (removable.length) {
       removableByKey.set(row.record_key, removable);
       const removableSet = new Set(removable.map(Number));
@@ -810,6 +1035,7 @@ export async function planCompaction({ pool, connectorInstanceId, stream, policy
   return {
     connectorInstanceId,
     stream,
+    mode,
     scannedKeys,
     scannedVersions,
     removableVersions,
@@ -947,6 +1173,7 @@ async function runCli() {
   const stream = args.stream;
   const explicitConnectorId = args['connector-id'] || null;
   const limitKeys = parseLimitKeys(args['limit-keys']);
+  const mode = parseMode(args.mode);
   const databaseUrl =
     process.env.PDPP_DATABASE_URL ||
     process.env.PDPP_TEST_POSTGRES_URL ||
@@ -954,12 +1181,16 @@ async function runCli() {
 
   if (!connectorInstanceId || !stream) {
     console.error(
-      'usage: compact-record-history --connector-instance-id=<id> --stream=<name> [--connector-id=<id>] [--limit-keys=N] [--apply]',
+      'usage: compact-record-history --connector-instance-id=<id> --stream=<name> [--connector-id=<id>] [--mode=audit|canonical] [--limit-keys=N] [--apply]',
     );
     process.exit(2);
   }
   if (limitKeys === 'invalid') {
     console.error('--limit-keys must be a positive integer');
+    process.exit(2);
+  }
+  if (mode === 'invalid') {
+    console.error(`--mode must be one of: ${COMPACTION_MODES.join('|')} (default audit)`);
     process.exit(2);
   }
   if (!databaseUrl) {
@@ -996,12 +1227,28 @@ async function runCli() {
       process.exit(2);
     }
 
+    // Canonical mode is deny-by-default: refuse here (before opening any plan)
+    // when the policy is not explicitly canonical-eligible. This is the
+    // fail-closed gate the spec's "Ineligible stream fails closed" scenario
+    // requires — an ineligible stream never reaches the destructive path.
+    if (mode === 'canonical' && !isCanonicalEligible(policy)) {
+      console.error(
+        `canonical mode refused for connector_id="${connectorId}" stream="${stream}": ` +
+          `canonical compaction requires changeModel="${CANONICAL_CHANGE_MODEL}" and ` +
+          `representativePolicy="${CANONICAL_REPRESENTATIVE_POLICY}".\n` +
+          `Canonical-eligible streams:\n${describeCanonicalEligible()}\n` +
+          `Run without --mode=canonical to use conservative audit-mode retention.`,
+      );
+      process.exit(2);
+    }
+
     const plan = await planCompaction({
       pool,
       connectorInstanceId,
       stream,
       policy,
       limitKeys,
+      mode,
     });
 
     printPlan({ plan, apply });
@@ -1015,7 +1262,7 @@ async function runCli() {
         stream,
       });
       console.log(
-        `APPLIED: deleted ${result.deleted} row(s), backed up into "${result.backupTable}". retained_size_stream marked dirty for ${connectorInstanceId}/${stream}.`,
+        `APPLIED [${mode} mode]: deleted ${result.deleted} row(s), backed up into "${result.backupTable}". retained_size_stream marked dirty for ${connectorInstanceId}/${stream}.`,
       );
     } else if (apply) {
       console.log('APPLIED: nothing to delete.');
@@ -1030,9 +1277,9 @@ async function runCli() {
 }
 
 function printPlan({ plan, apply }) {
-  const mode = apply ? 'APPLY' : 'DRY-RUN';
+  const action = apply ? 'APPLY' : 'DRY-RUN';
   console.log(
-    `compact-record-history: ${mode} — ${plan.connectorInstanceId}/${plan.stream}`,
+    `compact-record-history: ${action} [${plan.mode || 'audit'} mode] — ${plan.connectorInstanceId}/${plan.stream}`,
   );
   console.log(`  connector_id(s) seen: ${plan.connectorIdsSeen.join(', ') || '(none)'}`);
   console.log(`  scannedKeys:           ${plan.scannedKeys}`);
