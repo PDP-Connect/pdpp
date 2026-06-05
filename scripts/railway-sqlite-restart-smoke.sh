@@ -59,6 +59,18 @@ export PDPP_DB_PATH="/root/.pdpp/pdpp.sqlite"
 # Keep PDPP_DATABASE_URL unset so the reference does not pick Postgres.
 unset PDPP_DATABASE_URL || true
 export PDPP_EMBEDDING_DOWNLOAD_ALLOWED="${PDPP_EMBEDDING_DOWNLOAD_ALLOWED:-0}"
+# docker-compose.yml still starts the Postgres service because `reference`
+# depends on its healthcheck, even though this smoke uses SQLite. Avoid
+# colliding with another local stack's default 55432 bind.
+export PDPP_POSTGRES_PORT="${PDPP_POSTGRES_PORT:-$(node - <<'NODE'
+const net = require('node:net');
+const server = net.createServer();
+server.listen(0, '127.0.0.1', () => {
+  const { port } = server.address();
+  server.close(() => process.stdout.write(String(port)));
+});
+NODE
+)}"
 
 cd "$REPO_ROOT"
 
@@ -132,6 +144,7 @@ assert_owner_login() {
 echo "== SQLite restart-survival smoke =="
 echo "origin:     $ORIGIN"
 echo "storage:    sqlite @ $PDPP_DB_PATH (on the pdpp-home volume)"
+echo "pg port:    $PDPP_POSTGRES_PORT (bound only because compose health-depends on postgres)"
 echo
 
 echo "[1/4] booting composed stack on SQLite-on-volume ..."

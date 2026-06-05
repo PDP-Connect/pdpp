@@ -67,17 +67,31 @@ export const SEED_CONNECTOR_ID = 'https://registry.pdpp.org/connectors/spotify';
 export const SEED_STREAM = 'top_artists';
 
 // Stable keys + matching data.id (ingestRecord rejects a key that disagrees with
-// data.id). Deterministic emitted_at so re-runs are byte-identical and a query
-// ordered by -emitted_at is predictable.
+// data.id). Deterministic timestamps keep re-runs byte-identical; the live
+// smoke deliberately avoids unadvertised sort fields and only asserts presence.
 export const SEED_RECORDS = [
   {
     key: 'railway-seed-artist-1',
-    data: { id: 'railway-seed-artist-1', name: 'Deploy Test Quartet', rank: 1 },
+    data: {
+      id: 'railway-seed-artist-1',
+      name: 'Deploy Test Quartet',
+      genres: ['test-fixture'],
+      popularity: 41,
+      followers: 10,
+      source_updated_at: '2026-01-01T00:00:01.000Z',
+    },
     emitted_at: '2026-01-01T00:00:01.000Z',
   },
   {
     key: 'railway-seed-artist-2',
-    data: { id: 'railway-seed-artist-2', name: 'Restart Survival Band', rank: 2 },
+    data: {
+      id: 'railway-seed-artist-2',
+      name: 'Restart Survival Band',
+      genres: ['test-fixture'],
+      popularity: 42,
+      followers: 20,
+      source_updated_at: '2026-01-01T00:00:02.000Z',
+    },
     emitted_at: '2026-01-01T00:00:02.000Z',
   },
 ];
@@ -343,7 +357,29 @@ async function registerSeedManifest(origin, log) {
     connector_id: SEED_CONNECTOR_ID,
     name: 'Spotify (Railway seed fixture)',
     version: '1.0.0',
-    streams: [{ name: SEED_STREAM }, { name: 'saved_tracks' }, { name: 'recently_played' }],
+    streams: [
+      {
+        name: SEED_STREAM,
+        description: 'Railway Core smoke fixture artists',
+        semantics: 'mutable_state',
+        schema: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            name: { type: 'string' },
+            genres: { type: 'array', items: { type: 'string' } },
+            popularity: { type: 'integer' },
+            followers: { type: 'integer' },
+            source_updated_at: { type: 'string', format: 'date-time' },
+          },
+          required: ['id', 'name'],
+        },
+        primary_key: ['id'],
+        cursor_field: 'source_updated_at',
+        consent_time_field: 'source_updated_at',
+        selection: { fields: true, resources: true },
+      },
+    ],
   };
   const resp = await fetch(`${origin}/connectors`, {
     method: 'POST',
@@ -542,7 +578,7 @@ async function runScopedMcpQuery(origin, clientToken, log) {
   const query = await mcpPost(
     origin,
     clientToken,
-    mcpQueryRecordsMessage(SEED_STREAM, { sort: '-emitted_at', limit: 10 }),
+    mcpQueryRecordsMessage(SEED_STREAM, { limit: 10 }),
   );
   if (query.status !== 200) {
     throw new SmokeError(`query_records failed ${query.status}: ${query.text}`);
