@@ -16,13 +16,14 @@
 //   - Postgres chosen but PDPP_DATABASE_URL missing;
 //   - console's private AS/RS targets unset.
 //
-// It does not contact Railway, Docker, or any network. It reads a dotenv-style
-// file (the merged variables an operator intends to set across the console and
-// reference services) and reports contract violations.
+// It does not contact Railway, Docker, or any network. It reads the dotenv-style
+// files an operator intends to set on the console and reference services and
+// reports contract violations. The service split matters: some variable names
+// intentionally have different values per service (for example PDPP_RS_URL).
 //
 // Usage:
-//   node scripts/check-railway-deploy-env.mjs deploy/railway/env.example [--json]
-//   node scripts/check-railway-deploy-env.mjs <path-to-your-merged-env> [--json]
+//   node scripts/check-railway-deploy-env.mjs --console console.env --reference reference.env
+//   node scripts/check-railway-deploy-env.mjs --console console.env --reference reference.env --json
 //
 // Exit codes: 0 = contract satisfied; 1 = one or more violations.
 
@@ -84,6 +85,46 @@ export function parseEnv(text) {
 // leaving it as-is silently loses data on redeploy. Any path under a real mount
 // (anything that is not the known unmounted default) is accepted.
 export const UNMOUNTED_SQLITE_DEFAULT = '/var/lib/pdpp/pdpp.sqlite';
+
+function value(env, key) {
+  return env[key];
+}
+
+function requireSame(violations, consoleEnv, referenceEnv, key, label) {
+  const consoleValue = value(consoleEnv, key);
+  const referenceValue = value(referenceEnv, key);
+  if (isPlaceholder(consoleValue)) {
+    violations.push(`${label}: console ${key} is not set.`);
+  }
+  if (isPlaceholder(referenceValue)) {
+    violations.push(`${label}: reference ${key} is not set.`);
+  }
+  if (
+    !isPlaceholder(consoleValue) &&
+    !isPlaceholder(referenceValue) &&
+    String(consoleValue).trim() !== String(referenceValue).trim()
+  ) {
+    violations.push(
+      `${label}: console and reference ${key} must match; got "${consoleValue}" and "${referenceValue}".`,
+    );
+  }
+}
+
+function isRailwayPrivateUrl(url, port) {
+  if (isPlaceholder(url)) {
+    return false;
+  }
+  try {
+    const parsed = new URL(String(url).trim());
+    return (
+      parsed.protocol === 'http:' &&
+      parsed.hostname.endsWith('.railway.internal') &&
+      parsed.port === String(port)
+    );
+  } catch {
+    return false;
+  }
+}
 
 // Evaluate the merged env against the deploy contract. Returns an array of
 // violation strings (empty means the contract is satisfied). Pure function so
@@ -153,37 +194,137 @@ export function evaluateRailwayDeployEnv(env) {
   return violations;
 }
 
-function main(argv) {
-  const args = argv.slice(2);
-  const json = args.includes('--json');
-  const filePath = args.find((arg) => !arg.startsWith('--'));
+export function evaluateRailwayServiceEnvs({ consoleEnv, referenceEnv }) {
+  const violations = [];
 
-  if (!filePath) {
-    process.stderr.write(
-      'Usage: node scripts/check-railway-deploy-env.mjs <env-file> [--json]\n',
+  requireSame(violations, consoleEnv, referenceEnv, 'PDPP_REFERENCE_ORIGIN', 'public origin');
+  const origin = consoleEnv.PDPP_REFERENCE_ORIGIN;
+  if (!isPlaceholder(origin) && !/^https:\/\//.test(origin.trim())) {
+    violations.push(
+      `public origin: PDPP_REFERENCE_ORIGIN must be an https:// origin; got "${origin}".`,
     );
-    process.exit(1);
   }
 
+  requireSame(violations, consoleEnv, referenceEnv, 'PDPP_REFERENCE_MODE', 'composed mode');
+  if (
+    !isPlaceholder(consoleEnv.PDPP_REFERENCE_MODE) &&
+    String(consoleEnv.PDPP_REFERENCE_MODE).trim() !== 'composed'
+  ) {
+    violations.push('composed mode: console PDPP_REFERENCE_MODE must be "composed".');
+  }
+
+  requireSame(violations, consoleEnv, referenceEnv, 'PDPP_OWNER_PASSWORD', 'owner gate');
+
+  const consoleAsUrl = consoleEnv.PDPP_AS_URL;
+  if (!isRailwayPrivateUrl(consoleAsUrl, 7662)) {
+    violations.push(
+      'console PDPP_AS_URL must point at the private Railway reference AS ' +
+        '(expected http://<reference-service>.railway.internal:7662).',
+    );
+  }
+
+  const consoleRsUrl = consoleEnv.PDPP_RS_URL;
+  if (!isRailwayPrivateUrl(consoleRsUrl, 7663)) {
+    violations.push(
+      'console PDPP_RS_URL must point at the private Railway reference RS ' +
+        '(expected http://<reference-service>.railway.internal:7663).',
+    );
+  }
+
+  if (String(consoleEnv.PDPP_ENABLE_DASHBOARD ?? '').trim() !== '1') {
+    violations.push('console PDPP_ENABLE_DASHBOARD must be "1" for the owner-console front door.');
+  }
+  if (!isPlaceholder(consoleEnv.PORT)) {
+    violations.push('console PORT must not be set; Railway injects the public service port.');
+  }
+
+  if (String(referenceEnv.NODE_ENV ?? '').trim() !== 'production') {
+    violations.push('reference NODE_ENV must be "production".');
+  }
+  if (String(referenceEnv.AS_PORT ?? '').trim() !== '7662') {
+    violations.push('reference AS_PORT must be "7662".');
+  }
+  if (String(referenceEnv.RS_PORT ?? '').trim() !== '7663') {
+    violations.push('reference RS_PORT must be "7663".');
+  }
+  if (String(referenceEnv.PORT ?? '').trim() !== '7662') {
+    violations.push(
+      'reference PORT must be "7662" so Railway healthchecks target the AS healthcheck listener.',
+    );
+  }
+  if (String(referenceEnv.PDPP_REFERENCE_OPERATIONAL_DEFAULTS ?? '').trim() !== '1') {
+    violations.push('reference PDPP_REFERENCE_OPERATIONAL_DEFAULTS must be "1".');
+  }
+  if (String(referenceEnv.PDPP_RS_URL ?? '').trim() !== 'http://127.0.0.1:7663') {
+    violations.push(
+      'reference PDPP_RS_URL must be "http://127.0.0.1:7663" for hosted-MCP self-calls.',
+    );
+  }
+  if (String(referenceEnv.PDPP_EMBEDDING_DOWNLOAD_ALLOWED ?? '').trim() !== '0') {
+    violations.push('reference PDPP_EMBEDDING_DOWNLOAD_ALLOWED must be "0" for the Core test.');
+  }
+
+  violations.push(...evaluateRailwayDeployEnv(referenceEnv).filter((violation) => {
+    return (
+      !violation.startsWith('PDPP_REFERENCE_ORIGIN') &&
+      !violation.startsWith('PDPP_OWNER_PASSWORD') &&
+      !violation.startsWith('PDPP_AS_URL') &&
+      !violation.startsWith('PDPP_RS_URL')
+    );
+  }));
+
+  return violations;
+}
+
+function readEnvFile(filePath) {
   let text;
   try {
     text = readFileSync(filePath, 'utf8');
   } catch (error) {
-    process.stderr.write(`Cannot read env file "${filePath}": ${error?.message ?? error}\n`);
+    throw new Error(`Cannot read env file "${filePath}": ${error?.message ?? error}`);
+  }
+  return parseEnv(text);
+}
+
+function main(argv) {
+  const args = argv.slice(2);
+  const json = args.includes('--json');
+  const consoleFlag = args.indexOf('--console');
+  const referenceFlag = args.indexOf('--reference');
+  const consoleFile = consoleFlag === -1 ? null : args[consoleFlag + 1];
+  const referenceFile = referenceFlag === -1 ? null : args[referenceFlag + 1];
+
+  if (!consoleFile || !referenceFile || consoleFile.startsWith('--') || referenceFile.startsWith('--')) {
+    process.stderr.write(
+      'Usage: node scripts/check-railway-deploy-env.mjs --console <console-env> --reference <reference-env> [--json]\n',
+    );
     process.exit(1);
   }
 
-  const env = parseEnv(text);
-  const violations = evaluateRailwayDeployEnv(env);
+  let consoleEnv;
+  let referenceEnv;
+  try {
+    consoleEnv = readEnvFile(consoleFile);
+    referenceEnv = readEnvFile(referenceFile);
+  } catch (error) {
+    process.stderr.write(`${error?.message ?? error}\n`);
+    process.exit(1);
+  }
+
+  const violations = evaluateRailwayServiceEnvs({ consoleEnv, referenceEnv });
   const ok = violations.length === 0;
 
   if (json) {
-    process.stdout.write(`${JSON.stringify({ ok, file: filePath, violations }, null, 2)}\n`);
+    process.stdout.write(
+      `${JSON.stringify({ ok, console: consoleFile, reference: referenceFile, violations }, null, 2)}\n`,
+    );
   } else if (ok) {
-    process.stdout.write(`Railway deploy env contract satisfied: ${filePath}\n`);
+    process.stdout.write(
+      `Railway deploy env contract satisfied: console=${consoleFile} reference=${referenceFile}\n`,
+    );
   } else {
     process.stderr.write(
-      `Railway deploy env contract violations in ${filePath}:\n` +
+      `Railway deploy env contract violations:\n` +
         violations.map((v) => `- ${v}`).join('\n') +
         '\n',
     );

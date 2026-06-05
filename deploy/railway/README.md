@@ -75,11 +75,12 @@ root as `railway.json` (or paste the values into the service settings).
 
 ## Environment
 
-The variable names and meanings match `.env.docker.example`;
-[`env.example`](./env.example) is the Railway-scoped subset with placeholders to
-fill in. Set the variables on the services indicated below. Provide
-`PDPP_OWNER_PASSWORD` and any database URL as Railway secrets, not committed
-files.
+The variable names and meanings match `.env.docker.example`. Use
+[`console.env.example`](./console.env.example) and
+[`reference.env.example`](./reference.env.example) as the service-specific
+templates, and [`env.example`](./env.example) as a consolidated reference.
+Set the variables on the services indicated below. Provide `PDPP_OWNER_PASSWORD`
+and any database URL as Railway secrets, not committed files.
 
 Set on **both** services:
 
@@ -97,6 +98,8 @@ Set on the **console** service:
 Set on the **reference** service:
 
 - `NODE_ENV=production`, `AS_PORT=7662`, `RS_PORT=7663`
+- `PORT=7662` — Railway healthchecks use `PORT`; set it to the Authorization
+  Server listener so `/.well-known/oauth-authorization-server` resolves.
 - `PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1`
 - `PDPP_RS_URL=http://127.0.0.1:7663` (loopback, for internal hosted-MCP
   self-calls — keep it distinct from the public origin so self-calls do not
@@ -108,14 +111,17 @@ Set on the **reference** service:
 Preflight the merged env locally before deploying:
 
 ```sh
-node scripts/check-railway-deploy-env.mjs <your-merged-env-file>
+node scripts/check-railway-deploy-env.mjs \
+  --console <your-console-env-file> \
+  --reference <your-reference-env-file>
 ```
 
 The check is offline and deterministic. It flags a missing or non-HTTPS public
-origin, an empty owner password, unset private AS/RS targets, and storage left
-on the non-durable default. Run against the committed `env.example` it reports
-the placeholder origin and empty owner password on purpose — `env.example` is a
-template, not a ready-to-deploy file.
+origin, an empty owner password, mismatched shared values, console URLs that do
+not target the private Railway reference service, reference healthcheck `PORT`
+misconfiguration, and storage left on the non-durable default. Run against the
+committed service templates it reports the placeholder origin and empty owner
+password on purpose — they are templates, not ready-to-deploy files.
 
 ## Storage — pick one
 
@@ -176,7 +182,7 @@ restart) rather than first-discovery of application bugs.
 
 Local, before any live run (from a main checkout with Docker):
 
-1. `node scripts/check-railway-deploy-env.mjs <merged-env>` — env contract holds.
+1. `node scripts/check-railway-deploy-env.mjs --console <console-env> --reference <reference-env>` — env contract holds.
 2. `pnpm docker:smoke` — composed-origin assertions (AS `issuer`, RS `resource`,
    and RS `authorization_servers[0]` all equal the public origin; no internal
    service name leaks) and the `/dashboard` → `/owner/login` redirect, on the

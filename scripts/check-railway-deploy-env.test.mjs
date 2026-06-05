@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   evaluateRailwayDeployEnv,
+  evaluateRailwayServiceEnvs,
   isPlaceholder,
   isRailwayReference,
   parseEnv,
@@ -35,6 +36,36 @@ function validSqliteEnv(overrides = {}) {
     PDPP_RS_URL: 'http://reference.railway.internal:7663',
     PDPP_STORAGE_BACKEND: 'sqlite',
     PDPP_DB_PATH: '/data/pdpp.sqlite',
+    ...overrides,
+  };
+}
+
+function validConsoleServiceEnv(overrides = {}) {
+  return {
+    PDPP_REFERENCE_ORIGIN: 'https://pdpp.example.com',
+    PDPP_REFERENCE_MODE: 'composed',
+    PDPP_OWNER_PASSWORD: 's3cret-owner-pw',
+    PDPP_AS_URL: 'http://reference.railway.internal:7662',
+    PDPP_RS_URL: 'http://reference.railway.internal:7663',
+    PDPP_ENABLE_DASHBOARD: '1',
+    ...overrides,
+  };
+}
+
+function validReferenceServiceEnv(overrides = {}) {
+  return {
+    PDPP_REFERENCE_ORIGIN: 'https://pdpp.example.com',
+    PDPP_REFERENCE_MODE: 'composed',
+    PDPP_OWNER_PASSWORD: 's3cret-owner-pw',
+    NODE_ENV: 'production',
+    PORT: '7662',
+    AS_PORT: '7662',
+    RS_PORT: '7663',
+    PDPP_REFERENCE_OPERATIONAL_DEFAULTS: '1',
+    PDPP_RS_URL: 'http://127.0.0.1:7663',
+    PDPP_EMBEDDING_DOWNLOAD_ALLOWED: '0',
+    PDPP_STORAGE_BACKEND: 'postgres',
+    PDPP_DATABASE_URL: '${{Postgres.DATABASE_URL}}',
     ...overrides,
   };
 }
@@ -135,4 +166,73 @@ test('the committed env.example is a template and fails the contract with placeh
   const violations = evaluateRailwayDeployEnv(parseEnv(text));
   assert.equal(violations.some((v) => v.includes('PDPP_REFERENCE_ORIGIN is not set')), true);
   assert.equal(violations.some((v) => v.includes('PDPP_OWNER_PASSWORD is empty')), true);
+});
+
+test('fully-configured service envs satisfy the Railway deploy contract', () => {
+  assert.deepEqual(
+    evaluateRailwayServiceEnvs({
+      consoleEnv: validConsoleServiceEnv(),
+      referenceEnv: validReferenceServiceEnv(),
+    }),
+    [],
+  );
+});
+
+test('service env preflight rejects mismatched shared values', () => {
+  const violations = evaluateRailwayServiceEnvs({
+    consoleEnv: validConsoleServiceEnv({ PDPP_REFERENCE_ORIGIN: 'https://console.example.com' }),
+    referenceEnv: validReferenceServiceEnv({ PDPP_REFERENCE_ORIGIN: 'https://reference.example.com' }),
+  });
+  assert.equal(violations.some((v) => v.includes('must match')), true);
+});
+
+test('service env preflight rejects console URLs that are not private Railway targets', () => {
+  const violations = evaluateRailwayServiceEnvs({
+    consoleEnv: validConsoleServiceEnv({ PDPP_RS_URL: 'http://127.0.0.1:7663' }),
+    referenceEnv: validReferenceServiceEnv(),
+  });
+  assert.equal(
+    violations.some((v) => v.includes('console PDPP_RS_URL must point at the private Railway reference RS')),
+    true,
+  );
+});
+
+test('service env preflight rejects setting PORT on the console service', () => {
+  const violations = evaluateRailwayServiceEnvs({
+    consoleEnv: validConsoleServiceEnv({ PORT: '3000' }),
+    referenceEnv: validReferenceServiceEnv(),
+  });
+  assert.equal(violations.some((v) => v.includes('console PORT must not be set')), true);
+});
+
+test('service env preflight requires reference PORT to target the AS listener', () => {
+  const violations = evaluateRailwayServiceEnvs({
+    consoleEnv: validConsoleServiceEnv(),
+    referenceEnv: validReferenceServiceEnv({ PORT: '' }),
+  });
+  assert.equal(violations.some((v) => v.includes('reference PORT must be "7662"')), true);
+});
+
+test('service env preflight requires reference hosted-MCP self-calls to stay loopback', () => {
+  const violations = evaluateRailwayServiceEnvs({
+    consoleEnv: validConsoleServiceEnv(),
+    referenceEnv: validReferenceServiceEnv({ PDPP_RS_URL: 'http://reference.railway.internal:7663' }),
+  });
+  assert.equal(
+    violations.some((v) => v.includes('reference PDPP_RS_URL must be "http://127.0.0.1:7663"')),
+    true,
+  );
+});
+
+test('committed service env templates fail only because operator placeholders remain', () => {
+  const consoleText = readFileSync(path.join(repoRoot, 'deploy/railway/console.env.example'), 'utf8');
+  const referenceText = readFileSync(path.join(repoRoot, 'deploy/railway/reference.env.example'), 'utf8');
+  const violations = evaluateRailwayServiceEnvs({
+    consoleEnv: parseEnv(consoleText),
+    referenceEnv: parseEnv(referenceText),
+  });
+  assert.equal(violations.some((v) => v.includes('PDPP_REFERENCE_ORIGIN is not set')), true);
+  assert.equal(violations.some((v) => v.includes('PDPP_OWNER_PASSWORD is not set')), true);
+  assert.equal(violations.some((v) => v.includes('reference PORT must be')), false);
+  assert.equal(violations.some((v) => v.includes('PDPP_DATABASE_URL')), false);
 });
