@@ -163,11 +163,16 @@ first-discovery of application bugs.
 - `pnpm docker:smoke` passes from the main checkout (composed-origin assertions +
   owner-gating redirect on the real images) — the canonical local proxy for
   acceptance steps 2, 3, and 5.
-- A SQLite-on-mounted-path variant of the smoke flow boots on SQLite alone and
-  survives a container restart (acceptance step 7's durability check), proving
-  the `PDPP_DB_PATH`-onto-volume requirement before it bites on the platform.
-- The documented env block diff-matches `.env.docker.example`; `git diff --check`
-  is clean; all deploy-doc links/paths exist; voice-guide self-check
+- `pnpm railway:mcp-query-smoke:test` passes for the live-query harness decision
+  logic, and `pnpm railway:mcp-query-smoke -- --origin <origin> --owner-password
+  <pw>` proves anonymous `/mcp` refusal plus a scoped `query_records` success
+  against a running composed origin.
+- `pnpm railway:sqlite-restart-smoke` boots on SQLite forced onto the persistent
+  volume, seeds through the MCP query smoke, force-recreates the private
+  reference container, and proves records plus owner login survive (acceptance
+  step 7's durability check).
+- The documented service env blocks are consistent with `.env.docker.example`;
+  `git diff --check` is clean; all deploy-doc links/paths exist; voice-guide self-check
   (operator-voice, honest cost framing, Core / Collection / reference kept
   distinct, no hosted-service "sign up / we sync / our service" language).
 

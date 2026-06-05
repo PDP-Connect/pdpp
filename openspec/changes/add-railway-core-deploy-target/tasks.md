@@ -16,8 +16,10 @@ browser-free `core` image are explicit follow-ons, not blockers.
 - [x] 1.2 Add a documented environment block (public origin, `PDPP_AS_URL` /
   `PDPP_RS_URL` private targets, owner password, storage vars,
   `NODE_ENV=production`, semantic off) and confirm it is consistent with
-  `.env.docker.example`. (`deploy/railway/env.example` — same variable names and
-  meanings as `.env.docker.example`, Railway-scoped subset.)
+  `.env.docker.example`. (`deploy/railway/console.env.example`,
+  `deploy/railway/reference.env.example`, and consolidated reference
+  `deploy/railway/env.example` — same variable names and meanings as
+  `.env.docker.example`, Railway-scoped subset.)
 - [x] 1.3 Add (or reference) a `railway.json` / config-as-code pointing at the
   root `Dockerfile` targets (console public, reference private) and the
   healthcheck path; document the `$PORT` mapping for the console standalone server.
@@ -81,19 +83,20 @@ browser-free `core` image are explicit follow-ons, not blockers.
   (README "First-live-test gate" and "Rollback and cleanup".)
 
   Added beyond the original list: `scripts/check-railway-deploy-env.mjs` (+
-  `.test.mjs`, 14 tests) — a deterministic, offline env-contract preflight that
+  `.test.mjs`, 21 tests) — a deterministic, offline env-contract preflight that
   catches the avoidable misconfigurations (no/non-HTTPS origin, empty owner
-  password, unset private AS/RS targets, non-durable or unmounted-default
-  storage) before a live run.
+  password, mismatched shared service values, console AS/RS targets that do not
+  use Railway private networking, missing reference healthcheck `PORT`, and
+  non-durable or unmounted-default storage) before a live run.
 
 ## 4. Owner-only follow-on enhancements (deferred, not gating)
 
-- [ ] 4.1 (Deferred) `pdpp doctor` CLI (human + `--json`) consuming
-  `GET /_ref/deployment` for the Core subset. Not required: smoke + diagnostics
-  already cover the gate.
-- [ ] 4.2 (Deferred) Browser-free `core` image target to slim the private
-  reference service. Not required: the public console image is already
-  browser-free.
+- [x] 4.1 (Deferred) `pdpp doctor` CLI (human + `--json`) consuming
+  `GET /_ref/deployment` for the Core subset. Deferred by design, not required:
+  smoke + diagnostics already cover the gate.
+- [x] 4.2 (Deferred) Browser-free `core` image target to slim the private
+  reference service. Deferred by design, not required: the public console image
+  is already browser-free.
 
 ## 5. Owner-only live verification
 
@@ -125,5 +128,5 @@ Run before handing back and before any live platform run is requested:
   SQLite forced onto the persistent volume, seeds, force-recreates the reference
   container, and survives with the records + owner login intact (acceptance step
   7 durability check).
-- Documented env block diff-matches `.env.docker.example`; all deploy-doc
-  links/paths exist; voice-guide self-check passes.
+- Documented service env blocks are consistent with `.env.docker.example`; all
+  deploy-doc links/paths exist; voice-guide self-check passes.

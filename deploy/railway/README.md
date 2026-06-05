@@ -108,7 +108,7 @@ Set on the **reference** service:
   test).
 - The storage variables from the option you pick below.
 
-Preflight the merged env locally before deploying:
+Preflight the service envs locally before deploying:
 
 ```sh
 node scripts/check-railway-deploy-env.mjs \
