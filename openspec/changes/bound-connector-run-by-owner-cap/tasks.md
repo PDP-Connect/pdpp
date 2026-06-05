@@ -63,8 +63,22 @@ landed implementation; §4 is owner closeout.
   the remainder defers as `retry_exhausted` / `run_cap_deferred` gaps, the
   source-pressure cooldown is **not** armed, and the next run recovers the
   deferred records first. Record as a residual risk if it is the only remaining
-  step. (No live ChatGPT run has been performed; all evidence to date is from
-  fixtures/mocks and the existing connector contract.)
+  step. **Live attempt 2026-06-05:** configured
+  `PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN=25`,
+  `PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS=900000`, and
+  `PDPP_CHATGPT_DETAIL_RATE_LIMIT_STOP_AFTER=3` on
+  `cin_11deac1e728b244aaeb56765`; run `run_1780681611410` hydrated 25 details,
+  recovered 25 gaps, and emitted cap-deferred `DETAIL_GAP` rows with
+  `error.class = run_cap_deferred` and no 429/source-pressure evidence. The run
+  then found 2,169 conversations requiring detail and spent foreground time
+  materializing one resumable gap per conversation; owner cancelled it at
+  `2026-06-05T18:01:33Z` after 313 gap rows. This proves the fetch-pressure cap
+  works but the tail-materialization path is not yet low-burn enough for a
+  confident unattended schedule.
+- [ ] Follow-up implementation: once a per-run cap trips, bound the deferral
+  materialization itself (for example chunked gap creation, a backlog cursor, or
+  a wall-clock-checked tail writer) so a huge account does not spend a long run
+  writing thousands of gap rows after it has already stopped fetching details.
 - [ ] Archive this change once the spec delta is folded into `polyfill-runtime`
   and the owner-only live verification is recorded.
 
