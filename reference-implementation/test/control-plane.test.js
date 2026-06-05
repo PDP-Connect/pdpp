@@ -21,6 +21,7 @@ import { getDb } from '../server/db.js';
 import { emitSpineEvent } from '../lib/spine.ts';
 import { runConnector } from '../runtime/index.js';
 import { canonicalConnectorKey } from '../server/connector-key.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
@@ -299,6 +300,47 @@ test('_ref listing helpers', async (t) => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
       const spotifyId = canonicalManifestConnectorId(spotifyManifest);
       const source = { connector_id: spotifyId };
+      const instances = createSqliteConnectorInstanceStore();
+      const instance = instances.ensureDefaultAccountConnection({
+        ownerSubjectId: 'owner_local',
+        connectorId: spotifyId,
+        displayName: spotifyId,
+        now: '2026-04-24T00:00:00.000Z',
+      });
+      assert.ok(instance?.connectorInstanceId, 'registered test connector must have a default instance');
+      const secondInstance = instances.upsert({
+        connectorInstanceId: 'cin_pending_interaction_second',
+        ownerSubjectId: 'owner_local',
+        connectorId: spotifyId,
+        displayName: `${spotifyId} pending interaction second`,
+        status: 'active',
+        sourceKind: 'account',
+        sourceBindingKey: 'pending-interaction-second',
+        sourceBinding: { kind: 'test_account', label: 'pending-interaction-second' },
+        createdAt: '2026-04-24T00:00:00.000Z',
+        updatedAt: '2026-04-24T00:00:00.000Z',
+      });
+      assert.ok(secondInstance?.connectorInstanceId, 'second active synthetic run needs a distinct connection');
+      const insertActiveRun = getDb().prepare(
+        `INSERT INTO controller_active_runs(connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at)
+         VALUES(?, ?, ?, ?, ?, ?)`,
+      );
+      insertActiveRun.run(
+        instance.connectorInstanceId,
+        instance.connectorId,
+        'run_pending_input',
+        'trc_pending_interaction_test',
+        'scn_pending_interaction_test',
+        '2026-04-24T00:00:00.000Z',
+      );
+      insertActiveRun.run(
+        secondInstance.connectorInstanceId,
+        secondInstance.connectorId,
+        'run_second_input',
+        'trc_pending_interaction_test',
+        'scn_pending_interaction_test',
+        '2026-04-24T00:02:00.000Z',
+      );
       // Spine-layer stamping requirement: every run.started must carry
       // boot_epoch+seq. Harness ran startServer which initialized the
       // singleton; read it once and merge into every synthetic emit.

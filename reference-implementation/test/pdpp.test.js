@@ -6901,46 +6901,79 @@ test('PDPP reference implementation integration', async (t) => {
 
   await t.test('changes_since cursors expire with HTTP 410 when history is pruned', async () => {
     try {
-      await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+      await withHarness(async ({ asUrl, rsUrl }) => {
+        const cursorManifest = {
+          protocol_version: '0.1.0',
+          connector_id: 'cursor-expiry-fixture',
+          version: '1.0.0',
+          display_name: 'Cursor expiry fixture',
+          runtime_requirements: { bindings: { network: { required: false } } },
+          streams: [
+            {
+              name: 'events',
+              semantics: 'mutable_state',
+              schema: {
+                type: 'object',
+                required: ['id', 'value'],
+                properties: {
+                  id: { type: 'string' },
+                  value: { type: 'string' },
+                },
+              },
+              primary_key: ['id'],
+            },
+          ],
+        };
+        const registerResp = await fetchJson(`${asUrl}/connectors`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(cursorManifest),
+        });
+        assert.equal(registerResp.status, 201);
         const ownerToken = await issueOwnerToken(asUrl, 'u1');
-        await seedSpotify(rsUrl, spotifyManifest, ownerToken);
+        const initial = await fetch(`${rsUrl}/v1/ingest/events?connector_id=${encodeURIComponent(cursorManifest.connector_id)}`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${ownerToken}`,
+            'Content-Type': 'application/x-ndjson',
+          },
+          body: JSON.stringify({
+            key: 'evt_1',
+            data: { id: 'evt_1', value: 'initial' },
+            emitted_at: '2026-04-24T00:00:00.000Z',
+          }),
+        });
+        assert.equal(initial.status, 200);
 
         const approved = await approveGrant(asUrl, 'u1', {
           client_id: 'concert_recommendation_app',
-          source: { kind: 'connector', id: spotifyManifest.connector_id },
+          source: { kind: 'connector', id: cursorManifest.connector_id },
           purpose_code: 'https://pdpp.org/purpose/personalization',
           purpose_description: 'Incremental sync with cursor expiry',
           access_mode: 'continuous',
-          streams: [{ name: 'top_artists', view: 'basic' }],
+          streams: [{ name: 'events' }],
         });
 
         const baseline = await fetchJson(
-          `${rsUrl}/v1/streams/top_artists/records?changes_since=${encodeURIComponent(Buffer.from(JSON.stringify({ kind: 'changes_since', version: 0 })).toString('base64'))}`,
+          `${rsUrl}/v1/streams/events/records?changes_since=${encodeURIComponent(Buffer.from(JSON.stringify({ kind: 'changes_since', version: 0 })).toString('base64'))}`,
           { headers: { Authorization: `Bearer ${approved.token}` } }
         );
         assert.equal(baseline.status, 200);
 
         process.env.PDPP_CHANGE_HISTORY_LIMIT = '2';
 
-        const firstId = baseline.body.data[0].id;
-        const ownerRecord = await fetchJson(
-          `${rsUrl}/v1/streams/top_artists/records/${encodeURIComponent(firstId)}?connector_id=${encodeURIComponent(spotifyManifest.connector_id)}`,
-          { headers: { Authorization: `Bearer ${ownerToken}` } }
-        );
-
-        for (let i = 0; i < 3; i++) {
+        for (let i = 0; i < 4; i++) {
           const update = {
-            key: firstId,
+            key: 'evt_1',
             data: {
-              ...ownerRecord.body.data,
-              genres: [...ownerRecord.body.data.genres, `delta-${i}`],
-              source_updated_at: new Date(Date.now() + i * 1000).toISOString(),
+              id: 'evt_1',
+              value: `delta-${i}`,
             },
-            emitted_at: new Date(Date.now() + i * 1000).toISOString(),
+            emitted_at: `2026-04-24T00:00:0${i + 1}.000Z`,
           };
 
           const ingest = await fetch(
-            `${rsUrl}/v1/ingest/top_artists?connector_id=${encodeURIComponent(spotifyManifest.connector_id)}`,
+            `${rsUrl}/v1/ingest/events?connector_id=${encodeURIComponent(cursorManifest.connector_id)}`,
             {
               method: 'POST',
               headers: {
@@ -6954,7 +6987,7 @@ test('PDPP reference implementation integration', async (t) => {
         }
 
         const expired = await fetchJson(
-          `${rsUrl}/v1/streams/top_artists/records?changes_since=${encodeURIComponent(baseline.body.next_changes_since)}`,
+          `${rsUrl}/v1/streams/events/records?changes_since=${encodeURIComponent(baseline.body.next_changes_since)}`,
           { headers: { Authorization: `Bearer ${approved.token}` } }
         );
         assert.equal(expired.status, 410);

@@ -752,11 +752,6 @@ CREATE TABLE IF NOT EXISTS record_changes (
 
 CREATE INDEX IF NOT EXISTS idx_record_changes_record
   ON record_changes(connector_id, stream, record_key, version);
--- Covers the bounded version-stats hot path: MAX(emitted_at) / COUNT grouped by
--- (connector_instance_id, stream). The record-keyed index above does not carry
--- emitted_at, so without this MAX(emitted_at) forces a heap visit per row.
-CREATE INDEX IF NOT EXISTS idx_record_changes_emitted
-  ON record_changes(connector_instance_id, stream, emitted_at);
 
 CREATE TABLE IF NOT EXISTS blobs (
   blob_id       TEXT PRIMARY KEY,

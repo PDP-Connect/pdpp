@@ -1531,7 +1531,7 @@ test('POST /oauth/authorize/mcp-package narrows the child grant to the submitted
         },
         {
           connectorId: github.connector_id,
-          streamNames: ['repositories', 'starred_repos'],
+          streamNames: ['repositories'],
         },
       ],
     });
@@ -1576,7 +1576,7 @@ test('POST /oauth/authorize/mcp-package narrows the child grant to the submitted
     assert.deepEqual(spotifyStreamNames, ['saved_tracks'], 'spotify child carries only the approved stream');
     assert.deepEqual(
       githubStreamNames,
-      ['repositories', 'starred_repos'],
+      ['repositories'],
       'github child carries exactly the approved subset',
     );
 
