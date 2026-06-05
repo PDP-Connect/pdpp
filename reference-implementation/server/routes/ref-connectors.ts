@@ -107,6 +107,7 @@ export interface MountRefConnectorsContext {
   createRequestConnectorInstanceStore(): ConnectorInstanceStore;
   deleteSchedule(connectorId: string, options: { connectorInstanceId?: string | null }): Promise<boolean>;
   getConnectorDetail(connectorId: string): Promise<Record<string, unknown> | null>;
+  getConnectorSummaryForRoute(routeId: string): Promise<unknown | null> | unknown | null;
   getOwnerSubjectId(req: unknown): string;
   getSchedule(connectorId: string, options: { connectorInstanceId?: string | null }): Promise<unknown> | unknown;
   handleError(res: unknown, err: unknown): void;
@@ -237,14 +238,27 @@ export function mountRefConnectorsList(app: AppLike, ctx: MountRefConnectorsCont
     "/_ref/connectors",
     { contract: "refListConnectors" },
     ctx.requireOwnerSession,
-    async (_req: RouteRequest, res: RouteResponse) => {
+    async (req: RouteRequest, res: RouteResponse) => {
       try {
+        // Optional connection selector. When present, the route projects only
+        // the resolved connection (records subpages resolve one connection and
+        // must not hydrate every connector); when absent it lists every
+        // configured connection exactly as before. The scoped read goes through
+        // the same per-connection projection (`ref-control.ts`), so a
+        // single-connection summary cannot diverge from its entry in the list.
+        const connectionSelector = ctx.resolveSingleConnectorIdQueryValue(req.query.connection);
+        const listConnectorSummaries = connectionSelector
+          ? async () => {
+              const summary = await ctx.getConnectorSummaryForRoute(connectionSelector);
+              return summary == null ? [] : [summary];
+            }
+          : () => ctx.listConnectorSummaries();
         // The operation expects `RefConnectorsListItem[]`; the host read
         // returns the same shape via `ref-control.ts`. We forward
         // opaquely — the adapter does not redefine the item shape.
         const envelope = await executeRefConnectorsList({
           listConnectorSummaries: () =>
-            ctx.listConnectorSummaries() as unknown as ReturnType<
+            listConnectorSummaries() as unknown as ReturnType<
               Parameters<typeof executeRefConnectorsList>[0]["listConnectorSummaries"]
             >,
         });

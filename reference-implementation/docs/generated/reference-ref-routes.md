@@ -97,6 +97,10 @@ Search exact trace/grant/run ids and record content across retained records.
 
 List configured connection summaries with manifest, latest run, schedule, and freshness.
 
+### Query parameters
+
+- `connection` — string
+
 ### Responses
 
 - `200` — JSON body

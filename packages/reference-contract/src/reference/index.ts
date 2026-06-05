@@ -68,6 +68,20 @@ const ConnectorListResponseSchema = {
   required: ["object", "data"],
 };
 
+// Optional connection selector for the connection-summary list. When present,
+// the route projects only the resolved connection (an exact `connection_id` /
+// `connector_instance_id` match is preferred, else the first connection whose
+// `connector_id` matches); when absent, the route lists every configured
+// connection. The response stays `ConnectorListResponseSchema` — a list of 0 or
+// 1 when the selector is supplied.
+const ConnectorListQuerySchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    connection: { type: "string", minLength: 1 },
+  },
+};
+
 const ScheduleUpsertBodySchema = {
   type: "object",
   additionalProperties: false,
@@ -1454,6 +1468,7 @@ export const referenceManifests = [
     surface: "reference",
     tags: ["reference", "connectors"],
     summary: "List configured connection summaries with manifest, latest run, schedule, and freshness.",
+    request: { query: ConnectorListQuerySchema },
     responses: { 200: { schema: ConnectorListResponseSchema }, ...CommonErrors },
   },
   {

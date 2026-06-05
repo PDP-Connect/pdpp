@@ -2813,15 +2813,132 @@ export interface ListConnectorSummariesOptions {
   readonly onInFlightChange?: (inFlight: number) => void;
 }
 
-export async function listConnectorSummaries(
-  controller?: ControllerLike | null,
-  options: ListConnectorSummariesOptions = {}
-): Promise<ConnectorSummary[]> {
+// Shared inputs for `projectConnectorSummaryForInstance`. These are the reads
+// that are identical across every connection in one request (the registered
+// manifests and the once-per-request browser-surface snapshot) plus the optional
+// controller used to resolve schedules. Hoisting them keeps the single-connection
+// projection and the all-connection list on the exact same per-connection code
+// path, so the two cannot drift.
+interface ConnectorSummaryProjectionDeps {
+  readonly controller?: ControllerLike | null | undefined;
+  readonly manifestsByConnectorId: ReadonlyMap<string, ConnectorManifest>;
+  readonly sharedBrowserSurfaceReader: BrowserSurfaceLeaseStoreReader;
+}
+
+// Project one configured connection into its summary, or `null` when the
+// connection is not a public reference connector / has no registered manifest.
+// This is the single source of truth for a connection-summary item: both
+// `listConnectorSummaries` (mapped over all instances) and
+// `getConnectorSummaryForRoute` (one resolved instance) call it.
+async function projectConnectorSummaryForInstance(
+  instance: ConnectorInstanceRow,
+  deps: ConnectorSummaryProjectionDeps
+): Promise<ConnectorSummary | null> {
+  const { controller, manifestsByConnectorId, sharedBrowserSurfaceReader } = deps;
+  const connectorId = instance.connectorId;
+  const connectorInstanceId = instance.connectorInstanceId;
+  const manifest = manifestsByConnectorId.get(connectorId);
+  if (!manifest) {
+    return null;
+  }
+  if (!isPublicReferenceConnector({ connector_id: connectorId, manifest: JSON.stringify(manifest) }, manifest)) {
+    return null;
+  }
+  const live = await getConnectorRecordProjection(
+    recordStorageConnectorIdForConnection(instance),
+    connectorInstanceId
+  );
+  const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox, attention, remoteSurface, localCoverage] =
+    await Promise.all([
+      getScheduleFrom(controller, connectorId, { connectorInstanceId }),
+      getLatestRunSummary(connectorId),
+      getLatestRunSummary(connectorId, "succeeded"),
+      getConnectorDetailGapProjection(connectorId, connectorInstanceId),
+      getConnectorOutboxAxis(connectorId, { connectorInstanceId }),
+      getConnectorAttentionProjection(connectorId, { connectorInstanceId }),
+      getConnectorBrowserSurfaceProjection(connectorId, {
+        profileKey: readBrowserSurfaceProfileKey(connectorId, connectorInstanceId, manifest),
+        store: sharedBrowserSurfaceReader,
+      }),
+      getConnectorLocalCoverageAxis(connectorId, connectorInstanceId),
+    ]);
+  const refreshPolicy = extractRefreshPolicy(manifest);
+  const localDeviceProgress =
+    instance.sourceKind === "local_device" ? projectLocalDeviceProgress(outbox.heartbeats) : null;
+  // A heartbeat can satisfy freshness only when it represents a healthy
+  // check with no known local backlog. Active/pending outboxes still show
+  // progress via the outbox axis rather than a false "fresh" claim.
+  const canUseHeartbeatForFreshness =
+    localDeviceProgress?.last_heartbeat_status === "healthy" &&
+    (localDeviceProgress.records_pending == null || localDeviceProgress.records_pending === 0);
+  const freshnessHeartbeatAt = canUseHeartbeatForFreshness ? localDeviceProgress.last_heartbeat_at : null;
+  const freshness = buildConnectorFreshness({
+    lastRun,
+    lastSuccessfulRun,
+    live,
+    refreshPolicy,
+    lastHeartbeatAt: freshnessHeartbeatAt,
+  });
+  const connectionHealth = projectConnectorSummaryConnectionHealth({
+    attentionRecords: attention.records,
+    freshness,
+    lastRun,
+    lastSuccessfulRun,
+    localCoverage,
+    localDeviceBacked: instance.sourceKind === "local_device",
+    manifestStreams: manifest.streams ?? [],
+    outbox: { axis: outbox.axis, cause: outbox.cause },
+    pendingDetailGaps: detailGaps.gaps,
+    pendingDetailGapsReadLimit: detailGaps.readLimit,
+    pendingDetailGapsUnreliable: detailGaps.unreliable,
+    refreshPolicy,
+    remoteSurface: remoteSurface.evidence,
+    unreliableSources: combineUnreliableSources(
+      detailGaps.unreliable,
+      outbox.unreliable,
+      attention.unreliable,
+      remoteSurface.unreliable
+    ),
+    schedule,
+  });
+  const connectorDisplayName = manifest.display_name || connectorId;
+  const collectionReport = projectCollectionReport({
+    lastRun,
+    connectionHealth,
+    manifestStreams: manifest.streams ?? [],
+    refreshPolicy,
+  });
+  return {
+    collection_report: collectionReport,
+    connection_id: connectorInstanceId,
+    connection_health: connectionHealth,
+    connector_display_name: connectorDisplayName,
+    connector_id: connectorId,
+    connector_instance_id: connectorInstanceId,
+    display_name: instance.displayName || connectorDisplayName,
+    local_device_progress: localDeviceProgress,
+    manifest_version: manifest.version || null,
+    next_action: connectionHealth.next_action,
+    retained_bytes: live.retainedBytes,
+    streams: (manifest.streams || []).map((stream) => stream.name),
+    stream_count: live.byStream.size,
+    total_records: live.totalRecords,
+    total_retained_bytes: live.retainedBytes?.total_bytes ?? null,
+    freshness,
+    refresh_policy: refreshPolicy,
+    schedule,
+    last_run: lastRun,
+    last_successful_run: lastSuccessfulRun,
+  };
+}
+
+async function loadConnectorSummaryProjectionDeps(
+  controller?: ControllerLike | null
+): Promise<ConnectorSummaryProjectionDeps> {
   const connectorRows = await listRegisteredConnectorRows();
   const manifestsByConnectorId = new Map(
     connectorRows.map((row) => [row.connector_id, parseManifest(row.manifest, row.connector_id)])
   );
-  const rows = await listConnectorInstanceRowsForDashboard();
   // The browser-surface leases/surfaces tables are global, unscoped reads that
   // `getConnectorBrowserSurfaceProjection` filters by `connector_id` in memory.
   // Read them once here and replay the snapshot per connector instead of issuing
@@ -2829,109 +2946,46 @@ export async function listConnectorSummaries(
   // every records-dashboard poll, so the saved reads compound under the active-run
   // poll cadence.
   const sharedBrowserSurfaceReader = await loadSharedBrowserSurfaceReader();
+  return { controller, manifestsByConnectorId, sharedBrowserSurfaceReader };
+}
+
+export async function listConnectorSummaries(
+  controller?: ControllerLike | null,
+  options: ListConnectorSummariesOptions = {}
+): Promise<ConnectorSummary[]> {
+  const deps = await loadConnectorSummaryProjectionDeps(controller);
+  const rows = await listConnectorInstanceRowsForDashboard();
   const summaries = await mapWithConcurrency(
     rows,
     options.concurrency ?? LIST_CONNECTOR_SUMMARIES_CONCURRENCY,
-    async (instance): Promise<ConnectorSummary | null> => {
-      const connectorId = instance.connectorId;
-      const connectorInstanceId = instance.connectorInstanceId;
-      const manifest = manifestsByConnectorId.get(connectorId);
-      if (!manifest) {
-        return null;
-      }
-      if (!isPublicReferenceConnector({ connector_id: connectorId, manifest: JSON.stringify(manifest) }, manifest)) {
-        return null;
-      }
-      const live = await getConnectorRecordProjection(
-        recordStorageConnectorIdForConnection(instance),
-        connectorInstanceId
-      );
-      const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox, attention, remoteSurface, localCoverage] =
-        await Promise.all([
-          getScheduleFrom(controller, connectorId, { connectorInstanceId }),
-          getLatestRunSummary(connectorId),
-          getLatestRunSummary(connectorId, "succeeded"),
-          getConnectorDetailGapProjection(connectorId, connectorInstanceId),
-          getConnectorOutboxAxis(connectorId, { connectorInstanceId }),
-          getConnectorAttentionProjection(connectorId, { connectorInstanceId }),
-          getConnectorBrowserSurfaceProjection(connectorId, {
-            profileKey: readBrowserSurfaceProfileKey(connectorId, connectorInstanceId, manifest),
-            store: sharedBrowserSurfaceReader,
-          }),
-          getConnectorLocalCoverageAxis(connectorId, connectorInstanceId),
-        ]);
-      const refreshPolicy = extractRefreshPolicy(manifest);
-      const localDeviceProgress =
-        instance.sourceKind === "local_device" ? projectLocalDeviceProgress(outbox.heartbeats) : null;
-      // A heartbeat can satisfy freshness only when it represents a healthy
-      // check with no known local backlog. Active/pending outboxes still show
-      // progress via the outbox axis rather than a false "fresh" claim.
-      const canUseHeartbeatForFreshness =
-        localDeviceProgress?.last_heartbeat_status === "healthy" &&
-        (localDeviceProgress.records_pending == null || localDeviceProgress.records_pending === 0);
-      const freshnessHeartbeatAt = canUseHeartbeatForFreshness ? localDeviceProgress.last_heartbeat_at : null;
-      const freshness = buildConnectorFreshness({
-        lastRun,
-        lastSuccessfulRun,
-        live,
-        refreshPolicy,
-        lastHeartbeatAt: freshnessHeartbeatAt,
-      });
-      const connectionHealth = projectConnectorSummaryConnectionHealth({
-        attentionRecords: attention.records,
-        freshness,
-        lastRun,
-        lastSuccessfulRun,
-        localCoverage,
-        localDeviceBacked: instance.sourceKind === "local_device",
-        manifestStreams: manifest.streams ?? [],
-        outbox: { axis: outbox.axis, cause: outbox.cause },
-        pendingDetailGaps: detailGaps.gaps,
-        pendingDetailGapsReadLimit: detailGaps.readLimit,
-        pendingDetailGapsUnreliable: detailGaps.unreliable,
-        refreshPolicy,
-        remoteSurface: remoteSurface.evidence,
-        unreliableSources: combineUnreliableSources(
-          detailGaps.unreliable,
-          outbox.unreliable,
-          attention.unreliable,
-          remoteSurface.unreliable
-        ),
-        schedule,
-      });
-      const connectorDisplayName = manifest.display_name || connectorId;
-      const collectionReport = projectCollectionReport({
-        lastRun,
-        connectionHealth,
-        manifestStreams: manifest.streams ?? [],
-        refreshPolicy,
-      });
-      return {
-        collection_report: collectionReport,
-        connection_id: connectorInstanceId,
-        connection_health: connectionHealth,
-        connector_display_name: connectorDisplayName,
-        connector_id: connectorId,
-        connector_instance_id: connectorInstanceId,
-        display_name: instance.displayName || connectorDisplayName,
-        local_device_progress: localDeviceProgress,
-        manifest_version: manifest.version || null,
-        next_action: connectionHealth.next_action,
-        retained_bytes: live.retainedBytes,
-        streams: (manifest.streams || []).map((stream) => stream.name),
-        stream_count: live.byStream.size,
-        total_records: live.totalRecords,
-        total_retained_bytes: live.retainedBytes?.total_bytes ?? null,
-        freshness,
-        refresh_policy: refreshPolicy,
-        schedule,
-        last_run: lastRun,
-        last_successful_run: lastSuccessfulRun,
-      };
-    },
+    (instance): Promise<ConnectorSummary | null> => projectConnectorSummaryForInstance(instance, deps),
     options.onInFlightChange ? { onInFlightChange: options.onInFlightChange } : {}
   );
   return summaries.filter((summary): summary is ConnectorSummary => summary !== null);
+}
+
+// Resolve one configured connection from a record-subpage route id and project
+// only that connection. The selector precedence matches the operator console's
+// `resolveConnectionForRecordsRoute`: an exact match on the stable connection
+// identity (`connectorInstanceId`) is preferred; otherwise the first configured
+// connection whose `connectorId` matches. Returns `null` when nothing resolves,
+// or when the matched connection is not a public reference connector. The
+// per-connection projection fan-out runs for the matched connection only — the
+// records subpages that resolve one connection no longer hydrate every connector.
+export async function getConnectorSummaryForRoute(
+  routeId: string,
+  controller?: ControllerLike | null
+): Promise<ConnectorSummary | null> {
+  const rows = await listConnectorInstanceRowsForDashboard();
+  const match =
+    rows.find((instance) => instance.connectorInstanceId === routeId) ??
+    rows.find((instance) => instance.connectorId === routeId) ??
+    null;
+  if (match === null) {
+    return null;
+  }
+  const deps = await loadConnectorSummaryProjectionDeps(controller);
+  return projectConnectorSummaryForInstance(match, deps);
 }
 
 export async function getConnectorDetail(

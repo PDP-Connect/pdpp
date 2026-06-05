@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { closeDb, getDb, initDb } from '../server/db.js';
-import { listConnectorSummaries } from '../server/ref-control.ts';
+import { getConnectorSummaryForRoute, listConnectorSummaries } from '../server/ref-control.ts';
 import { rebuildRetainedSize } from '../server/retained-size-read-model.js';
 import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 
@@ -205,4 +205,86 @@ test('reference connector summaries project local-device storage records under p
 
   assert.equal(personal.total_records, 0);
   assert.equal(personal.stream_count, 0);
+}));
+
+// `observed_at` on connection-health condition rows is stamped at projection
+// call time, so two projections of the same connection taken a millisecond apart
+// differ only in that timestamp. Normalize it before asserting structural
+// equality so the drift check compares the load-bearing projection, not the wall
+// clock.
+function withoutObservedAt(summary) {
+  if (!summary || !summary.connection_health || !Array.isArray(summary.connection_health.conditions)) {
+    return summary;
+  }
+  return {
+    ...summary,
+    connection_health: {
+      ...summary.connection_health,
+      conditions: summary.connection_health.conditions.map(({ observed_at: _observed, ...rest }) => rest),
+    },
+  };
+}
+
+test('getConnectorSummaryForRoute resolves one connection by stable identity and matches its list entry', withTmpDb(async () => {
+  // Two connections share CONNECTOR_ID. A record subpage routed to the WORK
+  // connection must get exactly that connection's summary — and it must be
+  // structurally identical (modulo the projection timestamp) to the entry the
+  // all-connector list produces, since both go through the same per-connection
+  // projection (no drift).
+  seedConnector();
+  await seedInstances({ sourceKind: 'manual' });
+  seedRecord({
+    connectorInstanceId: WORK_INSTANCE_ID,
+    stream: 'messages',
+    key: 'msg_1',
+    data: { id: 'msg_1', text: 'work message' },
+    emittedAt: '2026-05-20T12:01:00.000Z',
+    version: 1,
+  });
+  await rebuildRetainedSize();
+
+  const scoped = await getConnectorSummaryForRoute(WORK_INSTANCE_ID);
+  assert.ok(scoped, 'a known connection id resolves to a summary');
+  assert.equal(scoped.connector_instance_id, WORK_INSTANCE_ID);
+  assert.equal(scoped.connection_id, WORK_INSTANCE_ID);
+  assert.equal(scoped.total_records, 1);
+
+  const summaries = await listConnectorSummaries();
+  const listEntry = summaries.find((row) => row.connector_instance_id === WORK_INSTANCE_ID);
+  assert.deepEqual(
+    withoutObservedAt(scoped),
+    withoutObservedAt(listEntry),
+    'scoped summary is identical to the connection list entry (shared projection, no drift)',
+  );
+}));
+
+test('getConnectorSummaryForRoute falls back to the same connection the list resolves first for a connector_id', withTmpDb(async () => {
+  // When a record subpage is routed by bare connector_id (the row had no
+  // concrete connection identity), the resolver returns the FIRST configured
+  // connection of that connector — the SAME one the all-connector list places
+  // first, which is exactly what the console's prior `find` over the full list
+  // selected. The invariant is parity with the list order, not a hardcoded
+  // instance.
+  seedConnector();
+  await seedInstances({ sourceKind: 'manual' });
+
+  const summaries = await listConnectorSummaries();
+  const firstForConnector = summaries.find((row) => row.connector_id === CONNECTOR_ID);
+  assert.ok(firstForConnector, 'the connector has at least one configured connection');
+
+  const scoped = await getConnectorSummaryForRoute(CONNECTOR_ID);
+  assert.ok(scoped, 'a connector_id-only route still resolves a connection');
+  assert.equal(scoped.connector_id, CONNECTOR_ID);
+  assert.equal(
+    scoped.connector_instance_id,
+    firstForConnector.connector_instance_id,
+    'connector_id fallback resolves the same connection the full list resolves first',
+  );
+}));
+
+test('getConnectorSummaryForRoute returns null when nothing resolves', withTmpDb(async () => {
+  seedConnector();
+  await seedInstances({ sourceKind: 'manual' });
+  const scoped = await getConnectorSummaryForRoute('cin_does_not_exist');
+  assert.equal(scoped, null);
 }));

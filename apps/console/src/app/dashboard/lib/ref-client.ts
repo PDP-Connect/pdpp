@@ -759,8 +759,17 @@ export async function listWebPushSubscriptions(): Promise<ListResponse<WebPushSu
   return (await refFetch("/_ref/web-push/subscriptions")) as ListResponse<WebPushSubscriptionSummary>;
 }
 
-export async function listConnectorSummaries(): Promise<ListResponse<RefConnectorSummary>> {
-  return (await refFetch("/_ref/connectors")) as ListResponse<RefConnectorSummary>;
+export async function listConnectorSummaries(
+  options: { connectionRouteId?: string } = {}
+): Promise<ListResponse<RefConnectorSummary>> {
+  // When a record subpage knows the connection it wants, pass the route id so
+  // the reference projects only that one connection (a 0-or-1 list) instead of
+  // running the per-connection fan-out for every configured connection. Unscoped
+  // callers (records index, schedules, grant request) omit it and get the full
+  // list exactly as before.
+  return (await refFetch("/_ref/connectors", { connection: options.connectionRouteId })) as ListResponse<
+    RefConnectorSummary
+  >;
 }
 
 export async function listRecordVersionStats(

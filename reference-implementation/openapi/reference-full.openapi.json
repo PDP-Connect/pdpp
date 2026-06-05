@@ -12343,7 +12343,17 @@
           "connectors"
         ],
         "summary": "List configured connection summaries with manifest, latest run, schedule, and freshness.",
-        "parameters": [],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "connection",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "",
