@@ -22,11 +22,17 @@ import test from 'node:test';
 import pg from 'pg';
 
 import {
+  CANONICAL_CHANGE_MODEL,
+  CANONICAL_REPRESENTATIVE_POLICY,
+  COMPACTION_MODES,
   COMPACTION_POLICIES,
   applyCompaction,
+  assertCanonicalEligible,
   findPolicy,
+  isCanonicalEligible,
   markScopeDirty,
   parseLimitKeys,
+  parseMode,
   planCompaction,
   recordFingerprint,
   selectRemovableVersions,
@@ -590,6 +596,233 @@ test('selectRemovableVersions: current-row pin holds even when current matches a
   assert.deepEqual(removable.sort((a, b) => a - b), [2, 4]);
 });
 
+// ─── Canonical-mode eligibility (task 1.2 / 2.1) ─────────────────────────
+
+test('COMPACTION_MODES is exactly [audit, canonical] and audit is the default of parseMode', () => {
+  assert.deepEqual(COMPACTION_MODES, ['audit', 'canonical']);
+  assert.equal(parseMode(undefined), 'audit');
+  assert.equal(parseMode(null), 'audit');
+  assert.equal(parseMode(''), 'audit');
+  assert.equal(parseMode('audit'), 'audit');
+  assert.equal(parseMode('canonical'), 'canonical');
+  assert.equal(parseMode('strict'), 'invalid');
+  assert.equal(parseMode('CANONICAL'), 'invalid', 'mode is case-sensitive');
+  assert.equal(parseMode(true), 'invalid', 'a bare --mode flag (boolean) is invalid');
+});
+
+test('chase/transactions is the ONLY canonical-eligible policy in this slice (task 2.1/2.3)', () => {
+  const eligible = COMPACTION_POLICIES.filter(isCanonicalEligible).map(
+    (p) => `${p.connectorIds[0]}/${p.stream}`,
+  );
+  assert.deepEqual(eligible, ['chase/transactions'], 'exactly one canonical-eligible stream this tranche');
+});
+
+test('chase/transactions declares the canonical policy fields exactly (task 2.1)', () => {
+  const p = findPolicy('chase', 'transactions');
+  assert.ok(p);
+  assert.equal(p.changeModel, CANONICAL_CHANGE_MODEL);
+  assert.equal(p.representativePolicy, CANONICAL_REPRESENTATIVE_POLICY);
+  // Fingerprint exclusions stay aligned with the connector runtime (task 2.2).
+  assert.deepEqual(p.excludeKeys, ['fetched_at', 'source']);
+  assert.ok(isCanonicalEligible(p));
+});
+
+test('no other Chase/USAA/Amazon/ChatGPT/agent/point-in-time stream is canonical-eligible (task 2.3)', () => {
+  // Every registered policy except chase/transactions must be canonical-INELIGIBLE
+  // (missing both fields). This is the fail-closed guarantee for the whole
+  // registry, pinned so a future edit cannot silently widen canonical scope.
+  for (const p of COMPACTION_POLICIES) {
+    const pair = `${p.connectorIds[0]}/${p.stream}`;
+    if (pair === 'chase/transactions') continue;
+    assert.equal(
+      isCanonicalEligible(p),
+      false,
+      `${pair} must NOT be canonical-eligible in this slice`,
+    );
+    assert.equal(p.changeModel, undefined, `${pair} must not declare changeModel`);
+    assert.equal(p.representativePolicy, undefined, `${pair} must not declare representativePolicy`);
+  }
+});
+
+test('isCanonicalEligible fails closed for partial / wrong field values (task 1.2)', () => {
+  assert.equal(isCanonicalEligible(null), false);
+  assert.equal(isCanonicalEligible(undefined), false);
+  assert.equal(isCanonicalEligible({}), false, 'no fields → ineligible');
+  assert.equal(
+    isCanonicalEligible({ changeModel: 'immutable_semantic' }),
+    false,
+    'changeModel alone is not enough',
+  );
+  assert.equal(
+    isCanonicalEligible({ representativePolicy: 'current' }),
+    false,
+    'representativePolicy alone is not enough',
+  );
+  assert.equal(
+    isCanonicalEligible({ changeModel: 'mutable', representativePolicy: 'current' }),
+    false,
+    'a mutable change model is never eligible',
+  );
+  assert.equal(
+    isCanonicalEligible({ changeModel: 'immutable_semantic', representativePolicy: 'first' }),
+    false,
+    'representativePolicy must be exactly "current" in this slice',
+  );
+});
+
+test('assertCanonicalEligible throws for ineligible policies and is a no-op for chase/transactions', () => {
+  // Denial path (spec scenario "Ineligible stream fails closed"): a non-eligible
+  // policy must throw rather than allow a canonical delete.
+  assert.throws(
+    () => assertCanonicalEligible(findPolicy('chase', 'accounts'), 'chase', 'accounts'),
+    /canonical mode refused/,
+  );
+  assert.throws(
+    () => assertCanonicalEligible(findPolicy('usaa', 'transactions'), 'usaa', 'transactions'),
+    /requires changeModel="immutable_semantic"/,
+  );
+  assert.throws(
+    () => assertCanonicalEligible(null, 'mystery', 'widgets'),
+    /no registered policy/,
+  );
+  // Eligible policy → no throw.
+  assert.doesNotThrow(() =>
+    assertCanonicalEligible(findPolicy('chase', 'transactions'), 'chase', 'transactions'),
+  );
+});
+
+// ─── Canonical-mode selector (task 1.3 / 3.1 / 3.2) ──────────────────────
+
+const CHASE_TX_POLICY = findPolicy('chase', 'transactions');
+
+// A chase-transaction-shaped body: identity (id/fitid) + immutable fields, with
+// the excluded run/acquisition metadata (fetched_at, source). Two bodies with
+// the same `key` part share one canonical fingerprint; a `field` override moves
+// it (a real transaction change).
+function tx(version, { run = 'r', field = -4599, fetchedAt = `2026-06-0${version}T00:00:00Z` } = {}) {
+  return row(version, {
+    id: 'INTACC123|FITID-0001',
+    account_id: 'INTACC123',
+    fitid: 'FITID-0001',
+    date: '2026-04-10',
+    amount: field,
+    name: 'COFFEE SHOP',
+    fetched_at: fetchedAt,
+    source: `qfx_download_${run}`,
+  });
+}
+
+test('canonical: immutable same-fingerprint run converges to the current survivor (spec scenario 2)', () => {
+  // Five versions differing ONLY on excluded metadata → one fingerprint.
+  const rows = [
+    tx(1, { run: 'all' }),
+    tx(2, { run: 'since' }),
+    tx(3, { run: 'all' }),
+    tx(4, { run: 'since' }),
+    tx(5, { run: 'all' }),
+  ];
+  // Canonical keeps ONLY the current row (v5); audit keeps first+current.
+  assert.deepEqual(
+    selectRemovableVersions(rows, 5, CHASE_TX_POLICY, 'canonical').sort((a, b) => a - b),
+    [1, 2, 3, 4],
+    'canonical collapses the whole same-fingerprint run to the current row',
+  );
+  assert.deepEqual(
+    selectRemovableVersions(rows, 5, CHASE_TX_POLICY, 'audit').sort((a, b) => a - b),
+    [2, 3, 4],
+    'audit still keeps the first observation + current',
+  );
+});
+
+test('canonical: distinct canonical fingerprints each keep a survivor (spec scenario 3)', () => {
+  // A A B B with current = v4 (B). Real field move at v3 is a boundary.
+  const rows = [
+    tx(1, { field: -4599 }),
+    tx(2, { field: -4599 }),
+    tx(3, { field: -5000 }),
+    tx(4, { field: -5000 }),
+  ];
+  // Survivors: v1 (first of run A) + v4 (current, run B). Removable: v2, v3.
+  assert.deepEqual(
+    selectRemovableVersions(rows, 4, CHASE_TX_POLICY, 'canonical').sort((a, b) => a - b),
+    [2, 3],
+  );
+});
+
+test('canonical: current row in the middle of a same-fingerprint run is the sole survivor', () => {
+  const rows = [tx(1), tx(2), tx(3), tx(4)];
+  // current = v3; the whole run shares one fingerprint → only v3 survives.
+  assert.deepEqual(
+    selectRemovableVersions(rows, 3, CHASE_TX_POLICY, 'canonical').sort((a, b) => a - b),
+    [1, 2, 4],
+  );
+});
+
+test('canonical: tombstone and resurrection boundary are hard survivors (spec scenario 4)', () => {
+  // A A TOMB A A with current = v5. The resurrection boundary (v4) is pinned
+  // even though it shares the current run's fingerprint; only the pre-tombstone
+  // duplicate v2 collapses.
+  const rows = [tx(1), tx(2), row(3, null, { deleted: true }), tx(4), tx(5)];
+  const removable = selectRemovableVersions(rows, 5, CHASE_TX_POLICY, 'canonical').sort((a, b) => a - b);
+  assert.deepEqual(removable, [2], 'survivors: v1, v3(tombstone), v4(resurrection), v5(current)');
+});
+
+test('canonical: a tombstone never collapses across the resurrection (multi-duplicate post-tombstone run)', () => {
+  // TOMB then A A A with current = v5. v2 tombstone + v3 resurrection pinned;
+  // v4 is the only removable duplicate; v5 current survives.
+  const rows = [tx(1), row(2, null, { deleted: true }), tx(3), tx(4), tx(5)];
+  const removable = selectRemovableVersions(rows, 5, CHASE_TX_POLICY, 'canonical').sort((a, b) => a - b);
+  assert.deepEqual(removable, [4], 'survivors: v1, v2(tombstone), v3(resurrection), v5(current)');
+});
+
+test('canonical: the current row is NEVER removable (no current-anchor orphaning)', () => {
+  // Across a spread of shapes, the current version must never appear in the
+  // removable set — the design.md "current anchor orphaning" guard.
+  const shapes = [
+    { rows: [tx(1), tx(2), tx(3)], current: 1 },
+    { rows: [tx(1), tx(2), tx(3)], current: 2 },
+    { rows: [tx(1), tx(2), tx(3)], current: 3 },
+    { rows: [tx(1), tx(2, { field: -1 }), tx(3)], current: 2 },
+    { rows: [tx(1), row(2, null, { deleted: true }), tx(3)], current: 3 },
+  ];
+  for (const { rows, current } of shapes) {
+    const removable = selectRemovableVersions(rows, current, CHASE_TX_POLICY, 'canonical');
+    assert.ok(
+      !removable.includes(current),
+      `current v${current} must not be removable (got ${JSON.stringify(removable)})`,
+    );
+  }
+});
+
+test('canonical: a single-version history removes nothing', () => {
+  assert.deepEqual(selectRemovableVersions([tx(1)], 1, CHASE_TX_POLICY, 'canonical'), []);
+  assert.deepEqual(selectRemovableVersions([], 1, CHASE_TX_POLICY, 'canonical'), []);
+});
+
+test('canonical: all-distinct-fingerprint history removes nothing (every version is a real boundary)', () => {
+  const rows = [tx(1, { field: -1 }), tx(2, { field: -2 }), tx(3, { field: -3 })];
+  assert.deepEqual(selectRemovableVersions(rows, 3, CHASE_TX_POLICY, 'canonical'), []);
+});
+
+test('canonical floor is at or below the audit floor for the same history', () => {
+  // Canonical can never RETAIN more than audit for any chase/transactions shape:
+  // it removes a superset of audit's removable versions.
+  const shapes = [
+    [tx(1), tx(2), tx(3), tx(4), tx(5)],
+    [tx(1), tx(2), tx(3, { field: -5000 }), tx(4, { field: -5000 })],
+    [tx(1), tx(2), row(3, null, { deleted: true }), tx(4), tx(5)],
+    [tx(1), tx(2, { field: -2 }), tx(3), tx(4, { field: -4 }), tx(5)],
+  ];
+  for (const rows of shapes) {
+    const current = rows[rows.length - 1].version;
+    const audit = new Set(selectRemovableVersions(rows, current, CHASE_TX_POLICY, 'audit'));
+    const canonical = new Set(selectRemovableVersions(rows, current, CHASE_TX_POLICY, 'canonical'));
+    for (const v of audit) {
+      assert.ok(canonical.has(v), `canonical must also remove audit-removable v${v}`);
+    }
+  }
+});
+
 // ─── Postgres-backed integration tests ──────────────────────────────────
 
 if (!POSTGRES_URL) {
@@ -980,5 +1213,177 @@ if (!POSTGRES_URL) {
       assert.equal(result.inserted, 0);
       assert.equal(result.backupTable, null, 'no-op apply does not create a backup table');
     });
+  });
+
+  // ─── Canonical-mode convergence regression (task 3.5) ──────────────────
+
+  test('canonical: chase/transactions metadata-churn history compacts to one retained current survivor per key', async () => {
+    // Reproduces the live offender shape (chase-transaction-immutable-ratio-
+    // 20260605.md): every transaction was re-emitted each run with a fresh
+    // `fetched_at`/`source`, so each key accumulated many versions that share
+    // ONE canonical fingerprint after the policy exclusions. Canonical mode must
+    // converge each key to exactly its current `records.version` row (the 4605→
+    // 1145 / 1.000-ratio shape), while audit mode keeps the conservative
+    // first+current (the 4605→2289 / ~2.0-ratio shape).
+    const pool = new Pool({ connectionString: POSTGRES_URL });
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorInstanceId = `cin_compact_chasetx_${suffix}`;
+    const connectorId = 'chase';
+    const stream = 'transactions';
+    const runId = `test_${suffix}`;
+    const backupTable = `compact_record_history_backup_${runId}`;
+
+    // Three keys, each with 5 metadata-churn versions (only fetched_at/source
+    // move). Per key: stored=5, semantic=1 → canonical keeps 1 (current),
+    // audit keeps 2 (first+current).
+    const keyCount = 3;
+    const versionsPerKey = 5;
+    const txBody = (key, run, ts) => ({
+      id: key,
+      account_id: 'INTACC123',
+      fitid: key.split('|')[1],
+      date: '2026-04-10',
+      amount: -4599,
+      currency: 'USD',
+      type: 'DEBIT',
+      name: 'COFFEE SHOP',
+      memo: null,
+      check_number: null,
+      reference_number: null,
+      source: `qfx_download_${run}_2026-04-10`,
+      fetched_at: ts,
+    });
+
+    try {
+      await pool.query(
+        `INSERT INTO version_counter(connector_id, connector_instance_id, stream, max_version)
+         VALUES($1, $2, $3, $4)
+         ON CONFLICT (connector_instance_id, stream) DO UPDATE SET max_version = EXCLUDED.max_version`,
+        [connectorId, connectorInstanceId, stream, keyCount * versionsPerKey],
+      );
+      let version = 0;
+      for (let k = 0; k < keyCount; k++) {
+        const recordKey = `INTACC123|FITID-${String(k).padStart(4, '0')}`;
+        let lastBody = null;
+        for (let v = 0; v < versionsPerKey; v++) {
+          version += 1;
+          // Alternate the acquisition mode + advance the run clock so EVERY
+          // version differs on excluded metadata only.
+          const run = v % 2 === 0 ? 'all' : 'since_last_statement';
+          const ts = `2026-06-0${v + 1}T10:00:00.000Z`;
+          lastBody = txBody(recordKey, run, ts);
+          await pool.query(
+            `INSERT INTO record_changes(connector_id, connector_instance_id, stream, record_key, version, record_json, emitted_at, deleted)
+             VALUES($1, $2, $3, $4, $5, $6::jsonb, $7, FALSE)`,
+            [connectorId, connectorInstanceId, stream, recordKey, version, JSON.stringify(lastBody), ts],
+          );
+        }
+        // Current row = the last (highest-version) observation for this key.
+        await pool.query(
+          `INSERT INTO records(connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version, deleted, primary_key_text)
+           VALUES($1, $2, $3, $4, $5::jsonb, $6, $7, FALSE, $4)`,
+          [connectorId, connectorInstanceId, stream, recordKey, JSON.stringify(lastBody), lastBody.fetched_at, version],
+        );
+      }
+
+      const policy = findPolicy('chase', 'transactions');
+      assert.ok(policy, 'chase/transactions policy must be registered');
+      assert.ok(isCanonicalEligible(policy), 'chase/transactions must be canonical-eligible');
+
+      const totalVersions = keyCount * versionsPerKey;
+
+      // Audit mode: keeps first + current per key → 2 retained per key.
+      const auditPlan = await planCompaction({
+        pool, connectorInstanceId, stream, policy, limitKeys: null, mode: 'audit',
+      });
+      assert.equal(auditPlan.scannedKeys, keyCount);
+      assert.equal(auditPlan.scannedVersions, totalVersions);
+      assert.equal(
+        auditPlan.retainedVersionsAfter,
+        keyCount * 2,
+        'audit keeps first + current per key',
+      );
+
+      // Canonical mode: keeps only the current row per key → 1 retained per key.
+      const canonicalPlan = await planCompaction({
+        pool, connectorInstanceId, stream, policy, limitKeys: null, mode: 'canonical',
+      });
+      assert.equal(canonicalPlan.mode, 'canonical');
+      assert.equal(canonicalPlan.scannedVersions, totalVersions);
+      assert.equal(
+        canonicalPlan.removableVersions,
+        totalVersions - keyCount,
+        'canonical removes all but one (current) version per key',
+      );
+      assert.equal(
+        canonicalPlan.retainedVersionsAfter,
+        keyCount,
+        'canonical converges to one retained current survivor per key (1.000 ratio)',
+      );
+
+      // Apply canonical and confirm convergence on disk.
+      const result = await applyCompaction({ pool, plan: canonicalPlan, runId });
+      assert.equal(result.deleted, totalVersions - keyCount);
+
+      const retained = (await pool.query(
+        `SELECT count(*)::int AS c FROM record_changes WHERE connector_instance_id = $1 AND stream = $2`,
+        [connectorInstanceId, stream],
+      )).rows[0].c;
+      assert.equal(retained, keyCount, 'one retained history version per key after canonical apply');
+
+      // Every current row still has a matching retained history row at its
+      // version (no current-anchor orphaning — the design.md safety assertion).
+      const orphans = (await pool.query(
+        `SELECT count(*)::int AS c
+           FROM records r
+          WHERE r.connector_instance_id = $1 AND r.stream = $2
+            AND NOT EXISTS (
+              SELECT 1 FROM record_changes c
+               WHERE c.connector_instance_id = r.connector_instance_id
+                 AND c.stream = r.stream
+                 AND c.record_key = r.record_key
+                 AND c.version = r.version)`,
+        [connectorInstanceId, stream],
+      )).rows[0].c;
+      assert.equal(orphans, 0, 'every current records.version has a matching retained history row');
+
+      // Idempotence: re-running canonical after apply finds nothing more.
+      const idempotentPlan = await planCompaction({
+        pool, connectorInstanceId, stream, policy, limitKeys: null, mode: 'canonical',
+      });
+      assert.equal(idempotentPlan.removableVersions, 0, 'canonical apply is idempotent');
+    } finally {
+      try { await pool.query(`DROP TABLE IF EXISTS "${backupTable}"`); } catch {}
+      await pool.query(`DELETE FROM record_changes WHERE connector_instance_id = $1`, [connectorInstanceId]);
+      await pool.query(`DELETE FROM records WHERE connector_instance_id = $1`, [connectorInstanceId]);
+      await pool.query(`DELETE FROM version_counter WHERE connector_instance_id = $1`, [connectorInstanceId]);
+      try { await pool.query(`DELETE FROM retained_size_stream WHERE connector_instance_id = $1`, [connectorInstanceId]); } catch {}
+      try { await pool.query(`DELETE FROM retained_size_connection WHERE connector_instance_id = $1`, [connectorInstanceId]); } catch {}
+      await pool.end();
+    }
+  });
+
+  test('canonical: planCompaction refuses an ineligible stream (fail-closed apply guard)', async () => {
+    // The deny-by-default gate must throw before any planning for a policy that
+    // is not canonical-eligible — an ineligible stream can never reach the
+    // destructive path even via the programmatic API.
+    const pool = new Pool({ connectionString: POSTGRES_URL });
+    try {
+      const policy = findPolicy('chase', 'accounts');
+      assert.ok(policy && !isCanonicalEligible(policy));
+      await assert.rejects(
+        () => planCompaction({
+          pool,
+          connectorInstanceId: 'cin_does_not_matter',
+          stream: 'accounts',
+          policy,
+          limitKeys: null,
+          mode: 'canonical',
+        }),
+        /canonical mode refused/,
+      );
+    } finally {
+      await pool.end();
+    }
   });
 }
