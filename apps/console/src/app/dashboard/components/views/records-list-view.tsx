@@ -113,6 +113,24 @@ function resolvePrimaryEmptyHint(interactive: boolean, hasNoDataRegistrations: b
 }
 
 /**
+ * Copy for the "No data yet" section that lists registered-but-empty
+ * connections. It must (1) say what the rows are — real connections, not catalog
+ * connectors you could add (those stay under Add connection) — and (2) name the
+ * real removal path: owner-agent connection controls, where revoke stops future
+ * collection and delete also erases records. Removal is owner-bearer only, so
+ * pointing at the owner agent (not a console action) is the honest framing.
+ *
+ * The sandbox is mock-backed and cannot create or remove connections, so it gets
+ * a plain specimen note with no action guidance.
+ */
+function resolveNoDataSectionDescription(interactive: boolean): string {
+  if (!interactive) {
+    return "These mock connections are registered but have no seeded records.";
+  }
+  return "These connections are registered but have no durable records yet; scheduled connectors add records on their next pull, and local-collector connections fill in when their device pushes. A connector you have not connected stays under Add connection; to drop one you do not want, ask your owner agent to revoke it (stops future collection) or delete it (also erases its records).";
+}
+
+/**
  * Assigns ordinal subtitles to unnamed connections that share a connector
  * type. When a user has two Gmail connections but neither has a custom name,
  * both rows would show "Gmail" for both the headline and the subtitle — making
@@ -365,14 +383,7 @@ export function RecordsListView({
       </Section>
 
       {empty.length > 0 ? (
-        <Section
-          description={
-            interactive
-              ? "These connections are registered but have no durable progress yet. A scheduled or owner-triggerable connector pulls its first records on Sync now; a local-collector connection fills in when its device pushes."
-              : "These mock connections are registered but have no seeded records."
-          }
-          title={`No data yet (${empty.length})`}
-        >
+        <Section description={resolveNoDataSectionDescription(interactive)} title={`No data yet (${empty.length})`}>
           <DataList>
             {empty.map((o) =>
               interactive ? (

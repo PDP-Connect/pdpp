@@ -297,7 +297,7 @@ const QUALIFIED_SYNC_NOW = /Where a connector supports an owner-triggered pull, 
 // universal next step for every registered-but-empty connection.
 const NO_DATA_SECTION_LOCAL_ONLY =
   /Click Sync now to pull initial data, or wait for a local-collector device to push its first records/;
-const NO_DATA_SECTION_MIXED_POPULATION = /a local-collector connection fills in when its device pushes/;
+const NO_DATA_SECTION_MIXED_POPULATION = /local-collector connections fill in when their device pushes/;
 
 test("view exposes a real add-connection entry point, not a dead Add button", async () => {
   const src = await readFile(VIEW_FILE, "utf8");
@@ -447,6 +447,57 @@ test("no-data section copy no longer treats local-collector push as the universa
   const src = await readFile(VIEW_FILE, "utf8");
   assert.doesNotMatch(src, NO_DATA_SECTION_LOCAL_ONLY);
   assert.match(src, NO_DATA_SECTION_MIXED_POPULATION);
+});
+
+// ─── Zero-record connection lifecycle: what it is + how to remove it ──────────
+//
+// Rows in "No data yet" are real connections (the catalog-vs-connection fix
+// stopped catalog connectors from being materialized as phantom rows), so the
+// copy must (a) keep a connector you have not connected pointed at Add
+// connection, and (b) name the real removal path — owner-agent revoke (stops
+// future collection) / delete (also erases records). Removal is owner-bearer
+// only, so the copy directs the owner to their owner agent rather than implying
+// a console click. These pin the meaning; they do not pin the exact prose.
+
+// The no-data section description is sourced from a pure, testable helper rather
+// than an inline ternary, so the lifecycle copy can be asserted directly.
+const NO_DATA_SECTION_USES_HELPER = /description=\{resolveNoDataSectionDescription\(interactive\)\}/;
+const NO_DATA_SECTION_HELPER_DEF = /function resolveNoDataSectionDescription\(interactive: boolean\): string/;
+// A connector you have not connected stays under Add connection — so a no-data
+// row is never read as "a connector I can choose".
+const NO_DATA_SECTION_NAMES_CATALOG = /not connected stays under Add connection/;
+// The removal path names honest revoke-vs-delete semantics directed at the
+// owner agent: revoke stops future collection, delete also erases records.
+const NO_DATA_SECTION_NAMES_OWNER_AGENT = /owner agent/;
+const NO_DATA_SECTION_NAMES_REVOKE = /revoke it \(stops future collection\)/;
+const NO_DATA_SECTION_NAMES_DELETE = /delete it \(also erases its records\)/;
+// The copy must not render a fake Remove/Delete-connection button: the browser
+// session cannot call the owner-bearer revoke/delete routes.
+const NO_DATA_SECTION_NO_FAKE_REMOVE_BUTTON = /data-testid="(remove|delete)-connection-action"/;
+
+test("no-data section description is sourced from a pure, testable helper", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.match(src, NO_DATA_SECTION_HELPER_DEF);
+  assert.match(src, NO_DATA_SECTION_USES_HELPER);
+});
+
+test("no-data section copy distinguishes a catalog connector from a registered connection", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.match(src, NO_DATA_SECTION_NAMES_CATALOG);
+});
+
+test("no-data section copy names the real owner-agent removal path with honest revoke/delete semantics", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.match(src, NO_DATA_SECTION_NAMES_OWNER_AGENT);
+  assert.match(src, NO_DATA_SECTION_NAMES_REVOKE);
+  assert.match(src, NO_DATA_SECTION_NAMES_DELETE);
+});
+
+test("no-data section copy does not render a console removal button that cannot exist", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  // No fake Remove/Delete-connection action element is rendered in the view; the
+  // copy directs the owner to their owner agent instead.
+  assert.doesNotMatch(src, NO_DATA_SECTION_NO_FAKE_REMOVE_BUTTON);
 });
 
 // Connection-lifecycle objective #1: version churn should not feel like
