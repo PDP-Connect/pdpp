@@ -19,9 +19,31 @@
 
 ## 2. Smallest safe runtime tranche (additive only)
 
-- [ ] 2.1 Accept an optional connector-declared `considered` count on
+- [x] 2.1 Accept an optional connector-declared `considered` count on
   `DETAIL_COVERAGE` and inside `SKIP_RESULT.diagnostics`; bound and redact it on
   the same path as existing diagnostics. No existing field changes.
+  Landed in `reference-implementation/runtime/index.js`: a shared
+  `boundConsideredCount()` normalizes the value to a trusted safe non-negative
+  integer at or below `GAP_CONSIDERED_MAX` (10,000,000) or to `null` (= `unknown`,
+  field omitted). `DETAIL_COVERAGE.considered` is normalized at emission and added
+  as an optional `considered` on the existing `run.detail_coverage_declared` spine
+  event (no existing field changed). `SKIP_RESULT.diagnostics.considered` rides the
+  existing `boundGapDiagnostics` redaction/bounding path and is then re-validated by
+  `normalizeConsideredInDiagnostics()` so a malformed/out-of-bound value is dropped
+  while sibling diagnostics keys survive — flowing through to the `run.stream_skipped`
+  spine event and the terminal `known_gaps[].diagnostics`. Drop-don't-reject (mirrors
+  the non-object-diagnostics posture): a malformed `considered` never fails the run and
+  never fabricates a denominator; absence stays `unknown` (never inferred from
+  collected). Strictly additive: no `collection_report` / `coverage_axis` /
+  `forward_disposition` is emitted on terminal events. Tests:
+  `reference-implementation/test/collection-profile.test.js` adds seven focused cases
+  (valid preserve, malformed/out-of-bound drop, 0-and-max boundary, absence-stays-
+  unknown for DETAIL_COVERAGE; valid preserve and malformed-drop for
+  SKIP_RESULT.diagnostics; and a 2.7 layer-boundary guard asserting no
+  collection_report/coverage_axis/forward_disposition appears on `run.completed`).
+  NOTE: "redact" in this task is exercised only for `SKIP_RESULT.diagnostics`
+  (free-text path); `DETAIL_COVERAGE.considered` is a pure integer with no string to
+  redact, so it is bounded-only — no spec wording change needed.
 - [ ] 2.2 In `buildRunTerminalData()`, derive a per-stream Collection Report block
   (`considered` axis, `collected`, coverage condition, checkpoint status,
   `forward_disposition`) from `RECORD` counts, `SKIP_RESULT`, `DETAIL_GAP` /

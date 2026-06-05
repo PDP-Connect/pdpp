@@ -284,6 +284,12 @@ const KNOWN_GAPS_MAX = 50;
 const GAP_DIAGNOSTICS_BYTES_MAX = 8 * 1024;
 const GAP_DIAGNOSTICS_DEPTH_MAX = 6;
 const GAP_DIAGNOSTICS_LIST_MAX = 32;
+// Upper bound on an optional connector-declared `considered` denominator
+// (DETAIL_COVERAGE / SKIP_RESULT.diagnostics). A `considered` value is only
+// ever a count label; anything that is not a safe non-negative integer at or
+// below this cap is dropped to `unknown` (omitted) rather than trusted. See
+// openspec/changes/define-connector-progress-evidence-contract (task 2.1).
+const GAP_CONSIDERED_MAX = 10_000_000;
 const GAP_SEVERITIES = new Set(['actionable', 'informational', 'recoverable', 'transient']);
 const INFORMATIONAL_GAP_REASONS = new Set(['not_available_in_mode', 'out_of_scope', 'user_disabled']);
 const TRANSIENT_GAP_REASONS = new Set([
@@ -453,6 +459,53 @@ function projectDiagnosticsNode(value, depth) {
   return undefined;
 }
 
+/**
+ * Normalize an optional connector-declared `considered` denominator into either
+ * a trusted safe non-negative integer or `null` (= `unknown`, omit the field).
+ *
+ * A `considered` value is evidence only: it labels how many items the connector
+ * claims it weighed for a stream/boundary. It is never trusted unless it is a
+ * safe non-negative integer at or below {@link GAP_CONSIDERED_MAX}. Anything
+ * else — non-number, NaN/Infinity, negative, fractional, or over-bound — is
+ * dropped to `null` so it cannot fabricate a completeness denominator. The
+ * runtime never infers `considered` from collected counts (that conflation is
+ * explicitly rejected by the progress-evidence contract); absence stays
+ * `unknown`. Mirrors the drop-don't-reject posture of `boundGapDiagnostics`:
+ * malformed evidence is omitted, not a protocol violation.
+ */
+function boundConsideredCount(value) {
+  if (typeof value !== 'number' || !Number.isInteger(value)) return null;
+  if (value < 0 || value > GAP_CONSIDERED_MAX) return null;
+  return value;
+}
+
+/**
+ * Normalize a top-level `considered` key inside a bounded diagnostics object
+ * (SKIP_RESULT.diagnostics). `boundGapDiagnostics` already preserved numbers as
+ * raw leaves; this re-validates the one denominator key so an out-of-bound,
+ * fractional, or non-integer `considered` is dropped to `unknown` (deleted)
+ * instead of surviving as an untrusted number. A trusted value is rewritten in
+ * its normalized form. Truncation sentinels and non-object inputs pass through
+ * untouched. Mutates and returns the bounded object in place.
+ */
+function normalizeConsideredInDiagnostics(boundedDiagnostics) {
+  if (
+    boundedDiagnostics == null
+    || typeof boundedDiagnostics !== 'object'
+    || Array.isArray(boundedDiagnostics)
+    || !Object.prototype.hasOwnProperty.call(boundedDiagnostics, 'considered')
+  ) {
+    return boundedDiagnostics;
+  }
+  const considered = boundConsideredCount(boundedDiagnostics.considered);
+  if (considered == null) {
+    delete boundedDiagnostics.considered;
+  } else {
+    boundedDiagnostics.considered = considered;
+  }
+  return boundedDiagnostics;
+}
+
 function inferRecoveryAction(reason, message, interactionKind = null) {
   const text = `${reason || ''} ${message || ''} ${interactionKind || ''}`.toLowerCase();
   if (/\b(otp|mfa|2fa|manual|captcha|anti[-_ ]?bot)\b/.test(text)) {
@@ -584,7 +637,7 @@ function buildKnownGap({
     severity,
     unsupportedInDefaultScope,
   });
-  const boundedDiagnostics = boundGapDiagnostics(diagnostics);
+  const boundedDiagnostics = normalizeConsideredInDiagnostics(boundGapDiagnostics(diagnostics));
   return {
     kind,
     stream: boundGapString(stream),
@@ -2708,6 +2761,7 @@ export async function runConnector(opts) {
         case 'DETAIL_COVERAGE': {
           validateDetailCoverageMessage(msg, scopeByStream);
           trackDetailCoverage(msg);
+          const coverageConsidered = boundConsideredCount(msg.considered);
           await emitSpineEventTracked({
             event_type: 'run.detail_coverage_declared',
             trace_id: traceContext.trace_id,
@@ -2729,6 +2783,9 @@ export async function runConnector(opts) {
               hydrated_keys: msg.hydrated_keys.length,
               gap_keys: msg.gap_keys?.length || 0,
               optional_skip_keys: msg.optional_skip_keys?.length || 0,
+              // Optional connector-declared denominator; omitted (= `unknown`)
+              // unless it is a trusted safe non-negative integer in bounds.
+              ...(coverageConsidered == null ? {} : { considered: coverageConsidered }),
             },
           });
           onProgress({

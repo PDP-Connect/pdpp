@@ -2408,6 +2408,367 @@ rl.on('line', (line) => {
     }
   });
 
+  // ── 5b. Optional connector-declared `considered` denominator ──
+  //
+  // openspec/changes/define-connector-progress-evidence-contract (task 2.1):
+  // a connector may declare an optional bounded `considered` count on
+  // DETAIL_COVERAGE and inside SKIP_RESULT.diagnostics so partial-vs-complete is
+  // real, not gap-only. It is treated as evidence only: a trusted value is a safe
+  // non-negative integer in bounds; anything malformed or over-bound is dropped
+  // to `unknown` (omitted) rather than fabricating a completeness denominator.
+  // This tranche carries the value onto the existing per-stream spine events only;
+  // it introduces no collection_report / coverage_axis / forward_disposition.
+
+  await t.test('runtime preserves a valid DETAIL_COVERAGE.considered count on the spine event', async () => {
+    const manifest = buildMultiStreamManifest('considered-coverage');
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
+    const asUrl = `http://localhost:${asPort}`;
+
+    const { connectorPath, cleanup } = createTestConnector([
+      {
+        type: 'DETAIL_COVERAGE',
+        reference_only: true,
+        state_stream: 'items',
+        stream: 'other_items',
+        required_keys: ['k1', 'k2'],
+        hydrated_keys: ['k1', 'k2'],
+        considered: 42,
+      },
+      { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest,
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+      });
+
+      assert.equal(result.status, 'succeeded');
+
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const coverageEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.detail_coverage_declared');
+      assert.ok(coverageEvent, 'expected run.detail_coverage_declared event');
+      assert.equal(coverageEvent.data.stream, 'other_items');
+      assert.equal(coverageEvent.data.required_keys, 2, 'existing coverage counts still emitted');
+      assert.equal(coverageEvent.data.hydrated_keys, 2);
+      assert.equal(coverageEvent.data.considered, 42, 'valid considered is preserved verbatim');
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
+  await t.test('runtime drops malformed / out-of-bound DETAIL_COVERAGE.considered to unknown without rejecting', async () => {
+    // Each value is NOT a safe non-negative integer in bounds, so none may be
+    // trusted as a denominator: the field must be omitted (unknown), and the
+    // run must still succeed (drop, don't reject) with its other coverage counts.
+    for (const considered of [-1, 3.5, Number.NaN, Number.POSITIVE_INFINITY, '7', 10_000_001, null]) {
+      const manifest = buildMultiStreamManifest('considered-coverage-bad');
+      const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+      const { asPort, rsPort } = server;
+      const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
+      const asUrl = `http://localhost:${asPort}`;
+
+      const { connectorPath, cleanup } = createTestConnector([
+        {
+          type: 'DETAIL_COVERAGE',
+          reference_only: true,
+          state_stream: 'items',
+          stream: 'other_items',
+          required_keys: ['k1'],
+          hydrated_keys: ['k1'],
+          considered,
+        },
+        { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+      ]);
+
+      try {
+        const result = await runConnector({
+          connectorPath,
+          connectorId,
+          ownerToken,
+          manifest,
+          state: null,
+          collectionMode: 'full_refresh',
+          persistState: true,
+          rsUrl: `http://localhost:${rsPort}`,
+          onInteraction: async () => ({}),
+        });
+
+        assert.equal(result.status, 'succeeded', `considered=${String(considered)} must not reject the run`);
+
+        const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+        const coverageEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.detail_coverage_declared');
+        assert.ok(coverageEvent, 'coverage event still emitted');
+        assert.equal(
+          coverageEvent.data.considered,
+          undefined,
+          `considered=${String(considered)} must drop to unknown (omitted), never a trusted count`,
+        );
+        assert.equal(coverageEvent.data.required_keys, 1, 'other coverage counts unaffected');
+      } finally {
+        cleanup();
+        await closeServer(server);
+      }
+    }
+  });
+
+  await t.test('runtime accepts a boundary DETAIL_COVERAGE.considered of 0 and the max bound', async () => {
+    for (const considered of [0, 10_000_000]) {
+      const manifest = buildMultiStreamManifest('considered-coverage-edge');
+      const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+      const { asPort, rsPort } = server;
+      const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
+      const asUrl = `http://localhost:${asPort}`;
+
+      const { connectorPath, cleanup } = createTestConnector([
+        {
+          type: 'DETAIL_COVERAGE',
+          reference_only: true,
+          state_stream: 'items',
+          stream: 'other_items',
+          required_keys: ['k1'],
+          hydrated_keys: ['k1'],
+          considered,
+        },
+        { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+      ]);
+
+      try {
+        const result = await runConnector({
+          connectorPath,
+          connectorId,
+          ownerToken,
+          manifest,
+          state: null,
+          collectionMode: 'full_refresh',
+          persistState: true,
+          rsUrl: `http://localhost:${rsPort}`,
+          onInteraction: async () => ({}),
+        });
+
+        assert.equal(result.status, 'succeeded');
+        const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+        const coverageEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.detail_coverage_declared');
+        assert.equal(coverageEvent.data.considered, considered, `boundary considered=${considered} is trusted`);
+      } finally {
+        cleanup();
+        await closeServer(server);
+      }
+    }
+  });
+
+  await t.test('existing DETAIL_COVERAGE with no considered stays unknown (no field) and unchanged', async () => {
+    const manifest = buildMultiStreamManifest('considered-coverage-absent');
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
+    const asUrl = `http://localhost:${asPort}`;
+
+    const { connectorPath, cleanup } = createTestConnector([
+      {
+        type: 'DETAIL_COVERAGE',
+        reference_only: true,
+        state_stream: 'items',
+        stream: 'other_items',
+        required_keys: ['k1'],
+        hydrated_keys: ['k1'],
+        gap_keys: [],
+        optional_skip_keys: [],
+      },
+      { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest,
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+      });
+
+      assert.equal(result.status, 'succeeded');
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const coverageEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.detail_coverage_declared');
+      assert.ok(coverageEvent, 'coverage event emitted with prior shape');
+      assert.equal(coverageEvent.data.considered, undefined, 'absence stays unknown — never inferred from collected');
+      assert.equal(coverageEvent.data.required_keys, 1);
+      assert.equal(coverageEvent.data.hydrated_keys, 1);
+      assert.equal(coverageEvent.data.gap_keys, 0);
+      assert.equal(coverageEvent.data.optional_skip_keys, 0);
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
+  await t.test('runtime preserves a valid SKIP_RESULT.diagnostics.considered count', async () => {
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort);
+    const asUrl = `http://localhost:${asPort}`;
+
+    const { connectorPath, cleanup } = createTestConnector([
+      {
+        type: 'SKIP_RESULT',
+        stream: 'items',
+        reason: 'partial_export',
+        message: 'declared a considered inventory',
+        diagnostics: { phase: 'inventory_counted', considered: 1200 },
+      },
+      { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest: MINIMAL_MANIFEST,
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+      });
+
+      assert.equal(result.status, 'succeeded');
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const skippedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.stream_skipped');
+      assert.ok(skippedEvent, 'expected run.stream_skipped event');
+      assert.equal(skippedEvent.data.diagnostics.considered, 1200, 'valid considered preserved on spine diagnostics');
+      assert.equal(skippedEvent.data.diagnostics.phase, 'inventory_counted', 'rest of diagnostics intact');
+      assert.equal(skippedEvent.data.known_gap.diagnostics.considered, 1200, 'considered also on known_gap diagnostics');
+
+      const completedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.completed');
+      assert.equal(completedEvent.data.known_gaps[0].diagnostics.considered, 1200, 'considered survives to terminal known_gap');
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
+  await t.test('runtime drops malformed SKIP_RESULT.diagnostics.considered while keeping the rest of diagnostics', async () => {
+    for (const considered of [-5, 2.5, '900', Number.NaN, 10_000_001]) {
+      const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+      const { asPort, rsPort } = server;
+      const { ownerToken, connectorId } = await setupConnector(server, asPort);
+      const asUrl = `http://localhost:${asPort}`;
+
+      const { connectorPath, cleanup } = createTestConnector([
+        {
+          type: 'SKIP_RESULT',
+          stream: 'items',
+          reason: 'partial_export',
+          message: 'bad considered',
+          diagnostics: { phase: 'inventory_counted', considered, note: 'keep me' },
+        },
+        { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+      ]);
+
+      try {
+        const result = await runConnector({
+          connectorPath,
+          connectorId,
+          ownerToken,
+          manifest: MINIMAL_MANIFEST,
+          state: null,
+          collectionMode: 'full_refresh',
+          persistState: true,
+          rsUrl: `http://localhost:${rsPort}`,
+          onInteraction: async () => ({}),
+        });
+
+        assert.equal(result.status, 'succeeded', `considered=${String(considered)} must not reject the run`);
+        const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+        const skippedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.stream_skipped');
+        assert.ok(skippedEvent, 'skip event still emitted');
+        assert.equal(
+          skippedEvent.data.diagnostics.considered,
+          undefined,
+          `considered=${String(considered)} dropped to unknown, never trusted`,
+        );
+        assert.equal(skippedEvent.data.diagnostics.phase, 'inventory_counted', 'sibling diagnostics keys survive');
+        assert.equal(skippedEvent.data.diagnostics.note, 'keep me', 'unrelated diagnostics preserved');
+      } finally {
+        cleanup();
+        await closeServer(server);
+      }
+    }
+  });
+
+  await t.test('this tranche introduces no collection_report / coverage_axis / forward_disposition on terminal events', async () => {
+    // 2.7 layer-boundary guard: declaring `considered` must NOT cause the runtime
+    // to emit a per-run collection_report block, a coverage axis, or a forward
+    // disposition on terminal events. Those are later tranches (2.2 / projection).
+    const manifest = buildMultiStreamManifest('considered-no-terminal-block');
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
+    const asUrl = `http://localhost:${asPort}`;
+
+    const { connectorPath, cleanup } = createTestConnector([
+      {
+        type: 'DETAIL_COVERAGE',
+        reference_only: true,
+        state_stream: 'items',
+        stream: 'other_items',
+        required_keys: ['k1'],
+        hydrated_keys: ['k1'],
+        considered: 9,
+      },
+      {
+        type: 'SKIP_RESULT',
+        stream: 'items',
+        reason: 'partial_export',
+        message: 'declared considered',
+        diagnostics: { considered: 50 },
+      },
+      { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest,
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+      });
+
+      assert.equal(result.status, 'succeeded');
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const completedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.completed');
+      assert.ok(completedEvent, 'expected run.completed event');
+      assert.equal(completedEvent.data.collection_report, undefined, 'no collection_report block introduced by this tranche');
+      assert.equal(completedEvent.data.coverage_axis, undefined, 'no coverage_axis on the terminal event');
+      assert.equal(completedEvent.data.forward_disposition, undefined, 'no forward_disposition on the terminal event');
+      // The terminal known_gaps block (the existing carrier) is unchanged.
+      assert.ok(Array.isArray(completedEvent.data.known_gaps), 'existing known_gaps block still present');
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
   await t.test('runtime reports known gaps for partial flush then failed terminal state', async () => {
     const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
     const { asPort, rsPort } = server;
