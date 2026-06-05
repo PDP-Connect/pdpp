@@ -36,6 +36,7 @@ import {
   listDirectoryInventory,
   openInventoryFingerprintCursor,
 } from "../../src/local-source-inventory.ts";
+import { readBoundedFilePreview } from "../../src/bounded-file-preview.ts";
 import { safeTextPreview } from "../../src/safe-text-preview.ts";
 import {
   ATTACHMENT_PREVIEW_CHARS,
@@ -397,7 +398,7 @@ interface WalkToolResultsArgs {
   sessionId: string;
 }
 
-interface EmitToolResultFileArgs {
+export interface EmitToolResultFileArgs {
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   full: string;
   projectDir: string;
@@ -406,15 +407,19 @@ interface EmitToolResultFileArgs {
   toolResultsDir: string;
 }
 
-async function emitToolResultFile(args: EmitToolResultFileArgs): Promise<void> {
-  let buf: string;
-  try {
-    buf = await readFile(args.full, "utf8");
-  } catch {
+export async function emitToolResultFile(args: EmitToolResultFileArgs): Promise<void> {
+  // Tool-result blobs are machine-generated and unbounded (a single large
+  // command output can be hundreds of MB). The durable record keeps only a
+  // short preview plus the byte length (already known from `st.size`), so we
+  // read just a bounded head prefix instead of the whole file — keeping memory
+  // flat on huge sessions. A forbidden byte past the window cannot reach the
+  // preview anyway, so prefix-only screening is honest for this lossy field.
+  const bounded = await readBoundedFilePreview(args.full);
+  if (bounded === null) {
     return;
   }
   const rel = args.full.slice(args.toolResultsDir.length + 1);
-  const previewResult = safeTextPreview(buf, TOOL_RESULT_PREVIEW_CHARS);
+  const previewResult = safeTextPreview(bounded.buffer, TOOL_RESULT_PREVIEW_CHARS);
   await args.emitRecord("attachments", {
     id: `tool_result_file:${args.projectDir}/${args.sessionId}/${rel}`,
     session_id: args.sessionId,
