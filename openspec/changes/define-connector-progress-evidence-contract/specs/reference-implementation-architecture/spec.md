@@ -2,22 +2,44 @@
 
 ### Requirement: Every connector run SHALL produce a per-stream Collection Report
 
-The reference runtime SHALL derive, for each terminal connector run, a structured
-**Collection Report**: a per-stream coverage entry for every stream that was in
-requested scope or visible in the connector manifest for that run. Each entry
-SHALL answer, as structured fields rather than only timeline prose, what was
+For each terminal connector run, the reference implementation SHALL produce a
+structured **Collection Report**: a per-stream coverage entry for every stream that
+was in requested scope or visible in the connector manifest for that run. Each
+entry SHALL answer, as structured fields rather than only timeline prose, what was
 **considered**, what was **collected**, what was **skipped**, what remains a
-**retryable gap**, what is **terminal or unsupported**, and what **checkpoint** was
-committed for that stream. The runtime SHALL compose the report from signals it
-already receives — `RECORD` counts, `SKIP_RESULT`, the reference-only `DETAIL_GAP`
-and `DETAIL_COVERAGE` signals, committed `STATE` cursors, and its own terminal
-accounting — and SHALL NOT require a new portable wire message from the connector.
+**retryable gap**, what is **terminal or unsupported**, what **checkpoint** was
+committed for that stream, and what the next run is expected to do.
 
-The Collection Report SHALL be attached to the run's terminal evidence (the
-`run.completed`, `run.failed`, or `run.cancelled` spine event payload) and SHALL
-be visible only on owner/control-plane surfaces under the same redaction and
-bounding policy already applied to `known_gaps` and `SKIP_RESULT.diagnostics`. It
-SHALL NOT be exposed through grant-scoped `/v1` data, search, schema, or blob APIs.
+The Collection Report SHALL be produced as a two-layer construction, because the
+evidence needed to answer those questions does not all live in one layer:
+
+- **Runtime collection-fact block (objective, run-local).** The reference runtime
+  SHALL attach to the run's terminal evidence (the `run.completed`, `run.failed`,
+  or `run.cancelled` spine event payload) a per-stream block carrying only the
+  objective, run-local facts it owns at run completion: the stream's **collected**
+  count, a **considered** value or `unknown` (never inferred from collected count),
+  the committed **checkpoint** status, the **skip** reason for any `SKIP_RESULT`,
+  and the count of pending recoverable **detail gaps**. The runtime SHALL compose
+  this block from signals it already receives — `RECORD` counts, `SKIP_RESULT`, the
+  reference-only `DETAIL_GAP` and `DETAIL_COVERAGE` signals, and committed `STATE`
+  cursors — and SHALL NOT require a new portable wire message from the connector.
+  The runtime SHALL NOT stamp a final coverage condition or a forward disposition
+  on the terminal event: both require freshness, refresh-policy, attention, and
+  cross-stream rollup evidence that the per-connector run subprocess does not hold.
+- **Control-plane projection (derived on read).** The control-plane projection
+  (the layer that assembles connection-health evidence) SHALL derive the full
+  per-stream Collection Report — each entry's **coverage condition** and **forward
+  disposition** — from the runtime collection-fact block plus the freshness axis,
+  manifest refresh policy, open attention evidence, and cross-stream coverage
+  rollup that only that layer holds. Deriving on read keeps the report honest as
+  data ages: an entry that was fresh at run completion can become
+  `owner_refresh_due` later without rewriting run history.
+
+The Collection Report SHALL be visible only on owner/control-plane surfaces under
+the same redaction and bounding policy already applied to `known_gaps` and
+`SKIP_RESULT.diagnostics`. Neither the runtime collection-fact block nor the
+derived report SHALL be exposed through grant-scoped `/v1` data, search, schema, or
+blob APIs.
 
 A stream's entry SHALL reuse the connection-coverage condition vocabulary — the
 runtime `CoverageAxis` the connection-health projection already emits
@@ -30,20 +52,26 @@ is a separate axis and SHALL NOT be encoded as a coverage condition.
 #### Scenario: A successful run produces a report entry per in-scope stream
 
 - **WHEN** a connector run completes for a scope that requested two streams and the manifest declares no further streams
-- **THEN** the run's terminal evidence SHALL include a Collection Report with one stream entry for each of the two requested streams
-- **AND** each entry SHALL carry the stream's collected count, its committed checkpoint status, and a coverage condition drawn from the connection-coverage vocabulary
+- **THEN** the run's terminal evidence SHALL carry a runtime collection-fact block with one per-stream entry for each of the two requested streams, each entry carrying the stream's collected count and committed checkpoint status
+- **AND** the control-plane projection SHALL derive a Collection Report with one entry per stream, each entry carrying a coverage condition drawn from the connection-coverage vocabulary
+
+#### Scenario: The runtime terminal event carries facts only, not derived axes
+
+- **WHEN** the reference runtime emits the `run.completed`, `run.failed`, or `run.cancelled` terminal event for a run
+- **THEN** the terminal event's collection-fact block SHALL carry per-stream collected count, considered-or-`unknown`, checkpoint status, skip reason, and pending-detail-gap count
+- **AND** the terminal event SHALL NOT carry a per-stream coverage condition or a per-stream forward disposition, because those are derived by the control-plane projection from evidence the runtime does not hold
 
 #### Scenario: A run that skips a stream records it in the report
 
 - **WHEN** a connector emits `SKIP_RESULT` for a requested stream because the implementation cannot collect it in the current mode
-- **THEN** the Collection Report entry for that stream SHALL carry the skip reason and a coverage condition of `unsupported`, `unavailable`, `deferred`, or `terminal_gap` consistent with the skip
-- **AND** the entry SHALL NOT report that stream as `complete`
+- **THEN** the runtime collection-fact block for that stream SHALL carry the skip reason
+- **AND** the derived Collection Report entry for that stream SHALL carry a coverage condition of `unsupported`, `unavailable`, `deferred`, or `terminal_gap` consistent with the skip and SHALL NOT report that stream as `complete`
 
 #### Scenario: A run with a recoverable detail gap records it in the report
 
 - **WHEN** a bounded run records a durable recoverable `DETAIL_GAP` for a stream before committing list-level progress
-- **THEN** the Collection Report entry for that stream SHALL carry a `retryable_gap` coverage condition and the count of pending recoverable gaps
-- **AND** the entry SHALL reference the reference-only detail-gap backlog rather than restating per-item locators in the report
+- **THEN** the runtime collection-fact block for that stream SHALL carry the count of pending recoverable gaps
+- **AND** the derived Collection Report entry for that stream SHALL carry a `retryable_gap` coverage condition and SHALL reference the reference-only detail-gap backlog rather than restating per-item locators in the report
 
 #### Scenario: The report does not change the public data API
 
@@ -63,10 +91,14 @@ credentials, OTP, re-consent, or a manual action), `owner_refresh_due` (no
 outstanding coverage gap, but the retained data is stale for a connection that
 cannot refresh on its own, so an owner-initiated run is due), or `terminal` (an
 outstanding gap that no future run is expected to fill without a connector or
-source change). The disposition SHALL be derived from the entry's coverage
-condition, the retryability of any recorded gap, current attention evidence, and
-the connection's freshness and refresh-policy evidence — not from run timeline
-prose.
+source change). The disposition SHALL be derived by the control-plane projection
+from the entry's coverage condition, the retryability of any recorded gap, current
+attention evidence, and the connection's freshness and refresh-policy evidence —
+not from run timeline prose, and not stamped on the runtime terminal event. The
+runtime terminal event SHALL NOT carry a forward disposition; the forward
+disposition is derived on read by the layer that holds freshness, refresh-policy,
+attention, and rollup evidence (the same construction the connection-level
+`forward_disposition` already uses).
 
 Coverage completeness and freshness are distinct axes and SHALL NOT be conflated:
 a stale stream that collected everything it considered SHALL keep a `complete`
@@ -142,15 +174,17 @@ A Collection Report stream entry SHALL distinguish a known **considered** axis �
 the source range, inventory size, or boundary the run took into account for that
 stream — from an unknown one. When a connector declares what it considered for a
 stream (for example via `DETAIL_COVERAGE.required_keys`, an explicit considered
-count, or an inventory diagnostic), the entry SHALL record that considered value
-and MAY use it to distinguish `partial` from `complete`. When the connector
-declares no considered value, the entry's considered axis SHALL be `unknown`, and
-the runtime SHALL NOT infer `complete` from collected count alone.
+count, or an inventory diagnostic), the runtime collection-fact block SHALL record
+that considered value, and the control-plane projection MAY use it to distinguish
+`partial` from `complete`. When the connector declares no considered value, the
+runtime collection-fact block's considered value SHALL be `unknown`, and the
+runtime SHALL NOT infer a considered value from collected count alone.
 
 A run that collected records SHALL NOT, by collected count alone, be projected as
-having completely covered a stream whose considered denominator is unknown. The
-absence of a considered value SHALL read as absence of evidence, not as proof of
-completeness.
+having completely covered a stream whose considered denominator is unknown. Neither
+the runtime nor the control-plane projection SHALL infer `complete` from collected
+count alone. The absence of a considered value SHALL read as absence of evidence,
+not as proof of completeness.
 
 #### Scenario: A connector declares what it considered
 
@@ -191,6 +225,6 @@ update promote an explicit wire contract.
 
 #### Scenario: Report composition avoids secrets
 
-- **WHEN** the runtime composes a Collection Report from connector-authored skip diagnostics, detail-gap locators, or considered values
-- **THEN** the report SHALL apply the same secret-redaction and bounding policy used for `known_gaps` and `SKIP_RESULT.diagnostics`
-- **AND** it SHALL NOT persist bearer tokens, cookies, secret-bearing URLs, request bodies, or raw private payloads
+- **WHEN** the runtime bounds connector-authored skip diagnostics, detail-gap locators, or considered values into the collection-fact block, and the control-plane projection derives the Collection Report from it
+- **THEN** both layers SHALL apply the same secret-redaction and bounding policy used for `known_gaps` and `SKIP_RESULT.diagnostics`
+- **AND** neither SHALL persist bearer tokens, cookies, secret-bearing URLs, request bodies, or raw private payloads

@@ -45,13 +45,32 @@
   NOTE: "redact" in this task is exercised only for `SKIP_RESULT.diagnostics`
   (free-text path); `DETAIL_COVERAGE.considered` is a pure integer with no string to
   redact, so it is bounded-only — no spec wording change needed.
-- [ ] 2.2 In `buildRunTerminalData()`, derive a per-stream Collection Report block
-  (`considered` axis, `collected`, coverage condition, checkpoint status,
-  `forward_disposition`) from `RECORD` counts, `SKIP_RESULT`, `DETAIL_GAP` /
-  `DETAIL_COVERAGE`, committed `STATE`, open attention evidence, and the
-  connection's freshness axis + refresh-policy evidence
-  (`connection-health.ts` `FreshnessAxis` / `isManualRefreshOnly`). Attach to the
-  terminal event payload alongside the existing `known_gaps` block.
+- [ ] 2.2a (Tranche B — runtime facts half) In `buildRunTerminalData()`, attach a
+  per-stream runtime collection-fact block to the terminal event payload alongside
+  the existing `known_gaps` block, carrying only objective run-local facts:
+  per-stream `collected` count (track per-stream emitted in the run loop; today only
+  aggregate `totalEmitted` exists), `considered` value or `unknown`, committed
+  checkpoint status (from `committedStateStreams` / `newState`), `SKIP_RESULT`
+  reason, and pending-`DETAIL_GAP` count. Compose from `RECORD` counts,
+  `SKIP_RESULT`, `DETAIL_GAP` / `DETAIL_COVERAGE`, and committed `STATE`. Do NOT
+  stamp a coverage condition or `forward_disposition` on the terminal event — the
+  per-connector run subprocess has no freshness, refresh-policy, attention, or
+  cross-stream rollup evidence (that lives downstream in the connection-health
+  projection). Strictly additive; same redaction/bounding policy as
+  `SKIP_RESULT.diagnostics`. Pin the layer boundary with a golden-payload
+  regression so no existing terminal-event field, status code, or commit semantic
+  changes (2.7 invariant).
+- [ ] 2.2b (Tranche C — control-plane projection half) In
+  `reference-implementation/server/ref-control.ts`, key the existing coverage
+  rollup (`mapCoverageAxis`) and the already-tested pure
+  `deriveForwardDisposition()` per stream: read the runtime collection-fact block
+  (and the per-stream `run.detail_coverage_declared` / `run.stream_skipped` spine
+  evidence) plus the freshness axis, manifest refresh policy, and open attention
+  evidence that layer already assembles, and derive each Collection Report entry's
+  coverage condition and `forward_disposition`. Surface on the owner/control-plane
+  projection only; derive on read (never frozen at run completion). This extends the
+  connection-level `forward_disposition` (2.3a/2.3b) from connection scope to stream
+  scope using the same pure helper.
 - [x] 2.3 Forward-disposition derivation is a pure function of (coverage
   condition, gap retryability, attention presence, freshness axis, refresh policy).
   Unit-test all five branches, including `owner_refresh_due` for manual-refresh
@@ -126,14 +145,20 @@
   field set is a separately-reviewable owner-agent contract change and is not
   needed for the dashboard surface. Strictly additive: RI untouched; console
   typecheck clean, 271/271 dashboard-lib + 27/27 diagnostics tests green.
-- [ ] 2.4 `considered: unknown` when no connector-declared value exists; prove a
-  collected-records, no-gaps, no-considered run is NOT projected `complete`.
-- [ ] 2.5 Prove the report is absent from grant-scoped `/v1` reads (records,
+- [ ] 2.4 (with Tranche C) Runtime collection-fact block records `considered:
+  unknown` when no connector-declared value exists (the runtime never infers it from
+  collected count); prove the projection does NOT derive `complete` for a
+  collected-records, no-gaps, no-considered run (the pure helper already returns
+  `resumable` for `unknown` coverage — pin it end-to-end through the per-stream
+  path).
+- [ ] 2.5 (with Tranche C) Prove neither the runtime collection-fact block nor the
+  projection-derived Collection Report appears in grant-scoped `/v1` reads (records,
   search, schema, blobs).
-- [ ] 2.6 Prove a portable `RECORD`/`STATE`/`DONE`-only connector still yields a
-  valid report with `unknown` axes.
-- [ ] 2.7 Run the reference-implementation runtime test suite; confirm no existing
-  terminal-event field, status code, or commit semantic changed.
+- [ ] 2.6 (with Tranche C) Prove a portable `RECORD`/`STATE`/`DONE`-only connector
+  still yields a valid Collection Report with `unknown` axes.
+- [ ] 2.7 (with Tranche B) Run the reference-implementation runtime test suite;
+  confirm no existing terminal-event field, status code, or commit semantic changed
+  by the runtime collection-fact block.
 
 ## 3. Validation
 
@@ -153,32 +178,43 @@
 
 ## Notes
 
-- Tranche 2 is the only code in this change and is strictly additive. If 2.1–2.7
-  cannot all land green, ship the spec (section 1) and record tranche 2 as the
-  next implementation lane rather than landing a partial runtime change.
-- Tranche-2 increments landed so far: 2.3 (the pure `deriveForwardDisposition`
-  helper and its tests), 2.3a (wiring that helper into `computeConnectionHealth`
-  so a connection-level `forward_disposition` is surfaced on the health snapshot),
-  and 2.3b (rendering that connection-level disposition in the console so the
-  owner can actually see it). All three are strictly additive and emit nothing new
-  on any spine event, so none perturbs an existing terminal-event field, status
-  code, or commit semantic (the 2.7 invariant): 2.3 adds a pure function + unit
-  tests; 2.3a adds one optional snapshot field consumed only by the internal
-  `ConnectorSummary` server type, not by any `additionalProperties: false` contract
-  schema; 2.3b adds a console-only formatter + one diagnostics line, reading the
-  field already passed through `GET /_ref/connectors` — no new server contract.
-  2.3a + 2.3b together deliver the first real, owner-VISIBLE dashboard value — the
-  "what will the next run do?" answer rendered on the connection detail page —
-  while staying inside the existing health projection and surface. The
-  remaining tranche-2 tasks (2.1 considered input; 2.2 the per-run, per-stream
-  `buildRunTerminalData()` Collection Report block; 2.4–2.7 honesty / absence /
-  portability proofs) are the next implementation lane. 2.2 specifically is NOT yet
-  objectively narrow: the runtime `index.js` terminal builder has no access to the
-  freshness / refresh-policy evidence the per-stream `forward_disposition` needs
-  (that evidence is assembled downstream in `ref-control` for the connection-health
-  projection), so a faithful per-stream block requires either threading
-  connection-health evidence into the runtime or deriving the per-stream
-  disposition in the projection layer — a layering decision for the owner, not a
-  mechanical wiring step.
+- Tranche 2 is the only code in this change and is strictly additive. If the
+  remaining tranche-2 tasks cannot all land green, ship the spec (section 1) and the
+  landed increments and record the rest as the next implementation lane rather than
+  landing a partial runtime change.
+- The per-run Collection Report is a **two-layer construction** (the accepted
+  layering decision; see
+  `tmp/workstreams/ri-progress-evidence-terminal-layering-v1-report.md`): the
+  runtime attaches an objective per-stream collection-fact block to the terminal
+  event (Tranche B / task 2.2a), and the control-plane projection (`ref-control` →
+  `connection-health`) derives the per-stream coverage condition and
+  `forward_disposition` on read (Tranche C / task 2.2b + 2.4–2.7). The runtime never
+  stamps a coverage condition or `forward_disposition` on the terminal event,
+  because the per-connector run subprocess holds no freshness, refresh-policy,
+  attention, or cross-stream rollup evidence — that is assembled downstream. This
+  resolves the prior open layering question; the old single-step "derive the whole
+  report in `buildRunTerminalData()`" framing is superseded.
+- Tranche-2 increments landed so far: 2.1 (accept the optional connector-declared
+  `considered` count on `DETAIL_COVERAGE` and inside `SKIP_RESULT.diagnostics`,
+  riding the existing spine events; the `Number.isSafeInteger` boundary is the only
+  numeric trust bound), 2.3 (the pure `deriveForwardDisposition` helper and its
+  tests), 2.3a (wiring that helper into `computeConnectionHealth` so a
+  connection-level `forward_disposition` is surfaced on the health snapshot), and
+  2.3b (rendering that connection-level disposition in the console so the owner can
+  actually see it). All four are strictly additive and emit nothing new on any spine
+  event beyond the optional `considered` value, so none perturbs an existing
+  terminal-event field, status code, or commit semantic (the 2.7 invariant): 2.1
+  adds an optional bounded/redacted input on an existing event; 2.3 adds a pure
+  function + unit tests; 2.3a adds one optional snapshot field consumed only by the
+  internal `ConnectorSummary` server type, not by any `additionalProperties: false`
+  contract schema; 2.3b adds a console-only formatter + one diagnostics line,
+  reading the field already passed through `GET /_ref/connectors` — no new server
+  contract. 2.3a + 2.3b together deliver the first real, owner-VISIBLE dashboard
+  value — the "what will the next run do?" answer rendered on the connection detail
+  page — while staying inside the existing health projection and surface. The
+  remaining tranche-2 tasks (2.2a the runtime collection-fact block; 2.2b the
+  projection-derived per-stream coverage condition + `forward_disposition`; 2.4–2.7
+  honesty / absence / portability proofs) are the next implementation lane,
+  sequenced runtime-facts-first then projection.
 - The detail-gap reference-only constraint is preserved: this change reuses
   `DETAIL_GAP` / `DETAIL_COVERAGE` but does not promote them to portable protocol.

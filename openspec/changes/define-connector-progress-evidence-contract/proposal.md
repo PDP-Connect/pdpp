@@ -30,26 +30,38 @@ has to reconstruct freshness and gap honesty from heterogeneous heuristics — t
 exact connector-by-connector fragility the refresh doc warns against.
 
 The missing piece is not more storage or a new wire protocol. It is a **durable
-per-run, per-stream collection-report contract** that the reference runtime
-composes from signals it already receives, with a small required core and an
-explicit forward disposition. The contract makes the existing fields a guarantee
-instead of a coincidence, and names the one genuinely-missing-but-derivable field
-(`considered`) so `partial` can be told from `complete` without inference.
+per-run, per-stream collection-report contract** the reference implementation
+builds from signals it already receives, with a small required core and an explicit
+forward disposition. It is a two-layer construction: the runtime emits objective
+per-stream facts on the terminal event, and the control-plane projection — the only
+layer that holds freshness, refresh-policy, attention, and rollup evidence — derives
+the coverage condition and forward disposition from those facts. The contract makes
+the existing fields a guarantee instead of a coincidence, and names the one
+genuinely-missing-but-derivable field (`considered`) so `partial` can be told from
+`complete` without inference.
 
 ## What Changes
 
 - Add a `reference-implementation-architecture` requirement defining a **per-run
-  Collection Report**: for each requested or manifest-visible stream, the
-  reference runtime SHALL derive a structured stream-coverage entry that answers
-  considered / collected / skipped / retryable / terminal-or-unsupported /
-  checkpoint / forward-disposition, composed from the connector's already-emitted
-  `RECORD`, `SKIP_RESULT`, `DETAIL_GAP`, `DETAIL_COVERAGE`, and `STATE` signals
-  plus the runtime's own terminal accounting.
-- Add a requirement that the report carries a **forward disposition** per stream
-  (`complete` | `resumable` | `awaiting_owner` | `owner_refresh_due` | `terminal`)
-  so an owner surface can state what the next run is expected to do, derived from
-  coverage condition, gap retryability, attention evidence, and the connection's
-  freshness / refresh-policy evidence rather than prose. The `owner_refresh_due`
+  Collection Report** built as a two-layer construction: (a) the reference runtime
+  attaches a per-stream **collection-fact block** to the terminal event carrying
+  only objective, run-local facts — considered-or-`unknown`, collected, skip
+  reason, pending-detail-gap count, checkpoint status — composed from the
+  connector's already-emitted `RECORD`, `SKIP_RESULT`, `DETAIL_GAP`,
+  `DETAIL_COVERAGE`, and `STATE` signals plus the runtime's own terminal
+  accounting; and (b) the **control-plane projection** derives the per-stream
+  **coverage condition** and **forward disposition** from that fact block plus the
+  freshness, refresh-policy, attention, and cross-stream rollup evidence only it
+  holds. The runtime SHALL NOT stamp a coverage condition or forward disposition on
+  the terminal event.
+- Add a requirement that the derived report carries a **forward disposition** per
+  stream (`complete` | `resumable` | `awaiting_owner` | `owner_refresh_due` |
+  `terminal`) so an owner surface can state what the next run is expected to do.
+  The disposition is derived in the control-plane projection from coverage
+  condition, gap retryability, attention evidence, and the connection's freshness /
+  refresh-policy evidence rather than prose, and is never carried on the runtime
+  terminal event (the same construction the connection-level `forward_disposition`
+  already uses). The `owner_refresh_due`
   value closes the manual-refresh seam: a manual-refresh-only connection (such as
   Reddit) can have **complete coverage** yet **stale freshness**, and the
   disposition SHALL surface that owner-initiated refresh is due instead of
@@ -58,18 +70,24 @@ instead of a coincidence, and names the one genuinely-missing-but-derivable fiel
   `awaiting_owner` stays reserved for an actual outstanding coverage gap so missing
   data is never confused with merely aged data.
 - Add a requirement that **absence of a considered denominator is itself honest**:
-  when a connector does not declare what it considered, the runtime SHALL mark the
-  stream's considered axis `unknown` and SHALL NOT infer `complete`.
+  when a connector does not declare what it considered, the runtime SHALL record the
+  stream's considered value as `unknown`, and neither the runtime nor the
+  control-plane projection SHALL infer `complete` from collected count alone.
 - Keep the contract a **reference-implementation projection**, not a new portable
   Collection Profile wire message: it reuses the reference-only `DETAIL_GAP` /
   `DETAIL_COVERAGE` signals under their existing reference-only constraint and the
   already-public `SKIP_RESULT` / `STATE` / terminal-event surfaces. Portable
   connectors and protocol readers SHALL NOT be required to emit a new message.
-- Implement one small, safe runtime change: expose an optional connector-declared
-  `considered` count on `DETAIL_COVERAGE` (already carries `required_keys`) and on
-  `SKIP_RESULT.diagnostics`, and surface a derived `considered` axis on the
-  terminal event's existing per-stream accounting — without changing any existing
-  field, status code, or commit semantics.
+- Implement the runtime input plumbing as the first, smallest, strictly-additive
+  code tranche: accept an optional connector-declared `considered` count on
+  `DETAIL_COVERAGE` (already carries `required_keys`) and inside
+  `SKIP_RESULT.diagnostics`, bounded and redacted on the existing diagnostics path,
+  riding the existing `run.detail_coverage_declared` / `run.stream_skipped` spine
+  events — without changing any existing field, status code, or commit semantics
+  (landed; see tasks 2.1/2.3/2.3a/2.3b). The per-stream collection-fact block on
+  the terminal event (runtime half) and the projection-derived coverage condition +
+  forward disposition (control-plane half) are the next implementation tranches,
+  sequenced below; this change does not claim they are implemented.
 
 ## Capabilities
 
