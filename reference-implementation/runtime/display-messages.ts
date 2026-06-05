@@ -109,14 +109,19 @@ export const DISPLAY_MESSAGES: Record<string, string> = {
   qfx_download_failed: "We couldn't download the transactions file",
   qfx_parse_failed: "We couldn't read the transactions file",
   records_not_found: "We didn't find any records to import",
-  // ─── Bounded-run cap (ChatGPT detail lane) ─────────────────────────────
-  // A run that hit its own per-run size/time budget and deferred the rest —
-  // not a source failure and not source pressure. `retry_exhausted` is the
-  // wire reason these resumable gaps carry (scanned from the connector source);
-  // `run_cap_deferred` is the error class that distinguishes a self-imposed cap
-  // from a busy-service defer. Both read as "saved so far, will finish next run".
-  retry_exhausted: "We collected a batch this time and saved it; the rest will be collected on the next run",
-  run_cap_deferred: "We collected a batch this time and saved it; the rest will be collected on the next run",
+  // ─── Resumable retry / bounded-run cap deferrals ───────────────────────
+  // Two distinct codes, neither of which means the service was busy (that copy
+  // belongs to `upstream_pressure` / `upstream_pressure_deferred`):
+  //   - `retry_exhausted` is the GENERIC resumable wire reason — a retry budget
+  //     was used up. It covers any retry-exhaustion path, not only a configured
+  //     cap, so its copy stays generic and the rest is retried next run.
+  //   - `run_cap_deferred` is the SPECIFIC error class for a configured per-run
+  //     size/time budget: the run chose to stop and saved what it collected.
+  // The two strings must differ (the run-cap class is more specific than the
+  // generic reason) and neither may imply source pressure.
+  retry_exhausted: "We used up this run's retries here, so we'll pick the rest up on the next run",
+  run_cap_deferred:
+    "We collected a batch within this run's budget and saved it; the rest will be collected on the next run",
   row_exception: "Something went wrong reading one of the rows",
   schema_validation_failed: "Some data didn't match the expected format and was skipped",
   scrape_failed: "We couldn't read the page contents",
