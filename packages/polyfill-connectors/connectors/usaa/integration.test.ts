@@ -235,6 +235,133 @@ test("emitStatementRecords: hydrated rows populate pdf_path + pdf_sha256 + docum
   assert.match(String(stmt.data.document_url), /^file:\/\//, "document_url should be a file:// URL");
 });
 
+// ─── Invariant 4c: per-run detail-coverage evidence on the emit path ─────
+
+function statementCoverage(messages: readonly EmittedMessage[]): EmittedMessage | undefined {
+  return messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "statements");
+}
+function statementGaps(messages: readonly EmittedMessage[]): EmittedMessage[] {
+  return messages.filter((m) => m.type === "DETAIL_GAP" && m.stream === "statements");
+}
+
+test("emitStatementRecords: fully hydrated statement run emits DETAIL_COVERAGE with required === hydrated, no gaps", async () => {
+  const { deps, messages } = makeHarness();
+  const indexRows = [makeIndexRow({ rowIndex: 0, id: "S0" }), makeIndexRow({ rowIndex: 1, id: "S1" })];
+  const hydration = new Map<number, HydrationResult>([
+    [0, makeHydrationOk()],
+    [1, makeHydrationOk({ pdfPath: "/tmp/usaa-test/statement-1.pdf" })],
+  ]);
+  const summary: HydrationSummary = { attempts: 2, successes: 2, results: hydration };
+  await emitStatementRecords(deps, indexRows, hydration, summary);
+
+  const coverage = statementCoverage(messages);
+  assert.ok(coverage && coverage.type === "DETAIL_COVERAGE", "a DETAIL_COVERAGE must be emitted");
+  assert.equal(coverage.reference_only, true);
+  assert.equal(coverage.state_stream, "statements");
+  assert.deepEqual([...coverage.required_keys].sort(), ["S0", "S1"]);
+  assert.deepEqual([...coverage.hydrated_keys].sort(), ["S0", "S1"]);
+  assert.equal(coverage.gap_keys, undefined, "no gap_keys when every PDF is present");
+  assert.equal(statementGaps(messages).length, 0, "no DETAIL_GAP when fully hydrated");
+});
+
+test("emitStatementRecords: a failed statement PDF surfaces a DETAIL_GAP + gap_key (partial, not complete)", async () => {
+  const { deps, messages } = makeHarness();
+  const indexRows = [makeIndexRow({ rowIndex: 0, id: "OK" }), makeIndexRow({ rowIndex: 1, id: "MISS" })];
+  // Only row 0 hydrated; row 1 has no map entry and no carry-forward cursor.
+  const hydration = new Map<number, HydrationResult>([[0, makeHydrationOk()]]);
+  const summary: HydrationSummary = { attempts: 2, successes: 1, results: hydration };
+  await emitStatementRecords(deps, indexRows, hydration, summary);
+
+  const coverage = statementCoverage(messages);
+  assert.ok(coverage && coverage.type === "DETAIL_COVERAGE");
+  assert.deepEqual([...coverage.required_keys].sort(), ["MISS", "OK"]);
+  assert.deepEqual(coverage.hydrated_keys, ["OK"]);
+  assert.deepEqual(coverage.gap_keys, ["MISS"]);
+
+  const gaps = statementGaps(messages);
+  assert.equal(gaps.length, 1, "exactly one DETAIL_GAP for the missing PDF");
+  const gap = gaps[0];
+  assert.ok(gap && gap.type === "DETAIL_GAP");
+  assert.equal(gap.record_key, "MISS");
+  assert.equal(gap.status, "pending");
+  assert.equal(gap.retryable, true);
+  assert.equal(gap.reference_only, true);
+});
+
+test("emitStatementRecords: required_keys === hydrated_keys ∪ gap_keys (runtime coverage-completeness invariant)", async () => {
+  const { deps, messages } = makeHarness();
+  const indexRows = [
+    makeIndexRow({ rowIndex: 0, id: "H0" }),
+    makeIndexRow({ rowIndex: 1, id: "G1" }),
+    makeIndexRow({ rowIndex: 2, id: "H2" }),
+  ];
+  const hydration = new Map<number, HydrationResult>([
+    [0, makeHydrationOk()],
+    [2, makeHydrationOk({ pdfPath: "/tmp/usaa-test/statement-2.pdf" })],
+  ]);
+  const summary: HydrationSummary = { attempts: 3, successes: 2, results: hydration };
+  await emitStatementRecords(deps, indexRows, hydration, summary);
+
+  const coverage = statementCoverage(messages);
+  assert.ok(coverage && coverage.type === "DETAIL_COVERAGE");
+  const union = new Set([...coverage.hydrated_keys, ...(coverage.gap_keys ?? [])]);
+  assert.equal(union.size, coverage.required_keys.length);
+  for (const key of coverage.required_keys) {
+    assert.ok(union.has(key), `required key ${String(key)} is hydrated or a pending gap`);
+  }
+  // Every gap_key has exactly one matching pending DETAIL_GAP.
+  const gapKeys = new Set(statementGaps(messages).map((g) => g.type === "DETAIL_GAP" && g.record_key));
+  for (const key of coverage.gap_keys ?? []) {
+    assert.ok(gapKeys.has(key), `gap key ${String(key)} has a DETAIL_GAP`);
+  }
+});
+
+test("emitStatementRecords: a run with only disclosures (no statement docs) emits no coverage and no gaps", async () => {
+  const { deps, messages } = makeHarness();
+  // Titles the statement-parse predicate rejects (agreement/disclosure).
+  const indexRows = [
+    makeIndexRow({ rowIndex: 0, id: "D0", title: "CARDHOLDER AGREEMENT" }),
+    makeIndexRow({ rowIndex: 1, id: "D1", title: "PRIVACY DISCLOSURE" }),
+  ];
+  const hydration = new Map<number, HydrationResult>();
+  const summary: HydrationSummary = { attempts: 0, successes: 0, results: hydration };
+  await emitStatementRecords(deps, indexRows, hydration, summary);
+
+  assert.equal(statementCoverage(messages), undefined, "no DETAIL_COVERAGE without a real denominator");
+  assert.equal(statementGaps(messages).length, 0, "no DETAIL_GAP for non-statement rows");
+  // The statement records themselves still emit (index-only) — coverage is additive.
+  // (The disclosure rows are honest `statements` records; only the PDF-detail
+  //  coverage report is suppressed.)
+});
+
+test("emitStatementRecords: DETAIL_GAP and DETAIL_COVERAGE never interpolate statement title or account text", async () => {
+  const { deps, messages } = makeHarness();
+  const indexRows = [
+    makeIndexRow({
+      rowIndex: 0,
+      id: "S0",
+      title: "April 2026 STATEMENT",
+      account_reference: "USAA CLASSIC CHECKING *9241",
+    }),
+  ];
+  const hydration = new Map<number, HydrationResult>();
+  const summary: HydrationSummary = { attempts: 1, successes: 0, results: hydration };
+  await emitStatementRecords(deps, indexRows, hydration, summary);
+
+  const refMessages = [statementCoverage(messages), ...statementGaps(messages)].filter(Boolean);
+  assert.ok(refMessages.length >= 1, "coverage + at least one gap emitted");
+  const serialized = JSON.stringify(refMessages);
+  // Target the fixture's document-title + account-reference PII (e.g. "April",
+  // "CHECKING", "*9241"), NOT the legitimate lowercase `statements` /
+  // `statement_id` protocol identifiers, which are not PII.
+  assert.doesNotMatch(
+    serialized,
+    /April|CHECKING|CLASSIC|\*9241/,
+    "no title/account text leaks into coverage evidence"
+  );
+  assert.match(serialized, /S0/, "only the opaque statement id appears");
+});
+
 // ─── Invariant 4b: buildIndexRows drops rows missing date_delivered ──────
 
 test("buildIndexRows: rows without a date_delivered are dropped (no undated keys)", () => {

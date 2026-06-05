@@ -32,6 +32,7 @@ import {
 import {
   type BrowserCollectContext,
   type EmittedMessage,
+  emitDetailCoverage,
   type InteractionRequest,
   type InteractionResponse,
   nowIso,
@@ -66,6 +67,7 @@ import {
   rowsToTransactions,
 } from "./parsers.ts";
 import { validateRecord as validateRecordRaw } from "./schemas.ts";
+import { computeStatementCoverage, type StatementCoverageRow } from "./statement-coverage.ts";
 import { fileUrlForPath, hydrateStatementPdfs, parsePdfStatement } from "./statement-pdfs.ts";
 import type {
   BillingKv,
@@ -531,6 +533,12 @@ export async function emitStatementRecords(
   fingerprintCursor?: FingerprintCursor,
   hydrationCursor?: StatementHydrationCursor
 ): Promise<void> {
+  // Per-run detail-coverage evidence. Each statement-document row's resolved
+  // hydration outcome (fresh, carried, or all-null) is the numerator input;
+  // `shouldParseStatementTitle` is the candidacy (denominator) input. See
+  // statement-coverage.ts. Collected here because this loop already resolves
+  // both for every row; emitted once after the loop (below).
+  const coverageRows: StatementCoverageRow[] = [];
   for (const row of indexRows) {
     const ok = hydrationSuccess(hydrationResults.get(row.rowIndex));
     // On success use this run's fresh pointers; on failure carry the prior
@@ -544,6 +552,7 @@ export async function emitStatementRecords(
     } else {
       pointers = { document_url: null, pdf_path: null, pdf_sha256: null };
     }
+    coverageRows.push({ id: row.id, isCandidate: shouldParseStatementTitle(row.title), pointers });
     const rec: StatementRecord = {
       id: row.id,
       account_id: row.account_id,
@@ -579,6 +588,15 @@ export async function emitStatementRecords(
   // stops being carried forever.
   fingerprintCursor?.pruneStale();
   hydrationCursor?.pruneStale();
+  // Honest per-run detail coverage for the statement-PDF detail pass. Emitted
+  // only when the run saw at least one statement-document row (a real
+  // denominator). Each gap candidate (a statement whose PDF is not present this
+  // run) is a pending, retryable DETAIL_GAP — so the run reads "partial, will
+  // retry" instead of "complete", and the runtime's coverage-completeness
+  // invariant (required === hydrated ∪ pending-gap) holds. Reference-only:
+  // these reuse DETAIL_GAP / DETAIL_COVERAGE without promoting them to portable
+  // protocol. Strictly additive — no statement RECORD or STATE changes.
+  await emitStatementCoverage(deps, coverageRows);
   const progressMsg = {
     type: "PROGRESS",
     stream: "statements",
@@ -599,6 +617,30 @@ export async function emitStatementRecords(
     stream: "statements",
     cursor,
   });
+}
+
+/**
+ * Emit the per-run `statements` detail-coverage evidence: a redacted, pending
+ * DETAIL_GAP for each statement-document row whose PDF is not present this run,
+ * then one DETAIL_COVERAGE whose `required_keys` is the real denominator (the
+ * statement-document rows the run saw on the documents index). A run with no
+ * statement-document candidates emits nothing — there is no real denominator to
+ * report. The denominator never includes disclosures/agreements (index-only by
+ * design) and never carries account/title text — only opaque statement id
+ * hashes. See statement-coverage.ts for the contract.
+ */
+export async function emitStatementCoverage(
+  deps: EmitDeps,
+  coverageRows: readonly StatementCoverageRow[]
+): Promise<void> {
+  const result = computeStatementCoverage(coverageRows);
+  if (result.candidateCount === 0) {
+    return;
+  }
+  for (const gap of result.gaps) {
+    await deps.emit(gap);
+  }
+  await emitDetailCoverage(deps, result.coverage);
 }
 
 /**
