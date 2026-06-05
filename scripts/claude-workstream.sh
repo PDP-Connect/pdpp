@@ -22,6 +22,7 @@
 #     --prompt <prompt-file> \
 #     --report <report-path-relative-to-worktree-or-absolute> \
 #     [--model <alias|model-id>] \
+#     [--effort <low|medium|high|xhigh|max>] \
 #     [--no-recovery] \
 #     [--artifact-root <dir>] \
 #     [--tmux] \
@@ -29,6 +30,7 @@
 #
 # Defaults:
 #   --model        opus
+#   --effort       unset (Claude CLI default)
 #   --artifact-root  <git-common-dir>/../tmp/workstreams/claude-wrapper/<lane>/<ts>
 #   --tmux-session main   (only relevant when --tmux is given)
 #
@@ -58,6 +60,7 @@ worktree=""
 prompt_file=""
 report_path=""
 model="opus"
+effort=""
 artifact_root=""
 do_recovery=1
 use_tmux=0
@@ -80,6 +83,7 @@ while [[ $# -gt 0 ]]; do
     --prompt) prompt_file="${2:-}"; shift 2 ;;
     --report) report_path="${2:-}"; shift 2 ;;
     --model) model="${2:-}"; shift 2 ;;
+    --effort) effort="${2:-}"; shift 2 ;;
     --artifact-root) artifact_root="${2:-}"; shift 2 ;;
     --no-recovery) do_recovery=0; shift ;;
     --tmux) use_tmux=1; shift ;;
@@ -229,6 +233,7 @@ write_status() {
     --arg status "$status_value" \
     --arg report_state "$report_state" \
     --arg model "$model" \
+    --arg effort "$effort" \
     --arg exit_class "$exit_class" \
     --argjson recovered "$recovered" \
     --argjson exit_code "$exit_code" \
@@ -251,7 +256,8 @@ write_status() {
        exit_code: $exit_code,
        exit_class: $exit_class,
        transcript_bytes: $transcript_bytes,
-       model: $model
+       model: $model,
+       effort: $effort
      }' >"$status_json"
 }
 
@@ -359,6 +365,8 @@ classify_exit() {
 invoke_claude_main() {
   local output_file="$1"
   local exit_code=0
+  local effort_args=()
+  [[ -n "$effort" ]] && effort_args=(--effort "$effort")
   (
     trap - INT TERM HUP QUIT
     cd "$worktree_abs"
@@ -366,6 +374,7 @@ invoke_claude_main() {
     claude \
       --print \
       --model "$model" \
+      "${effort_args[@]}" \
       --no-session-persistence \
       --setting-sources user \
       --strict-mcp-config \
@@ -379,6 +388,8 @@ invoke_claude_recovery() {
   local output_file="$1"
   local prompt="$2"
   local exit_code=0
+  local effort_args=()
+  [[ -n "$effort" ]] && effort_args=(--effort "$effort")
   (
     trap - INT TERM HUP QUIT
     cd "$worktree_abs"
@@ -386,6 +397,7 @@ invoke_claude_recovery() {
     claude \
       --print \
       --model "$model" \
+      "${effort_args[@]}" \
       --no-session-persistence \
       --setting-sources user \
       --strict-mcp-config \
@@ -419,7 +431,11 @@ WORKSTREAM CONTRACT (added by claude-workstream.sh — do not omit):
 echo "claude-workstream: lane=$lane worktree=$worktree_abs"
 echo "claude-workstream: artifact_dir=$artifact_dir"
 echo "claude-workstream: report=$report_abs"
-echo "claude-workstream: invoking claude (model=$model)…"
+if [[ -n "$effort" ]]; then
+  echo "claude-workstream: invoking claude (model=$model effort=$effort)…"
+else
+  echo "claude-workstream: invoking claude (model=$model)…"
+fi
 
 main_exit=0
 invoke_claude_main "$transcript" || main_exit=$?
