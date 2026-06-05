@@ -39,6 +39,7 @@
     "release:policy-check": "node scripts/check-package-release-policy.mjs",
     "release:policy-check:test": "node --test scripts/check-package-release-policy.test.mjs",
     "release:dist-tag-check": "node scripts/check-dist-tag-posture.mjs",
+    "release:dist-tag-check:test": "node --test scripts/check-dist-tag-posture.test.mjs",
     "release:cadence-check": "node scripts/check-beta-cadence.mjs",
     "release:cadence-check:test": "node --test scripts/check-beta-cadence.test.mjs",
     "reference-implementation:test": "pnpm --dir reference-implementation run test",

@@ -103,6 +103,9 @@ jobs:
       - name: Test beta release-cadence guard
         run: pnpm release:cadence-check:test
 
+      - name: Test dist-tag posture classifier
+        run: pnpm release:dist-tag-check:test
+
       - name: Typecheck operator console app
         run: pnpm --dir apps/console run types:check
 
