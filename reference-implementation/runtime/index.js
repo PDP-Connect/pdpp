@@ -498,6 +498,129 @@ function normalizeConsideredInDiagnostics(boundedDiagnostics) {
   return boundedDiagnostics;
 }
 
+/**
+ * Build the per-stream runtime collection-fact block attached to the terminal
+ * event (`run.completed` / `run.failed` / `run.cancelled`).
+ *
+ * This is the runtime half of the two-layer Collection Report construction
+ * (openspec/changes/define-connector-progress-evidence-contract, task 2.2a). It
+ * is pure and run-local: it carries ONLY the objective facts the per-connector
+ * run subprocess owns at completion — per-stream `collected` count, a declared
+ * `considered` value or `unknown` (never inferred from collected), the committed
+ * checkpoint status, the `SKIP_RESULT` reason, and the pending recoverable
+ * detail-gap count.
+ *
+ * It deliberately does NOT derive a coverage condition or a forward
+ * disposition. Both require freshness, refresh-policy, attention, and the
+ * cross-stream rollup that only the control-plane projection (ref-control ->
+ * connection-health) holds. The projection derives those on read (Tranche C).
+ *
+ * Honesty rules pinned by the layer-boundary tests:
+ *   - one entry per in-scope stream, including zero-record streams;
+ *   - `considered` is OMITTED (reads `unknown`) unless a trusted declared value
+ *     exists; it is NEVER set to `collected`;
+ *   - declared `DETAIL_COVERAGE.considered` wins over `required_keys.length`;
+ *   - no `coverage`, `coverage_axis`, `forward_disposition`, `freshness`, or
+ *     `refresh` key, on the block or on any entry.
+ *
+ * @returns {{ reference_only: true, schema_version: number, streams: object[] }
+ *           | null} the block, or null when there is no in-scope stream universe.
+ */
+function buildCollectionFacts({
+  scopeByStream,
+  emittedByStream,
+  knownGaps,
+  durableDetailGaps,
+  detailCoverageByStateStream,
+  newState,
+  committedStateStreams,
+  persistState,
+}) {
+  const inScopeStreams = [...scopeByStream.keys()];
+  if (!inScopeStreams.length) return null;
+
+  // Map each data `stream` to the `state_stream` whose checkpoint covers it.
+  // Default: a stream checkpoints itself (state_stream === stream). For
+  // list-plus-detail connectors the detail `stream` (e.g. other_items) is
+  // covered by the list `state_stream` (e.g. items); DETAIL_COVERAGE entries
+  // carry both, so we learn the mapping from them.
+  const streamToStateStream = new Map();
+  for (const [stateStream, entries] of detailCoverageByStateStream) {
+    for (const entry of entries) {
+      if (entry?.stream && !streamToStateStream.has(entry.stream)) {
+        streamToStateStream.set(entry.stream, stateStream);
+      }
+    }
+  }
+
+  const committed = committedStateStreams instanceof Set
+    ? committedStateStreams
+    : new Set(committedStateStreams || []);
+  const stagedStateStreams = new Set(Object.keys(newState || {}));
+
+  const checkpointForStateStream = (stateStream) => {
+    if (!persistState) return 'disabled';
+    if (committed.has(stateStream)) return 'committed';
+    if (stagedStateStreams.has(stateStream)) return 'not_committed';
+    return 'not_staged';
+  };
+
+  // First declared considered (DETAIL_COVERAGE.considered) wins, else the
+  // required-keys count, else unknown (omitted). Never derived from collected.
+  const declaredConsideredForStream = (stream) => {
+    let requiredKeysFallback = null;
+    for (const entries of detailCoverageByStateStream.values()) {
+      for (const entry of entries) {
+        if (entry?.stream !== stream) continue;
+        if (typeof entry.considered === 'number') return entry.considered;
+        if (requiredKeysFallback == null && Array.isArray(entry.requiredKeys)) {
+          requiredKeysFallback = entry.requiredKeys.length;
+        }
+      }
+    }
+    return requiredKeysFallback;
+  };
+
+  const skipForStream = (stream) => {
+    const gap = knownGaps.find(
+      (candidate) => candidate.kind === 'skip_result' && candidate.stream === stream,
+    );
+    if (!gap) return null;
+    const action = gap.recovery_hint && typeof gap.recovery_hint === 'object'
+      ? gap.recovery_hint.action
+      : null;
+    return {
+      reason: gap.reason,
+      ...(action ? { recovery_action: action } : {}),
+    };
+  };
+
+  const pendingDetailGapsForStream = (stream) => durableDetailGaps.filter(
+    (gap) => gap.stream === stream && gap.status === 'pending',
+  ).length;
+
+  const streams = inScopeStreams.map((stream) => {
+    const considered = declaredConsideredForStream(stream);
+    const stateStream = streamToStateStream.get(stream) || stream;
+    return {
+      stream,
+      collected: emittedByStream.get(stream) || 0,
+      // Omit when unknown — absence reads as `unknown` downstream; never
+      // inferred from collected count.
+      ...(considered == null ? {} : { considered }),
+      checkpoint: checkpointForStateStream(stateStream),
+      pending_detail_gaps: pendingDetailGapsForStream(stream),
+      skipped: skipForStream(stream),
+    };
+  });
+
+  return {
+    reference_only: true,
+    schema_version: 1,
+    streams,
+  };
+}
+
 function inferRecoveryAction(reason, message, interactionKind = null) {
   const text = `${reason || ''} ${message || ''} ${interactionKind || ''}`.toLowerCase();
   if (/\b(otp|mfa|2fa|manual|captcha|anti[-_ ]?bot)\b/.test(text)) {
@@ -1866,6 +1989,15 @@ export async function runConnector(opts) {
   const newState = {};
   const committedStateStreams = new Set();
   let totalEmitted = 0;
+  // Per-stream emitted counter. `totalEmitted` is the aggregate the DONE
+  // records_emitted guard checks; this Map carries the same accounting keyed by
+  // data `stream` so the terminal collection-fact block can state per-stream
+  // `collected` without re-deriving it. Every in-scope stream is seeded to 0 so
+  // a stream that emitted nothing still appears as an honest `collected: 0`
+  // (absence of records is a fact, not a missing entry).
+  const emittedByStream = new Map(
+    (startScope.streams || []).map((streamScope) => [streamScope.name, 0]),
+  );
   let totalFlushed = 0;
   let finalStatus = 'failed';
   let pendingInteraction = null;
@@ -1952,6 +2084,19 @@ export async function runConnector(opts) {
     const publicIngestFailure = toPublicIngestFailure(ingestFailure);
     const terminalKnownGaps = buildKnownGapsForTerminal(reason, connectorError);
     const visibleKnownGaps = terminalKnownGaps.slice(0, KNOWN_GAPS_MAX);
+    // Runtime collection-fact block (task 2.2a): objective per-stream facts only.
+    // No coverage condition / forward disposition — those are derived by the
+    // control-plane projection on read (Tranche C).
+    const collectionFacts = buildCollectionFacts({
+      scopeByStream,
+      emittedByStream,
+      knownGaps,
+      durableDetailGaps,
+      detailCoverageByStateStream,
+      newState,
+      committedStateStreams,
+      persistState,
+    });
     return {
       source: runSource,
       grant_id: grantId,
@@ -1993,6 +2138,7 @@ export async function runConnector(opts) {
             },
           }
         : {}),
+      ...(collectionFacts ? { collection_facts: collectionFacts } : {}),
       ...(violation instanceof ProtocolViolation
         ? { violation: violation.toPublicShape({ lastValidSpineEvent }) }
         : {}),
@@ -2034,6 +2180,11 @@ export async function runConnector(opts) {
       requiredKeys: msg.required_keys.map(normalizeCoverageKey),
       hydratedKeys: new Set(msg.hydrated_keys.map(normalizeCoverageKey)),
       optionalSkipKeys: new Set((msg.optional_skip_keys || []).map(normalizeCoverageKey)),
+      // Optional connector-declared considered denominator (task 2.1). Retained
+      // here — normalized to a trusted safe non-negative integer or null — so
+      // the terminal collection-fact block can prefer it over the
+      // required_keys.length fallback. null stays `unknown`; never inferred.
+      considered: boundConsideredCount(msg.considered),
     });
     detailCoverageByStateStream.set(msg.state_stream, entries);
   }
@@ -2396,6 +2547,7 @@ export async function runConnector(opts) {
           if (!recordBatch[stream]) recordBatch[stream] = [];
           recordBatch[stream].push({ key, data, emitted_at, op });
           totalEmitted++;
+          emittedByStream.set(stream, (emittedByStream.get(stream) || 0) + 1);
 
           if (recordBatch[stream].length >= BATCH_SIZE) {
             await flushBatch(stream);

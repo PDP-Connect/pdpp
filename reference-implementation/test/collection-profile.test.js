@@ -2712,11 +2712,26 @@ rl.on('line', (line) => {
     }
   });
 
-  await t.test('this tranche introduces no collection_report / coverage_axis / forward_disposition on terminal events', async () => {
-    // 2.7 layer-boundary guard: declaring `considered` must NOT cause the runtime
-    // to emit a per-run collection_report block, a coverage axis, or a forward
-    // disposition on terminal events. Those are later tranches (2.2 / projection).
-    const manifest = buildMultiStreamManifest('considered-no-terminal-block');
+  // ── 5c. Tranche B — runtime collection-fact block (task 2.2a) ──
+  //
+  // openspec/changes/define-connector-progress-evidence-contract (task 2.2a):
+  // the runtime attaches a per-stream `collection_facts` block to the terminal
+  // event carrying ONLY objective run-local facts — per-stream collected count,
+  // a declared considered value or `unknown` (never inferred from collected),
+  // committed checkpoint status, the SKIP_RESULT reason, and the pending
+  // recoverable detail-gap count. It does NOT carry a coverage condition or a
+  // forward disposition — those are derived later by the control-plane
+  // projection (Tranche C). The block is named `collection_facts` to keep it
+  // distinct from the projection-derived `collection_report` the spec reserves
+  // for the control-plane layer.
+
+  await t.test('2.2a layer boundary: terminal collection_facts carries facts only, no coverage_axis / forward_disposition', async () => {
+    // 2.7 layer-boundary guard, sharpened for Tranche B: the runtime NOW emits a
+    // facts-only `collection_facts` block, but it must carry no coverage axis or
+    // forward disposition — on the block OR on any per-stream entry. The
+    // projection-derived `collection_report` key must remain absent on the
+    // terminal event (that is Tranche C).
+    const manifest = buildMultiStreamManifest('facts-block-layer-boundary');
     const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
     const { asPort, rsPort } = server;
     const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
@@ -2759,11 +2774,539 @@ rl.on('line', (line) => {
       const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
       const completedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.completed');
       assert.ok(completedEvent, 'expected run.completed event');
-      assert.equal(completedEvent.data.collection_report, undefined, 'no collection_report block introduced by this tranche');
+
+      // The projection-derived report and the derived axes never appear on the
+      // runtime terminal event.
+      assert.equal(completedEvent.data.collection_report, undefined, 'no projection-derived collection_report on terminal event (Tranche C)');
       assert.equal(completedEvent.data.coverage_axis, undefined, 'no coverage_axis on the terminal event');
       assert.equal(completedEvent.data.forward_disposition, undefined, 'no forward_disposition on the terminal event');
+
+      // The runtime facts block IS present, facts-only.
+      const facts = completedEvent.data.collection_facts;
+      assert.ok(facts, 'runtime collection_facts block present on terminal event');
+      assert.equal(facts.reference_only, true, 'facts block is a reference-only projection');
+      assert.ok(Array.isArray(facts.streams), 'facts block carries a per-stream array');
+      assert.equal(facts.streams.length, 2, 'one entry per in-scope stream');
+
+      // No derived axis appears on the block or on any per-stream entry — this
+      // is the layer boundary Tranche C alone is allowed to cross.
+      assert.equal('coverage' in facts, false, 'no coverage condition on the block');
+      assert.equal('coverage_axis' in facts, false, 'no coverage_axis on the block');
+      assert.equal('forward_disposition' in facts, false, 'no forward_disposition on the block');
+      assert.equal('freshness' in facts, false, 'no freshness on the block');
+      assert.equal('refresh' in facts, false, 'no refresh policy on the block');
+      for (const entry of facts.streams) {
+        assert.equal('coverage' in entry, false, `no coverage condition on entry ${entry.stream}`);
+        assert.equal('coverage_axis' in entry, false, `no coverage_axis on entry ${entry.stream}`);
+        assert.equal('forward_disposition' in entry, false, `no forward_disposition on entry ${entry.stream}`);
+        assert.equal('freshness' in entry, false, `no freshness on entry ${entry.stream}`);
+        assert.equal('refresh' in entry, false, `no refresh policy on entry ${entry.stream}`);
+      }
+
       // The terminal known_gaps block (the existing carrier) is unchanged.
       assert.ok(Array.isArray(completedEvent.data.known_gaps), 'existing known_gaps block still present');
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
+  await t.test('2.2a: one collection_facts entry per in-scope stream, each with collected + checkpoint, no verdict', async () => {
+    // A two-stream success: each requested stream gets exactly one entry with a
+    // raw collected count and a checkpoint fact, and NO coverage verdict.
+    const manifest = buildMultiStreamManifest('facts-per-in-scope-stream');
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
+    const asUrl = `http://localhost:${asPort}`;
+
+    const { connectorPath, cleanup } = createTestConnector([
+      { type: 'RECORD', stream: 'items', key: 'i1', data: { id: 'i1', value: 'a' }, emitted_at: new Date().toISOString() },
+      { type: 'RECORD', stream: 'items', key: 'i2', data: { id: 'i2', value: 'b' }, emitted_at: new Date().toISOString() },
+      { type: 'STATE', stream: 'items', cursor: { last: 'i2' } },
+      { type: 'RECORD', stream: 'other_items', key: 'o1', data: { id: 'o1', value: 'c' }, emitted_at: new Date().toISOString() },
+      { type: 'STATE', stream: 'other_items', cursor: { last: 'o1' } },
+      { type: 'DONE', status: 'succeeded', records_emitted: 3 },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest,
+        scope: { streams: [{ name: 'items' }, { name: 'other_items' }] },
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+      });
+
+      assert.equal(result.status, 'succeeded');
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const completedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.completed');
+      const facts = completedEvent.data.collection_facts;
+      assert.ok(facts, 'facts block present');
+
+      const byStream = Object.fromEntries(facts.streams.map((entry) => [entry.stream, entry]));
+      assert.deepEqual(Object.keys(byStream).sort(), ['items', 'other_items']);
+
+      assert.equal(byStream.items.collected, 2, 'items collected count is the raw per-stream emitted total');
+      assert.equal(byStream.items.checkpoint, 'committed', 'committed STATE for items checkpoints committed');
+      assert.equal(byStream.items.pending_detail_gaps, 0);
+      assert.equal(byStream.items.skipped, null, 'no skip for items');
+
+      assert.equal(byStream.other_items.collected, 1, 'other_items collected count is per-stream');
+      assert.equal(byStream.other_items.checkpoint, 'committed');
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
+  await t.test('2.2a: a zero-record in-scope stream still gets an honest collected:0 entry, considered absent', async () => {
+    // A stream the connector never emitted for is a fact (collected:0), not a
+    // missing entry; and with no declared considered, the considered key is
+    // absent (reads unknown) — never inferred to equal collected.
+    const manifest = buildMultiStreamManifest('facts-zero-record-stream');
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
+    const asUrl = `http://localhost:${asPort}`;
+
+    const { connectorPath, cleanup } = createTestConnector([
+      { type: 'RECORD', stream: 'items', key: 'i1', data: { id: 'i1', value: 'a' }, emitted_at: new Date().toISOString() },
+      { type: 'DONE', status: 'succeeded', records_emitted: 1 },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest,
+        scope: { streams: [{ name: 'items' }, { name: 'other_items' }] },
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+      });
+
+      assert.equal(result.status, 'succeeded');
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const completedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.completed');
+      const facts = completedEvent.data.collection_facts;
+      const byStream = Object.fromEntries(facts.streams.map((entry) => [entry.stream, entry]));
+
+      assert.ok(byStream.other_items, 'zero-record in-scope stream still has an entry');
+      assert.equal(byStream.other_items.collected, 0, 'honest collected:0 for a stream that emitted nothing');
+      assert.equal('considered' in byStream.other_items, false, 'no declared considered -> considered key absent (unknown)');
+      assert.equal(byStream.other_items.checkpoint, 'not_staged', 'no STATE staged for other_items -> not_staged');
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
+  await t.test('2.2a: a SKIP_RESULT stream carries the skip fact, no complete verdict', async () => {
+    // The runtime states the skip fact; deciding unsupported/etc is the
+    // projection's job (Tranche C). The entry must NOT carry a coverage verdict.
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort);
+    const asUrl = `http://localhost:${asPort}`;
+
+    const { connectorPath, cleanup } = createTestConnector([
+      { type: 'SKIP_RESULT', stream: 'items', reason: 'partial_export', message: 'could not export', recovery_hint: 'retry_by_runtime' },
+      { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest: MINIMAL_MANIFEST,
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+      });
+
+      assert.equal(result.status, 'succeeded');
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const completedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.completed');
+      const facts = completedEvent.data.collection_facts;
+      const itemsEntry = facts.streams.find((entry) => entry.stream === 'items');
+
+      assert.ok(itemsEntry, 'items entry present');
+      assert.ok(itemsEntry.skipped, 'skip fact recorded on the entry');
+      assert.equal(itemsEntry.skipped.reason, 'partial_export', 'skip reason carried verbatim');
+      assert.equal(itemsEntry.skipped.recovery_action, 'retry_by_runtime', 'normalized recovery action carried');
+      // No coverage verdict: the runtime states the skip, the projection decides.
+      assert.equal('coverage' in itemsEntry, false, 'no coverage condition on a skipped entry');
+      assert.equal('forward_disposition' in itemsEntry, false, 'no forward_disposition on a skipped entry');
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
+  await t.test('2.2a: a pending DETAIL_GAP shows pending_detail_gaps>=1 by count, not restated locators', async () => {
+    const manifest = buildMultiStreamManifest('facts-pending-detail-gap');
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
+    const asUrl = `http://localhost:${asPort}`;
+
+    const { connectorPath, cleanup } = createTestConnector([
+      { type: 'RECORD', stream: 'items', key: 'i1', data: { id: 'i1', value: 'a' }, emitted_at: new Date().toISOString() },
+      {
+        type: 'DETAIL_GAP',
+        stream: 'other_items',
+        parent_stream: 'items',
+        record_key: 'i1',
+        reason: 'temporary_unavailable',
+        retryable: true,
+      },
+      // No STATE staged -> the commit-gate does not fire on the unsatisfied
+      // detail coverage (none declared), so the run completes with the gap pending.
+      { type: 'DONE', status: 'succeeded', records_emitted: 1 },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest,
+        scope: { streams: [{ name: 'items' }, { name: 'other_items' }] },
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+      });
+
+      assert.equal(result.status, 'succeeded');
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const completedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.completed');
+      const facts = completedEvent.data.collection_facts;
+      const gapEntry = facts.streams.find((entry) => entry.stream === 'other_items');
+
+      assert.ok(gapEntry, 'detail-gap stream has an entry');
+      assert.equal(gapEntry.pending_detail_gaps, 1, 'pending recoverable detail gap counted on its stream');
+      // The entry references the gap by count; per-item locators stay in the
+      // existing detail_gaps block, not restated here.
+      assert.equal('detail_locator' in gapEntry, false, 'no per-item locators restated on the facts entry');
+      assert.equal('record_key' in gapEntry, false, 'no per-item record_key restated on the facts entry');
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
+  await t.test('2.2a: considered honesty — declared value carried, absence stays unknown, never set to collected', async () => {
+    const manifest = buildMultiStreamManifest('facts-considered-honesty');
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
+    const asUrl = `http://localhost:${asPort}`;
+
+    const { connectorPath, cleanup } = createTestConnector([
+      // items collects records but declares NO considered.
+      { type: 'RECORD', stream: 'items', key: 'i1', data: { id: 'i1', value: 'a' }, emitted_at: new Date().toISOString() },
+      { type: 'RECORD', stream: 'items', key: 'i2', data: { id: 'i2', value: 'b' }, emitted_at: new Date().toISOString() },
+      { type: 'STATE', stream: 'items', cursor: { last: 'i2' } },
+      // other_items declares an explicit considered = 7 via DETAIL_COVERAGE,
+      // larger than what it collected, so partial-vs-complete is real.
+      {
+        type: 'DETAIL_COVERAGE',
+        reference_only: true,
+        state_stream: 'items',
+        stream: 'other_items',
+        required_keys: ['k1', 'k2'],
+        hydrated_keys: ['k1', 'k2'],
+        considered: 7,
+      },
+      { type: 'DONE', status: 'succeeded', records_emitted: 2 },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest,
+        scope: { streams: [{ name: 'items' }, { name: 'other_items' }] },
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+      });
+
+      assert.equal(result.status, 'succeeded');
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const completedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.completed');
+      const facts = completedEvent.data.collection_facts;
+      const byStream = Object.fromEntries(facts.streams.map((entry) => [entry.stream, entry]));
+
+      // items: collected 2 records, declared no considered -> considered absent.
+      assert.equal(byStream.items.collected, 2);
+      assert.equal('considered' in byStream.items, false, 'no declared considered -> key absent (unknown)');
+
+      // other_items: declared considered 7 wins, even though it collected 0.
+      assert.equal(byStream.other_items.collected, 0, 'other_items emitted no records');
+      assert.equal(byStream.other_items.considered, 7, 'declared DETAIL_COVERAGE.considered carried');
+      assert.notEqual(byStream.other_items.considered, byStream.other_items.collected, 'considered is NEVER set to collected');
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
+  await t.test('2.2a: declared considered prefers DETAIL_COVERAGE.considered over required_keys.length', async () => {
+    const manifest = buildMultiStreamManifest('facts-considered-priority');
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
+    const asUrl = `http://localhost:${asPort}`;
+
+    const { connectorPath, cleanup } = createTestConnector([
+      {
+        type: 'DETAIL_COVERAGE',
+        reference_only: true,
+        state_stream: 'items',
+        stream: 'other_items',
+        required_keys: ['k1', 'k2'], // length 2
+        hydrated_keys: ['k1', 'k2'],
+        considered: 200, // explicit declared denominator wins over length 2
+      },
+      { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest,
+        scope: { streams: [{ name: 'items' }, { name: 'other_items' }] },
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+      });
+
+      assert.equal(result.status, 'succeeded');
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const completedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.completed');
+      const facts = completedEvent.data.collection_facts;
+      const other = facts.streams.find((entry) => entry.stream === 'other_items');
+      assert.equal(other.considered, 200, 'declared considered wins over required_keys.length');
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
+  await t.test('2.2a: required_keys.length is the considered fallback when no considered is declared', async () => {
+    const manifest = buildMultiStreamManifest('facts-considered-fallback');
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
+    const asUrl = `http://localhost:${asPort}`;
+
+    const { connectorPath, cleanup } = createTestConnector([
+      {
+        type: 'DETAIL_COVERAGE',
+        reference_only: true,
+        state_stream: 'items',
+        stream: 'other_items',
+        required_keys: ['k1', 'k2', 'k3'], // length 3 = fallback considered
+        hydrated_keys: ['k1', 'k2', 'k3'],
+      },
+      { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest,
+        scope: { streams: [{ name: 'items' }, { name: 'other_items' }] },
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+      });
+
+      assert.equal(result.status, 'succeeded');
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const completedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.completed');
+      const facts = completedEvent.data.collection_facts;
+      const other = facts.streams.find((entry) => entry.stream === 'other_items');
+      assert.equal(other.considered, 3, 'required_keys.length used as the considered fallback');
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
+  await t.test('2.2a: a RECORD/STATE/DONE-only connector still yields a valid facts block with unknown considered (task 2.6 at runtime scope)', async () => {
+    // The portability floor: a connector that emits only RECORD/STATE/DONE — no
+    // DETAIL_COVERAGE, no SKIP_RESULT — still produces a valid per-stream facts
+    // block. Its considered axis is just absent (unknown); no derived axes.
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort);
+    const asUrl = `http://localhost:${asPort}`;
+
+    const { connectorPath, cleanup } = createTestConnector([
+      { type: 'RECORD', stream: 'items', key: 'i1', data: { id: 'i1', value: 'a' }, emitted_at: new Date().toISOString() },
+      { type: 'STATE', stream: 'items', cursor: { last: 'i1' } },
+      { type: 'DONE', status: 'succeeded', records_emitted: 1 },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest: MINIMAL_MANIFEST,
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+      });
+
+      assert.equal(result.status, 'succeeded');
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const completedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.completed');
+      const facts = completedEvent.data.collection_facts;
+      assert.ok(facts, 'facts block present for a RECORD/STATE/DONE-only connector');
+      assert.equal(facts.streams.length, 1);
+      const entry = facts.streams[0];
+      assert.equal(entry.stream, 'items');
+      assert.equal(entry.collected, 1);
+      assert.equal(entry.checkpoint, 'committed');
+      assert.equal('considered' in entry, false, 'no considered evidence -> unknown (absent)');
+      assert.equal('coverage' in entry, false);
+      assert.equal('forward_disposition' in entry, false);
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
+  await t.test('2.2a (2.7 invariant): the facts block perturbs no existing terminal-event field', async () => {
+    // Golden-payload regression: a representative success run still carries every
+    // pre-existing terminal field with its prior shape; the only addition is the
+    // additive collection_facts block.
+    const manifest = buildMultiStreamManifest('facts-2-7-invariant');
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
+    const asUrl = `http://localhost:${asPort}`;
+
+    const { connectorPath, cleanup } = createTestConnector([
+      { type: 'RECORD', stream: 'items', key: 'i1', data: { id: 'i1', value: 'a' }, emitted_at: new Date().toISOString() },
+      { type: 'STATE', stream: 'items', cursor: { last: 'i1' } },
+      { type: 'DONE', status: 'succeeded', records_emitted: 1 },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest,
+        scope: { streams: [{ name: 'items' }] },
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+      });
+
+      assert.equal(result.status, 'succeeded');
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const completedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.completed');
+      const data = completedEvent.data;
+
+      // Pre-existing terminal fields keep their presence and shape.
+      assert.equal(data.records_emitted, 1, 'records_emitted unchanged');
+      assert.equal(data.records_flushed, 1, 'records_flushed unchanged');
+      assert.equal(data.buffered_records_dropped, 0, 'buffered_records_dropped unchanged');
+      assert.equal(data.persist_state, true, 'persist_state unchanged');
+      assert.equal(data.checkpoint_mode, 'checkpointed_streaming', 'checkpoint_mode unchanged');
+      assert.equal(data.checkpoint_commit_status, 'committed', 'checkpoint_commit_status unchanged');
+      assert.equal(data.state_streams_staged, 1, 'state_streams_staged unchanged');
+      assert.equal(data.state_streams_committed, 1, 'state_streams_committed unchanged');
+      assert.equal(data.known_gaps, undefined, 'no known_gaps on a clean success (unchanged)');
+      assert.equal(data.detail_gaps, undefined, 'no detail_gaps on a clean success (unchanged)');
+
+      // The only new field is the additive facts block.
+      assert.ok(data.collection_facts, 'collection_facts is the additive block');
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
+  await t.test('2.2a: the facts block also rides the run.failed terminal event, still facts-only', async () => {
+    // buildRunTerminalData() composes the block for every terminal event; prove
+    // it on a connector-reported failure too, with its collected/checkpoint facts
+    // intact and still no derived axis.
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort);
+    const asUrl = `http://localhost:${asPort}`;
+
+    const { connectorPath, cleanup } = createTestConnector([
+      { type: 'RECORD', stream: 'items', key: 'i1', data: { id: 'i1', value: 'a' }, emitted_at: new Date().toISOString() },
+      { type: 'STATE', stream: 'items', cursor: { last: 'i1' } },
+      { type: 'DONE', status: 'failed', records_emitted: 1, error: { message: 'upstream 500', retryable: true } },
+    ]);
+
+    try {
+      // A connector-reported DONE(failed) resolves with status 'failed' (it does
+      // not reject — the runtime recorded a clean terminal event for it).
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest: MINIMAL_MANIFEST,
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+      });
+      assert.equal(result.status, 'failed', 'DONE(failed) resolves as failed');
+
+      const { body: timeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const failedEvent = (timeline.data || []).find((event) => event.event_type === 'run.failed');
+      assert.ok(failedEvent, 'expected run.failed terminal event');
+
+      const facts = failedEvent.data.collection_facts;
+      assert.ok(facts, 'collection_facts present on the failed terminal event');
+      const itemsEntry = facts.streams.find((entry) => entry.stream === 'items');
+      assert.equal(itemsEntry.collected, 1, 'collected count recorded on a failed run');
+      // The failed run staged but committed no checkpoint (commit gates on success).
+      assert.equal(itemsEntry.checkpoint, 'not_committed', 'staged-but-not-committed checkpoint on a failed run');
+      assert.equal('coverage' in itemsEntry, false, 'no coverage condition even on failure');
+      assert.equal('forward_disposition' in itemsEntry, false, 'no forward_disposition even on failure');
+      assert.equal(failedEvent.data.coverage_axis, undefined, 'no coverage_axis on the failed terminal event');
+      assert.equal(failedEvent.data.forward_disposition, undefined, 'no forward_disposition on the failed terminal event');
     } finally {
       cleanup();
       await closeServer(server);

@@ -45,7 +45,7 @@
   NOTE: "redact" in this task is exercised only for `SKIP_RESULT.diagnostics`
   (free-text path); `DETAIL_COVERAGE.considered` is a pure integer with no string to
   redact, so it is bounded-only — no spec wording change needed.
-- [ ] 2.2a (Tranche B — runtime facts half) In `buildRunTerminalData()`, attach a
+- [x] 2.2a (Tranche B — runtime facts half) In `buildRunTerminalData()`, attach a
   per-stream runtime collection-fact block to the terminal event payload alongside
   the existing `known_gaps` block, carrying only objective run-local facts:
   per-stream `collected` count (track per-stream emitted in the run loop; today only
@@ -60,6 +60,34 @@
   `SKIP_RESULT.diagnostics`. Pin the layer boundary with a golden-payload
   regression so no existing terminal-event field, status code, or commit semantic
   changes (2.7 invariant).
+  Landed in `reference-implementation/runtime/index.js`: a new pure
+  `buildCollectionFacts({...})` returns `{ reference_only: true, schema_version: 1,
+  streams: [...] }`, attached as an additive `collection_facts` block in
+  `buildRunTerminalData()` (so it rides all three terminal events: `run.completed`,
+  `run.failed`, `run.cancelled`). The block is named `collection_facts` to keep it
+  distinct from the projection-derived `collection_report` the spec reserves for the
+  control-plane layer (Tranche C). Two small run-local additions feed it: a
+  per-stream `emittedByStream` Map (seeded to 0 for every in-scope stream, so a
+  zero-record stream is an honest `collected: 0` entry, incremented next to
+  `totalEmitted++` in the RECORD case), and a retained normalized `considered` on
+  each `trackDetailCoverage()` entry. Per entry: `collected` (raw per-stream emitted
+  count), `considered` (declared `DETAIL_COVERAGE.considered` > `required_keys.length`
+  > OMITTED = `unknown`; never inferred from collected), `checkpoint`
+  (`committed | not_committed | not_staged | disabled`, mapped `stream → state_stream`
+  so list+detail checkpoints resolve correctly), `pending_detail_gaps` (count of
+  pending durable detail gaps by stream — locators stay in the existing `detail_gaps`
+  block, not restated), and `skipped` (`{ reason, recovery_action }` from the
+  `SKIP_RESULT` known-gap, or `null`). NO `coverage` / `coverage_axis` /
+  `forward_disposition` / `freshness` / `refresh` key on the block or any entry.
+  Tests: `reference-implementation/test/collection-profile.test.js` adds nine focused
+  cases (sharpened layer-boundary golden guard asserting `collection_facts` present
+  facts-only with no derived axis on block OR entry and `collection_report` still
+  absent; one-entry-per-in-scope-stream; zero-record honest `collected:0`; skip fact
+  with no verdict; pending-detail-gap by count; considered honesty incl.
+  never-equals-collected; declared-vs-required_keys priority; required_keys fallback;
+  RECORD/STATE/DONE-only portability floor; and the 2.7 no-field-perturbed golden
+  regression). 116/116 collection-profile + 46/46 event-spine + 5/5
+  ref-run-timeline-terminal-status green; RI `tsc --noEmit` exit 0.
 - [ ] 2.2b (Tranche C — control-plane projection half) In
   `reference-implementation/server/ref-control.ts`, key the existing coverage
   rollup (`mapCoverageAxis`) and the already-tested pure
@@ -156,9 +184,18 @@
   search, schema, blobs).
 - [ ] 2.6 (with Tranche C) Prove a portable `RECORD`/`STATE`/`DONE`-only connector
   still yields a valid Collection Report with `unknown` axes.
-- [ ] 2.7 (with Tranche B) Run the reference-implementation runtime test suite;
+- [x] 2.7 (with Tranche B) Run the reference-implementation runtime test suite;
   confirm no existing terminal-event field, status code, or commit semantic changed
   by the runtime collection-fact block.
+  A golden-payload regression in `collection-profile.test.js` asserts a
+  representative success run keeps every pre-existing terminal field
+  (`records_emitted`, `records_flushed`, `buffered_records_dropped`, `persist_state`,
+  `checkpoint_mode`, `checkpoint_commit_status`, `state_streams_staged`,
+  `state_streams_committed`, and the conditional `known_gaps` / `detail_gaps` blocks)
+  with its prior presence/shape, the only addition being `collection_facts`.
+  Confirmed against 116/116 collection-profile + 46/46 event-spine + 5/5
+  ref-run-timeline-terminal-status, all green; the block is strictly additive (a
+  conditional spread) and no status code or commit semantic was touched.
 
 ## 3. Validation
 
