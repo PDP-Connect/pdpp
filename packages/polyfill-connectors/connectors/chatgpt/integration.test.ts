@@ -64,6 +64,7 @@ import {
   resolveChatGptBackendFetchTimeoutMs,
   resolveChatGptDetailLaneTuning,
   resolveChatGptMaxDetailFetchesPerRun,
+  resolveChatGptMaxGapMaterializationsPerRun,
   resolveChatGptMaxRunWallClockMs,
   resolveChatGptRateLimitDensityStop,
   runConversationsAndMessagesStreams,
@@ -2746,4 +2747,156 @@ test("runMessagesAndConversationsWithDetail: serial tuning fires no preflight an
     (m) => m.type === "PROGRESS" && (m as { message?: string }).message?.includes("cold-state preflight")
   );
   assert.deepEqual(preflightNotes, [], "no preflight progress in serial posture");
+});
+
+// ─── Gap-materialization limit tests ─────────────────────────────────────────
+
+test("resolveChatGptMaxGapMaterializationsPerRun: unset returns the finite default", () => {
+  assert.equal(resolveChatGptMaxGapMaterializationsPerRun({}), 100);
+});
+
+test("resolveChatGptMaxGapMaterializationsPerRun: positive integer overrides the default", () => {
+  assert.equal(resolveChatGptMaxGapMaterializationsPerRun({ PDPP_CHATGPT_MAX_GAP_MATERIALIZATIONS_PER_RUN: "10" }), 10);
+  assert.equal(resolveChatGptMaxGapMaterializationsPerRun({ PDPP_CHATGPT_MAX_GAP_MATERIALIZATIONS_PER_RUN: "1" }), 1);
+});
+
+test("resolveChatGptMaxGapMaterializationsPerRun: value < 1 returns Infinity (disable escape hatch)", () => {
+  assert.equal(
+    resolveChatGptMaxGapMaterializationsPerRun({ PDPP_CHATGPT_MAX_GAP_MATERIALIZATIONS_PER_RUN: "0" }),
+    Number.POSITIVE_INFINITY
+  );
+  assert.equal(
+    resolveChatGptMaxGapMaterializationsPerRun({ PDPP_CHATGPT_MAX_GAP_MATERIALIZATIONS_PER_RUN: "-1" }),
+    Number.POSITIVE_INFINITY
+  );
+});
+
+test("resolveChatGptMaxGapMaterializationsPerRun: non-integer returns the default", () => {
+  assert.equal(
+    resolveChatGptMaxGapMaterializationsPerRun({ PDPP_CHATGPT_MAX_GAP_MATERIALIZATIONS_PER_RUN: "1.5" }),
+    100
+  );
+  assert.equal(
+    resolveChatGptMaxGapMaterializationsPerRun({ PDPP_CHATGPT_MAX_GAP_MATERIALIZATIONS_PER_RUN: "abc" }),
+    100
+  );
+});
+
+test("runMessagesAndConversationsWithDetail: post-cap gap materialization stops at the injected limit", async () => {
+  // 8 conversations, fetch cap of 2, gap-materialization limit of 3.
+  // Expected: 2 fetches, then 3 DETAIL_GAP rows, then the loop stops.
+  // The remaining 3 conversations (convo-6..8) are not materialized as gaps —
+  // they will re-appear on the next run because the messages cursor is held back.
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      fetchedIds.push(path);
+      await Promise.resolve();
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [
+      makeConvo({ id: "convo-1" }),
+      makeConvo({ id: "convo-2" }),
+      makeConvo({ id: "convo-3" }),
+      makeConvo({ id: "convo-4" }),
+      makeConvo({ id: "convo-5" }),
+      makeConvo({ id: "convo-6" }),
+      makeConvo({ id: "convo-7" }),
+      makeConvo({ id: "convo-8" }),
+    ],
+    makeEmitConversation(deps),
+    {
+      random: () => 0,
+      sleep: () => undefined,
+      runBudget: new ChatGptRunBudget({ maxFetches: 2 }),
+      maxGapMaterializations: 3,
+    }
+  );
+
+  assert.deepEqual(
+    fetchedIds,
+    ["/conversation/convo-1", "/conversation/convo-2"],
+    "only conversations within the fetch cap are hydrated"
+  );
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2"]);
+
+  // Exactly 3 gap rows — the limit stops post-cap materialization before the
+  // remaining 3 conversations are touched.
+  const gaps = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP"
+  );
+  assert.equal(gaps.length, 3, "post-cap gap materialization halts at the injected limit of 3");
+  assert.deepEqual(
+    gaps.map((g) => g.record_key),
+    ["convo-3", "convo-4", "convo-5"],
+    "the first 3 tail conversations become DETAIL_GAP rows; the rest are skipped"
+  );
+  assert.equal(
+    gaps.every((g) => g.reason === "retry_exhausted" && g.detail?.class === "run_cap_deferred"),
+    true,
+    "materialized gaps are run-cap-deferred, not source-pressure"
+  );
+
+  // The gapKeys coverage set reflects only the materialized gaps, not the
+  // silently-skipped tail — consistent with "not lost, will re-appear next run".
+  assert.deepEqual(coverage.gapKeys, ["convo-3", "convo-4", "convo-5"]);
+});
+
+test("runMessagesAndConversationsWithDetail: no-cap run is byte-for-byte unchanged (gap limit never consulted)", async () => {
+  // With NO fetch/wall-clock cap, the gap-materialization limit is never
+  // reached and all conversations are hydrated normally.
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      fetchedIds.push(path);
+      await Promise.resolve();
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "convo-1" }), makeConvo({ id: "convo-2" }), makeConvo({ id: "convo-3" })],
+    makeEmitConversation(deps),
+    {
+      random: () => 0,
+      sleep: () => undefined,
+      // No runBudget → open budget (no cap), maxGapMaterializations=1 to prove it
+      // is never consulted even with a tiny injected limit.
+      maxGapMaterializations: 1,
+    }
+  );
+
+  assert.deepEqual(
+    fetchedIds,
+    ["/conversation/convo-1", "/conversation/convo-2", "/conversation/convo-3"],
+    "all conversations hydrated when no cap is configured"
+  );
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2", "convo-3"]);
+  assert.deepEqual(coverage.gapKeys, [], "no gaps materialized on an uncapped run");
+
+  const gaps = harness.protocolMessages.filter((m) => m.type === "DETAIL_GAP");
+  assert.equal(gaps.length, 0, "gap limit is never consulted when no cap trips");
 });

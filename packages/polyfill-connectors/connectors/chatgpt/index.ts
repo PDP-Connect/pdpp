@@ -281,6 +281,36 @@ export class ChatGptRateLimitDensityTracker {
 const CHATGPT_MAX_DETAIL_FETCHES_PER_RUN_ENV = "PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN";
 const CHATGPT_MAX_RUN_WALL_CLOCK_MS_ENV = "PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS";
 
+// ─── Bounded gap-materialization after a cap trips ─────────────────────────
+//
+// The fetch/wall-clock caps above stop launching new detail fetches once a run
+// hits its budget. But stopping the FETCHES is not the same as stopping the RUN:
+// the lane still walks every remaining conversation in the work list to write a
+// resumable run-cap DETAIL_GAP row for each one. On a large cold account
+// (the 2026-06-05 live finding: ~2,169 conversations, fetch cap 25) that
+// post-trip loop materialized one gap row per remaining conversation and kept
+// the run active and emitting `run.detail_gap_recorded` for >15 min AFTER the
+// wall-clock cap — exactly what an unattended schedule must not do.
+//
+// This budget bounds that materialization. Once a cap has tripped, the run
+// writes at most `maxGapMaterializations` resumable run-cap DETAIL_GAP rows for
+// the newest slice of the tail (so the next run recovers that bounded slice
+// first), then STOPS iterating instead of touching every remaining backlog row.
+// The unwritten remainder is not lost: because the run was truncated, the
+// messages cursor is held back (see runConversationsAndMessagesStreams), so the
+// remaining conversations are re-listed and re-derived on the next run. The
+// already-hydrated prefix re-hydrates idempotently (records and gaps both
+// upsert), so the only cost of the holdback is re-fetching the bounded prefix —
+// itself capped by the fetch budget — never a multi-hour grind.
+//
+// Default is a finite safety value: it is consulted ONLY after a fetch/wall-clock
+// cap has tripped, so with NO cap configured it is never reached and a normal run
+// stays byte-for-byte unchanged. Set the env var to opt into a different bound, or
+// to any value < 1 to restore the old unbounded "one gap per remaining
+// conversation" materialization (the disable escape hatch).
+const CHATGPT_MAX_GAP_MATERIALIZATIONS_PER_RUN_ENV = "PDPP_CHATGPT_MAX_GAP_MATERIALIZATIONS_PER_RUN";
+const CHATGPT_MAX_GAP_MATERIALIZATIONS_PER_RUN_DEFAULT = 100;
+
 /**
  * Resolve the maximum conversation-detail hydrations a single run may perform
  * before deferring the remaining tail as resumable DETAIL_GAP records. Unset or
@@ -316,6 +346,28 @@ export function resolveChatGptMaxRunWallClockMs(env: NodeJS.ProcessEnv = process
     return Number.POSITIVE_INFINITY;
   }
   return Math.floor(parsed);
+}
+
+/**
+ * Resolve the maximum number of resumable run-cap DETAIL_GAP rows a single run
+ * will materialize AFTER a fetch/wall-clock cap has tripped, before it stops
+ * iterating the remaining backlog. Unset → the finite default; a positive
+ * integer overrides it; any value < 1 (the disable escape hatch) returns
+ * Infinity, restoring the old unbounded "one gap per remaining conversation"
+ * materialization. This bound only matters once a cap has already tripped, so an
+ * unconfigured run never consults it and is byte-for-byte unchanged.
+ */
+export function resolveChatGptMaxGapMaterializationsPerRun(env: NodeJS.ProcessEnv = process.env): number {
+  const trimmed = env[CHATGPT_MAX_GAP_MATERIALIZATIONS_PER_RUN_ENV]?.trim();
+  if (trimmed == null || trimmed === "") {
+    return CHATGPT_MAX_GAP_MATERIALIZATIONS_PER_RUN_DEFAULT;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed)) {
+    return CHATGPT_MAX_GAP_MATERIALIZATIONS_PER_RUN_DEFAULT;
+  }
+  // An explicit value < 1 is the documented disable escape hatch (unbounded).
+  return parsed < 1 ? Number.POSITIVE_INFINITY : parsed;
 }
 
 /**
@@ -1776,6 +1828,11 @@ interface ConversationDetailPacingOptions {
   runBudget?: ChatGptRunBudget;
   sleep?: (ms: number) => Promise<void> | void;
   tuning?: ChatGptDetailLaneTuning;
+  // Maximum number of resumable run-cap DETAIL_GAP rows the pass will
+  // materialize AFTER a fetch/wall-clock cap trips, before stopping iteration.
+  // Tests inject a small value to exercise the halt without a full backlog.
+  // Defaults to resolveChatGptMaxGapMaterializationsPerRun().
+  maxGapMaterializations?: number;
 }
 
 interface ConversationDetailCoverage {
@@ -2076,6 +2133,13 @@ export async function runMessagesAndConversationsWithDetail(
       });
     },
   });
+  // Bound how many run-cap DETAIL_GAP rows we will materialize once any
+  // fetch/wall-clock cap has tripped. Resolved once per pass; consulted only
+  // after `runCapDeferReason` is set, so a run with no cap configured never
+  // reaches this counter and is byte-for-byte unchanged.
+  const maxGapMaterializations =
+    pacing.maxGapMaterializations ?? resolveChatGptMaxGapMaterializationsPerRun();
+  let gapMaterializationsAfterCap = 0;
   let observedRecoverablePressure: ChatGptRecoverableRetryExhaustedError | null = null;
   let runCapDeferReason: ChatGptRunCapReason | null = null;
   await lane.runAll(convosToSync, async (c) => {
@@ -2087,9 +2151,16 @@ export async function runMessagesAndConversationsWithDetail(
       coverage.gapKeys.push(c.id);
       return { deferredDueToPressure: true, status: 0, json: null };
     }
-    // Bounded-run cap already tripped earlier in this pass: defer this and every
-    // later conversation as a resumable run-cap DETAIL_GAP without a fetch.
+    // Bounded-run cap already tripped earlier in this pass: defer this
+    // conversation as a resumable run-cap DETAIL_GAP, but only up to the
+    // materialization limit. Once the limit is reached, stop iterating — the
+    // remaining conversations are not lost: the messages cursor is held back,
+    // so they re-appear on the next run and are bounded by the per-run caps.
     if (runCapDeferReason) {
+      if (gapMaterializationsAfterCap >= maxGapMaterializations) {
+        return { deferredDueToPressure: true, status: 0, json: null };
+      }
+      gapMaterializationsAfterCap += 1;
       await deps.emit(makeRunCapDeferredConversationDetailGap(c, runCapDeferReason));
       coverage.gapKeys.push(c.id);
       return { deferredDueToPressure: true, status: 0, json: null };
@@ -2125,6 +2196,8 @@ export async function runMessagesAndConversationsWithDetail(
         stream: "messages",
         message: `ChatGPT conversation-detail lane reached its per-run ${capReason === "max_wall_clock" ? "wall-clock" : "detail-count"} cap after ${runBudget.count} hydrated conversation(s); deferring the remaining conversation details as resumable DETAIL_GAP records for the next run`,
       });
+      // Count this first-trip materialization against the post-cap gap limit.
+      gapMaterializationsAfterCap += 1;
       await deps.emit(makeRunCapDeferredConversationDetailGap(c, capReason));
       coverage.gapKeys.push(c.id);
       return { deferredDueToPressure: true, status: 0, json: null };
