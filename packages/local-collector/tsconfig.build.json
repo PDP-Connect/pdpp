@@ -20,6 +20,7 @@
     "../polyfill-connectors/connectors/codex/**/*.ts",
     "../polyfill-connectors/src/auth.ts",
     "../polyfill-connectors/src/browser-handoff.ts",
+    "../polyfill-connectors/src/collector-build-info.ts",
     "../polyfill-connectors/src/collector-protocol.ts",
     "../polyfill-connectors/src/collector-runner.ts",
     "../polyfill-connectors/src/connector-runtime-protocol.ts",

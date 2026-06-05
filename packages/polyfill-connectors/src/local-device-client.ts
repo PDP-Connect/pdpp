@@ -94,6 +94,16 @@ export interface HeartbeatLastError {
 }
 
 export interface HeartbeatRequest {
+  /**
+   * Build-derived agent version of the running collector (e.g.
+   * `0.0.0+43f63825f01a`, or `0.0.0+source` for an unbuilt run). Optional and
+   * additive: the reference server already accepts this field on the heartbeat
+   * wire schema and persists it to `device_exporters.agent_version` via a
+   * COALESCE update, so an absent value preserves the last stored one. Carries
+   * only a version string and a short revision token — never a path or secret.
+   * See `collector-build-info.ts`.
+   */
+  agent_version?: string;
   connector_id: string;
   last_error?: HeartbeatLastError | null;
   outbox?: HeartbeatOutboxDiagnostics;

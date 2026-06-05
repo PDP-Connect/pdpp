@@ -27,6 +27,7 @@ import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
+import { buildAgentVersion } from "./collector-build-info.ts";
 import type { EmittedMessage, StartMessage, StreamScope } from "./connector-runtime-protocol.ts";
 import {
   type EnrollmentExchangeResponse,
@@ -52,6 +53,17 @@ import {
   type ConnectorPlacementInput,
   type RuntimeBindingName,
 } from "./runtime-capabilities.ts";
+
+/**
+ * Build-derived agent version reported on every heartbeat this runner emits,
+ * resolved once at module load. Populates `device_exporters.agent_version` so an
+ * owner can see which collector build a host is running — and catch stale-build
+ * drift — without inspecting `dist/` mtimes on the machine. A built artifact
+ * reports its real revision; an unbuilt source/`tsx` run reports `…+source`.
+ * Redaction-safe: a version string plus a short revision token, never a path or
+ * secret. See `collector-build-info.ts`.
+ */
+const COLLECTOR_AGENT_VERSION = buildAgentVersion();
 
 /**
  * Maximum stderr bytes retained from a connector child before the runner
@@ -549,6 +561,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     });
 
     await client.heartbeat({
+      agent_version: COLLECTOR_AGENT_VERSION,
       connector_id: config.connector.connector_id,
       outbox: buildHeartbeatOutboxDiagnostics(postDrainSummary, {
         backlogOpen: countOpenBacklogGaps(outbox, config.sourceInstanceId),
@@ -623,6 +636,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     if (!checkpointResult.statePutFailed) {
       const finalDeadLetterError = buildHeartbeatDeadLetterError(outbox, config.sourceInstanceId);
       await client.heartbeat({
+        agent_version: COLLECTOR_AGENT_VERSION,
         connector_id: config.connector.connector_id,
         ...(finalDeadLetterError ? { last_error: finalDeadLetterError } : {}),
         outbox: buildHeartbeatOutboxDiagnostics(finalSummary, {
@@ -1387,7 +1401,11 @@ async function safeHeartbeat(
   request: Parameters<LocalDeviceClient["heartbeat"]>[0]
 ): Promise<void> {
   try {
-    await client.heartbeat(request);
+    // Stamp the build-derived agent version on every best-effort heartbeat too
+    // (corrective post-throw, skip-for-backlog, state-read block), so a host
+    // that only ever reports via these paths still surfaces its build. An
+    // explicitly-provided value is preserved.
+    await client.heartbeat({ agent_version: COLLECTOR_AGENT_VERSION, ...request });
   } catch {
     // Heartbeat is best-effort here; the caller is already handling a more
     // important failure and we do not want to mask it with a heartbeat error.

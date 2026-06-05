@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import { buildAgentVersion } from "./collector-build-info.ts";
 import type { EmittedMessage, StartMessage, StreamScope } from "./connector-runtime-protocol.ts";
 import { type EnrollmentExchangeResponse, LocalDeviceClient } from "./local-device-client.ts";
 import {
@@ -154,6 +155,7 @@ export async function runLocalDeviceExporter(config: LocalDeviceRuntimeConfig): 
   });
 
   await client.heartbeat({
+    agent_version: buildAgentVersion(),
     connector_id: profile.connectorId,
     records_pending: (await queue.list()).filter((item) => item.status !== "sent").length,
     source_instance_id: config.sourceInstanceId,
@@ -188,6 +190,7 @@ export async function runLocalDeviceExporter(config: LocalDeviceRuntimeConfig): 
 
   const sentBatches = await drainLocalDeviceQueue({ client, queue });
   await client.heartbeat({
+    agent_version: buildAgentVersion(),
     connector_id: profile.connectorId,
     records_pending: (await queue.list()).filter((item) => item.status !== "sent").length,
     source_instance_id: config.sourceInstanceId,

@@ -125,6 +125,10 @@ test('device exporter routes enroll, heartbeat, ingest idempotently, isolate sou
     const heartbeat = await postJson(
       `${asUrl}/_ref/device-exporters/${encodeURIComponent(first.device_id)}/heartbeat`,
       {
+        // Build-derived agent version, surfaced so an owner can spot stale-build
+        // drift without inspecting dist mtimes. The reference persists it and
+        // the diagnostics projection echoes it back (asserted below).
+        agent_version: '0.0.0+deadbeef0001',
         connector_id: 'codex',
         records_pending: 0,
         source_instance_id: first.source_instance_id,
@@ -194,6 +198,12 @@ test('device exporter routes enroll, heartbeat, ingest idempotently, isolate sou
     assert.equal(diagnostics.data.length, 2);
     const firstDiagnostics = diagnostics.data.find((device) => device.device_id === first.device_id);
     assert.ok(Number.isFinite(Date.parse(firstDiagnostics.last_heartbeat_at)));
+    // The build-derived agent version sent on the heartbeat is persisted and
+    // surfaced on the owner diagnostics projection.
+    assert.equal(firstDiagnostics.agent_version, '0.0.0+deadbeef0001');
+    // A device that never reported a version surfaces null, not an error.
+    const secondDiagnostics = diagnostics.data.find((device) => device.device_id === second.device_id);
+    assert.equal(secondDiagnostics.agent_version, null);
     assert.equal(firstDiagnostics.source_instances[0].connector_instance_id, first.connector_instance_id);
     assert.equal(firstDiagnostics.source_instances[0].accepted_record_count, 1);
 

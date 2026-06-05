@@ -220,6 +220,12 @@ function DeviceRow({ device }: { device: DeviceExporter }) {
             <span>created {formatRelativeTime(device.created_at)}</span>
             <span>heartbeat {formatRelativeTime(device.last_heartbeat_at)}</span>
             <span>last ingest {formatRelativeTime(device.last_ingest_at)}</span>
+            {device.agent_version ? (
+              <span className="inline-flex min-w-0 items-center gap-1">
+                build
+                <code className="max-w-[14rem] truncate font-mono text-foreground/80">{device.agent_version}</code>
+              </span>
+            ) : null}
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
             <MetaPill label="accepted" tone="success" value={counts.accepted} />

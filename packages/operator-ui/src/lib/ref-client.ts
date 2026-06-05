@@ -581,6 +581,12 @@ export interface DeviceSourceInstance {
 }
 
 export interface DeviceExporter {
+  /**
+   * Build-derived agent version the device last reported on a heartbeat (e.g.
+   * `0.0.0+43f63825f01a`). Owner-only diagnostic for spotting stale-build drift;
+   * `null` when the device has never reported a version.
+   */
+  agent_version?: string | null;
   created_at: string;
   device_id: string;
   display_name?: string | null;

@@ -56,6 +56,7 @@ interface AppLike {
 // ─── Minimal substrate shapes ────────────────────────────────────────────────
 
 interface DeviceRow {
+  readonly agentVersion?: string | null;
   readonly collectorProtocolVersion?: string | null;
   readonly createdAt: string;
   readonly deviceId: string;
@@ -893,6 +894,13 @@ function projectDeviceExporter(
     subject_id: device.ownerSubjectId,
     display_name: device.displayName,
     status: device.status,
+    // Build-derived agent version the device last reported on a heartbeat (e.g.
+    // `0.0.0+43f63825f01a`), persisted on the device row. Owner-only diagnostic:
+    // it lets an owner see which collector build a host is running — and catch
+    // stale-build drift — without inspecting `dist/` mtimes on the machine.
+    // Additive and nullable: a device that has never reported a version surfaces
+    // `null` and is not alarmed on its absence.
+    agent_version: device.agentVersion ?? null,
     created_at: device.createdAt,
     last_heartbeat_at: lastHeartbeatAt,
     last_ingest_at: lastIngestAt,

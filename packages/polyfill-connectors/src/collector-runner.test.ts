@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { test } from "node:test";
 
+import { buildAgentVersion } from "./collector-build-info.ts";
 import {
   buildCollectorStartMessage,
   COLLECTOR_STDERR_MAX_BYTES,
@@ -323,6 +324,51 @@ test("runCollectorConnector auto-prunes over-retention succeeded rows after a cl
     } finally {
       outbox.close();
     }
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector reports the build-derived agent version on every heartbeat", async () => {
+  // Stale-build drift was invisible because the collector reported an empty
+  // `agent_version`. Every heartbeat must now carry the build-derived version so
+  // the reference can persist it to `device_exporters.agent_version` and surface
+  // which build a host is running. In an unbuilt test run this is `…+source`.
+  const harness = await startCollectorHarness({});
+  try {
+    const queuePath = await tempQueuePath();
+    const fixture = await writeFixtureConnector({ script: ONE_RECORD_CONNECTOR_SCRIPT });
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-agent-version",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      queuePath,
+      sourceInstanceId: "src-agent-version",
+    });
+    assert.equal(result.done?.status, "succeeded");
+
+    const expected = buildAgentVersion();
+    assert.match(expected, /^[^+]+\+source$/, "an unbuilt test run reports the source sentinel");
+    assert.ok(harness.heartbeats.length >= 2, "expected at least the starting and final heartbeats");
+    for (const heartbeat of harness.heartbeats) {
+      assert.equal(
+        heartbeat.agent_version,
+        expected,
+        `every heartbeat must carry the build-derived agent version; saw ${String(heartbeat.agent_version)}`
+      );
+    }
+    // Redaction: the reported version carries no path, home dir, or token.
+    const starting = harness.heartbeats.find((h) => h.status === "starting");
+    const startingVersion = String(starting?.agent_version ?? "");
+    assert.ok(!startingVersion.includes("/"), "agent version must not carry a path separator");
+    assert.ok(!startingVersion.includes(process.env.HOME ?? " never"), "must not carry a home path");
   } finally {
     await harness.close();
   }
