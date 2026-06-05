@@ -359,9 +359,56 @@ export async function emitDeferredStreams(emit: EmitFn, requested: RequestedScop
 }
 
 /**
+ * Terminal outcome class for an exhausted export ladder. The ladder reaches
+ * `emitExportFailure` only when no CSV was produced AND the source never
+ * returned an explicit "nothing to export" response (that honest-empty path
+ * short-circuits in `processAccountTransactions` and is never a gap). What
+ * remains is genuinely ambiguous, so we split it by the last diagnostic phase
+ * the ladder recorded:
+ *
+ *   - `source_structure_changed` — the export affordance or its date-range
+ *     dialog was missing/unrecognized (`no_export_affordance`,
+ *     `export_dialog_unexpected_shape`). These are the two phases the ladder
+ *     already treats as fatal (`isFatalDiagPhase`): they don't get better with
+ *     a shorter window, so retrying is pointless until the connector's
+ *     selectors are revisited. This is the "source UI/API changed or terminally
+ *     unsupported" outcome.
+ *   - `export_pressure` — the affordance and dialog were found and the export
+ *     was submitted, but the download/body never materialized, the click
+ *     failed, or the dialog reported a transient error
+ *     (`export_artifact_wait_failed`, `export_dialog_error`,
+ *     `export_click_failed`). This is the "temporary export/source pressure"
+ *     outcome — a later run may succeed.
+ *   - `unknown` — every window failed without leaving a diagnostic phase
+ *     (`lastDiag === null`). We don't claim to know which of the above it was.
+ *
+ * This is a within-protocol refinement: `SKIP_RESULT.reason` is a free-form
+ * string and `diagnostics` is open, so the only thing that changes is which
+ * vetted reason/copy the dashboard sees and a machine-readable `outcome`
+ * discriminator on the diagnostics object. No new protocol field is added.
+ */
+export type ExportLadderOutcome = "export_pressure" | "source_structure_changed" | "unknown";
+
+/** Map the ladder's last diagnostic phase to a terminal outcome class. */
+export function classifyExportLadderOutcome(lastDiag: DiagnosticInfo | null): ExportLadderOutcome {
+  if (!lastDiag) {
+    return "unknown";
+  }
+  if (isFatalDiagPhase(lastDiag)) {
+    return "source_structure_changed";
+  }
+  return "export_pressure";
+}
+
+/**
  * Emit the "backfill ladder exhausted" SKIP_RESULT for transactions.
  * Called when `tryExportLadder` returns no CSV across every candidate
  * start without an explicit "nothing to export" source response.
+ *
+ * The honest-empty case (the source explicitly said "no transactions") never
+ * reaches here — `processAccountTransactions` returns before calling this when
+ * `exportEmpty` is true — so this function never turns a genuinely empty
+ * account/window into a retryable gap.
  */
 export async function emitExportFailure(
   deps: EmitDeps,
@@ -369,18 +416,34 @@ export async function emitExportFailure(
   lastDiag: DiagnosticInfo | null
 ): Promise<void> {
   const isCreditCard = CREDIT_CARD_TYPE_RE.test(a.account_type);
+  const outcome = classifyExportLadderOutcome(lastDiag);
   const baseMessage = lastDiag
-    ? `Export ladder exhausted: ${formatDiagnosticInfo(lastDiag)}`
-    : "Export dialog didn't produce a download across all ranges — account may have no transactions or selectors shifted";
+    ? `Export ladder exhausted (${outcome}): ${formatDiagnosticInfo(lastDiag)}`
+    : "Export dialog didn't produce a download across all ranges and the source never reported an empty account — outcome unknown (transient pressure or shifted selectors)";
   const ccSuffix = isCreditCard
     ? ' (credit-card export flow not verified live 2026-04-19 — see design-notes/usaa.md "Fallback path: DOM scrape")'
     : "";
+  // Credit-card exports keep their own unverified-flow reason regardless of
+  // outcome (the flow itself was never confirmed live), but still carry the
+  // structural-vs-pressure discriminator in diagnostics. For non-credit-card
+  // accounts, a missing affordance/dialog is reported as a distinct
+  // structure-changed reason so the dashboard stops conflating "the connector
+  // is broken" with "the export was momentarily unavailable".
+  let reason: string;
+  if (isCreditCard) {
+    reason = "credit_card_export_unverified";
+  } else if (outcome === "source_structure_changed") {
+    reason = "export_affordance_missing";
+  } else {
+    reason = "export_no_download";
+  }
+  const baseDiagnostics = lastDiag ? sanitizeDiagnosticInfo(lastDiag) : null;
   await deps.emit({
     type: "SKIP_RESULT",
     stream: "transactions",
-    reason: isCreditCard ? "credit_card_export_unverified" : "export_no_download",
+    reason,
     message: `${baseMessage}${ccSuffix}`,
-    diagnostics: lastDiag ? sanitizeDiagnosticInfo(lastDiag) : null,
+    diagnostics: { outcome, ...(baseDiagnostics ?? {}) },
   });
 }
 

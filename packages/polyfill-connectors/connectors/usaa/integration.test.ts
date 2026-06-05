@@ -424,7 +424,13 @@ test("emitAccountsStream: emittedAt propagates into every accounts record's fetc
 
 // ─── Invariant 7: backfill ladder exhausted → SKIP_RESULT shape ──────────
 
-test("emitExportFailure: exhausted ladder with diagnostic emits SKIP_RESULT carrying the last phase", async () => {
+test("emitExportFailure: a missing export affordance is reported as a structure-changed outcome, not export_no_download", async () => {
+  // `no_export_affordance` is one of the two fatal phases the ladder breaks on:
+  // the export button/page was never located, so a shorter date window can't
+  // help. That is the "source UI/API changed" outcome, and it must be visible
+  // to the dashboard as a distinct reason — not collapsed into the transient
+  // `export_no_download` bucket — so a structurally-broken connector is not
+  // mistaken for momentary export pressure.
   const { deps, messages } = makeHarness();
   const diag: DiagnosticInfo = {
     phase: "no_export_affordance",
@@ -441,15 +447,77 @@ test("emitExportFailure: exhausted ladder with diagnostic emits SKIP_RESULT carr
   const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
   assert.ok(skip, "SKIP_RESULT must emit when the ladder is exhausted");
   assert.equal(skip.stream, "transactions", "export failure is charged to the transactions stream");
-  assert.equal(skip.reason, "export_no_download", "non-credit-card account uses export_no_download");
+  assert.equal(skip.reason, "export_affordance_missing", "a missing affordance/dialog is a structure-changed outcome");
   assert.match(skip.message, /no_export_affordance/, "message carries the last diagnostic phase");
+  assert.match(skip.message, /source_structure_changed/, "message names the terminal outcome class");
   assert.match(skip.message, /page=captured/, "message reports whether page diagnostics were captured");
   assert.doesNotMatch(skip.message, /accountId=|https?:\/\//, "message omits page URLs and URL identifiers");
   assert.notEqual(skip.diagnostics, diag, "diagnostic context is sanitized before emission");
-  const emittedDiag = skip.diagnostics as DiagnosticInfo;
+  const emittedDiag = skip.diagnostics as DiagnosticInfo & { outcome: string };
+  assert.equal(emittedDiag.outcome, "source_structure_changed", "outcome discriminator rides on diagnostics");
   assert.equal(emittedDiag.phase, diag.phase, "diagnostic phase threads through as structured context");
   assert.equal(emittedDiag.diag?.url, "", "diagnostic URL is redacted before emission");
   assert.equal(emittedDiag.diag?.title, "", "diagnostic page title is redacted before emission");
+});
+
+test("emitExportFailure: the dialog-unexpected-shape phase is also a structure-changed outcome", async () => {
+  const { deps, messages } = makeHarness();
+  const diag: DiagnosticInfo = {
+    phase: "export_dialog_unexpected_shape",
+    diag: {
+      url: "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001",
+      title: "Checking",
+      has_utility_bar: false,
+      export_candidates: [],
+      nav_candidates: [],
+      dialogs_open: 1,
+      dialog_html_preview: "<div>unexpected</div>",
+    },
+  };
+  await emitExportFailure(deps, makeAccount(), diag);
+  const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+  assert.ok(skip);
+  assert.equal(
+    skip.reason,
+    "export_affordance_missing",
+    "an unrecognized export dialog is a structure-changed outcome"
+  );
+  const emittedDiag = skip.diagnostics as DiagnosticInfo & { outcome: string };
+  assert.equal(emittedDiag.outcome, "source_structure_changed");
+});
+
+test("emitExportFailure: a transient artifact-wait failure stays export_no_download (pressure outcome)", async () => {
+  // The affordance and dialog were found and the export submitted; only the
+  // download/body never materialized. That is recoverable on a later run, so
+  // it must NOT be reported as a structure change.
+  const { deps, messages } = makeHarness();
+  const diag: DiagnosticInfo = {
+    artifact: { cdpError: null, cdpReady: true, candidates: [] },
+    diag: null,
+    error: "download_empty",
+    phase: "export_artifact_wait_failed",
+  };
+  await emitExportFailure(deps, makeAccount(), diag);
+  const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+  assert.ok(skip);
+  assert.equal(skip.reason, "export_no_download", "submitted-but-no-download stays the transient pressure reason");
+  assert.match(skip.message, /export_pressure/, "message names the pressure outcome class");
+  const emittedDiag = skip.diagnostics as DiagnosticInfo & { outcome: string };
+  assert.equal(emittedDiag.outcome, "export_pressure");
+});
+
+test("emitExportFailure: no diagnostic at all is an honest unknown outcome (still retryable)", async () => {
+  // Every window failed without leaving a diagnostic phase. We don't claim to
+  // know whether it was structural or transient, so the reason stays the
+  // retryable `export_no_download` and the message says so plainly.
+  const { deps, messages } = makeHarness();
+  await emitExportFailure(deps, makeAccount(), null);
+  const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+  assert.ok(skip);
+  assert.equal(skip.reason, "export_no_download", "an unknown exhaustion stays retryable, not a structure change");
+  assert.match(skip.message, /outcome unknown/, "message is honest that the outcome could not be determined");
+  const emittedDiag = skip.diagnostics as { outcome: string };
+  assert.equal(emittedDiag.outcome, "unknown");
 });
 
 test("emitExportFailure: artifact diagnostics are summarized when page diagnostics are unavailable", async () => {

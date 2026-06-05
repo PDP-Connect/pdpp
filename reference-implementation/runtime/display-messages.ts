@@ -87,6 +87,7 @@ export const DISPLAY_MESSAGES: Record<string, string> = {
   starred_entry_missing_repo: "We skipped a starred entry whose repository was unavailable",
   unparseable_order_date: "We skipped some orders because their dates couldn't be read",
   upstream_pressure_deferred: "The service was busy, so we saved what we could and will finish the rest later",
+  export_affordance_missing: "We couldn't find the export controls on this page — the site may have changed",
   export_error: "The export couldn't be downloaded",
   export_no_download: "The export didn't produce a downloadable file",
   export_not_found: "We couldn't find an export to import",
