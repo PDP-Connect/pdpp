@@ -2283,7 +2283,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return projectBrowserSurfaceLease(cancelResult.lease);
   }
 
-  async function expireBrowserSurfaceWaits(): Promise<BrowserSurfaceProjection[]> {
+  async function expireBrowserSurfaceWaitsWithoutPromotion(): Promise<BrowserSurfaceLease[]> {
     if (!browserSurfaceLeaseManager) {
       return [];
     }
@@ -2299,6 +2299,14 @@ export function createController(opts: ControllerOptions = {}): Controller {
       );
       await persistBrowserSurfaceLeaseMutation(lease);
     }
+    return deferred;
+  }
+
+  async function expireBrowserSurfaceWaits(): Promise<BrowserSurfaceProjection[]> {
+    if (!browserSurfaceLeaseManager) {
+      return [];
+    }
+    const deferred = await expireBrowserSurfaceWaitsWithoutPromotion();
     await persistAndPromoteBrowserSurfaceLeases(
       browserSurfaceLeaseManager.pumpQueuedLeases(),
       "browser-surface timeout"
@@ -2922,6 +2930,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (!browserSurfaceLeaseManager) {
       return { kind: "ready", lease: null, env: null };
     }
+    await expireBrowserSurfaceWaitsWithoutPromotion();
     const priorityClass = ctx.options.priorityClass ?? "owner_interactive";
     const leaseResult = await acquireInitialBrowserSurfaceLease(ctx, priorityClass);
     const reclaim = await reclaimWaitingLeaseIfNeeded(ctx, leaseResult.lease);

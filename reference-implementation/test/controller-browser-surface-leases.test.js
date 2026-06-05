@@ -889,6 +889,60 @@ test("queued browser-surface timeout emits deferred event without connector fail
   assert.equal(calls.runConnector, 1);
 });
 
+test("managed acquisition expires stale queued lease before duplicate detection", async (t) => {
+  let releaseFirst;
+  let nowMs = Date.parse("2026-05-12T12:00:00.000Z");
+  const manager = createManager({
+    surfaceCap: 1,
+    staticProfileKey: "managed-profile",
+    leaseWaitTimeoutMs: 1000,
+    now: () => new Date(nowMs),
+  });
+  const store = createMemoryBrowserSurfaceLeaseStore();
+  const runConnectorImpl = (opts) => {
+    if (opts.runId === "run_first") {
+      return new Promise((resolve) => {
+        releaseFirst = () => resolve({ status: "completed" });
+      });
+    }
+    return Promise.resolve({ status: "completed", records_emitted: 0, state: null, checkpoint_summary: null });
+  };
+  const { controller } = setup(t, { browserSurfaceLeaseStore: store, manager, runConnectorImpl });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_first",
+  });
+  const queued = await controller.runNow("other-managed", {
+    manifest: OTHER_MANAGED_MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_stale_waiter",
+  });
+
+  assert.equal(queued.status, "waiting_for_browser_surface");
+  assert.equal(manager.getLease("lease_2").status, "waiting_for_browser_surface");
+  assert.equal(store.leases.get("lease_2").status, "waiting_for_browser_surface");
+
+  nowMs += 2000;
+  const retry = await controller.runNow("other-managed", {
+    manifest: OTHER_MANAGED_MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_retry",
+  });
+
+  assert.equal(retry.status, "waiting_for_browser_surface");
+  assert.equal(retry.browser_surface.browser_surface_lease_id, "lease_3");
+  assert.equal(manager.getLease("lease_2").status, "deferred");
+  assert.equal(manager.getLease("lease_2").wait_reason, "lease_wait_timeout");
+  assert.equal(store.leases.get("lease_2").status, "deferred");
+  assert.equal(store.leases.get("lease_2").wait_reason, "lease_wait_timeout");
+  assert.ok(listRunEventTypes("run_stale_waiter").includes("run.browser_surface_deferred"));
+
+  releaseFirst();
+  await controller.drainActiveRuns(1000);
+});
+
 test("promotion precondition failure defers lease instead of recording clean release", async (t) => {
   let releaseFirst;
   let promotedRunPathResolutions = 0;

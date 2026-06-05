@@ -53,6 +53,7 @@ import { isMainModule } from "../../src/is-main-module.ts";
 import { savePlaywrightDownload } from "../../src/playwright-download.ts";
 import { resourceSet } from "../../src/scope-filters.ts";
 import {
+  isHydrated,
   openStatementHydrationCursor,
   readPriorStatementHydration,
   type StatementHydration,
@@ -1298,11 +1299,11 @@ export function statementRowOutsideTimeRange(deps: EmitDeps, dateIso: string | n
  * prior `document_url`/`pdf_path`/`pdf_sha256` (which point at content-
  * addressed bytes a prior run stored and that never move) instead of null.
  * A statement that was never hydrated stays all-null (honest index-only).
- * Either way the per-run `pdf_download_failed` SKIP_RESULT — emitted by the
- * caller — remains the authoritative record that this run did not re-fetch
- * the PDF; the carried body asserts the artifact's last known location, not
- * that this run re-verified it. This stops the `value -> null` hydration-
- * availability flap from re-versioning an immutable statement.
+ * Either way the statement detail-coverage report remains the authoritative
+ * record of whether PDF bytes were present this run. The carried body asserts
+ * the artifact's last known location, not that this run re-verified it. This
+ * stops the `value -> null` hydration-availability flap from re-versioning an
+ * immutable statement.
  *
  * Gated on the per-statement fingerprint cursor (excludes `fetched_at`) so a
  * re-listed statement that is byte-identical modulo the run clock does not
@@ -1317,7 +1318,7 @@ export async function emitStatementIndexOnly(
   dateIso: string | null,
   fingerprintCursor?: FingerprintCursor,
   hydrationCursor?: StatementHydrationCursor
-): Promise<void> {
+): Promise<StatementHydration> {
   const carried: StatementHydration = hydrationCursor
     ? hydrationCursor.resolveOnFailure(id)
     : { document_url: null, pdf_path: null, pdf_sha256: null };
@@ -1338,6 +1339,32 @@ export async function emitStatementIndexOnly(
   if (!fingerprintCursor || fingerprintCursor.shouldEmit(record)) {
     await deps.emitRecord("statements", record);
   }
+  return carried;
+}
+
+export type StatementDetailOutcome = { kind: "hydrated"; id: string } | { kind: "index_only"; id: string };
+
+export async function emitStatementDetailCoverage(
+  deps: EmitDeps,
+  outcomes: readonly StatementDetailOutcome[]
+): Promise<void> {
+  if (!deps.wantsStatements || outcomes.length === 0) {
+    return;
+  }
+  const requiredKeys = outcomes.map((outcome) => outcome.id);
+  const hydratedKeys = outcomes.filter((outcome) => outcome.kind === "hydrated").map((outcome) => outcome.id);
+  const optionalSkipKeys = outcomes.filter((outcome) => outcome.kind === "index_only").map((outcome) => outcome.id);
+  await deps.emit(
+    buildDetailCoverageMessage({
+      stream: "statements",
+      stateStream: "statements",
+      requiredKeys,
+      hydratedKeys,
+      optionalSkipKeys,
+      considered: outcomes.length,
+      covered: outcomes.length,
+    })
+  );
 }
 
 /**
@@ -1757,7 +1784,7 @@ async function processStatementRow(
   accountsResFilter: ReadonlySet<string> | null,
   fingerprintCursor?: FingerprintCursor,
   hydrationCursor?: StatementHydrationCursor
-): Promise<void> {
+): Promise<StatementDetailOutcome | null> {
   try {
     const dateIso = parseDateDelivered(row.date_delivered_raw);
     const accountId = resolveAccountIdForRow(row, filteredAccounts) ?? resolveAccountIdForRow(row, accounts);
@@ -1766,10 +1793,10 @@ async function processStatementRow(
     // statement's account, skip it. (emitRecord will also skip, but doing
     // it here saves the PDF download.)
     if (accountsResFilter?.size && accountId && !accountsResFilter.has(accountId)) {
-      return;
+      return null;
     }
     if (statementRowOutsideTimeRange(deps, dateIso)) {
-      return;
+      return null;
     }
 
     const id = shortHash(`${row.account_reference ?? ""}|${dateIso ?? row.date_delivered_raw}|${row.title}`);
@@ -1782,18 +1809,24 @@ async function processStatementRow(
     const dlResult = await downloadStatementPdf(page, row, accountId, deps.capture);
     if (!dlResult.ok) {
       await deps.emit({
-        type: "SKIP_RESULT",
+        type: "PROGRESS",
         stream: "statements",
-        reason: "pdf_download_failed",
-        message: `Statement PDF download failed: ${dlResult.error}`,
-        diagnostics: { error: dlResult.error, account_matched: Boolean(accountId) },
+        message: "Statement PDF not hydrated this run; emitting index-only statement",
       });
       // Still emit a record so the owner has proof the statement exists.
       // If it was previously hydrated, carry the prior pointers forward so a
       // transient download failure does not flap them to null and re-version
       // an immutable statement.
-      await emitStatementIndexOnly(deps, id, row, accountId, dateIso, fingerprintCursor, hydrationCursor);
-      return;
+      const carried = await emitStatementIndexOnly(
+        deps,
+        id,
+        row,
+        accountId,
+        dateIso,
+        fingerprintCursor,
+        hydrationCursor
+      );
+      return { kind: isHydrated(carried) ? "hydrated" : "index_only", id };
     }
 
     const record = {
@@ -1824,6 +1857,7 @@ async function processStatementRow(
     if (!fingerprintCursor || fingerprintCursor.shouldEmit(record)) {
       await deps.emitRecord("statements", record);
     }
+    return { kind: "hydrated", id };
   } catch (rowErr) {
     await deps.emit({
       type: "SKIP_RESULT",
@@ -1835,6 +1869,7 @@ async function processStatementRow(
         message: truncate(errMessage(rowErr), ERROR_MESSAGE_SLICE_LONG),
       },
     });
+    return null;
   }
 }
 
@@ -1862,6 +1897,7 @@ async function runStatements(
       message: `Found ${rows.length} statement row(s)`,
     });
 
+    const outcomes: StatementDetailOutcome[] = [];
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       if (!row) {
@@ -1875,7 +1911,7 @@ async function runStatements(
         total: rows.length,
       } as const;
       await deps.emit(progressMsg);
-      await processStatementRow(
+      const outcome = await processStatementRow(
         deps,
         page,
         row,
@@ -1885,7 +1921,11 @@ async function runStatements(
         fingerprintCursor,
         hydrationCursor
       );
+      if (outcome) {
+        outcomes.push(outcome);
+      }
     }
+    await emitStatementDetailCoverage(deps, outcomes);
 
     // Statements is a full scan of the documents index: prune fingerprints
     // (and the carried hydration pointers, in lockstep) for statements no

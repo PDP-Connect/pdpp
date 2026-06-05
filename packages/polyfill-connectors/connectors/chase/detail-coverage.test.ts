@@ -18,6 +18,10 @@
  * These exercise the exported helpers directly through the recording
  * harness — the same pattern integration.test.ts uses — so they validate
  * the emitted protocol messages without driving Playwright.
+ *
+ * The bottom section also pins Chase's statement-PDF posture: statement index
+ * rows are covered source metadata, while missing local PDF bytes are optional
+ * detail evidence, not a source coverage gap.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -27,7 +31,9 @@ import {
   type AccountDetailOutcome,
   buildAccountDetailGap,
   type EmitDeps,
+  emitStatementDetailCoverage,
   emitTransactionsDetailCoverage,
+  type StatementDetailOutcome,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 import type { TransactionCursor, TransactionsStateShape } from "./types.ts";
@@ -57,6 +63,7 @@ function makeHarness(overrides: HarnessOverrides = {}): Harness {
     { name: "accounts" },
     { name: "transactions" },
     { name: "balances" },
+    { name: "statements" },
   ];
   const requested = new Map<string, StreamScope>(requestedStreams.map((s) => [s.name, s]));
   const deps: EmitDeps = {
@@ -218,4 +225,54 @@ test("emitTransactionsDetailCoverage: required_keys is the union of hydrated + g
     [...accountedFor].sort(),
     "every required account is either hydrated or a gap — no key silently dropped"
   );
+});
+
+// ─── emitStatementDetailCoverage: metadata covered, PDF detail optional ──
+
+test("emitStatementDetailCoverage: all statement PDFs hydrated -> complete statement coverage", async () => {
+  const { deps, messages } = makeHarness();
+  const outcomes: StatementDetailOutcome[] = [
+    { kind: "hydrated", id: "STMT-1" },
+    { kind: "hydrated", id: "STMT-2" },
+  ];
+  await emitStatementDetailCoverage(deps, outcomes);
+
+  const coverage = coverageOf(messages);
+  assert.deepEqual(coverage, {
+    type: "DETAIL_COVERAGE",
+    reference_only: true,
+    state_stream: "statements",
+    stream: "statements",
+    required_keys: ["STMT-1", "STMT-2"],
+    hydrated_keys: ["STMT-1", "STMT-2"],
+    considered: 2,
+    covered: 2,
+  });
+});
+
+test("emitStatementDetailCoverage: index-only statements are optional detail skips, not gaps", async () => {
+  const { deps, messages } = makeHarness();
+  const outcomes: StatementDetailOutcome[] = [
+    { kind: "hydrated", id: "STMT-1" },
+    { kind: "index_only", id: "STMT-2" },
+  ];
+  await emitStatementDetailCoverage(deps, outcomes);
+
+  const coverage = coverageOf(messages);
+  assert.ok(coverage, "expected a DETAIL_COVERAGE message");
+  assert.deepEqual(coverage.required_keys, ["STMT-1", "STMT-2"]);
+  assert.deepEqual(coverage.hydrated_keys, ["STMT-1"]);
+  assert.deepEqual(coverage.optional_skip_keys, ["STMT-2"], "missing local PDF bytes are optional detail evidence");
+  assert.equal(coverage.gap_keys, undefined, "optional PDF misses must not create retryable or terminal gaps");
+  assert.equal(coverage.considered, 2, "both statement index rows were enumerated");
+  assert.equal(coverage.covered, 2, "both statement metadata records were accounted for");
+});
+
+test("emitStatementDetailCoverage: emits nothing when statements are out of scope", async () => {
+  const { deps, messages } = makeHarness({
+    requestedStreams: [{ name: "accounts" }],
+    wantsStatements: false,
+  });
+  await emitStatementDetailCoverage(deps, [{ kind: "hydrated", id: "STMT-1" }]);
+  assert.equal(coverageOf(messages), undefined, "statement coverage must not emit outside requested scope");
 });
