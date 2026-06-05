@@ -19,37 +19,48 @@ spec delta is accepted. None are marked complete because no code has landed.
 
 ## 2. Projection (implementation lane — not in this spec lane)
 
-- [ ] Add a nullable `detail_gap_backlog` rollup field to
+- [x] Add a nullable `detail_gap_backlog` rollup field to
   `ConnectionHealthSnapshot`
   (`reference-implementation/runtime/connection-health.ts`):
-  `{ pending: number; recovered: number | null; max_attempt_count: number;
-  next_attempt_at: string | null } | null`.
-- [ ] Project it from the existing `getSourcePressureGaps` probe
-  (`reference-implementation/server/index.js`) /
-  `computeSourcePressureCooldown` figures (`pendingPressureGapCount`,
-  `maxAttemptCount`, `nextRunAt`) wired through the connection-health input
-  evidence, for all connectors — not only scheduled ones.
-- [ ] `null` when the durable gap evidence is unreadable (fail-open, mirroring the
-  cooldown probe); real `0` when drained; never inferred from record counts.
+  `{ pending: number; pending_is_floor: boolean; recovered: number | null;
+  max_attempt_count: number; next_attempt_at: string | null } | null`.
+  (Added `pending_is_floor` to carry the bounded-read honesty marker per
+  `design.md` "Bounded probe vs. true count".)
+- [x] Project it from the existing durable pending-gap evidence (the same
+  `connector_detail_gaps` rows the cooldown probe reads), reusing the
+  `SOURCE_PRESSURE_GAP_REASONS` vocabulary and the cooldown governor's
+  `PendingPressureGap` shape, wired through the connection-health input
+  evidence in `reference-implementation/server/ref-control.ts`
+  (`projectConnectorSummaryConnectionHealth`), for all connectors — not only
+  scheduled ones. The pure derivation lives in `deriveSourcePressureBacklog`.
+- [x] `null` when the durable gap evidence is unreadable (fail-open, mirroring the
+  cooldown probe — `detailGaps.unreliable` is threaded separately into the
+  backlog derivation); real `0` when drained; never inferred from record counts.
 - [ ] (Optional, same lane or follow-up) add a bounded reason-scoped
   count-by-status aggregate to the detail-gap store for the recovered count;
-  leave `recovered` `null` until then.
-- [ ] Make the pending count honest about the read bound (exact total or a
+  leave `recovered` `null` until then. (Deferred this tranche: no
+  count-by-status query exists; `recovered` stays `null`.)
+- [x] Make the pending count honest about the read bound (exact total or a
   bound-aware floor; resolve the bounded-probe decision recorded in `design.md`).
+  Resolved as a `pending_is_floor` boolean keyed on the shared
+  `DETAIL_GAP_PROJECTION_LIMIT` (100): `pending` is a floor when the bounded
+  read returned a full page.
 
 ## 3. Contract tests (implementation lane)
 
-- [ ] The rollup is additive and nullable; `null` (unreadable) is distinct from a
+- [x] The rollup is additive and nullable; `null` (unreadable) is distinct from a
   drained `0`.
-- [ ] Pending is reason-scoped to source pressure and never inferred from
+- [x] Pending is reason-scoped to source pressure and never inferred from
   collected record counts.
-- [ ] `recovered` is `null` when not computed.
-- [ ] The rollup does not change the headline state, coverage axis, freshness
+- [x] `recovered` is `null` when not computed.
+- [x] The rollup does not change the headline state, coverage axis, freshness
   axis, forward disposition, or `next_action`.
-- [ ] The rollup is exposed for a manual-refresh connector that never reaches
+- [x] The rollup is exposed for a manual-refresh connector that never reaches
   `cooling_off`.
-- [ ] The rollup carries no body/locator/payload/source name/secret and is not
-  exposed to grant-scoped clients.
+- [x] The rollup carries no body/locator/payload/source name/secret and is not
+  exposed to grant-scoped clients. (Owner-only by construction: the snapshot is
+  served only by `requireOwnerSession`-gated `/_ref/connectors` routes; no `/v1`
+  grant-scoped route reads `connection_health`.)
 
 ## 4. Console consumption (implementation lane — depends on §2)
 

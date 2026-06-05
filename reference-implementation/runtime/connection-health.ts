@@ -40,6 +40,7 @@
  */
 
 import { BLOCKED_PROMOTION_THRESHOLD } from "./connection-health-policy.ts";
+import { type PendingPressureGap, SOURCE_PRESSURE_GAP_REASONS } from "./scheduler-source-pressure-cooldown.ts";
 
 // ─── Public types ──────────────────────────────────────────────────────────
 
@@ -401,6 +402,163 @@ export function rollupOutboxDiagnosticCounts(
 }
 
 /**
+ * Source-pressure detail-gap backlog rollup.
+ *
+ * The scheduler-managed analogue of the local-device `OutboxDiagnosticCounts`
+ * rollup: it answers "how much catch-up is outstanding under source pressure?"
+ * for a connection whose run deferred required detail as resumable
+ * `DETAIL_GAP` records (reason `upstream_pressure` / `rate_limited`) instead of
+ * grinding a throttled account. The numbers are exactly the figures the
+ * cross-run cooldown governor (`scheduler-source-pressure-cooldown.ts`) already
+ * reasons about; this rollup makes them *visible* on the snapshot without
+ * changing any dispatch policy.
+ *
+ * Honesty contract (see `surface-source-pressure-detail-gap-backlog`):
+ *
+ *   - The whole object is `null` only when the durable gap evidence cannot be
+ *     read (the same fail-open stance the cooldown probe takes). A readable but
+ *     empty backlog is a real `0`, never `null` — a UI must be able to tell
+ *     "drained" from "unmeasured".
+ *   - `pending` is load-bearing and is the count of *pending source-pressure
+ *     gaps* only. It is never inferred from collected record counts.
+ *   - `pending_is_floor` is `true` when the durable read was bounded and the
+ *     returned rows hit that bound, so `pending` is a floor rather than an
+ *     exact total. A surface must not present a bounded read as exact.
+ *   - `recovered` is optional and `null` when no cheap count-by-status
+ *     aggregate is available; the first projection tranche leaves it `null`.
+ *   - `max_attempt_count` / `next_attempt_at` mirror the cooldown's
+ *     `maxAttemptCount` / earliest gap-authored retry floor. `next_attempt_at`
+ *     here is the *backlog's* retry floor (Retry-After / cooldown), which can be
+ *     set for a manual connector even when the connection-level
+ *     `next_attempt_at` (the scheduler's next automatic dispatch) is `null`.
+ *
+ * The rollup carries only non-negative integer counts and an optional
+ * ISO-8601 timestamp — never a stream body, locator, record payload, source or
+ * host name, base URL, token, or per-connector branch.
+ */
+export interface DetailGapBacklog {
+  readonly max_attempt_count: number;
+  readonly next_attempt_at: string | null;
+  readonly pending: number;
+  readonly pending_is_floor: boolean;
+  readonly recovered: number | null;
+}
+
+/**
+ * Evidence the caller threads in so the projection can expose the
+ * source-pressure backlog rollup. The caller (ref-control) reads the durable
+ * `connector_detail_gaps` store, decides whether the read was reliable, and
+ * passes the bounded pending rows plus the bound it applied. The projection
+ * keeps the reason-scoping and floor logic in one pure place
+ * ({@link deriveSourcePressureBacklog}); the runtime never reads the store.
+ */
+export interface ConnectionDetailGapBacklogEvidence {
+  /**
+   * Bounded list of pending detail gaps for the connection, mapped onto the
+   * cooldown governor's `PendingPressureGap` shape. Non-source-pressure gaps
+   * MAY be present; {@link deriveSourcePressureBacklog} filters them out so the
+   * caller need not pre-filter. Only the `pending`-status rows belong here.
+   */
+  readonly pendingGaps: readonly PendingPressureGap[];
+  /**
+   * The `limit` the caller applied when reading the pending gaps. When the
+   * number of source-pressure gaps reaches this bound the pending count is a
+   * floor (`pending_is_floor === true`). `null`/absent means the read was not
+   * bounded (treat the count as exact).
+   */
+  readonly readLimit?: number | null;
+  /**
+   * Optional recovered-gap count from a bounded reason-scoped count-by-status
+   * aggregate. `null`/absent when no such aggregate was run (the default in
+   * the first projection tranche); never fabricated.
+   */
+  readonly recovered?: number | null;
+  /**
+   * `true` when the durable gap evidence could not be read. Mirrors the
+   * cooldown probe's fail-open stance: an unreadable store yields a `null`
+   * rollup (unmeasured), never a fabricated `0`.
+   */
+  readonly unreadable: boolean;
+}
+
+/**
+ * Derive the source-pressure detail-gap backlog rollup from durable gap
+ * evidence. Pure — no I/O, no clock reads.
+ *
+ *   - Returns `null` when the evidence is unreadable (`unreadable: true`).
+ *   - Otherwise returns a rollup whose `pending` counts only gaps whose reason
+ *     is in {@link SOURCE_PRESSURE_GAP_REASONS}; a readable store with no such
+ *     gaps yields a real `0` rollup, distinct from `null`.
+ *   - `pending_is_floor` is `true` when a positive read bound was applied and
+ *     the count of source-pressure gaps reached it. The bound is the *read*
+ *     bound, but the floor flag keys on the source-pressure count actually
+ *     observed, because the read returns gaps of every reason and only the
+ *     source-pressure subset is counted; reaching the bound means there may be
+ *     more pending source-pressure gaps beyond the page.
+ *   - `max_attempt_count` is the max `attemptCount` across the source-pressure
+ *     gaps (mirrors the cooldown governor).
+ *   - `next_attempt_at` is the latest gap-authored `nextAttemptAfter` floor
+ *     across the source-pressure gaps, or `null` when none is set.
+ *   - `recovered` is passed through verbatim (`null` when not computed).
+ */
+export function deriveSourcePressureBacklog(
+  evidence: ConnectionDetailGapBacklogEvidence | null | undefined
+): DetailGapBacklog | null {
+  if (!evidence || evidence.unreadable) {
+    return null;
+  }
+  const pressureGaps = (evidence.pendingGaps ?? []).filter(
+    (gap) => gap && typeof gap.reason === "string" && SOURCE_PRESSURE_GAP_REASONS.has(gap.reason)
+  );
+  const pending = pressureGaps.length;
+  const maxAttemptCount = pressureGaps.reduce((max, gap) => {
+    const attempt = gap.attemptCount;
+    if (typeof attempt !== "number" || !Number.isFinite(attempt) || attempt < 0) {
+      return max;
+    }
+    return Math.max(max, Math.floor(attempt));
+  }, 0);
+  const nextAttemptAt = latestNextAttemptAfter(pressureGaps);
+  // The read returns gaps of every reason up to `readLimit`. When the *total*
+  // returned rows hit that bound, the source-pressure subset may be truncated,
+  // even if this page happened to contain zero source-pressure gaps. A full
+  // page therefore makes `pending` a floor, never an exact total.
+  const readLimit =
+    typeof evidence.readLimit === "number" && Number.isFinite(evidence.readLimit) && evidence.readLimit > 0
+      ? Math.floor(evidence.readLimit)
+      : null;
+  const totalReturned = (evidence.pendingGaps ?? []).length;
+  const pendingIsFloor = readLimit !== null && totalReturned >= readLimit;
+  const recovered =
+    typeof evidence.recovered === "number" && Number.isFinite(evidence.recovered) && evidence.recovered >= 0
+      ? Math.floor(evidence.recovered)
+      : null;
+  return {
+    pending,
+    pending_is_floor: pendingIsFloor,
+    max_attempt_count: maxAttemptCount,
+    next_attempt_at: nextAttemptAt,
+    recovered,
+  };
+}
+
+function latestNextAttemptAfter(gaps: readonly PendingPressureGap[]): string | null {
+  let latestMs = Number.NEGATIVE_INFINITY;
+  let latestIso: string | null = null;
+  for (const gap of gaps) {
+    if (typeof gap.nextAttemptAfter !== "string" || gap.nextAttemptAfter.length === 0) {
+      continue;
+    }
+    const parsed = Date.parse(gap.nextAttemptAfter);
+    if (Number.isFinite(parsed) && parsed > latestMs) {
+      latestMs = parsed;
+      latestIso = gap.nextAttemptAfter;
+    }
+  }
+  return latestIso;
+}
+
+/**
  * Remote-surface axis: rolls up the most-urgent browser-surface lease and
  * surface health for a connection.
  *
@@ -502,6 +660,21 @@ export interface ConnectionHealthSnapshot {
   readonly axes: ConnectionAxes;
   readonly badges: ConnectionBadges;
   readonly conditions: readonly ConnectionHealthCondition[];
+  /**
+   * Additive, nullable source-pressure detail-gap backlog rollup
+   * ({@link DetailGapBacklog}). `null` when no backlog evidence was supplied
+   * or the durable gap store was unreadable; a readable-but-drained backlog is
+   * a real `0` pending count. This is owner-only diagnostic scale: it never
+   * changes the headline `state`, the coverage/freshness/attention axes, the
+   * `forward_disposition`, or `next_action` — those are derived from their
+   * existing condition families. It is the scheduler-managed analogue of the
+   * local-device outbox-count rollup and is available for manual-refresh
+   * connectors that never reach the scheduler `cooling_off` state. Carries only
+   * non-negative integer counts and an optional ISO-8601 timestamp; never a
+   * stream body, locator, payload, source name, base URL, token, or
+   * per-connector branch. SHALL NOT be exposed to grant-scoped clients.
+   */
+  readonly detail_gap_backlog: DetailGapBacklog | null;
   readonly dominant_condition_id: string | null;
   /**
    * Connection-level forward disposition: a single owner-facing answer to
@@ -735,6 +908,14 @@ export interface ComputeConnectionHealthInput {
   readonly attention: ConnectionAttentionEvidence | null;
   readonly backoff: ConnectionBackoffEvidence | null;
   readonly coverage: ConnectionCoverageEvidence | null;
+  /**
+   * Source-pressure detail-gap backlog evidence. The projection derives the
+   * additive {@link DetailGapBacklog} rollup from it via
+   * {@link deriveSourcePressureBacklog} and attaches it to the snapshot. It is
+   * pure annotation: no classification step reads it, so it cannot move the
+   * headline state or any axis. `null`/absent yields a `null` rollup.
+   */
+  readonly detailGapBacklog?: ConnectionDetailGapBacklogEvidence | null;
   readonly freshness: ConnectionFreshnessEvidence | null;
   readonly localDeviceCollection?: ConnectionLocalDeviceCollectionEvidence | null;
   readonly observedAt?: string | null;
@@ -788,6 +969,7 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
   const conditions = projectConditions(input, axes);
   const conditionSet = indexConditions(conditions);
   const forwardDisposition = deriveConnectionForwardDisposition(input, conditionSet);
+  const detailGapBacklog = deriveSourcePressureBacklog(input.detailGapBacklog ?? null);
   const remoteSurface = projectRemoteSurfaceDetail(input.remoteSurface ?? null);
   const lastSuccessAt = input.run?.lastSuccessAt ?? null;
   const nextAttemptAt = conditionExpired(input.backoff?.nextRunAt ?? null, input.observedAt ?? null)
@@ -810,6 +992,7 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
     return snapshot({
       ...args,
       conditions,
+      detailGapBacklog,
       dominantConditionId,
       forwardDisposition,
       supportingConditionIds: pickSupportingConditionIds(conditions, dominantConditionId),
@@ -2233,6 +2416,7 @@ interface SnapshotArgs {
   readonly axes: ConnectionAxes;
   readonly badges: ConnectionBadges;
   readonly conditions: readonly ConnectionHealthCondition[];
+  readonly detailGapBacklog?: DetailGapBacklog | null;
   readonly dominantConditionId: string | null;
   readonly forwardDisposition: ForwardDisposition;
   readonly lastSuccessAt: string | null;
@@ -2250,6 +2434,7 @@ function snapshot(args: SnapshotArgs): ConnectionHealthSnapshot {
     state: args.state,
     reason_code: args.reasonCode,
     conditions: args.conditions,
+    detail_gap_backlog: args.detailGapBacklog ?? null,
     dominant_condition_id: args.dominantConditionId,
     forward_disposition: args.forwardDisposition,
     supporting_condition_ids: args.supportingConditionIds,

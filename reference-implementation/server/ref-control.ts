@@ -16,6 +16,7 @@ import { type AttentionRecord, isHealthRelevant, type OwnerAction } from "../run
 import { readBrowserSurfaceProfileKey } from "../runtime/browser-surface-profile-key.ts";
 import {
   type ConnectionAttentionEvidence,
+  type ConnectionDetailGapBacklogEvidence,
   type ConnectionHealthSnapshot,
   type ConnectionLocalDeviceCollectionEvidence,
   type ConnectionRefreshEvidence,
@@ -32,6 +33,7 @@ import {
   type OutboxStalledCause,
   rollupOutboxDiagnosticCounts,
 } from "../runtime/connection-health.ts";
+import type { PendingPressureGap } from "../runtime/scheduler-source-pressure-cooldown.ts";
 import { getConnectorManifest } from "./auth.js";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
@@ -268,6 +270,13 @@ interface ConnectorRunSummary {
 }
 
 interface PendingDetailGapSummary {
+  /**
+   * Recovery-attempt count for the gap (`connector_detail_gaps.attempt_count`).
+   * `rowToGap` returns it; the source-pressure backlog rollup reads it as the
+   * cooldown governor's `attemptCount`. Optional/`unknown` because not every
+   * gap projection populates it.
+   */
+  readonly attempt_count?: unknown;
   readonly connector_instance_id?: unknown;
   readonly next_attempt_after?: unknown;
   readonly reason?: unknown;
@@ -278,6 +287,12 @@ interface PendingDetailGapSummary {
 
 interface DetailGapProjection {
   readonly gaps: readonly PendingDetailGapSummary[];
+  /**
+   * The `limit` applied to the pending-gap read. When `gaps.length` reaches it
+   * the listing is a bounded page, so any count derived from it (the
+   * source-pressure backlog `pending`) is a floor, not an exact total.
+   */
+  readonly readLimit: number;
   readonly unreliable: boolean;
 }
 
@@ -807,6 +822,14 @@ export async function getConnectorAttentionProjection(
   }
 }
 
+/**
+ * Bound applied to the pending-gap read in {@link getConnectorDetailGapProjection}.
+ * Shared with the source-pressure backlog rollup so the projection can mark its
+ * `pending` count as a floor when the read hits this bound, rather than
+ * presenting a bounded page as an exact total.
+ */
+const DETAIL_GAP_PROJECTION_LIMIT = 100;
+
 async function getConnectorDetailGapProjection(
   connectorId: string,
   connectorInstanceId?: string
@@ -822,18 +845,21 @@ async function getConnectorDetailGapProjection(
     // it.
     let gaps: readonly PendingDetailGapSummary[];
     if (connectorInstanceId) {
-      gaps = await Promise.resolve(store.listPendingGaps({ connectorId, connectorInstanceId, limit: 100 }));
+      gaps = await Promise.resolve(
+        store.listPendingGaps({ connectorId, connectorInstanceId, limit: DETAIL_GAP_PROJECTION_LIMIT })
+      );
     } else if (typeof store.listPendingGapsForConnector === "function") {
-      gaps = await Promise.resolve(store.listPendingGapsForConnector(connectorId, { limit: 100 }));
+      gaps = await Promise.resolve(store.listPendingGapsForConnector(connectorId, { limit: DETAIL_GAP_PROJECTION_LIMIT }));
     } else {
-      gaps = await Promise.resolve(store.listPendingGaps({ connectorId, limit: 100 }));
+      gaps = await Promise.resolve(store.listPendingGaps({ connectorId, limit: DETAIL_GAP_PROJECTION_LIMIT }));
     }
     return {
       gaps,
+      readLimit: DETAIL_GAP_PROJECTION_LIMIT,
       unreliable: false,
     };
   } catch {
-    return { gaps: [], unreliable: true };
+    return { gaps: [], readLimit: DETAIL_GAP_PROJECTION_LIMIT, unreliable: true };
   }
 }
 
@@ -1978,6 +2004,22 @@ function combineUnreliableSources(
 }
 
 /**
+ * Map durable pending-gap summaries onto the cooldown governor's
+ * `PendingPressureGap` shape so the runtime source-pressure backlog derivation
+ * can reason-scope and roll them up. Reads only the non-secret count/reason/
+ * timestamp fields the rollup needs; never the locator, payload, or source
+ * identity. Reason-filtering and the floor/null honesty rules live in
+ * `deriveSourcePressureBacklog`, not here.
+ */
+function mapPendingPressureGaps(gaps: readonly PendingDetailGapSummary[]): readonly PendingPressureGap[] {
+  return gaps.map((gap) => ({
+    attemptCount: typeof gap.attempt_count === "number" ? gap.attempt_count : null,
+    nextAttemptAfter: typeof gap.next_attempt_after === "string" ? gap.next_attempt_after : null,
+    reason: typeof gap.reason === "string" ? gap.reason : null,
+  }));
+}
+
+/**
  * Lifecycles the connection-health projection treats as "open" for a
  * structured attention record. `attention.isHealthRelevant` enforces
  * additional axes-based filtering on top of this.
@@ -2460,6 +2502,21 @@ export function projectConnectorSummaryConnectionHealth(input: {
   readonly outbox?: { axis: OutboxAxis; cause?: OutboxStalledCause | null };
   readonly pendingDetailGaps?: readonly PendingDetailGapSummary[];
   /**
+   * `true` when the durable detail-gap evidence could not be read. Threaded
+   * separately from {@link pendingDetailGaps} so the source-pressure backlog
+   * rollup can distinguish "unreadable store" (`null` rollup) from "readable
+   * but drained" (a real `0`). The same flag still feeds `unreliableSources`
+   * via the caller; this carries it to the backlog derivation specifically.
+   */
+  readonly pendingDetailGapsUnreliable?: boolean;
+  /**
+   * The bound the caller applied when reading {@link pendingDetailGaps}. When
+   * the returned rows hit it, the backlog `pending` count is reported as a
+   * floor rather than an exact total. `null`/absent means the read was not
+   * bounded.
+   */
+  readonly pendingDetailGapsReadLimit?: number | null;
+  /**
    * Pre-projected browser-surface evidence for the connection. The list
    * and detail operations read it via
    * {@link getConnectorBrowserSurfaceProjection}; tests pass synthetic
@@ -2534,11 +2591,23 @@ export function projectConnectorSummaryConnectionHealth(input: {
     freshnessAxis === "fresh"
       ? { verdict: "succeeded" }
       : null;
+  // Source-pressure detail-gap backlog evidence: reuse the same durable pending
+  // gaps already read for coverage/classification, mapped onto the cooldown
+  // governor's gap shape. The runtime derivation
+  // (`deriveSourcePressureBacklog`) reason-scopes them to source pressure and
+  // applies the floor/null honesty rules. `null` is the unreadable signal.
+  const detailGapBacklog: ConnectionDetailGapBacklogEvidence = {
+    pendingGaps: mapPendingPressureGaps(pendingDetailGaps),
+    readLimit: input.pendingDetailGapsReadLimit ?? null,
+    recovered: null,
+    unreadable: input.pendingDetailGapsUnreliable === true,
+  };
   return computeConnectionHealth({
     activity: { active: activeRunId !== null },
     attention,
     backoff: backoffEvidence.backoff,
     coverage,
+    detailGapBacklog,
     freshness: { axis: freshnessAxis },
     localDeviceCollection,
     outbox,
@@ -2781,6 +2850,8 @@ export async function listConnectorSummaries(
         manifestStreams: manifest.streams ?? [],
         outbox: { axis: outbox.axis, cause: outbox.cause },
         pendingDetailGaps: detailGaps.gaps,
+        pendingDetailGapsReadLimit: detailGaps.readLimit,
+        pendingDetailGapsUnreliable: detailGaps.unreliable,
         refreshPolicy,
         remoteSurface: remoteSurface.evidence,
         unreliableSources: combineUnreliableSources(
@@ -2868,6 +2939,8 @@ export async function getConnectorDetail(
     manifestStreams: manifest.streams ?? [],
     outbox: { axis: outbox.axis, cause: outbox.cause },
     pendingDetailGaps: detailGaps.gaps,
+    pendingDetailGapsReadLimit: detailGaps.readLimit,
+    pendingDetailGapsUnreliable: detailGaps.unreliable,
     refreshPolicy,
     remoteSurface: remoteSurface.evidence,
     unreliableSources: combineUnreliableSources(
