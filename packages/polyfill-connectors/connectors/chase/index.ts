@@ -40,6 +40,8 @@ import {
 } from "../../src/browser-artifact-response.ts";
 import {
   type BrowserCollectContext,
+  buildDetailCoverageMessage,
+  type DetailGapMessage,
   type EmittedMessage,
   runConnector,
   type ValidateRecord,
@@ -1377,12 +1379,38 @@ function accountProgressDiagnostic(accountProgress?: { index: number; total: num
   };
 }
 
+/**
+ * Per-account outcome of the QFX (transactions/balances) detail pass. The
+ * `accounts` stream is Chase's enumerated inventory — a known denominator —
+ * and each account is one key considered for the per-account QFX detail
+ * fetch. The runtime turns these outcomes into an honest DETAIL_COVERAGE
+ * report (`required_keys` = accounts considered; `hydrated_keys` = accounts
+ * the connector successfully reached; `gap_keys` = retryable failures).
+ *
+ * Three outcomes, deliberately distinct:
+ *   - `hydrated`: QFX downloaded and parsed for this account. Includes the
+ *     0-transaction parse — the account WAS reached; an empty ledger is
+ *     real coverage, not a failure.
+ *   - `no_activity`: Chase reported no activity for the requested window.
+ *     This is source-limited completeness ("won't backfill"), NOT a gap —
+ *     the account was reached and the source had nothing to return. Counts
+ *     as hydrated coverage so it is never projected as broken.
+ *   - `gap`: the QFX download or parse failed transiently. A retryable
+ *     DETAIL_GAP is emitted so the next run retries this account, and the
+ *     key lands in `gap_keys` — partial, not complete, and not silently
+ *     dropped.
+ */
+export type AccountDetailOutcome =
+  | { kind: "hydrated"; accountId: string }
+  | { kind: "no_activity"; accountId: string }
+  | { kind: "gap"; accountId: string; reason: DetailGapMessage["reason"]; errorClass: string };
+
 async function processAccountDownload(
   deps: EmitDeps,
   page: Page,
   account: ChaseAccount,
   accountProgress?: { index: number; total: number }
-): Promise<void> {
+): Promise<AccountDetailOutcome> {
   const activityChoice = chooseActivity(
     deps.requested,
     deps.txState,
@@ -1404,7 +1432,9 @@ async function processAccountDownload(
   const result = await downloadQfx(page, account, deps.tmpDir, deps.capture, downloadOpts);
   if ("noActivity" in result) {
     await emitNoActivityProgress(deps, account, result.activity);
-    return;
+    // Source-limited completeness: the account was reached, the source had
+    // no activity in the requested window. Coverage, not a gap.
+    return { kind: "no_activity", accountId: account.internal_id };
   }
   if (!result.downloaded) {
     await deps.emit({
@@ -1417,7 +1447,12 @@ async function processAccountDownload(
         ...accountProgressDiagnostic(accountProgress),
       },
     });
-    return;
+    return {
+      kind: "gap",
+      accountId: account.internal_id,
+      reason: "temporary_unavailable",
+      errorClass: "qfx_download_failed",
+    };
   }
 
   let parsed: unknown;
@@ -1435,7 +1470,12 @@ async function processAccountDownload(
         artifact: "qfx",
       },
     });
-    return;
+    return {
+      kind: "gap",
+      accountId: account.internal_id,
+      reason: "temporary_unavailable",
+      errorClass: "qfx_parse_failed",
+    };
   }
 
   const { transactions, balance } = extractFromQfx(parsed);
@@ -1466,6 +1506,79 @@ async function processAccountDownload(
     stream: "transactions",
     message: `Parsed account ${progressLabel}: emitted ${transactions.length} transaction(s)`,
   });
+  // Reached and parsed (even a 0-transaction QFX is real coverage of this
+  // account's ledger for the window).
+  return { kind: "hydrated", accountId: account.internal_id };
+}
+
+/**
+ * Build the retryable DETAIL_GAP for an account whose QFX download or parse
+ * failed transiently. `record_key` is the account id — the next run's detail
+ * pass retries exactly this account. Mirrors the chatgpt DETAIL_GAP contract
+ * (reference_only, retryable, pending) so the runtime persists one resumable
+ * gap per failed key and the per-account coverage stays honest.
+ */
+export function buildAccountDetailGap(outcome: {
+  accountId: string;
+  reason: DetailGapMessage["reason"];
+  errorClass: string;
+}): DetailGapMessage {
+  return {
+    type: "DETAIL_GAP",
+    stream: "transactions",
+    parent_stream: "accounts",
+    record_key: outcome.accountId,
+    status: "pending",
+    reason: outcome.reason,
+    detail_locator: {
+      kind: "chase.account",
+      account_id: outcome.accountId,
+    },
+    retryable: true,
+    reference_only: true,
+    detail: { class: outcome.errorClass },
+    last_error: { class: outcome.errorClass },
+  };
+}
+
+/**
+ * Emit the per-run DETAIL_COVERAGE for the account -> transactions detail
+ * fan-out. `accounts` is Chase's enumerated inventory (a known denominator),
+ * so this reports honest partial-vs-complete coverage of the QFX detail pass
+ * without inferring it from gaps alone:
+ *   - `required_keys`: every account considered for the QFX detail fetch.
+ *   - `hydrated_keys`: accounts reached, including source-limited no-activity
+ *     ones (won't-backfill is coverage, never a broken signal).
+ *   - `gap_keys`: accounts whose QFX failed transiently; each also carries a
+ *     pending DETAIL_GAP so the runtime's coverage invariant is satisfied and
+ *     the next run retries them.
+ * Only emitted when the denominator is genuinely known: transactions AND
+ * accounts are both in scope (the runtime validates `stream` / `state_stream`
+ * against requested scope) and at least one account was considered. When the
+ * denominator is unknown the connector emits nothing rather than invent a
+ * `complete` projection.
+ */
+export async function emitTransactionsDetailCoverage(
+  deps: EmitDeps,
+  outcomes: readonly AccountDetailOutcome[]
+): Promise<void> {
+  if (!(deps.wantsTransactions && deps.wantsAccounts) || outcomes.length === 0) {
+    return;
+  }
+  const requiredKeys = outcomes.map((o) => o.accountId);
+  const hydratedKeys = outcomes
+    .filter((o) => o.kind === "hydrated" || o.kind === "no_activity")
+    .map((o) => o.accountId);
+  const gapKeys = outcomes.filter((o) => o.kind === "gap").map((o) => o.accountId);
+  await deps.emit(
+    buildDetailCoverageMessage({
+      stream: "transactions",
+      stateStream: "accounts",
+      requiredKeys,
+      hydratedKeys,
+      gapKeys,
+    })
+  );
 }
 
 async function runTransactionsAndBalances(
@@ -1473,13 +1586,22 @@ async function runTransactionsAndBalances(
   page: Page,
   filteredAccounts: readonly ChaseAccount[]
 ): Promise<void> {
+  const outcomes: AccountDetailOutcome[] = [];
   for (let i = 0; i < filteredAccounts.length; i++) {
     const account = filteredAccounts[i];
     if (!account) {
       continue;
     }
-    await processAccountDownload(deps, page, account, { index: i + 1, total: filteredAccounts.length });
+    const outcome = await processAccountDownload(deps, page, account, {
+      index: i + 1,
+      total: filteredAccounts.length,
+    });
+    outcomes.push(outcome);
+    if (outcome.kind === "gap") {
+      await deps.emit(buildAccountDetailGap(outcome));
+    }
   }
+  await emitTransactionsDetailCoverage(deps, outcomes);
 }
 
 /**
