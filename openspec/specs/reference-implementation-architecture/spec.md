@@ -9069,7 +9069,7 @@ The console SHALL apply the following constraints to the child-declared source:
 - Only `has_one` relationships declared on the child stream, with a non-empty related `stream` and a non-empty `foreign_key`, produce a link. A child-declared `has_many` relationship SHALL NOT produce a child-to-parent link by this rule.
 - A link is rendered only when the child record carries a non-empty string value at the declared parent-key field; an absent, empty, or non-string value yields no link.
 - A field not covered by a declared relation (from either source) SHALL render as plain text; the console SHALL NOT construct a record-detail URL from an undeclared field.
-- When a child-declared `has_one` link and a parent-`expand_capabilities`-derived link resolve to the same parent stream, the console SHALL render a single link for that parent stream (deduplicated), not two.
+- The console SHALL deduplicate child-to-parent back-links by the pair `(parent stream, parent-key field)` — the parent stream together with the relation's parent-key field (`child_parent_key_field` for the `expand_capabilities` source, `foreign_key` for the child-declared source) — NOT by parent stream alone. When a child-declared `has_one` link and a parent-`expand_capabilities`-derived link describe the **same** edge (same parent stream and same parent-key field), the console SHALL render a single link for that edge (deduplicated), preferring the `expand_capabilities`-derived link. When a child stream declares **two or more distinct** relations to the same parent stream via **different** parent-key fields (for example a transaction's `account_id` and `transfer_account_id`, both targeting `accounts`), each such relation carries a different parent-key value and resolves to a different parent record, so the console SHALL render a distinct link for each and SHALL NOT collapse them to one.
 
 This is a console-only affordance. It SHALL NOT enable server-side reverse expansion, and the console SHALL NOT issue any `expand[]` request to obtain the values needed to draw the link.
 
@@ -9098,6 +9098,20 @@ This is a console-only affordance. It SHALL NOT enable server-side reverse expan
 - **WHEN** a displayed child stream declares a `has_many` relationship in its own `relationships[]`
 - **THEN** the console SHALL NOT render a child-to-parent link from that `has_many` declaration
 - **AND** child-to-parent navigation from the child-declared source SHALL be limited to `has_one` declarations
+
+#### Scenario: Two distinct relations to the same parent stream via different fields both render
+
+- **WHEN** a displayed child stream declares two `has_one` relationships to the same parent stream `<parent>` via different fields `<fkA>` and `<fkB>` (for example a YNAB `transactions` record declaring `has_one(account_id) -> accounts` and `has_one(transfer_account_id) -> accounts`)
+- **AND** the displayed child record carries non-empty string values `<parentKeyA>` in `<fkA>` and `<parentKeyB>` in `<fkB>`
+- **THEN** the console SHALL render two distinct links, one to `/dashboard/records/<connection>/<parent>/<parentKeyA>` and one to `/dashboard/records/<connection>/<parent>/<parentKeyB>`
+- **AND** the console SHALL NOT collapse them to a single link merely because they target the same parent stream
+
+#### Scenario: The same edge discovered via both sources collapses to one link
+
+- **WHEN** the displayed child stream's parent advertises a usable `expand_capabilities` entry resolving to parent stream `<parent>` with `child_parent_key_field: "<fk>"`
+- **AND** the displayed child stream also declares a `has_one` to `<parent>` with `foreign_key: "<fk>"` (the same parent-key field)
+- **AND** the displayed child record carries a non-empty string value `<parentKey>` in field `<fk>`
+- **THEN** the console SHALL render a single link to `/dashboard/records/<connection>/<parent>/<parentKey>` for that edge, preferring the `expand_capabilities`-derived link, not two
 
 #### Scenario: Undeclared foreign-key-shaped field renders as plain text
 

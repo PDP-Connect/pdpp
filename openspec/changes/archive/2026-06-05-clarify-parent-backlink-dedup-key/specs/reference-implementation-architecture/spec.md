@@ -57,3 +57,27 @@ This is a console-only affordance. It SHALL NOT enable server-side reverse expan
 - **AND** the displayed child stream also declares a `has_one` to `<parent>` with `foreign_key: "<fk>"` (the same parent-key field)
 - **AND** the displayed child record carries a non-empty string value `<parentKey>` in field `<fk>`
 - **THEN** the console SHALL render a single link to `/dashboard/records/<connection>/<parent>/<parentKey>` for that edge, preferring the `expand_capabilities`-derived link, not two
+
+#### Scenario: Undeclared foreign-key-shaped field renders as plain text
+
+- **WHEN** a displayed child record carries a field whose name resembles a foreign key but neither the parent's `expand_capabilities` nor the child stream's own manifest declares a relation using that field
+- **THEN** the console SHALL render the field as plain text
+- **AND** the console SHALL NOT construct a record-detail URL from that field
+
+#### Scenario: Missing or empty foreign-key value yields no link
+
+- **WHEN** a displayed child stream declares a `has_one` relationship with `foreign_key <fk>`
+- **AND** the displayed child record's `<fk>` value is absent, empty, or not a string
+- **THEN** the console SHALL NOT render a child-to-parent link for that relationship
+
+#### Scenario: Symmetric link does not imply server-side reverse expansion
+
+- **WHEN** the console renders a child-to-parent link as defined above (from either manifest source)
+- **AND** a client issues `GET /v1/streams/<child>/records?expand=<parent_relation>` against the same parent
+- **THEN** the reference server SHALL reject the request with `invalid_expand` unless a separate accepted change defines reverse expansion semantics
+
+#### Scenario: Console does not issue `expand[]` to draw parent links
+
+- **WHEN** the console renders the child record list or detail page and draws child-to-parent links
+- **THEN** the console SHALL NOT include any `expand[]` parameter in the underlying `GET /v1/streams/<child>/records` request solely to obtain the values needed to draw the parent links
+- **AND** the parent-key values used to draw links SHALL come from the child record's own parent-key field value already present in each record's payload
