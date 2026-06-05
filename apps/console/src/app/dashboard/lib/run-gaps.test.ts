@@ -1,13 +1,30 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { RefCollectionReportEntry, RefCoverageAxis } from "./ref-client.ts";
 import {
   classifyKnownGaps,
+  connectorHasPartialCoverageFromReport,
   connectorHasPartialCoverageHint,
   extractTerminalKnownGaps,
   formatRecoveryHint,
   type KnownGap,
   normalizeKnownGaps,
+  resolvePartialCoverageCue,
 } from "./run-gaps.ts";
+
+/** Minimal valid Collection Report entry for the coverage condition under test. */
+function reportEntry(stream: string, coverage_condition: RefCoverageAxis): RefCollectionReportEntry {
+  return {
+    checkpoint: "committed",
+    collected: 3,
+    considered: "unknown",
+    coverage_condition,
+    forward_disposition: "resumable",
+    pending_detail_gaps: 0,
+    skipped: null,
+    stream,
+  };
+}
 
 test("classifyKnownGaps keeps protocol violations distinct from source coverage gaps", () => {
   const gaps: KnownGap[] = [
@@ -201,4 +218,122 @@ test("extractTerminalKnownGaps preserves diagnostics on known gaps", () => {
   const result = extractTerminalKnownGaps([terminal]);
   assert.ok(result.gaps[0]);
   assert.deepEqual(result.gaps[0].diagnostics, diagnostics);
+});
+
+// ─── direct consumption of the server-projected Collection Report ──────────
+//
+// define-connector-progress-evidence-contract task 4.3: the records row reads
+// the reference's per-stream `coverage_condition` directly rather than
+// reconstructing partial coverage from the last run's raw `known_gaps`.
+
+test("connectorHasPartialCoverageFromReport flags partial / gaps / retryable_gap streams", () => {
+  for (const condition of ["partial", "gaps", "retryable_gap"] as const) {
+    assert.equal(
+      connectorHasPartialCoverageFromReport([reportEntry("issues", condition)]),
+      true,
+      `expected ${condition} to read partial coverage`
+    );
+  }
+});
+
+test("connectorHasPartialCoverageFromReport does not flag complete / unknown / terminal / manifest-accepted conditions", () => {
+  // `unknown` is the honesty contract — an unknown denominator must never read
+  // partial. `terminal_gap`/`unsupported`/`unavailable` are surfaced by the
+  // headline pill, not as resumable "partial source coverage". `complete`,
+  // `deferred`, and `inventory_only` are not gaps.
+  for (const condition of [
+    "complete",
+    "unknown",
+    "terminal_gap",
+    "unsupported",
+    "unavailable",
+    "deferred",
+    "inventory_only",
+  ] as const) {
+    assert.equal(
+      connectorHasPartialCoverageFromReport([reportEntry("issues", condition)]),
+      false,
+      `expected ${condition} NOT to read partial coverage`
+    );
+  }
+});
+
+test("connectorHasPartialCoverageFromReport flags when ANY in-scope stream is partial", () => {
+  const report = [
+    reportEntry("repositories", "complete"),
+    reportEntry("issues", "partial"),
+    reportEntry("starred", "complete"),
+  ];
+  assert.equal(connectorHasPartialCoverageFromReport(report), true);
+});
+
+test("connectorHasPartialCoverageFromReport treats an empty / absent report as no partial coverage", () => {
+  // An empty array is a real "no partial streams" answer; null/undefined is a
+  // reference predating the field. Neither should fabricate a partial cue.
+  assert.equal(connectorHasPartialCoverageFromReport([]), false);
+  assert.equal(connectorHasPartialCoverageFromReport(null), false);
+  assert.equal(connectorHasPartialCoverageFromReport(undefined), false);
+});
+
+test("resolvePartialCoverageCue prefers the server report over the known_gaps heuristic", () => {
+  // The report says complete; the raw known_gaps would (wrongly) reconstruct
+  // partial. The authoritative server verdict must win.
+  const result = resolvePartialCoverageCue({
+    collectionReport: [reportEntry("issues", "complete")],
+    lastRunKnownGaps: [{ kind: "skip_result", reason: "http_429" }],
+    totalRecords: 42,
+  });
+  assert.equal(result, false, "server report 'complete' must override the known_gaps heuristic");
+});
+
+test("resolvePartialCoverageCue trusts a report that reads partial even with no known_gaps", () => {
+  const result = resolvePartialCoverageCue({
+    collectionReport: [reportEntry("issues", "partial")],
+    lastRunKnownGaps: [],
+    totalRecords: 42,
+  });
+  assert.equal(result, true);
+});
+
+test("resolvePartialCoverageCue uses an empty report as an authoritative 'no partial' answer, NOT the heuristic", () => {
+  // A present-but-empty report means the projection found no in-scope streams to
+  // report; it is not absence. The heuristic must not run.
+  const result = resolvePartialCoverageCue({
+    collectionReport: [],
+    lastRunKnownGaps: [{ kind: "skip_result", reason: "http_429" }],
+    totalRecords: 42,
+  });
+  assert.equal(result, false, "an empty report must not fall back to the known_gaps heuristic");
+});
+
+test("resolvePartialCoverageCue falls back to the known_gaps heuristic only when the report is absent", () => {
+  // A reference predating the Collection Report (null) keeps the legacy
+  // behavior: a produced-records run with a non-protocol coverage gap reads
+  // partial.
+  assert.equal(
+    resolvePartialCoverageCue({
+      collectionReport: null,
+      lastRunKnownGaps: [{ kind: "skip_result", reason: "http_429" }],
+      totalRecords: 42,
+    }),
+    true
+  );
+  // ...and an undefined report behaves identically to null (legacy reference).
+  assert.equal(
+    resolvePartialCoverageCue({
+      collectionReport: undefined,
+      lastRunKnownGaps: [{ kind: "skip_result", reason: "http_429" }],
+      totalRecords: 42,
+    }),
+    true
+  );
+  // The legacy floor still holds: no produced records → no partial cue.
+  assert.equal(
+    resolvePartialCoverageCue({
+      collectionReport: null,
+      lastRunKnownGaps: [{ kind: "skip_result", reason: "http_429" }],
+      totalRecords: 0,
+    }),
+    false
+  );
 });

@@ -24,7 +24,7 @@ import {
 } from "../lib/connection-evidence.ts";
 import { formatNextAction } from "../lib/next-action.ts";
 import type { ConnectorOverview, ConnectorRunRef } from "../lib/rs-client.ts";
-import { connectorHasPartialCoverageHint, normalizeKnownGaps } from "../lib/run-gaps.ts";
+import { normalizeKnownGaps, resolvePartialCoverageCue } from "../lib/run-gaps.ts";
 import { type RunNowResult, runConnectorNowAction } from "./actions.ts";
 
 // Elapsed-time tick for the in-progress label. Separate from the poll
@@ -145,7 +145,17 @@ export function ConnectorRow({ labelNeeded, overview, runsHref }: RowProps) {
     isRunning,
   });
   const lastRunKnownGaps = normalizeKnownGaps(lastRun?.known_gaps);
-  const hasPartialCoverageHint = connectorHasPartialCoverageHint({ lastRunKnownGaps, totalRecords });
+  // Prefer the reference's server-projected per-stream Collection Report
+  // (`define-connector-progress-evidence-contract`) for the partial-coverage
+  // cue, so the row reads the same authoritative `coverage_condition` the
+  // connection headline and the detail-page stream chips do. The legacy
+  // `known_gaps` reconstruction is used only when the reference returns no
+  // report (a deployment predating Tranche C); see `resolvePartialCoverageCue`.
+  const hasPartialCoverageHint = resolvePartialCoverageCue({
+    collectionReport: overview.collectionReport ?? null,
+    lastRunKnownGaps,
+    totalRecords,
+  });
   let effectiveStartIso: string | undefined;
   if (isRunning && lastRun) {
     effectiveStartIso = lastRun.first_at;
@@ -254,6 +264,7 @@ export function ConnectorRow({ labelNeeded, overview, runsHref }: RowProps) {
         {/* Status + action */}
         <div className="flex shrink-0 items-center gap-2">
           <RunStatus
+            collectionReport={overview.collectionReport ?? null}
             connectionHealth={connectionHealth}
             hasRecords={totalRecords > 0}
             lastRun={lastRun}
@@ -483,6 +494,7 @@ function ConnectorRowToast({ toast }: { toast: ToastState }) {
 }
 
 function RunStatus({
+  collectionReport,
   connectionHealth,
   hasRecords,
   running,
@@ -491,6 +503,7 @@ function RunStatus({
   localDeviceProgress,
   runsHref,
 }: {
+  collectionReport: ConnectorOverview["collectionReport"];
   connectionHealth?: ConnectorOverview["connectionHealth"];
   hasRecords: boolean;
   running: boolean;
@@ -518,8 +531,13 @@ function RunStatus({
     );
   }
 
+  // No connection-health projection (a reference predating it). The "Partial"
+  // badge still prefers the server-projected Collection Report when one is
+  // present, and only reconstructs from the last run's raw `known_gaps` when no
+  // report is available — the same rule the row's coverage cue uses.
   const lastRunKnownGaps = normalizeKnownGaps(lastRun?.known_gaps);
-  const hasPartialCoverageHint = connectorHasPartialCoverageHint({
+  const hasPartialCoverageHint = resolvePartialCoverageCue({
+    collectionReport,
     lastRunKnownGaps,
     totalRecords: hasRecords ? 1 : 0,
   });

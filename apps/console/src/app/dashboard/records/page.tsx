@@ -36,6 +36,7 @@ function toConnectorOverview(summary: RefConnectorSummary): ConnectorOverview {
   const lastRun = toConnectorRunRef(summary.last_run);
   const lastSuccessfulRun = toConnectorRunRef(summary.last_successful_run);
   return {
+    collectionReport: summary.collection_report ?? null,
     connectionHealth: summary.connection_health,
     connectionId: summary.connection_id,
     connector: {

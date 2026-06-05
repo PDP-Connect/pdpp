@@ -534,3 +534,54 @@ test("the run-start action classifies failures by before/after-server phase", as
   assert.match(actionsSrc, ACTION_BEFORE_SERVER_RETURN_RE);
   assert.match(actionsSrc, ACTION_AFTER_SERVER_RETURN_RE);
 });
+
+// ─── direct consumption of the per-stream Collection Report (task 4.3) ──────
+//
+// define-connector-progress-evidence-contract task 4.3: the records row must
+// derive its "Partial source coverage" cue from the reference's
+// server-projected per-stream `coverage_condition` (the `collection_report`),
+// preferring it over the legacy `known_gaps` reconstruction. These structural
+// assertions pin that the row resolves the cue through the report-preferring
+// `resolvePartialCoverageCue` helper, threads the overview's `collectionReport`
+// into it (both the headline-status fallback and the ConnectorStats cue), and no
+// longer calls the bare `known_gaps` heuristic directly.
+
+const ROW_USES_RESOLVER = /resolvePartialCoverageCue\(\{/;
+const ROW_THREADS_REPORT = /collectionReport: overview\.collectionReport \?\? null/;
+const ROW_THREADS_REPORT_TO_RUNSTATUS = /collectionReport=\{overview\.collectionReport \?\? null\}/;
+const ROW_IMPORTS_RESOLVER = /import \{[^}]*resolvePartialCoverageCue[^}]*\} from "\.\.\/lib\/run-gaps\.ts"/;
+const ROW_NO_BARE_HEURISTIC = /connectorHasPartialCoverageHint/;
+
+test("connector-row resolves the partial-coverage cue through the report-preferring helper", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.match(src, ROW_IMPORTS_RESOLVER);
+  assert.match(src, ROW_USES_RESOLVER);
+});
+
+test("connector-row threads the server-projected collection_report into the coverage cue", async () => {
+  // Without threading `overview.collectionReport`, the helper would always fall
+  // back to the legacy `known_gaps` reconstruction. The object-literal form is
+  // unique to the helper call site (JSX props use `=`, not `:`).
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.match(src, ROW_THREADS_REPORT);
+});
+
+test("connector-row threads the collection_report into the no-health RunStatus fallback too", async () => {
+  // The legacy no-health "Partial" badge must prefer the report as well, so no
+  // path in the row silently re-derives partial coverage from raw known_gaps
+  // when the authoritative server report is available.
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.match(src, ROW_THREADS_REPORT_TO_RUNSTATUS);
+});
+
+test("connector-row no longer calls the bare known_gaps partial-coverage heuristic", async () => {
+  // The deprecation is complete: the row reads the server report (via the
+  // resolver). `connectorHasPartialCoverageHint` survives only as the resolver's
+  // internal legacy fallback in run-gaps.ts; it must not be invoked from the row.
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.equal(
+    ROW_NO_BARE_HEURISTIC.test(src),
+    false,
+    "row must not reference connectorHasPartialCoverageHint directly"
+  );
+});

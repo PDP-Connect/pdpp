@@ -12,15 +12,20 @@
  */
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { findManifestForConnectorId } from "../records/lib/relationships.ts";
 import {
   getOwnerToken,
   getRsInternalUrl,
   ReferenceServerUnreachableError,
   ResourceServerHttpError,
 } from "./owner-token.ts";
-import { findManifestForConnectorId } from "../records/lib/relationships.ts";
 import { type CanonicalReadWarning, extractReadWarnings } from "./read-envelope.ts";
-import type { RefConnectionHealthSnapshot, RefLocalDeviceProgress, RefRetainedBytesBreakdown } from "./ref-client.ts";
+import type {
+  RefCollectionReportEntry,
+  RefConnectionHealthSnapshot,
+  RefLocalDeviceProgress,
+  RefRetainedBytesBreakdown,
+} from "./ref-client.ts";
 import { verifyDashboardSession } from "./verify-session.ts";
 
 export interface StreamSummary {
@@ -516,6 +521,19 @@ export async function listConnectorManifests(): Promise<ConnectorManifest[]> {
 }
 
 export interface ConnectorOverview {
+  /**
+   * Per-stream Collection Report (`collection_report` on the connector
+   * summary, `define-connector-progress-evidence-contract` Tranche C),
+   * forwarded verbatim from the reference. The records row reads each entry's
+   * server-projected `coverage_condition` directly for its partial-coverage cue
+   * instead of reconstructing coverage from the last run's raw `known_gaps`.
+   *
+   * Optional and nullable on the overview: a reference predating the field
+   * omits it, and the row falls back to the legacy `known_gaps` heuristic only
+   * in that case (see `resolvePartialCoverageCue`). An empty array is a real
+   * "no partial streams" answer, distinct from absence.
+   */
+  collectionReport?: readonly RefCollectionReportEntry[] | null;
   connectionHealth?: RefConnectionHealthSnapshot;
   connectionId?: string;
   connector: ConnectorManifest;
