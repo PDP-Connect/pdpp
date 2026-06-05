@@ -89,13 +89,25 @@ The hosted MCP adapter SHALL route read tools through the same scoped-token REST
 
 ### Requirement: Hosted MCP connection presentation SHALL use shared connector identity
 
-The hosted MCP consent picker SHALL use the reference implementation's shared connector identity equivalence helper when suppressing stale legacy local collector aliases or grouping equivalent connector ids.
+The hosted MCP consent picker SHALL use canonical connector keys and configured connections as its selectable units. It SHALL suppress stale alias rows, SHALL NOT show URL-shaped manifest identifiers as connector choices, and SHALL preserve selected connection bindings on issued child grants.
 
 #### Scenario: Legacy local collector alias has a canonical dataful connection
 
-- **WHEN** both a legacy local collector connector id and its canonical connector id are registered
+- **WHEN** both a stale local collector alias and its canonical connector key are present in storage
 - **AND** the canonical connector has a dataful configured connection
-- **THEN** the hosted MCP picker SHALL NOT show a stale zero-record legacy duplicate as a separate owner-facing source.
+- **THEN** the hosted MCP picker SHALL NOT show the stale alias as a separate owner-facing source.
+
+#### Scenario: Connector manifest has a registry URI
+
+- **WHEN** the hosted MCP picker renders a connector-backed source
+- **THEN** the selectable item SHALL identify the connector type by canonical connector key and display name
+- **AND** any registry URI SHALL be shown only as provenance metadata, not as the value submitted by the form.
+
+#### Scenario: Owner approves multiple connections
+
+- **WHEN** an owner approves multiple configured connections in one hosted MCP authorization ceremony
+- **THEN** each child grant SHALL bind to the selected canonical connector key and selected connection id
+- **AND** the grant package SHALL NOT infer child grants from connector-type URLs or stale aliases.
 
 ### Requirement: Grant packages SHALL be visible to the operator
 

@@ -26,3 +26,10 @@ The reference now treats Patchright-bundled Chromium as the stronger default bro
 - May add a small `reference-implementation/server/streaming/neko-browser-client.*` seam around Patchright `chromium.connectOverCDP`.
 - Updates streaming posture tests and CDP anti-pattern grep gates.
 - Does not change PDPP Core, resource-server public APIs, grant semantics, stream-token scope, connector manifests, or owner tokens.
+
+## Residual Risks
+
+The code-level posture cleanup, the Patchright-seam refactor, the strict-mode no-attach gate, the `balanced`-mode normalization, and their deterministic tests are implemented and validated; the durable requirement is folded into `reference-implementation-architecture`. The remaining work is owner-only live verification that cannot run in this lane, preserved here per the AGENTS.md residual-risk rule (was tasks 4.1–4.2):
+
+- **n.eko CDP-proxy canary smoke (owner-only).** A live smoke proving Patchright can connect through the configured CDP proxy, add an init script, navigate, and read a canary value after navigation requires a running n.eko stack. Not yet run.
+- **n.eko stream input/lifecycle smoke (owner hardware).** A short n.eko stream smoke for tap/click, keyboard focus, paste, resize/orientation, and reconnect requires owner phone/hardware. Any failure observed in that smoke SHALL be recorded as a follow-up residual rather than treated as blocking the already-validated code-level posture cleanup. Not yet run.

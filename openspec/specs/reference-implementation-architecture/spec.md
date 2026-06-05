@@ -2667,27 +2667,27 @@ The hosted MCP `/mcp` handler SHALL substitute a package-aware adapter (`Package
 #### Scenario: Schema and list_streams fan out per source
 
 - **WHEN** a package token calls `schema` or `list_streams`
-- **THEN** the adapter SHALL fan out across each active child grant and SHALL merge the responses with `source` identity (`grant_id`, `connector_id`, `connection_id`) attached to every stream and granted connection row
+- **THEN** the adapter SHALL fan out across each active child grant and SHALL merge the responses with source identity (`grant_id`, `connector_key`, `connection_id`) attached to every stream and granted connection row
 - **AND** the merged envelope SHALL include `meta.package.member_count` so the client can tell it is operating under a package token.
 
 #### Scenario: Search fans out across children and preserves the selected REST search mode
 
 - **WHEN** a package token calls `search` with `mode=lexical`, `mode=semantic`, or `mode=hybrid`
 - **THEN** the adapter SHALL forward the call through `/v1/search`, `/v1/search/semantic`, or `/v1/search/hybrid` respectively
-- **AND** SHALL execute one source-local search per active child grant under that child's bearer
-- **AND** SHALL merge the hits into one envelope, with each hit carrying source identity.
+- **AND** it SHALL execute one source-local search per active child grant under that child's bearer
+- **AND** every merged hit SHALL carry canonical connector key and connection identity.
 
 #### Scenario: Source-specific reads without a selector return typed ambiguous_connection
 
-- **WHEN** a package token with more than one active child grant calls `query_records`, `fetch`, or `fetch_blob` without `connection_id`
-- **THEN** the adapter SHALL return a typed `ambiguous_connection` (409) error envelope including `available_connections` (one entry per active member with `grant_id`, `connector_id`, `connection_id`, optional `display_name`) and `retry_with: "connection_id"`
-- **AND** SHALL NOT call any child grant's RS bearer.
+- **WHEN** a package token with more than one active child grant calls `query_records`, `fetch`, `fetch_blob`, or an event-subscription create operation without `connection_id`
+- **THEN** the adapter SHALL return a typed `ambiguous_connection` (409) error envelope including `available_connections` (one entry per active member with `grant_id`, `connector_key`, `connection_id`, optional `display_name`) and `retry_with: "connection_id"`
+- **AND** it SHALL NOT call any child grant's RS bearer.
 
 #### Scenario: Unknown selector returns typed not_found
 
 - **WHEN** a package token passes a `connection_id` that does not match any active member
 - **THEN** the adapter SHALL return a typed `not_found` (404) error envelope including the candidate list
-- **AND** SHALL NOT fan out to any member.
+- **AND** it SHALL NOT fan out to any member.
 
 ### Requirement: Hosted MCP package event subscriptions SHALL bind to one child grant
 
@@ -4043,6 +4043,95 @@ messages, or public `/v1` resource-server contracts.
 - **AND** it SHALL NOT automatically compact, delete, merge, or rewrite
   `record_changes` history.
 
+### Requirement: Version-churn observability SHALL serve the unfiltered hot path from the maintained projection without an unbounded history scan
+
+The owner-only `GET /_ref/records/version-stats` read SHALL produce its bounded
+top-churn diagnostic for an **unfiltered** request without running an unbounded
+aggregate over the entire `record_changes` table. The reference implementation
+SHALL source the per-stream churn facts from the maintained retained-size
+projection for streams the projection can classify, and SHALL compute the
+ground-truth aggregate (`COUNT(*)`, `COUNT(DISTINCT record_key)`,
+`MAX(emitted_at)`) only for a bounded candidate set of streams.
+
+This requirement governs how the row facts are SOURCED for the unfiltered hot
+path. It SHALL NOT alter what a row contains, the numeric churn thresholds, the
+`risk_level` / `risk_reasons` classification, or the derived
+`version_disposition`. A row whose facts are sourced from ground truth SHALL be
+byte-identical to the row the prior full scan would have produced.
+
+The reference implementation SHALL treat the projection's `record_history_count`
+and current `record_count` as authoritative for a stream ONLY when that
+projection row is not dirty. It SHALL NOT treat the projection's
+`record_history_count` as authoritative for a dirty row, and SHALL NOT
+incrementally maintain `COUNT(DISTINCT record_key)` or `MAX(emitted_at)` from
+write-time deltas.
+
+The candidate set SHALL be derived conservatively so that no stream which
+ground truth would classify above `normal` is omitted from the ground-truth
+computation. A stream SHALL be a candidate when its projection row is dirty, or
+when its non-dirty projection facts could place it at or above the `watch`
+threshold under the denominator that maximizes versions-per-record. Over-
+inclusion of a stream that proves `normal` SHALL be acceptable; omission of a
+non-`normal` stream SHALL NOT occur.
+
+When the global retained-size projection is dirty (never built or rebuild
+pending), the reference implementation SHALL fall back to the full ground-truth
+computation for the unfiltered request rather than serve a candidate-narrowed
+diagnostic.
+
+#### Scenario: Unfiltered request avoids the unbounded scan
+
+- **WHEN** an owner-authenticated caller requests `GET /_ref/records/version-stats`
+  with no `connector_instance_id` and no `stream` filter, and the global
+  retained-size projection is not dirty
+- **THEN** the reference implementation SHALL NOT run an aggregate over
+  `record_changes` that is unbounded by stream
+- **AND** it SHALL compute the ground-truth `COUNT(*)`,
+  `COUNT(DISTINCT record_key)`, and `MAX(emitted_at)` only for the bounded
+  candidate set of streams (candidates plus any dirty projection rows).
+
+#### Scenario: Candidate facts are byte-identical to the full scan
+
+- **WHEN** the unfiltered request classifies a stream as `watch` or `high` from
+  the candidate ground-truth computation
+- **THEN** that row's `record_history_count`, `record_key_count`,
+  `last_history_at`, `versions_per_record`, `risk_level`, `risk_reasons`, and
+  `version_disposition` SHALL equal the values the prior full
+  `record_changes` scan would have produced for the same stream.
+
+#### Scenario: A non-candidate normal stream is classified without a scan
+
+- **WHEN** a stream's non-dirty projection facts are below the candidate
+  threshold under the versions-per-record-maximizing denominator
+- **THEN** the reference implementation SHALL classify the row from projection
+  facts alone, reporting `projection_authority` as the projection (not ground
+  truth), and SHALL report `record_key_count` and `last_history_at` as null
+- **AND** it SHALL NOT issue a `record_changes` aggregate for that stream.
+
+#### Scenario: A dirty projection row is always verified against ground truth
+
+- **WHEN** a stream's projection row is dirty
+- **THEN** the reference implementation SHALL include that stream in the bounded
+  ground-truth computation regardless of the stream's apparent projection risk,
+  so a stale projection count cannot cause a non-normal row to be omitted or
+  downgraded.
+
+#### Scenario: A cold or rebuilding projection falls back to the full computation
+
+- **WHEN** an unfiltered request arrives while the global retained-size
+  projection is dirty
+- **THEN** the reference implementation SHALL compute the diagnostic from the
+  full ground-truth aggregate rather than the candidate-narrowed path, so a cold
+  or rebuilding instance is never served a thinned diagnostic.
+
+#### Scenario: Filtered requests are unchanged
+
+- **WHEN** an owner passes an exact `connector_instance_id` or exact `stream`
+  filter
+- **THEN** the reference implementation SHALL apply that filter to the
+  ground-truth computation as before
+- **AND** result size SHALL remain capped by the server-enforced limit.
+
 ### Requirement: Record version allocation SHALL be atomic with the durable mutation
 
 The reference implementation SHALL allocate the next per-`(connector_id, stream)` record version with a single atomic store operation, executed inside the durable record mutation transaction, that simultaneously advances version state and returns the freshly-allocated version. The reference SHALL NOT compute the next version from a separately-observable read of `version_counter` followed by a later write.
@@ -4096,6 +4185,111 @@ When the reference processes a no-op re-ingest, an absent-record delete, or a re
 - **WHEN** the atomic allocation or any subsequent step inside the durable mutation transaction fails
 - **THEN** the reference SHALL NOT leave `version_counter` advanced relative to `records` and `record_changes`
 - **AND** a later changed write for the same `(connector_id, stream)` SHALL NOT collide with or skip around a partially allocated version
+
+### Requirement: Connector runtime SHALL provide adaptive lanes for upstream throttle buckets
+The reference implementation's polyfill connector runtime SHALL provide a reusable adaptive lane utility for connector-local outbound work that targets an upstream throttle bucket. A lane SHALL bound concurrency, bound queued work, apply inter-launch pacing, accept connector-provided outcome classification, respect bounded `Retry-After` when provided, and expose deterministic timing hooks for tests.
+
+#### Scenario: Connector schedules work through a lane
+- **WHEN** a connector schedules multiple upstream requests through an adaptive lane
+- **THEN** the lane SHALL NOT start more concurrent work than its current effective concurrency allows
+- **AND** the lane SHALL NOT exceed its configured maximum concurrency
+- **AND** the lane SHALL NOT allow queued work to grow without an explicit configured bound or pause/fail-fast policy
+
+#### Scenario: Upstream reports rate limiting
+- **WHEN** a lane receives an outcome classified as `rate_limited`
+- **THEN** the lane SHALL reduce effective concurrency conservatively
+- **AND** the lane SHALL apply a cooldown before launching additional work for the same upstream throttle bucket
+- **AND** the lane SHALL respect a bounded `Retry-After` value when one is provided
+
+#### Scenario: Clean successes continue
+- **WHEN** a lane observes a sustained connector-configured window of clean outcomes
+- **THEN** the lane MAY increase effective concurrency gradually
+- **AND** the lane SHALL NOT increase beyond its configured maximum concurrency
+
+### Requirement: Retries SHALL remain lane-governed
+Retry attempts for lane-governed work SHALL obey the same lane capacity, pacing, cooldown, queue, and cancellation controls as first attempts.
+
+#### Scenario: Request retries after a transient failure
+- **WHEN** a lane-governed request receives a retryable network, server, or throttle outcome
+- **THEN** the retry SHALL NOT bypass the lane's effective concurrency, cooldown, or queue bound
+- **AND** the lane SHALL NOT create multiple concurrent retry loops for the same upstream throttle bucket beyond the configured lane capacity
+
+#### Scenario: Run is cancelled while lane work is pending
+- **WHEN** a run using adaptive lanes is cancelled or reaches a terminal failure before queued lane work starts
+- **THEN** queued work SHALL be cleared or rejected
+- **AND** scheduled retries SHALL NOT launch after cancellation
+- **AND** active attempts SHOULD receive cancellation through `AbortSignal` or an equivalent mechanism when the underlying operation supports it
+
+### Requirement: Connectors SHALL treat unbounded throttling as a source-bucket signal
+When an upstream returns a retryable throttle response that carries no bounded backoff hint (for example HTTP 429 with no `Retry-After`), a connector SHALL be able to stop retrying that single request before exhausting its full per-request retry budget, so that a per-account throttle does not cause one request to spend a large retry budget against an already-pressured upstream. A bounded backoff hint, when present, SHALL still be honored on the connector's normal retry budget.
+
+#### Scenario: Bare throttle response without a backoff hint
+- **WHEN** a lane-governed request receives a throttle outcome (such as HTTP 429) that carries no `Retry-After` or equivalent bounded backoff hint
+- **THEN** the connector MAY stop retrying that request after a small bounded number of attempts rather than exhausting its full per-request budget
+- **AND** the connector SHALL surface the resulting pressure as resumable gap/deferred state rather than silently dropping required data
+- **AND** required items deferred by this fast-open SHALL NOT be represented as complete cursor coverage
+
+#### Scenario: Throttle response carries a bounded backoff hint
+- **WHEN** a lane-governed request receives a throttle outcome that carries a bounded `Retry-After` or equivalent hint
+- **THEN** the connector SHALL respect the bounded hint on its normal retry budget
+- **AND** the connector SHALL NOT treat the hinted wait as a fast-open source-bucket signal
+
+### Requirement: Raised detail concurrency SHALL be gated on current cold-state preflight
+When a connector is configured to run a bulk detail lane above the serial default concurrency for an opaque per-account upstream, it SHALL first classify current source pressure with a small status-only preflight before fanning out at the raised concurrency. If the preflight observes throttling, the connector SHALL hold the run at the serial default concurrency instead of escalating. The preflight SHALL only make a run more conservative, never less, and SHALL NOT run when the configured concurrency is already the serial default.
+
+#### Scenario: Owner enables a faster posture against a cold account
+- **WHEN** a connector is configured to raise bulk detail concurrency above the serial default
+- **AND** a status-only preflight of a small number of detail requests observes no throttling
+- **THEN** the connector MAY proceed at the requested raised concurrency
+
+#### Scenario: Owner enables a faster posture against a pressured account
+- **WHEN** a connector is configured to raise bulk detail concurrency above the serial default
+- **AND** a status-only preflight observes a throttle response
+- **THEN** the connector SHALL hold the bulk detail lane at the serial default concurrency for that run
+- **AND** the connector SHALL NOT fan out the raised concurrency against the pressured upstream
+
+#### Scenario: Serial default needs no preflight
+- **WHEN** a connector's configured bulk detail concurrency is the serial default
+- **THEN** the connector SHALL NOT issue any preflight probe requests
+- **AND** the run's request behavior SHALL remain unchanged from the serial baseline
+
+### Requirement: Adaptive lanes SHALL stay outside cursor ownership
+Adaptive lanes SHALL schedule connector work but SHALL NOT emit connector `RECORD`, `STATE`, or `DONE` messages and SHALL NOT decide whether a bounded run's staged state becomes durable.
+
+#### Scenario: Required upstream item fails after retry budget
+- **WHEN** a lane returns a terminal or exhausted outcome for an upstream item that the connector treats as required
+- **THEN** the connector SHALL remain responsible for deciding whether to fail the run, emit `SKIP_RESULT`, or continue
+- **AND** the lane SHALL NOT advance stream cursor state on the connector's behalf
+
+#### Scenario: Lane work affects a cursor boundary
+- **WHEN** a connector uses lane-managed work to collect records covered by a stream cursor boundary
+- **THEN** the connector SHALL wait for all required lane-managed work for that cursor boundary to settle before emitting the corresponding stream `STATE`
+- **AND** failed or skipped required items SHALL NOT be represented as complete cursor coverage
+
+#### Scenario: A bounded run fails
+- **WHEN** a bounded run using adaptive lanes fails before successful `DONE`
+- **THEN** the existing runtime checkpoint-commit rules SHALL remain authoritative
+- **AND** staged state SHALL NOT be durably committed merely because lane-managed work completed for some items
+
+### Requirement: Adaptive lane observability SHALL be safe and bounded
+Adaptive lanes SHALL expose progress or telemetry hooks sufficient to explain throttling behavior to the owner and to tests. Lane observability SHALL avoid leaking bearer tokens, cookies, request bodies, full sensitive URLs, or upstream record identifiers unless the connector supplies an explicitly safe label.
+
+#### Scenario: Lane enters cooldown
+- **WHEN** a lane enters cooldown because of upstream pressure
+- **THEN** observability hooks SHOULD report the lane name, outcome class, effective concurrency, bounded delay, and cooldown reason
+- **AND** the report SHALL avoid raw secret-bearing request details
+
+#### Scenario: Tests use fake timing
+- **WHEN** lane behavior is tested
+- **THEN** tests SHALL be able to inject fake sleep and fake randomness
+- **AND** tests SHALL NOT depend on wall-clock sleeps to prove retry, pacing, or adaptation behavior
+
+### Requirement: Adaptive lanes SHALL support quality-of-service separation
+The connector runtime SHALL allow connectors to use separate adaptive lanes for distinct upstream work classes so bulk collection does not starve recovery-critical work.
+
+#### Scenario: Bulk hydration is saturated
+- **WHEN** a connector's bulk hydration lane is at capacity or in cooldown
+- **THEN** separate login, manual-action, browser-navigation, or listing lanes SHALL NOT be blocked solely because the bulk lane is saturated
 
 ### Requirement: Run automation policy SHALL apply across trigger kinds
 The reference implementation SHALL classify every connector run request through a shared automation policy model before starting the connector. The policy model SHALL treat the run trigger as metadata and SHALL NOT create separate execution semantics for scheduled, manual, retry, and webhook-triggered runs.
@@ -6876,6 +7070,78 @@ default runtime remains unchanged.
   env gate
 - **AND** the existing SQLite-backed test suite SHALL continue to pass.
 
+### Requirement: Reference storage and runtime SHALL use canonical connector keys
+
+The reference implementation SHALL use canonical `connector_key` values for connector-backed storage bindings, source bindings, runtime configuration, state namespaces, record namespaces, blob bindings, schedules, runs, diagnostics, search indexes, semantic indexes, and owner-facing read URLs. URL-shaped manifest identifiers SHALL be metadata only.
+
+#### Scenario: New connector state is written
+
+- **WHEN** a connector run, local collector upload, scheduler operation, grant issuance, search index update, or event-subscription write persists connector-backed state
+- **THEN** the persisted connector type field SHALL contain the canonical `connector_key`
+- **AND** it SHALL NOT contain the manifest registry URI.
+
+#### Scenario: Owner search returns record URLs
+
+- **WHEN** an owner or grant-scoped client receives a record URL or hydration hint from search, Explore, MCP, or a dashboard API
+- **THEN** the URL or hint SHALL carry the canonical connector key and the concrete `connection_id` when needed
+- **AND** it SHALL NOT rely on URL-shaped connector ids to hydrate the record.
+
+#### Scenario: Local-device exporter persists records and state
+
+- **WHEN** a local-device exporter enrolls, ingests record batches, or writes device-scoped sync state for a connector type whose owner-supplied id is a legacy alias such as `claude_code`
+- **THEN** the catalog `connectors` row, the `connector_instances` row, the `device_source_instances` row, and the persisted record/state/version/blob rows SHALL all use the bare canonical `connector_key` (e.g. `claude-code`)
+- **AND** the persisted connector type field SHALL NOT carry a `local-device:` storage-namespace prefix
+- **AND** isolation between a local-device connection and an account connection for the same connector type SHALL be carried by `connector_instance_id`, not by a storage-key prefix.
+
+#### Scenario: Grant-scoped or owner read resolves a connection from a legacy storage binding
+
+- **WHEN** a grant-scoped client read, owner self-export read, or blob fetch resolves the active connection set from a storage binding whose `connector_id` still carries a legacy URL-shaped first-party id (e.g. `https://registry.pdpp.org/connectors/gmail`)
+- **THEN** the admission resolver SHALL canonicalize that `connector_id` to its `connector_key` (e.g. `gmail`) before enumerating active `connector_instances`
+- **AND** it SHALL resolve the same connection set it would for the bare canonical key, because records, blob bindings, and `connector_instances` are all keyed by `connector_key`
+- **AND** it SHALL NOT return `connection_not_found` solely because the storage binding carried the legacy URL alias rather than the canonical key.
+
+### Requirement: Reference forms SHALL NOT delimiter-parse connector identifiers
+
+Reference forms and route handlers SHALL use structured, validated, or opaque identifiers for connector and connection selections. They SHALL NOT parse concatenated raw connector identifiers with delimiters that may appear inside registry URLs or future custom ids.
+
+#### Scenario: Hosted MCP package selector submits a connection
+
+- **WHEN** the hosted MCP package consent form submits an approved connection selection
+- **THEN** the server SHALL resolve that selection from an opaque connection id or a structured payload
+- **AND** it SHALL NOT split a raw `connector_id` string such as `connection:<connector_id>:<connection_id>`.
+
+#### Scenario: Malformed selector is submitted
+
+- **WHEN** a selector cannot be validated as one available owner-visible connection or connector group
+- **THEN** the server SHALL reject it with a typed invalid-selection error
+- **AND** it SHALL NOT guess by truncating or partially parsing the selector.
+
+### Requirement: Reference docs SHALL not teach URL ids as active keys
+
+Reference implementation docs, operator copy, CLI help, MCP tool descriptions, and dashboard examples SHALL use canonical connector keys and connection ids. Manifest registry URIs MAY appear only as manifest provenance or registry links.
+
+#### Scenario: Operator reads a setup example
+
+- **WHEN** an operator reads a reference setup, consent, CLI, MCP, or local-collector example
+- **THEN** the example SHALL use `connector_key` values such as `gmail`, `slack`, or `claude-code`
+- **AND** it SHALL label any `https://registry...` value as `manifest_uri` or registry provenance, not as the operational connector id.
+
+### Requirement: Post-migration active code SHALL not depend on legacy connector aliases
+
+After the canonical connector-key migration lands, active reference code SHALL NOT require `legacy`, `legacy_default`, URL alias lookup, or stale local-collector alias equivalence to provide normal owner/client functionality.
+
+#### Scenario: Owner opens the connection picker
+
+- **WHEN** the owner opens the hosted MCP consent picker, connection dashboard, grant package flow, or event-subscription flow
+- **THEN** stale alias rows SHALL NOT appear as selectable sources
+- **AND** owner-visible labels SHALL be based on connector display name and connection display name, not on legacy storage markers.
+
+#### Scenario: Runtime needs to classify old data
+
+- **WHEN** code needs to mention old identifier shapes for migration diagnostics or tests
+- **THEN** that code SHALL be isolated to migration, backup, or test fixtures
+- **AND** normal runtime branches SHALL operate on canonical keys.
+
 ### Requirement: Public read operations SHALL use a canonical response envelope
 The reference implementation SHALL use one canonical envelope family for grant-authorized public read operations. List-like responses SHALL include `object`, `data`, `has_more`, `links`, and `meta`; non-list responses SHALL use the same `object`, `data`, `links`, and `meta` vocabulary without `has_more` unless list semantics apply.
 
@@ -8168,7 +8434,7 @@ The reference implementation SHALL refuse to mint a streaming session token when
 
 ### Requirement: n.eko streaming preserves an owner-controlled browser UX
 
-When the reference implementation uses n.eko as a streaming backend, it SHALL keep the sidecar behind the same stream-token lifecycle while presenting the owner with an embedded browser-control surface rather than a general n.eko room UI. The n.eko surface SHOULD use direct n.eko client integration when available so the reference can preserve native input, clipboard, focus, and geometry behavior without exposing n.eko product controls.
+When the reference implementation uses n.eko as a streaming backend, it SHALL keep the sidecar behind the same stream-token lifecycle while presenting the owner with an embedded browser-control surface rather than a general n.eko room UI. The n.eko surface SHOULD use direct n.eko client integration when available so the reference can preserve native input, clipboard, focus, and geometry behavior without exposing n.eko product controls. Routine n.eko assistive browser control SHALL use a Patchright-mediated browser-client seam rather than adapter-owned raw page-CDP helper commands; strict/browser-owner mode SHALL remain usable for baseline viewing and input without a page-level browser attach.
 
 #### Scenario: A managed connector is configured by canonical connector URL
 
@@ -8190,7 +8456,7 @@ When the reference implementation uses n.eko as a streaming backend, it SHALL ke
 - **THEN** the reference SHOULD preserve geometry agreement between the visible browser viewport, n.eko's screen model, and input coordinates
 - **AND** it SHOULD use exact 1:1 dimensions when n.eko/X11/Chromium can represent them
 - **AND** otherwise it SHOULD use local crop/remap only for residual capture gutters rather than arbitrary stretching
-- **AND** the reference SHOULD propagate the new dimensions to n.eko screen configuration and Chromium window bounds where those control paths are available
+- **AND** the reference SHOULD propagate the new dimensions to n.eko screen configuration and to Patchright-owned page viewport controls where those control paths are available
 - **AND** failures in those best-effort control paths SHALL NOT expose unrelated browser authority or invalidate the stream token
 
 #### Scenario: The owner pastes text into the remote browser
@@ -8202,17 +8468,30 @@ When the reference implementation uses n.eko as a streaming backend, it SHALL ke
 
 #### Scenario: The owner focuses a remote text field from a phone
 
-- **WHEN** a non-strict n.eko-backed stream detects that the remote page focused an editable element
+- **WHEN** an assistive n.eko-backed stream detects that the remote page focused an editable element
 - **THEN** the dashboard SHOULD focus n.eko's owner-side keyboard overlay so the mobile software keyboard opens
 - **AND** when the remote page blurs the editable element, the dashboard SHOULD blur the overlay so the software keyboard can dismiss
 - **AND** strict browser-owner mode SHALL still work without requiring that page-level focus bridge
+
+#### Scenario: Assistive n.eko browser control uses the Patchright seam
+
+- **WHEN** a n.eko-backed stream is in assistive mode and needs page navigation, page viewport sizing, page status, focus bridging, copy, or paste helpers
+- **THEN** the reference SHALL perform those operations through the Patchright-mediated browser-client seam
+- **AND** the n.eko adapter SHALL NOT open its own page-target WebSocket for those routine controls
+- **AND** the n.eko adapter SHALL NOT send `Runtime.enable`, `Runtime.addBinding`, direct `Page.addScriptToEvaluateOnNewDocument`, `Browser.setWindowBounds`, `Emulation.setUserAgentOverride`, or direct device/touch emulation commands for those routine controls
+
+#### Scenario: Balanced n.eko mode is accepted for compatibility
+
+- **WHEN** existing configuration requests n.eko `balanced` mode
+- **THEN** the reference SHALL treat it as the assistive Patchright-mediated path or reject it with an operator-actionable compatibility message
+- **AND** it SHALL NOT preserve `balanced` as a third browser-control posture with a separate raw-CDP helper path
 
 #### Scenario: A stealth-sensitive n.eko stream is opened
 
 - **WHEN** a n.eko stream is marked stealth-sensitive or browser-owner-managed
 - **THEN** the reference SHALL NOT require page-level CDP scripts, Runtime bindings, or CDP paste helpers for baseline viewing and input
 - **AND** browser fingerprint controls such as user agent, client hints, device scale, touch capability, proxy, and profile SHALL be owned by the browser launch/profile boundary rather than silently mutated by the viewer mid-page
-- **AND** any page-level helper SHALL be gated behind an explicit assistive mode or equivalent operator choice
+- **AND** any page-level helper SHALL be gated behind explicit assistive mode or equivalent operator choice
 
 #### Scenario: A local non-n.eko browser-backed connector launches
 
