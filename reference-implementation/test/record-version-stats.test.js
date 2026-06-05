@@ -586,9 +586,17 @@ test('candidate predicate selects hot churn and rejects flat streams', () => {
     isVersionChurnCandidate({ dirty: true, currentRecordCount: 12, recordHistoryCount: 12 }),
     true,
   );
-  // history-count arm independent of ratio (large current, history >= 10k).
+  // Large flat streams with history >= 10k are NOT candidates when the
+  // projection proves history/current is below the watch lower bound. The
+  // high-history classifier arm also requires vpr >= 10, so the watch bound
+  // safely covers it.
   assert.equal(
     isVersionChurnCandidate({ dirty: false, currentRecordCount: 9_000, recordHistoryCount: 10_000 }),
+    false,
+  );
+  // High-history + high-ratio streams remain candidates.
+  assert.equal(
+    isVersionChurnCandidate({ dirty: false, currentRecordCount: 1_000, recordHistoryCount: 10_000 }),
     true,
   );
   // current == 0 with history → candidate (history_without_current_records).

@@ -115,16 +115,15 @@ keyCount` — i.e. `history / current` is an **upper bound** on true `vpr`. Usin
 ```
 candidate ⇔  dirty != 0
           OR (current == 0 && history > 0)
-          OR history >= 10_000
           OR history >= 5 * max(1, current)      // vpr_upper_bound >= 5
 ```
 
-This is over-inclusive (a stream with `keyCount > current`, or a stream just
-under 10 k history, may be scanned though it turns out `normal`) — harmless, an
-extra bounded scan. It is never under-inclusive: any stream ground truth would
-classify `watch`/`high` satisfies the predicate. The `history >= 10_000` arm is
-kept independent of the ratio arm so the `high_history_count` reason is never
-missed even when `current` is large.
+This is over-inclusive (a stream with `keyCount > current` may be scanned though
+it turns out `normal`) — harmless, an extra bounded scan. It is never
+under-inclusive: any stream ground truth would classify `watch`/`high` satisfies
+the predicate. A stream with `history >= 10_000` but `history/current < 5` is not
+a candidate, because the classifier's high-history arm requires `vpr >= 10` and
+the row cannot even reach the watch lower bound.
 
 ### Edge cases
 

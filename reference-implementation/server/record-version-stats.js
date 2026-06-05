@@ -304,8 +304,10 @@ export async function listRecordVersionGroundTruthForKeys({ keys } = {}) {
  * unavailable distinct-key count), which is an upper bound on versions-per-record
  * — so the predicate never under-includes a real non-normal stream.
  *
- * Mirrors the thresholds in `classifyRecordVersionChurn` (watch at vpr >= 5,
- * the history-count arm at history >= 10_000, and current==0 with history>0).
+ * Mirrors the thresholds in `classifyRecordVersionChurn`: current==0 with
+ * history>0, or the watch lower bound (vpr >= 5). The high-history arm is
+ * stricter than watch (`history >= 10_000 && vpr >= 10`), so the watch bound is
+ * sufficient to avoid under-including it.
  */
 export function isVersionChurnCandidate({ dirty, currentRecordCount, recordHistoryCount } = {}) {
   if (dirty) return true;
@@ -313,7 +315,6 @@ export function isVersionChurnCandidate({ dirty, currentRecordCount, recordHisto
   const history = Number(recordHistoryCount || 0);
   if (history <= 0) return false;
   if (current === 0) return true; // history_without_current_records
-  if (history >= 10_000) return true; // high_history_count arm
   // vpr upper bound (history / current) >= watch threshold.
   return history >= 5 * Math.max(1, current);
 }

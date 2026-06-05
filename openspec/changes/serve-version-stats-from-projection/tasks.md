@@ -20,7 +20,9 @@
   (`listStreams`) and the global projection (`getProjection`, read once and
   reused for the envelope's `projection` block) and derive the conservative
   candidate predicate (`isVersionChurnCandidate`): `dirty OR (current == 0 &&
-  history > 0) OR history >= 10_000 OR history >= 5 * max(1, current)`.
+  history > 0) OR history >= 5 * max(1, current)`. The high-history classifier
+  arm is not a separate candidate arm because it also requires a ratio above the
+  watch lower bound.
 - [x] 2.2 Call `listRecordVersionGroundTruthForKeys` for `candidates ∪ dirty`
   only; merge exactly as today (ground truth overrides projection for scanned
   keys; non-candidates keep projection facts with null `record_key_count` /
