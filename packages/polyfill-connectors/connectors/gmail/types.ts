@@ -1,7 +1,7 @@
 // Shapes for the Gmail connector. Extracted from index.ts so parsers.ts
 // and tests can import them without pulling in the IMAP runtime entry.
 
-import type { DetailCoverageMessage } from "../../src/connector-runtime.ts";
+import type { DetailCoverageMessage, DetailGapMessage } from "../../src/connector-runtime.ts";
 
 export interface StreamRequest {
   name: string;
@@ -80,7 +80,13 @@ export type EmittedMessage =
   // understands DETAIL_COVERAGE (see connector-runtime-protocol.ts); adding it
   // to the local union lets `emit()` carry the attachments coverage report
   // without widening the durable protocol surface.
-  | DetailCoverageMessage;
+  | DetailCoverageMessage
+  // Reference-only per-record detail gap. A failed attachment hydration both
+  // lands in DETAIL_COVERAGE.gap_keys and emits one matching DETAIL_GAP so the
+  // host commit-gate can credit the missing key against a durable pending gap
+  // (gap_keys alone do not satisfy it). Already a known runtime protocol
+  // message; added to the local union so `emit()` can carry it.
+  | DetailGapMessage;
 
 export interface AttachmentRecord {
   blob_ref: BlobRef | null;

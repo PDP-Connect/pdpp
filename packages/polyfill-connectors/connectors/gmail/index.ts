@@ -32,7 +32,7 @@ import {
   type MailboxObject,
 } from "imapflow";
 import { flushAndExitAfterRuntimeAck } from "../../src/connector-exit.ts";
-import { buildDetailCoverageMessage } from "../../src/connector-runtime.ts";
+import { buildDetailCoverageMessage, buildDetailGap, type DetailGapMessage } from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { stringifyForJsonl } from "../../src/safe-emit.ts";
@@ -336,6 +336,15 @@ export function formatAttachmentBackfillSummary(summary: AttachmentBackfillSumma
  * coverage rather than a fabricated one.
  */
 export interface AttachmentDetailCoverage {
+  /**
+   * Failed attachment records, retained so the run can emit one matching
+   * DETAIL_GAP per `gapKeys` entry. The host commit-gate credits a missing
+   * required key only when it is hydrated, optional-skipped, or backed by a
+   * durable pending DETAIL_GAP — `gap_keys` alone do not satisfy it. Each
+   * record's `id` is exactly the value that landed in `gapKeys`, keeping the
+   * gap's `record_key` and the coverage key a single source of truth.
+   */
+  failedRecords: AttachmentRecord[];
   gapKeys: string[];
   hydratedKeys: string[];
   optionalSkipKeys: string[];
@@ -344,7 +353,7 @@ export interface AttachmentDetailCoverage {
 
 /** Fresh, empty accumulator for one attachments detail pass. */
 export function makeAttachmentDetailCoverage(): AttachmentDetailCoverage {
-  return { gapKeys: [], hydratedKeys: [], optionalSkipKeys: [], requiredKeys: [] };
+  return { failedRecords: [], gapKeys: [], hydratedKeys: [], optionalSkipKeys: [], requiredKeys: [] };
 }
 
 /**
@@ -361,6 +370,10 @@ export function recordAttachmentCoverage(coverage: AttachmentDetailCoverage, rec
       return;
     case "failed":
       coverage.gapKeys.push(record.id);
+      // Retain the record so a matching DETAIL_GAP is emitted for this key.
+      // `gap_keys` on DETAIL_COVERAGE are not enough on their own: the host
+      // commit-gate requires a durable pending DETAIL_GAP to credit the key.
+      coverage.failedRecords.push(record);
       return;
     case "too_large":
       coverage.optionalSkipKeys.push(record.id);
@@ -397,6 +410,57 @@ async function emitAttachmentDetailCoverage(coverage: AttachmentDetailCoverage |
       optionalSkipKeys: coverage.optionalSkipKeys,
     })
   );
+}
+
+/**
+ * Build the recoverable DETAIL_GAP for one failed attachment hydration.
+ *
+ * Every attachment that lands in `DETAIL_COVERAGE.gap_keys` (hydration_status
+ * `failed`) needs a matching durable DETAIL_GAP: the host commit-gate credits a
+ * missing required key only when it is hydrated, optional-skipped, or backed by
+ * a pending DETAIL_GAP — `gap_keys` on their own are not enough, so without this
+ * a successful run that failed even one attachment aborts at commit and the
+ * messages cursor never advances, re-fetching the same window every run.
+ *
+ * `record_key` is the attachment `id` (`<X-GM-MSGID>:<part_index>`), the exact
+ * value already in `gap_keys`, so the gate matches one-to-one. `reason` is
+ * `temporary_unavailable` (retryable): the `failed` bucket mixes transient
+ * download/network/parse errors with no exhaustion signal, mirroring Amazon's
+ * order-detail gap; retrying next run is the honest, non-destructive default.
+ *
+ * Reference-only and bounded: only opaque message and part identifiers cross
+ * (X-GM-MSGID, the BODYSTRUCTURE part index, and the attachment id). No
+ * filename, content, blob bytes, raw error text, tokens, cookies, URLs, request
+ * bodies, or payload snippets are carried.
+ */
+export function buildAttachmentDetailGap(attachment: AttachmentRecord): DetailGapMessage {
+  return buildDetailGap({
+    stream: "attachments",
+    parentStream: "messages",
+    recordKey: attachment.id,
+    reason: "temporary_unavailable",
+    locator: {
+      kind: "gmail.attachment_detail",
+      message_id: attachment.message_id,
+      part_index: attachment.part_index,
+      attachment_id: attachment.id,
+    },
+  });
+}
+
+/**
+ * Emit one DETAIL_GAP per failed attachment retained during the run, mirroring
+ * `emitAttachmentDetailCoverage`. Emitted right after the coverage report and
+ * before the messages STATE commits, so the gate sees every gap as durable when
+ * it credits required keys. No-ops when nothing failed.
+ */
+async function emitAttachmentDetailGaps(coverage: AttachmentDetailCoverage | undefined): Promise<void> {
+  if (!coverage) {
+    return;
+  }
+  for (const attachment of coverage.failedRecords) {
+    await emit(buildAttachmentDetailGap(attachment));
+  }
 }
 
 export interface PerMessageDeps {
@@ -1706,6 +1770,11 @@ async function runAllMailPasses(
   // messages STATE cursor commits — the ordering the progress-evidence
   // contract expects (records, then DETAIL_COVERAGE, then STATE).
   await emitAttachmentDetailCoverage(attachmentCoverage);
+  // Then one matching DETAIL_GAP per failed attachment, so the commit-gate can
+  // credit each gap_keys entry against a durable pending gap. Without this the
+  // gate aborts an otherwise-successful run and the messages cursor never
+  // advances, re-fetching the same window every run.
+  await emitAttachmentDetailGaps(attachmentCoverage);
 
   // Pass 2: detect flag/label changes on already-seen messages (incremental only)
   await runDeltaPass(client, session, deps.requested, deps.emitRecord, deps.emittedAt);

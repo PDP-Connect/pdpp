@@ -37,6 +37,7 @@ import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts
 import {
   type AttachmentDetailCoverage,
   addAttachmentBackfillRecordToSummary,
+  buildAttachmentDetailGap,
   createAttachmentBackfillSummary,
   DEFAULT_ATTACHMENT_BACKFILL_WINDOW_UIDS,
   DEFAULT_MAX_ATTACHMENT_BYTES,
@@ -1175,6 +1176,61 @@ test("recordAttachmentCoverage: routes each hydration status into the honest buc
   assert.ok(!coverage.hydratedKeys.includes("d:1"));
   assert.ok(!coverage.gapKeys.includes("d:1"));
   assert.ok(!coverage.optionalSkipKeys.includes("d:1"));
+  // The failed record is retained so a matching DETAIL_GAP can be emitted; its
+  // id is exactly the gap_keys entry, keeping the gap's record_key and the
+  // coverage key a single source of truth. Only `failed` is retained.
+  assert.deepEqual(
+    coverage.failedRecords.map((r) => r.id),
+    ["b:1"]
+  );
+});
+
+test("buildAttachmentDetailGap: bounded, non-secret gap whose record_key matches the coverage key", () => {
+  // A record shaped like the parser produces: id = `<X-GM-MSGID>:<part_index>`.
+  const attachment: AttachmentRecord = {
+    blob_ref: null,
+    content_id: null,
+    content_sha256: null,
+    content_type: "application/pdf",
+    encoding: "base64",
+    filename: "invoice.pdf",
+    hydration_error: "Error: connect ETIMEDOUT 10.0.0.1:993 (https://secret/token=abc)",
+    hydration_status: "failed",
+    id: "gmmsgid-9999:2",
+    is_inline: false,
+    message_id: "gmmsgid-9999",
+    message_received_at: FROZEN_NOW,
+    part_index: "2",
+    size_bytes: 4096,
+  };
+
+  const gap = buildAttachmentDetailGap(attachment);
+
+  // record_key == the attachment id == the DETAIL_COVERAGE.gap_keys entry, so
+  // the host commit-gate credits the missing required key one-to-one.
+  assert.equal(gap.record_key, "gmmsgid-9999:2");
+  assert.equal(gap.stream, "attachments");
+  assert.equal(gap.parent_stream, "messages");
+  assert.equal(gap.reason, "temporary_unavailable");
+  assert.equal(gap.status, "pending");
+  assert.equal(gap.retryable, true);
+  assert.equal(gap.reference_only, true);
+  // Locator carries only bounded identifiers sufficient for a later retry.
+  assert.deepEqual(gap.detail_locator, {
+    kind: "gmail.attachment_detail",
+    message_id: "gmmsgid-9999",
+    part_index: "2",
+    attachment_id: "gmmsgid-9999:2",
+  });
+  // No error block — the raw hydration_error (which here contains a secret-ish
+  // URL/token) is NOT carried anywhere on the gap. Defense against leaking
+  // tokens, cookies, URLs, request bodies, or payload snippets.
+  assert.equal(gap.detail, undefined);
+  assert.equal(gap.last_error, undefined);
+  const serialized = JSON.stringify(gap);
+  assert.ok(!serialized.includes("token=abc"), "no raw error text crosses the wire");
+  assert.ok(!serialized.includes("invoice.pdf"), "no filename crosses the wire");
+  assert.ok(!serialized.includes("ETIMEDOUT"), "no raw error text crosses the wire");
 });
 
 test("processMessage: records an attempted attachment into the coverage accumulator", async () => {
@@ -1269,4 +1325,45 @@ test("emitMessagesPass: accumulates honest coverage across hydrated, gap, and sk
       optional_skip_keys: ["big:1"],
     }
   );
+
+  // P0 invariant: every gap_keys entry MUST be backed by a matching durable
+  // DETAIL_GAP. `gap_keys` alone do not satisfy the host commit-gate, which
+  // credits a missing required key only when it is hydrated, optional-skipped,
+  // or backed by a pending DETAIL_GAP with the same record_key. Without this,
+  // an otherwise-successful run aborts at commit and re-fetches the same window
+  // forever. The failed record is retained on the accumulator; one gap per key.
+  assert.deepEqual(
+    coverage.failedRecords.map((r) => r.id),
+    coverage.gapKeys,
+    "exactly one retained failed record per gap_keys entry"
+  );
+  const gaps = coverage.failedRecords.map((r) => buildAttachmentDetailGap(r));
+  // The gate matches DETAIL_GAP.record_key against the DETAIL_COVERAGE key.
+  assert.deepEqual(
+    gaps.map((g) => g.record_key),
+    coverage.gapKeys
+  );
+  // Exact wire shape of the gap for `bad:1`: bounded, non-secret locator
+  // (message + part identifiers only), temporary_unavailable (retryable),
+  // pending, reference_only, and no error block (no raw error text crosses).
+  assert.deepEqual(gaps[0], {
+    type: "DETAIL_GAP",
+    stream: "attachments",
+    parent_stream: "messages",
+    record_key: "bad:1",
+    status: "pending",
+    reason: "temporary_unavailable",
+    detail_locator: {
+      kind: "gmail.attachment_detail",
+      message_id: "bad",
+      part_index: "1",
+      attachment_id: "bad:1",
+    },
+    retryable: true,
+    reference_only: true,
+  });
+  // Defense-in-depth: the gap carries no error/last_error block, so no raw
+  // hydration_error string (which could echo upstream URLs/text) ever crosses.
+  assert.equal(gaps[0]?.detail, undefined);
+  assert.equal(gaps[0]?.last_error, undefined);
 });
