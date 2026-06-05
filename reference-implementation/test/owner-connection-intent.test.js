@@ -35,12 +35,14 @@ import test from 'node:test';
 
 import { COLLECTOR_PROTOCOL_VERSION } from '../server/collector-protocol.ts';
 import { listSpineEventsPage } from '../lib/spine.ts';
+import { canonicalConnectorKey } from '../server/connector-key.js';
 import { startServer } from '../server/index.js';
 import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 import { classifyConnectorIntentModality } from '../server/routes/owner-connection-intent.ts';
 
 const OWNER_SUBJECT_ID = 'owner_local';
 const PROTOCOL_HEADERS = { 'X-PDPP-Collector-Protocol': COLLECTOR_PROTOCOL_VERSION };
+const NOW = '2026-05-31T00:00:00.000Z';
 
 async function closeServer(server) {
   server.schedulerManager?.stop?.();
@@ -148,6 +150,41 @@ function findIntentAuditEvent(resp) {
   assert.equal(event.request_id, resp.headers.get('Request-Id'));
   assert.equal(event.token_id, null, 'audit event must not store bearer tokens');
   return event;
+}
+
+function loadPackageManifest(name) {
+  return JSON.parse(
+    readFileSync(new URL(`../../packages/polyfill-connectors/manifests/${name}.json`, import.meta.url), 'utf8'),
+  );
+}
+
+async function registerConnector(asUrl, manifest) {
+  const resp = await fetch(`${asUrl}/connectors`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(manifest),
+  });
+  assert.equal(resp.status, 201, `register ${manifest.connector_id} failed: ${resp.status}`);
+  return manifest;
+}
+
+// Seed one configured connection instance directly, the same way the schedule
+// suite does, so the "owner already has a first Amazon account" precondition is
+// real without driving an enroll/ingest flow.
+async function seedInstance({ connectorInstanceId, connectorId, displayName, sourceBindingKey }) {
+  const store = createSqliteConnectorInstanceStore();
+  await store.upsert({
+    connectorInstanceId,
+    ownerSubjectId: OWNER_SUBJECT_ID,
+    connectorId,
+    displayName,
+    status: 'active',
+    sourceKind: 'account',
+    sourceBindingKey,
+    sourceBinding: { account_hint: sourceBindingKey },
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
 }
 
 // ---- classifier unit tests -------------------------------------------------
@@ -306,6 +343,119 @@ test('owner-agent initiating a browser-bound connector (Amazon) gets a typed uns
     assert.equal(audit.data?.connector_key, 'amazon');
     assert.equal(audit.data?.connector_modality, 'browser_bound');
     assert.equal(audit.data?.next_step_kind, 'unsupported');
+  });
+});
+
+// ---- Amazon second-account acceptance (task 5.3) ---------------------------
+//
+// Task 5.3 asks for proof that a trusted owner agent can "initiate the
+// second-account flow up to the owner-mediated next step." The other Amazon test
+// above initiates from a clean slate; this one exercises the actual acceptance
+// fixture from design.md Decision 2: the owner ALREADY has one configured Amazon
+// connection ("the owner personal") and the agent adds a SECOND account ("Shared
+// Amazon"). It walks both planes the design names — the owner control listing
+// plane (discover the existing account by its distinct `connection_id`) and the
+// intent plane (initiate the second account) — and asserts the flow reaches the
+// typed owner-mediated browser-assistance stop without faking success or
+// silently materializing the second connection.
+//
+// This is the acceptance-permitted form of 5.3: the browser-collector enrollment
+// primitive's live proof is still pending, so the honest second-account outcome
+// is a typed `unsupported`/`browser_bound` next step describing the owner-run
+// browser-assistance step — exactly the spec's "Connector requires browser
+// assistance" scenario (the response describes the browser-assistance step and
+// does NOT claim the agent can complete provider login/2FA by bearer authority).
+test('a trusted owner agent initiates an Amazon SECOND account up to the owner-mediated next step', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const manifest = await registerConnector(asUrl, loadPackageManifest('amazon'));
+    const connectorKey = canonicalConnectorKey(manifest.connector_id);
+    assert.equal(connectorKey, 'amazon');
+
+    // Precondition: the owner already has ONE configured Amazon account.
+    await seedInstance({
+      connectorInstanceId: 'cin_amazon_personal',
+      connectorId: connectorKey,
+      displayName: 'the owner personal',
+      sourceBindingKey: 'the owner@example.com',
+    });
+
+    const ownerToken = await issueOwnerToken(asUrl);
+
+    // --- Discovery plane: the agent lists connections and sees the existing
+    // Amazon account by its distinct connection_id + owner-meaningful label, so
+    // it knows which account the second one is being added alongside. (Spec:
+    // "Owner agent lists Amazon state".)
+    const listing = await fetchJson(`${rsUrl}/v1/owner/connections`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    assert.equal(listing.status, 200);
+    const amazonRows = listing.body.data.filter((r) => r.connector_key === 'amazon');
+    assert.equal(amazonRows.length, 1, 'exactly one Amazon account exists before the second-account intent');
+    const firstAccount = amazonRows[0];
+    assert.equal(firstAccount.connection_id, 'cin_amazon_personal');
+    assert.equal(firstAccount.connector_id, 'amazon');
+    assert.equal(firstAccount.display_name, 'the owner personal');
+    assert.equal(firstAccount.label_status, 'owner_set');
+
+    // --- Intent plane: the agent initiates the SECOND Amazon account, carrying
+    // the owner-meaningful label it intends to apply once the account is live.
+    const { status, body, resp } = await createIntent(rsUrl, ownerToken, {
+      connector_id: 'https://registry.pdpp.org/connectors/amazon',
+      display_name: 'Shared Amazon',
+    });
+
+    // The flow reaches the typed owner-mediated next step: an auditable intent,
+    // classified browser_bound, not yet active, with a browser-assistance reason.
+    assert.equal(status, 201);
+    assert.equal(body.object, 'owner_connection_intent');
+    assert.equal(body.connector_key, 'amazon');
+    assert.equal(body.connector_modality, 'browser_bound');
+    assert.equal(body.connection_active, false);
+    assert.equal(body.next_step.kind, 'unsupported');
+    // The reason describes the browser-assistance step the owner / local
+    // environment performs (spec "Connector requires browser assistance"): it
+    // names the browser-bound nature and points at the owner-run procedure.
+    assert.match(body.next_step.reason, /browser/i);
+    assert.match(body.next_step.reason, /browser-collector-proof-runbook\.md/);
+    // It must NOT claim the agent can complete login/2FA by bearer authority, and
+    // it must NOT yet advertise the one-click enroll step (gated on live proof).
+    assert.notEqual(body.next_step.kind, 'enroll_browser_collector');
+    assert.doesNotMatch(
+      body.next_step.reason,
+      /\b(headless|2fa|two-factor|log in for you|on your behalf without)\b/i,
+      'the next step must not claim the agent completes provider login/2FA itself',
+    );
+
+    // --- No silent success: the second intent wrote NO connection row. The owner
+    // still has exactly the one original Amazon account; the second materializes
+    // only when the owner completes the browser-assistance step locally.
+    const afterRows = (await createSqliteConnectorInstanceStore().listByOwner(OWNER_SUBJECT_ID))
+      .filter((row) => row.connectorId === 'amazon');
+    assert.equal(afterRows.length, 1, 'the second-account intent must not materialize a connection');
+    assert.equal(afterRows[0].connectorInstanceId, 'cin_amazon_personal');
+
+    // The owner-agent listing still shows exactly one Amazon account, unchanged.
+    const afterListing = await fetchJson(`${rsUrl}/v1/owner/connections`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    const afterAmazonRows = afterListing.body.data.filter((r) => r.connector_key === 'amazon');
+    assert.equal(afterAmazonRows.length, 1);
+    assert.equal(afterAmazonRows[0].connection_id, 'cin_amazon_personal');
+
+    // --- Audit: the second-account initiation is recorded as a non-secret,
+    // owner-agent, browser_bound, unsupported event with no bearer/secret leak.
+    const audit = findIntentAuditEvent(resp);
+    assert.equal(audit.actor_type, 'owner_agent');
+    assert.equal(audit.subject_id, OWNER_SUBJECT_ID);
+    assert.equal(audit.status, 'succeeded');
+    assert.equal(audit.data?.actor_kind, 'owner_agent');
+    assert.equal(audit.data?.connector_key, 'amazon');
+    assert.equal(audit.data?.connector_modality, 'browser_bound');
+    assert.equal(audit.data?.next_step_kind, 'unsupported');
+    assert.equal(audit.data?.operation, 'initiate_connection');
+    assert.equal(audit.data?.display_name_supplied, true);
+    // The owner-supplied label is never persisted in audit evidence.
+    assert.equal(JSON.stringify(audit).includes('Shared Amazon'), false);
   });
 });
 
