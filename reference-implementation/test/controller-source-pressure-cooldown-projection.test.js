@@ -9,13 +9,16 @@
 // RS/db/connector spawn is involved.
 
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
-import { closeDb, initDb } from "../server/db.js";
+import { closeDb, getDb, initDb } from "../server/db.js";
 import { __resetControllerInteractionStateForTests, createController } from "../runtime/controller.ts";
+
+const REFERENCE_IMPL_DIR_FROM_TEST = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 const CONNECTOR_ID = "https://registry.pdpp.org/connectors/cooldown-projection-test";
 const INSTANCE_ID = "cin_cooldown_projection";
@@ -162,4 +165,96 @@ test("cooldown next_run_at grows with pressure persistence", async (t) => {
     Date.parse(high.scheduler_backoff.next_run_at) > Date.parse(low.scheduler_backoff.next_run_at),
     "a more-persistent pressure picture must defer the next attempt further out",
   );
+});
+
+// ─── Catch-up honesty: a connection that will not auto-resume must not be ─────
+// projected as a cooling-off connection that "resumes at <next>". The console's
+// source-pressure copy reads "the scheduler is spacing out automatic attempts;
+// the captured progress is retained and it resumes at <next>." That promise is
+// only true when the connection actually has an eligible automatic schedule.
+// A manual-only / background-unsafe connector (e.g. ChatGPT — browser-scraped
+// behind a login wall, large history caught up slowly) has no such schedule, so
+// the projection must NOT stamp `cooling_off` + `next_run_at` for it even while
+// pending source-pressure gaps exist. These tests pin the two gates that keep
+// that promise honest, so a future refactor of `buildSchedulerBackoffApi` or the
+// schedule-creation gate cannot silently regress a manual connector into a false
+// auto-resume promise.
+
+test("a DISABLED schedule with pending pressure gaps projects no cooling_off (nothing will auto-resume)", async (t) => {
+  const controller = await buildScheduledController(t, { gaps: [pressureGapRow({ attempt_count: 2 })] });
+  // Same pressure picture as the cooling_off test above, but the operator has
+  // paused the schedule. A disabled row never auto-dispatches, so promising a
+  // deferred "next attempt" would be a lie.
+  await controller.setScheduleEnabled(CONNECTOR_ID, false, { connectorInstanceId: INSTANCE_ID });
+  const schedule = await controller.getSchedule(CONNECTOR_ID, { connectorInstanceId: INSTANCE_ID });
+
+  assert.ok(schedule, "schedule should still project while paused");
+  assert.equal(schedule.enabled, false);
+  assert.equal(
+    schedule.scheduler_backoff ?? null,
+    null,
+    "a paused connection must not advertise a cooling-off auto-resume it will never honor",
+  );
+});
+
+// The packaged ChatGPT manifest declares `recommended_mode: "manual"` and
+// `background_safe: false`. Enabling an automatic schedule for it is rejected at
+// creation time — the operator can never reach the enabled-eligible state that
+// would project `cooling_off` + `next_run_at`. This is the authoritative gate
+// upstream of the projection: it keeps the catch-up copy honest by construction.
+const MANUAL_CONNECTOR_MANIFEST_PATH = join(
+  REFERENCE_IMPL_DIR_FROM_TEST,
+  "..",
+  "packages",
+  "polyfill-connectors",
+  "manifests",
+  "chatgpt.json",
+);
+
+test("a manual / background-unsafe connector cannot enable an automatic schedule (creation-time gate)", async (t) => {
+  closeDb();
+  initDb(join(mkdtempSync(join(tmpdir(), "pdpp-cooldown-proj-manual-")), "pdpp.sqlite"));
+  __resetControllerInteractionStateForTests();
+  t.after(() => {
+    __resetControllerInteractionStateForTests();
+    closeDb();
+  });
+
+  // Register the real manual-policy manifest under the canonical key the
+  // controller resolves schedules by (`connector_key`, which `upsertSchedule`
+  // derives from the connector_id), so the eligibility gate sees the true
+  // `recommended_mode: "manual"` / `background_safe: false` policy.
+  const manifestText = readFileSync(MANUAL_CONNECTOR_MANIFEST_PATH, "utf8");
+  const manifest = JSON.parse(manifestText);
+  assert.equal(manifest.capabilities.refresh_policy.recommended_mode, "manual", "fixture must be a manual-policy connector");
+  getDb()
+    .prepare("INSERT INTO connectors (connector_id, manifest) VALUES (?, ?)")
+    .run(manifest.connector_key, manifestText);
+
+  const schedulerStore = createSchedulerStore();
+  const controller = createController({
+    connectorPathResolver: () => "/tmp/connector.js",
+    logger: { error: () => {}, warn: () => {} },
+    schedulerStore,
+    detailGapStore: fakeDetailGapStore(new Map()),
+    runConnectorImpl: () => Promise.resolve({ status: "succeeded", records_emitted: 0 }),
+  });
+
+  await assert.rejects(
+    () =>
+      controller.upsertSchedule(
+        manifest.connector_id,
+        { interval_seconds: 3600, enabled: true },
+        { connectorInstanceId: "cin_manual_catchup" },
+      ),
+    /manual runs|background-safe|automatic scheduling is disabled/i,
+    "enabling an automatic schedule for a manual / background-unsafe connector must be rejected",
+  );
+
+  // And the row must not have been created: no schedule means no cooling-off
+  // projection can ever be built for it.
+  const schedule = await controller.getSchedule(manifest.connector_id, {
+    connectorInstanceId: "cin_manual_catchup",
+  });
+  assert.equal(schedule ?? null, null, "a rejected automatic schedule must not be persisted");
 });

@@ -946,6 +946,16 @@ export function deriveConnectionStatusDisplay(input: {
         tone: "danger",
       };
     case "degraded": {
+      if (health.axes.coverage === "retryable_gap") {
+        return {
+          label: "Resuming",
+          shape: "diamond",
+          title:
+            dominant ??
+            `Some required detail is still outstanding, but it is recoverable — an ordinary run can fill it and the records already collected stay valid${reason}.`,
+          tone: "warning",
+        };
+      }
       const partial = health.axes.coverage === "gaps" || health.axes.coverage === "partial";
       return {
         label: partial ? "Partial" : "Degraded",
@@ -1129,7 +1139,28 @@ function coolingOffGuidance(health: RefConnectionHealthSnapshot): NextStepGuidan
 }
 
 /** Guidance for the `degraded` state, split by which axis is degraded. */
-function degradedGuidance(health: RefConnectionHealthSnapshot, supportsOwnerSync: boolean): NextStepGuidance {
+function degradedGuidance(health: RefConnectionHealthSnapshot, supportsOwnerSync: boolean): NextStepGuidance | null {
+  if (health.axes.coverage === "retryable_gap") {
+    if (health.next_attempt_at) {
+      return null;
+    }
+    if (supportsOwnerSync) {
+      return {
+        label: "Continue the sync",
+        detail:
+          "Some required detail is still outstanding. The records already collected stay valid; sync this connection when you're ready and an ordinary run fills the rest.",
+        scale: null,
+        tone: "warning",
+      };
+    }
+    return {
+      label: "Check the collector",
+      detail:
+        "Some required detail is still outstanding. The records already collected stay valid; this connection fills in when its local-collector device pushes the rest — confirm the collector is running on the host.",
+      scale: null,
+      tone: "warning",
+    };
+  }
   if (health.axes.coverage === "gaps" || health.axes.coverage === "partial") {
     return {
       label: "Review partial coverage",

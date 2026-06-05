@@ -949,6 +949,23 @@ test("deriveConnectionStatusDisplay: degraded with partial coverage reads as Par
   assert.equal(out.shape, "diamond");
 });
 
+test("deriveConnectionStatusDisplay: degraded with retryable coverage reads as Resuming", () => {
+  const out = deriveConnectionStatusDisplay({
+    hasDurableProgress: true,
+    health: snapshot({
+      state: "degraded",
+      axes: { coverage: "retryable_gap", freshness: "unknown", attention: "none", outbox: "unknown" },
+    }),
+    localDeviceProgress: null,
+  });
+  assert.equal(out.label, "Resuming");
+  assert.equal(out.tone, "warning");
+  assert.equal(out.shape, "diamond");
+  assert.match(out.title, /recoverable/i);
+  assert.match(out.title, /stay valid/i);
+  assert.doesNotMatch(out.title, /no owner action/i);
+});
+
 test("deriveConnectionStatusDisplay: needs_attention surfaces dominant condition rather than generic copy", () => {
   const out = deriveConnectionStatusDisplay({
     hasDurableProgress: true,
@@ -1150,6 +1167,54 @@ test("degraded+partial coverage routes to a coverage review, not a sync", () => 
   assert.ok(out);
   assert.match(out?.label ?? "", COVERAGE_RE);
   assert.doesNotMatch(out?.label ?? "", SYNC_NOW_RE);
+});
+
+test("degraded+retryable_gap with owner sync offers a non-alarming way to continue", () => {
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: snapshot({
+      state: "degraded",
+      next_attempt_at: null,
+      axes: { coverage: "retryable_gap", freshness: "unknown", attention: "none", outbox: "unknown" },
+    }),
+    supportsOwnerSync: true,
+  });
+  assert.ok(out, "owner-syncable retryable_gap must offer a next step, not null");
+  assert.equal(out?.label, "Continue the sync");
+  assert.match(out?.detail ?? "", /stay valid/i);
+  assert.doesNotMatch(out?.detail ?? "", /corrupt|failed/i);
+});
+
+test("degraded+retryable_gap without owner sync points at the collector host", () => {
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: snapshot({
+      state: "degraded",
+      next_attempt_at: null,
+      axes: { coverage: "retryable_gap", freshness: "unknown", attention: "none", outbox: "idle" },
+    }),
+    supportsOwnerSync: false,
+  });
+  assert.ok(out, "push-mode retryable_gap must offer collector guidance, not null");
+  assert.equal(out?.label, "Check the collector");
+  assert.match(out?.detail ?? "", /host/i);
+  assert.match(out?.detail ?? "", /stay valid/i);
+});
+
+test("degraded+retryable_gap suppresses the CTA only when an automatic attempt is scheduled", () => {
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: snapshot({
+      state: "degraded",
+      next_attempt_at: "2026-05-19T13:00:00Z",
+      axes: { coverage: "retryable_gap", freshness: "unknown", attention: "none", outbox: "unknown" },
+    }),
+    supportsOwnerSync: true,
+  });
+  assert.equal(out, null);
 });
 
 test("stale freshness suggests Sync now only when owner sync is supported", () => {
