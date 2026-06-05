@@ -1594,6 +1594,10 @@ async function ensurePostgresRecordsBlobSearchInstanceIndexes(client) {
   await client.query('CREATE INDEX IF NOT EXISTS idx_pg_records_stream_cursor ON records(connector_instance_id, stream, deleted, cursor_value, primary_key_text)');
   await client.query('CREATE INDEX IF NOT EXISTS idx_pg_records_connector_stream_deleted ON records(connector_id, stream, deleted)');
   await client.query('CREATE INDEX IF NOT EXISTS idx_pg_record_changes_record ON record_changes(connector_instance_id, stream, record_key, version)');
+  // Covers the bounded version-stats hot path: MAX(emitted_at) / COUNT grouped
+  // by (connector_instance_id, stream). The record-keyed index above omits
+  // emitted_at, so MAX(emitted_at) otherwise forces a per-row heap visit.
+  await client.query('CREATE INDEX IF NOT EXISTS idx_pg_record_changes_emitted ON record_changes(connector_instance_id, stream, emitted_at)');
   await client.query('CREATE INDEX IF NOT EXISTS idx_pg_blob_bindings_record ON blob_bindings(connector_instance_id, stream, record_key)');
   await client.query('CREATE INDEX IF NOT EXISTS idx_pg_semantic_search_scope ON semantic_search_blob(connector_instance_id, scope_key)');
 }

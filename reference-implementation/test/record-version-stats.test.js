@@ -1,13 +1,21 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { getDb } from '../server/db.js';
+import { closeDb, getDb, initDb } from '../server/db.js';
 import {
   buildRecordVersionStatsEnvelope,
   classifyRecordVersionChurn,
+  isVersionChurnCandidate,
+  listRecordVersionGroundTruthForKeys,
+  listRecordVersionGroundTruthStreams,
 } from '../server/record-version-stats.js';
+import { ingestRecord } from '../server/records.js';
+import { rebuildRetainedSize } from '../server/retained-size-read-model.js';
 import { startServer } from '../server/index.js';
-import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import {
+  createSqliteConnectorInstanceStore,
+  makeDefaultAccountConnectorInstanceId,
+} from '../server/stores/connector-instance-store.js';
 
 const CONNECTOR_ID = 'https://test.pdpp.dev/connectors/version-churn';
 const CONNECTOR_INSTANCE_ID = 'cin_test_version_churn';
@@ -118,6 +126,7 @@ test('record version stats envelope returns grouped projection rows without payl
       computed_at: NOW,
     }],
     listGroundTruthStreams: async () => [],
+    listGroundTruthForKeys: async () => [],
   });
 
   assert.equal(envelope.object, 'ref_record_version_stats');
@@ -133,9 +142,14 @@ test('record version stats envelope returns grouped projection rows without payl
 });
 
 test('record version stats envelope surfaces ground-truth rows missing from the projection', async () => {
+  // A projection with NO stream row but ground-truth streams present is, by
+  // definition, not fully built — its global row is dirty, which routes the
+  // unfiltered request through the full-scan fallback (the candidate path keys
+  // off projection rows and cannot scan a never-seen stream). This preserves the
+  // projection-missing surfacing for the cold/rebuilding projection.
   const envelope = await buildRecordVersionStatsEnvelope({}, {
     connectorInstanceStore: null,
-    getProjection: async () => ({ computed_at: NOW, dirty: false, metadata: { state: 'fresh' } }),
+    getProjection: async () => ({ computed_at: NOW, dirty: true, metadata: { state: 'rebuilding' } }),
     listStreams: async () => [],
     listGroundTruthStreams: async () => [{
       connector_id: CONNECTOR_ID,
@@ -163,9 +177,11 @@ test('record version stats envelope surfaces ground-truth rows missing from the 
 });
 
 test('record version stats envelope keeps normal-range projection-missing rows normal', async () => {
+  // Same cold-projection situation (no stream row, ground truth present) → dirty
+  // global → full-scan fallback.
   const envelope = await buildRecordVersionStatsEnvelope({}, {
     connectorInstanceStore: null,
-    getProjection: async () => ({ computed_at: NOW, dirty: false, metadata: { state: 'fresh' } }),
+    getProjection: async () => ({ computed_at: NOW, dirty: true, metadata: { state: 'rebuilding' } }),
     listStreams: async () => [],
     listGroundTruthStreams: async () => [{
       connector_id: CONNECTOR_ID,
@@ -267,7 +283,7 @@ test('record version stats envelope prefers ground-truth counts over stale proje
       dirty: false,
       computed_at: NOW,
     }],
-    listGroundTruthStreams: async () => [{
+    listGroundTruthForKeys: async () => [{
       connector_id: CONNECTOR_ID,
       connector_instance_id: CONNECTOR_INSTANCE_ID,
       stream: 'threads',
@@ -301,12 +317,26 @@ function dispositionRow(overrides = {}) {
   };
 }
 
+// Inject BOTH ground-truth seams so the unfiltered candidate path (which calls
+// listGroundTruthForKeys, not listGroundTruthStreams) is driven by the test
+// doubles rather than the real DB. The for-keys double returns the same rows
+// filtered to the requested candidate keys, exactly as the bounded helper does.
+function groundTruthForKeysFromRows(groundTruthRows) {
+  return async ({ keys } = {}) => {
+    const wanted = new Set((keys || []).map((k) => `${k.connectorInstanceId}\n${k.stream}`));
+    return groundTruthRows.filter(
+      (row) => wanted.has(`${row.connector_instance_id}\n${row.stream}`),
+    );
+  };
+}
+
 async function envelopeFor(streamRows, groundTruthRows = []) {
   return buildRecordVersionStatsEnvelope({}, {
     connectorInstanceStore: null,
     getProjection: async () => ({ computed_at: NOW, dirty: false, metadata: { state: 'fresh' } }),
     listStreams: async () => streamRows,
     listGroundTruthStreams: async () => groundTruthRows,
+    listGroundTruthForKeys: groundTruthForKeysFromRows(groundTruthRows),
   });
 }
 
@@ -358,9 +388,26 @@ test('AC-3: an unknown high/watch stream classifies active_defect_or_unclassifie
   assert.equal(envelope.data[0].version_disposition, 'active_defect_or_unclassified');
 });
 
+// Projection row mirroring a ground-truth row, so the unfiltered candidate path
+// scans the stream (vpr-from-current >= watch → candidate) and the ground-truth
+// last_history_at drives the disposition. Models the realistic production state:
+// the stream HAS a projection row; ground truth refines its distinct/timestamp
+// facts.
+function projectionRowFor(gt) {
+  return {
+    connector_id: gt.connector_id,
+    connector_instance_id: gt.connector_instance_id,
+    stream: gt.stream,
+    record_count: gt.current_record_count,
+    record_history_count: gt.record_history_count,
+    dirty: false,
+    computed_at: NOW,
+  };
+}
+
 test('AC-4: reviewed residue re-alarms to lossless_compaction_candidate after the review timestamp', async () => {
   // Within window → reviewed_historical_residue.
-  const within = await envelopeFor([], [{
+  const withinGt = {
     connector_id: 'usaa',
     connector_instance_id: 'cin_usaa',
     stream: 'accounts',
@@ -369,11 +416,12 @@ test('AC-4: reviewed residue re-alarms to lossless_compaction_candidate after th
     record_key_count: 4,
     last_current_at: NOW,
     last_history_at: '2026-06-03T12:00:00.000Z',
-  }]);
+  };
+  const within = await envelopeFor([projectionRowFor(withinGt)], [withinGt]);
   assert.equal(within.data[0].version_disposition, 'reviewed_historical_residue');
 
   // After window → re-alarm.
-  const after = await envelopeFor([], [{
+  const afterGt = {
     connector_id: 'usaa',
     connector_instance_id: 'cin_usaa',
     stream: 'accounts',
@@ -382,13 +430,14 @@ test('AC-4: reviewed residue re-alarms to lossless_compaction_candidate after th
     record_key_count: 4,
     last_current_at: NOW,
     last_history_at: '2026-06-03T19:19:53.634Z',
-  }]);
+  };
+  const after = await envelopeFor([projectionRowFor(afterGt)], [afterGt]);
   assert.equal(after.data[0].version_disposition, 'lossless_compaction_candidate');
 });
 
 test('AC-5: sessions classify recurring_point_in_time_snapshot and do not re-alarm on growth', async () => {
   for (const connector_id of ['claude-code', 'codex', 'local-device:claude-code']) {
-    const grown = await envelopeFor([], [{
+    const gt = {
       connector_id,
       connector_instance_id: 'cin_sessions',
       stream: 'sessions',
@@ -398,7 +447,8 @@ test('AC-5: sessions classify recurring_point_in_time_snapshot and do not re-ala
       last_current_at: NOW,
       // Far in the future relative to any prior review timestamp.
       last_history_at: '2027-01-01T00:00:00.000Z',
-    }]);
+    };
+    const grown = await envelopeFor([projectionRowFor(gt)], [gt]);
     assert.equal(
       grown.data[0].version_disposition,
       'recurring_point_in_time_snapshot',
@@ -452,5 +502,226 @@ test('/_ref/records/version-stats reads projection-backed high-churn rows', asyn
     assert.equal(body.data[0].record_history_count, 20_000);
   } finally {
     await closeServer(server);
+  }
+});
+
+// ─── projection-backed hot path (serve-version-stats-from-projection) ─────────
+//
+// These tests use a REAL in-memory DB and real ingest so the candidate-narrowing
+// path is exercised end-to-end against canonical state, then assert it produces
+// the SAME rows the unbounded full scan would.
+
+const GT_CONNECTOR = 'https://test.pdpp.dev/connectors/vstats-hotpath';
+const GT_INSTANCE = makeDefaultAccountConnectorInstanceId('owner_local', GT_CONNECTOR);
+
+function ingestUpsert(stream, id, payload, emittedAt) {
+  return ingestRecord(GT_CONNECTOR, {
+    stream,
+    key: id,
+    data: { id, ...payload },
+    emitted_at: emittedAt,
+    op: 'upsert',
+  });
+}
+
+// Build a corpus with a deliberate spread of churn shapes:
+//   - high-churn stream `hot`: 1 key, many versions (vpr huge → candidate)
+//   - normal stream `cold`: many keys, 1 version each (vpr 1 → NOT a candidate)
+async function seedHotpathCorpus() {
+  // hot: one key churned 30 times → 30 history versions, 1 current, 1 distinct key.
+  for (let v = 1; v <= 30; v += 1) {
+    await ingestUpsert('hot', 'h1', { v }, `2026-05-01T00:00:${String(v).padStart(2, '0')}.000Z`);
+  }
+  // cold: 12 distinct keys, one version each → 12 history, 12 current, vpr 1.
+  for (let i = 0; i < 12; i += 1) {
+    await ingestUpsert('cold', `c${i}`, { i }, `2026-05-02T00:00:${String(i).padStart(2, '0')}.000Z`);
+  }
+  await rebuildRetainedSize();
+}
+
+function streamRow(rows, stream) {
+  return rows.find((r) => r.stream === stream);
+}
+
+test('projection record_history_count is exact and clean after ingest+rebuild', async () => {
+  initDb();
+  try {
+    await seedHotpathCorpus();
+    // Ground truth straight from record_changes.
+    const gt = await listRecordVersionGroundTruthStreams({});
+    const hotGt = streamRow(gt, 'hot');
+    assert.equal(hotGt.record_history_count, 30);
+    assert.equal(hotGt.record_key_count, 1);
+    assert.equal(hotGt.current_record_count, 1);
+
+    // Projection row for the same stream matches and is clean.
+    const proj = getDb()
+      .prepare(
+        `SELECT record_history_count, record_count, dirty
+           FROM retained_size_stream
+          WHERE connector_instance_id = ? AND stream = 'hot'`,
+      )
+      .get(GT_INSTANCE);
+    assert.equal(Number(proj.record_history_count), 30, 'projection history count is exact');
+    assert.equal(Number(proj.record_count), 1, 'projection current count is exact');
+    assert.equal(Number(proj.dirty), 0, 'clean projection row carries dirty = 0');
+  } finally {
+    closeDb();
+  }
+});
+
+test('candidate predicate selects hot churn and rejects flat streams', () => {
+  // hot: 30 history / 1 current → candidate.
+  assert.equal(
+    isVersionChurnCandidate({ dirty: false, currentRecordCount: 1, recordHistoryCount: 30 }),
+    true,
+  );
+  // cold: 12 history / 12 current → vpr 1 → NOT a candidate.
+  assert.equal(
+    isVersionChurnCandidate({ dirty: false, currentRecordCount: 12, recordHistoryCount: 12 }),
+    false,
+  );
+  // dirty always wins regardless of apparent risk.
+  assert.equal(
+    isVersionChurnCandidate({ dirty: true, currentRecordCount: 12, recordHistoryCount: 12 }),
+    true,
+  );
+  // history-count arm independent of ratio (large current, history >= 10k).
+  assert.equal(
+    isVersionChurnCandidate({ dirty: false, currentRecordCount: 9_000, recordHistoryCount: 10_000 }),
+    true,
+  );
+  // current == 0 with history → candidate (history_without_current_records).
+  assert.equal(
+    isVersionChurnCandidate({ dirty: false, currentRecordCount: 0, recordHistoryCount: 3 }),
+    true,
+  );
+});
+
+test('bounded for-keys helper returns facts identical to the full scan', async () => {
+  initDb();
+  try {
+    await seedHotpathCorpus();
+    const full = await listRecordVersionGroundTruthStreams({});
+    const fullHot = streamRow(full, 'hot');
+    const bounded = await listRecordVersionGroundTruthForKeys({
+      keys: [{ connectorInstanceId: GT_INSTANCE, stream: 'hot' }],
+    });
+    assert.equal(bounded.length, 1, 'bounded helper returns only the requested key');
+    assert.deepEqual(bounded[0], fullHot, 'bounded facts byte-identical to full-scan facts');
+  } finally {
+    closeDb();
+  }
+});
+
+test('unfiltered envelope candidate path equals the full-scan envelope', async () => {
+  initDb();
+  try {
+    await seedHotpathCorpus();
+    // Candidate path (production default): listGroundTruthForKeys is the bounded
+    // helper; the clean global projection enables narrowing.
+    const candidate = await buildRecordVersionStatsEnvelope({});
+    // Force the full-scan path by pretending the global projection is dirty.
+    const fullScan = await buildRecordVersionStatsEnvelope(
+      {},
+      { getProjection: async () => ({ computed_at: NOW, dirty: true, metadata: { state: 'rebuilding' } }) },
+    );
+
+    // Both surface the hot stream with identical ground-truth facts.
+    const candHot = streamRow(candidate.data, 'hot');
+    const fullHot = streamRow(fullScan.data, 'hot');
+    assert.ok(candHot, 'candidate path surfaces the hot stream');
+    assert.deepEqual(
+      {
+        record_history_count: candHot.record_history_count,
+        record_key_count: candHot.record_key_count,
+        last_history_at: candHot.last_history_at,
+        versions_per_record: candHot.versions_per_record,
+        risk_level: candHot.risk_level,
+        risk_reasons: candHot.risk_reasons,
+        version_disposition: candHot.version_disposition,
+        projection_authority: candHot.projection_authority,
+      },
+      {
+        record_history_count: fullHot.record_history_count,
+        record_key_count: fullHot.record_key_count,
+        last_history_at: fullHot.last_history_at,
+        versions_per_record: fullHot.versions_per_record,
+        risk_level: fullHot.risk_level,
+        risk_reasons: fullHot.risk_reasons,
+        version_disposition: fullHot.version_disposition,
+        projection_authority: fullHot.projection_authority,
+      },
+      'candidate-path hot row is identical to the full-scan hot row',
+    );
+    // The hot stream is high churn under both paths.
+    assert.equal(candHot.record_history_count, 30);
+    assert.equal(candHot.record_key_count, 1);
+    assert.equal(candHot.versions_per_record, 30);
+
+    // The cold (normal) stream is classified WITHOUT a ground-truth scan on the
+    // candidate path: it keeps projection authority and null distinct/timestamp.
+    const candCold = streamRow(candidate.data, 'cold');
+    assert.ok(candCold, 'candidate path still lists the cold stream from the projection');
+    assert.equal(candCold.risk_level, 'normal');
+    assert.equal(candCold.projection_authority, 'retained_size_projection');
+    assert.equal(candCold.record_key_count, null);
+    assert.equal(candCold.last_history_at, null);
+  } finally {
+    closeDb();
+  }
+});
+
+test('a dirty projection row is verified against ground truth even when it looks normal', async () => {
+  initDb();
+  try {
+    await seedHotpathCorpus();
+    // Corrupt the hot projection row to look NORMAL (history == current) but mark
+    // it dirty — the candidate predicate must still scan it via ground truth and
+    // recover the real high-churn facts.
+    getDb()
+      .prepare(
+        `UPDATE retained_size_stream
+            SET record_history_count = 1, record_count = 1, dirty = 1
+          WHERE connector_instance_id = ? AND stream = 'hot'`,
+      )
+      .run(GT_INSTANCE);
+
+    const envelope = await buildRecordVersionStatsEnvelope({});
+    const hot = streamRow(envelope.data, 'hot');
+    assert.ok(hot, 'dirty hot row is still surfaced');
+    assert.equal(hot.record_history_count, 30, 'ground truth recovered despite stale projection count');
+    assert.equal(hot.record_key_count, 1);
+    assert.equal(hot.projection_authority, 'record_changes_ground_truth');
+    assert.equal(hot.projection_dirty, true);
+  } finally {
+    closeDb();
+  }
+});
+
+test('dirty global projection forces the full scan for the unfiltered request', async () => {
+  initDb();
+  try {
+    await seedHotpathCorpus();
+    // Mark the global row dirty: the candidate path must NOT be taken; the full
+    // scan covers every stream including any the projection lacked.
+    getDb().prepare(`UPDATE retained_size_global SET dirty = 1 WHERE projection_key = 'global'`).run();
+
+    let forKeysCalled = false;
+    const envelope = await buildRecordVersionStatsEnvelope(
+      {},
+      {
+        listGroundTruthForKeys: async () => {
+          forKeysCalled = true;
+          return [];
+        },
+      },
+    );
+    assert.equal(forKeysCalled, false, 'dirty global must bypass the bounded for-keys helper');
+    const hot = streamRow(envelope.data, 'hot');
+    assert.equal(hot.record_history_count, 30, 'full scan still produces correct hot facts');
+    assert.equal(hot.projection_authority, 'record_changes_ground_truth');
+  } finally {
+    closeDb();
   }
 });

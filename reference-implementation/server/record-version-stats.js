@@ -174,6 +174,150 @@ export async function listRecordVersionGroundTruthStreams({ connectorInstanceId,
   return rows.map(shapeGroundTruthRow);
 }
 
+/**
+ * Bounded variant of `listRecordVersionGroundTruthStreams`: run the identical
+ * history/current aggregate restricted to an explicit set of
+ * `(connector_instance_id, stream)` keys. The diagnostic facts it returns for a
+ * key are byte-identical to the full scan's facts for that key, but the work is
+ * proportional to the candidate set, not the whole `record_changes` corpus. The
+ * unfiltered hot path uses this for candidate + dirty streams only; the full
+ * scan (`listRecordVersionGroundTruthStreams`) is reserved for explicit filters
+ * and the dirty-global fallback.
+ */
+export async function listRecordVersionGroundTruthForKeys({ keys } = {}) {
+  const keyList = Array.isArray(keys) ? keys.filter((k) => k && k.connectorInstanceId && k.stream) : [];
+  if (keyList.length === 0) return [];
+
+  if (isPostgresStorageBackend()) {
+    // Build a VALUES list so a single bounded query covers every candidate key.
+    const params = [];
+    const tuples = keyList.map((k) => {
+      params.push(k.connectorInstanceId, k.stream);
+      return `($${params.length - 1}, $${params.length})`;
+    });
+    const valuesClause = tuples.join(', ');
+    const result = await postgresQuery(
+      `WITH wanted(connector_instance_id, stream) AS (
+          VALUES ${valuesClause}
+        ),
+        history AS (
+          SELECT rc.connector_instance_id, rc.connector_id, rc.stream,
+                 COUNT(*)::bigint AS record_history_count,
+                 COUNT(DISTINCT rc.record_key)::bigint AS record_key_count,
+                 MAX(rc.emitted_at) AS last_history_at
+            FROM record_changes rc
+            JOIN wanted w
+              ON w.connector_instance_id = rc.connector_instance_id
+             AND w.stream = rc.stream
+           GROUP BY rc.connector_instance_id, rc.connector_id, rc.stream
+        ),
+        current_records AS (
+          SELECT r.connector_instance_id, r.stream,
+                 COUNT(*)::bigint AS current_record_count,
+                 MAX(r.emitted_at) AS last_current_at
+            FROM records r
+            JOIN wanted w
+              ON w.connector_instance_id = r.connector_instance_id
+             AND w.stream = r.stream
+           WHERE r.deleted = FALSE
+           GROUP BY r.connector_instance_id, r.stream
+        )
+        SELECT history.connector_instance_id, history.connector_id, history.stream,
+               COALESCE(current_records.current_record_count, 0)::bigint AS current_record_count,
+               history.record_history_count,
+               history.record_key_count,
+               current_records.last_current_at,
+               history.last_history_at
+          FROM history
+          LEFT JOIN current_records
+            ON current_records.connector_instance_id = history.connector_instance_id
+           AND current_records.stream = history.stream`,
+      params,
+    );
+    return result.rows.map(shapeGroundTruthRow);
+  }
+
+  // SQLite has no row-VALUES join idiom as ergonomic as Postgres'; a temp filter
+  // table keeps the query bounded and avoids an N-placeholder IN list blowing the
+  // SQLite variable limit on large candidate sets.
+  const db = getDb();
+  return db.transaction(() => {
+    db.prepare(
+      `CREATE TEMP TABLE IF NOT EXISTS _vstats_wanted_keys(
+         connector_instance_id TEXT NOT NULL,
+         stream TEXT NOT NULL,
+         PRIMARY KEY(connector_instance_id, stream)
+       )`,
+    ).run();
+    db.prepare('DELETE FROM _vstats_wanted_keys').run();
+    const insert = db.prepare(
+      'INSERT OR IGNORE INTO _vstats_wanted_keys(connector_instance_id, stream) VALUES (?, ?)',
+    );
+    for (const k of keyList) insert.run(k.connectorInstanceId, k.stream);
+    const rows = db
+      .prepare(
+        `WITH history AS (
+            SELECT rc.connector_instance_id, rc.connector_id, rc.stream,
+                   COUNT(*) AS record_history_count,
+                   COUNT(DISTINCT rc.record_key) AS record_key_count,
+                   MAX(rc.emitted_at) AS last_history_at
+              FROM record_changes rc
+              JOIN _vstats_wanted_keys w
+                ON w.connector_instance_id = rc.connector_instance_id
+               AND w.stream = rc.stream
+             GROUP BY rc.connector_instance_id, rc.connector_id, rc.stream
+          ),
+          current_records AS (
+            SELECT r.connector_instance_id, r.stream,
+                   COUNT(*) AS current_record_count,
+                   MAX(r.emitted_at) AS last_current_at
+              FROM records r
+              JOIN _vstats_wanted_keys w
+                ON w.connector_instance_id = r.connector_instance_id
+               AND w.stream = r.stream
+             WHERE r.deleted = 0
+             GROUP BY r.connector_instance_id, r.stream
+          )
+          SELECT history.connector_instance_id, history.connector_id, history.stream,
+                 COALESCE(current_records.current_record_count, 0) AS current_record_count,
+                 history.record_history_count,
+                 history.record_key_count,
+                 current_records.last_current_at,
+                 history.last_history_at
+            FROM history
+            LEFT JOIN current_records
+              ON current_records.connector_instance_id = history.connector_instance_id
+             AND current_records.stream = history.stream`,
+      )
+      .all();
+    db.prepare('DELETE FROM _vstats_wanted_keys').run();
+    return rows.map(shapeGroundTruthRow);
+  })();
+}
+
+/**
+ * Conservative candidate predicate for the unfiltered hot path. Returns true
+ * when a stream COULD classify above `normal` and therefore needs the
+ * ground-truth `record_key_count` / `last_history_at`. Inputs are the
+ * projection's exact (`dirty = 0`) facts; a dirty row is always a candidate
+ * because its counts may be stale. The denominator uses `current` (not the
+ * unavailable distinct-key count), which is an upper bound on versions-per-record
+ * — so the predicate never under-includes a real non-normal stream.
+ *
+ * Mirrors the thresholds in `classifyRecordVersionChurn` (watch at vpr >= 5,
+ * the history-count arm at history >= 10_000, and current==0 with history>0).
+ */
+export function isVersionChurnCandidate({ dirty, currentRecordCount, recordHistoryCount } = {}) {
+  if (dirty) return true;
+  const current = Number(currentRecordCount || 0);
+  const history = Number(recordHistoryCount || 0);
+  if (history <= 0) return false;
+  if (current === 0) return true; // history_without_current_records
+  if (history >= 10_000) return true; // high_history_count arm
+  // vpr upper bound (history / current) >= watch threshold.
+  return history >= 5 * Math.max(1, current);
+}
+
 async function getDisplayNames(connectorInstanceIds, connectorInstanceStore) {
   if (!connectorInstanceStore || typeof connectorInstanceStore.get !== 'function') {
     return new Map();
@@ -210,6 +354,7 @@ export async function buildRecordVersionStatsEnvelope({
   connectorInstanceStore = null,
   listStreams = listRetainedSizeStreams,
   listGroundTruthStreams = listRecordVersionGroundTruthStreams,
+  listGroundTruthForKeys = listRecordVersionGroundTruthForKeys,
   getProjection = getRetainedSizeGlobal,
 } = {}) {
   const effectiveLimit = clampRecordVersionStatsLimit(limit);
@@ -218,12 +363,48 @@ export async function buildRecordVersionStatsEnvelope({
     connectorInstanceId: connectorInstanceId || undefined,
     stream: stream || undefined,
   });
-  const groundTruthRows = listGroundTruthStreams
-    ? await listGroundTruthStreams({
-      connectorInstanceId: connectorInstanceId || undefined,
-      stream: stream || undefined,
-    })
-    : [];
+  // The full-scan helper is the projection block's freshness source too; read it
+  // once and reuse so the dirty-global fallback decision and the envelope's
+  // `projection` summary agree.
+  const projection = await getProjection();
+
+  // Hot-path optimization: an UNFILTERED request avoids the unbounded
+  // `record_changes` scan. The projection's exact (`dirty = 0`)
+  // record_history_count / record_count identify the bounded candidate set that
+  // could classify watch/high; the ground-truth COUNT(DISTINCT)/MAX is computed
+  // for that set plus any dirty rows only. record_key_count and last_history_at
+  // are NOT delta-maintainable (a normal per-ingest prune can drop the only row
+  // for a cold key or the row holding MAX(emitted_at) without setting dirty), so
+  // they must come from ground truth wherever they drive classification — but a
+  // normal, non-dirty stream needs neither and is classified from projection
+  // facts alone. A dirty GLOBAL projection (cold / rebuild pending) falls back to
+  // the full scan so a rebuilding instance is never served a thinned diagnostic.
+  const isUnfiltered = !connectorInstanceId && !stream;
+  const projectionGlobalDirty = Boolean(projection?.dirty);
+  const useCandidatePath = isUnfiltered
+    && projectionGlobalDirty === false
+    && typeof listGroundTruthForKeys === 'function';
+
+  let groundTruthRows;
+  if (useCandidatePath) {
+    const candidateKeys = streamRows
+      .filter((row) => isVersionChurnCandidate({
+        dirty: Boolean(row.dirty),
+        currentRecordCount: row.record_count,
+        recordHistoryCount: row.record_history_count,
+      }))
+      .map((row) => ({ connectorInstanceId: row.connector_instance_id, stream: row.stream }));
+    groundTruthRows = candidateKeys.length
+      ? await listGroundTruthForKeys({ keys: candidateKeys })
+      : [];
+  } else {
+    groundTruthRows = listGroundTruthStreams
+      ? await listGroundTruthStreams({
+        connectorInstanceId: connectorInstanceId || undefined,
+        stream: stream || undefined,
+      })
+      : [];
+  }
   const groundTruthByKey = new Map(groundTruthRows.map((row) => [rowKey(row), row]));
   const projectionByKey = new Map(streamRows.map((row) => [rowKey(row), row]));
   const mergedRows = [
@@ -310,7 +491,6 @@ export async function buildRecordVersionStatsEnvelope({
       return `${a.connector_instance_id}:${a.stream}`.localeCompare(`${b.connector_instance_id}:${b.stream}`);
     });
 
-  const projection = await getProjection();
   return {
     object: 'ref_record_version_stats',
     data: rows.slice(0, effectiveLimit),
