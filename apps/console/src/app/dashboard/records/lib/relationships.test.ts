@@ -9,6 +9,9 @@ import {
   findManifestForConnectorId,
   findParentBackLink,
   manifestMatchesConnectorId,
+  mergeParentBackLinks,
+  type ParentBackLink,
+  parentBackLinkDedupKey,
   parentRelationsForChild,
   reverseChildListDedupKey,
   reverseChildListLinksFromManifest,
@@ -544,5 +547,87 @@ test("reverseChildListDedupKey is stable and distinguishes stream from field", (
   assert.notEqual(
     reverseChildListDedupKey("transactions", "account_id"),
     reverseChildListDedupKey("transfers", "account_id")
+  );
+});
+
+// ── mergeParentBackLinks ──────────────────────────────────────────────────────
+
+// A YNAB transaction declares TWO has_one edges to `accounts` via distinct
+// fields — `account_id` (the posting account) and `transfer_account_id` (the
+// other side of a transfer). They carry different values, so they resolve to
+// DIFFERENT account records and must both render. This is the regression the
+// merge guards: a parentStream-only dedup would silently drop one.
+const YNAB_TRANSACTIONS_TWO_ACCOUNT_EDGES = {
+  name: "transactions",
+  relationships: [
+    { name: "account", stream: "accounts", foreign_key: "account_id", cardinality: "has_one" },
+    { name: "transfer_account", stream: "accounts", foreign_key: "transfer_account_id", cardinality: "has_one" },
+  ],
+};
+
+test("two child-declared has_one edges to the same parent stream via different fields both render", () => {
+  const childLinks = childHasOneBackLinksFromManifest(
+    YNAB_TRANSACTIONS_TWO_ACCOUNT_EDGES,
+    { id: "t1", account_id: "acc-A", transfer_account_id: "acc-B" },
+    { connectionId: "cin_ynab" }
+  );
+  const merged = mergeParentBackLinks(null, childLinks);
+  assert.equal(merged.length, 2, "both account edges must survive the merge");
+  const byField = new Map(merged.map((l) => [l.childParentKeyField, l]));
+  assert.equal(byField.get("account_id")?.href, "/dashboard/records/cin_ynab/accounts/acc-A");
+  assert.equal(byField.get("transfer_account_id")?.href, "/dashboard/records/cin_ynab/accounts/acc-B");
+  // The two links point at DIFFERENT account records, not the same one.
+  assert.notEqual(byField.get("account_id")?.href, byField.get("transfer_account_id")?.href);
+});
+
+test("mergeParentBackLinks collapses the SAME edge discovered via both sources", () => {
+  // metadata source and child-declared source describe the same (accounts,
+  // account_id) edge → one link, metadata-derived preferred.
+  const metadata: ParentBackLink = {
+    parentStream: "accounts",
+    childParentKeyField: "account_id",
+    href: "/dashboard/records/cin/accounts/acc-A",
+  };
+  const childDeclared = childHasOneBackLinksFromManifest(
+    CHASE_TRANSACTIONS_MANIFEST_STREAM,
+    { id: "t1", account_id: "acc-A" },
+    { connectionId: "cin" }
+  );
+  const merged = mergeParentBackLinks(metadata, childDeclared);
+  assert.equal(merged.length, 1, "same (parentStream, field) from both sources collapses to one");
+  assert.equal(merged[0], metadata, "the metadata-derived link is preferred");
+});
+
+test("mergeParentBackLinks keeps distinct parent streams and is order-stable", () => {
+  const childLinks: ParentBackLink[] = [
+    { parentStream: "accounts", childParentKeyField: "account_id", href: "/a" },
+    { parentStream: "payees", childParentKeyField: "payee_id", href: "/p" },
+    { parentStream: "categories", childParentKeyField: "category_id", href: "/c" },
+  ];
+  const merged = mergeParentBackLinks(null, childLinks);
+  assert.deepEqual(
+    merged.map((l) => l.parentStream),
+    ["accounts", "payees", "categories"]
+  );
+});
+
+test("mergeParentBackLinks returns empty when there are no links", () => {
+  assert.deepEqual(mergeParentBackLinks(null, []), []);
+});
+
+test("parentBackLinkDedupKey is stable and distinguishes stream from field", () => {
+  assert.equal(
+    parentBackLinkDedupKey("accounts", "account_id"),
+    parentBackLinkDedupKey("accounts", "account_id")
+  );
+  // Same parent stream, different field → distinct keys (the YNAB case).
+  assert.notEqual(
+    parentBackLinkDedupKey("accounts", "account_id"),
+    parentBackLinkDedupKey("accounts", "transfer_account_id")
+  );
+  // Different parent stream, same field → distinct keys.
+  assert.notEqual(
+    parentBackLinkDedupKey("accounts", "account_id"),
+    parentBackLinkDedupKey("payees", "account_id")
   );
 });

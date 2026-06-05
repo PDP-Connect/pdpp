@@ -382,6 +382,53 @@ export function reverseChildListLinksFromManifest(
 }
 
 /**
+ * Stable key identifying a child → parent back-link as `(parent stream, child
+ * field carrying the parent key)`. Two declared `has_one` edges from the same
+ * child stream to the same parent stream via *different* fields (for example a
+ * YNAB transaction's `account_id` and `transfer_account_id`, both → `accounts`)
+ * resolve to *different* parent records, so they are distinct links and SHALL
+ * both render; deduplicating on parent stream alone would silently drop one. The
+ * field is part of the key for exactly that reason. The two parts are
+ * JSON-encoded as a 2-tuple, so the key is collision-free even when a stream or
+ * field name contains separators.
+ */
+export function parentBackLinkDedupKey(parentStream: string, childParentKeyField: string): string {
+  return JSON.stringify([parentStream, childParentKeyField]);
+}
+
+/**
+ * Merge the two child → parent back-link sources for a displayed child record —
+ * the parent streams' `expand_capabilities` (`findParentBackLink`, at most one)
+ * and the child stream's own declared `has_one` relationships
+ * (`childHasOneBackLinksFromManifest`, zero or more) — into the de-duplicated
+ * list the detail page renders.
+ *
+ * Both sources are manifest declarations that resolve to a parent record keyed
+ * by the value the child carries in the relation's parent-key field, so the
+ * dedup key is `(parentStream, childParentKeyField)` — NOT the parent stream
+ * alone. The same edge discovered via both sources (same field) collapses to one
+ * link; two distinct edges to the same parent stream via different fields both
+ * survive, because they point at different parent records. The metadata-derived
+ * link is preferred when both sources describe the same `(parentStream, field)`.
+ */
+export function mergeParentBackLinks(
+  metadataBackLink: ParentBackLink | null,
+  childDeclaredBackLinks: readonly ParentBackLink[]
+): ParentBackLink[] {
+  const seen = new Set<string>();
+  const out: ParentBackLink[] = [];
+  for (const link of [...(metadataBackLink ? [metadataBackLink] : []), ...childDeclaredBackLinks]) {
+    const key = parentBackLinkDedupKey(link.parentStream, link.childParentKeyField);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push(link);
+  }
+  return out;
+}
+
+/**
  * For a CHILD record being displayed, find the declared forward relation (from
  * any parent stream's metadata) whose `child_parent_key_field` matches a field
  * carried on the child, and return a link back to the parent record keyed by

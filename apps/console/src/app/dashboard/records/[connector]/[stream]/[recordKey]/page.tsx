@@ -19,6 +19,8 @@ import {
   childHasOneBackLinksFromManifest,
   findManifestForConnectorId,
   findParentBackLink,
+  mergeParentBackLinks,
+  parentBackLinkDedupKey,
   parentRelationsForChild,
   type RelatedLink,
   reverseChildListDedupKey,
@@ -139,17 +141,12 @@ export default async function RecordDetailPage({
   //   2. Child's own manifest has_one relationships (covers child-declared has_one like Chase transactions→account)
   const parentBackLinkFromMeta = findParentBackLink(streamName, record.data, parentRelations, { connectionId });
   const childHasOneLinks = childHasOneBackLinksFromManifest(childManifestStream, record.data, { connectionId });
-  // Prefer the metadata-derived link; fall back to manifest-derived ones. Deduplicate by parentStream.
-  const seenParentStreams = new Set<string>();
-  const allParentBackLinks = [...(parentBackLinkFromMeta ? [parentBackLinkFromMeta] : []), ...childHasOneLinks].filter(
-    (link) => {
-      if (seenParentStreams.has(link.parentStream)) {
-        return false;
-      }
-      seenParentStreams.add(link.parentStream);
-      return true;
-    }
-  );
+  // Merge the two manifest sources, preferring the metadata-derived link, and
+  // deduplicate by (parentStream, child parent-key field) — NOT parentStream
+  // alone. Two declared has_one edges to the same parent stream via different
+  // fields (e.g. a YNAB transaction's account_id and transfer_account_id, both →
+  // accounts) point at different parent records, so both must render.
+  const allParentBackLinks = mergeParentBackLinks(parentBackLinkFromMeta, childHasOneLinks);
 
   return (
     <DashboardShell active="records">
@@ -180,7 +177,10 @@ export default async function RecordDetailPage({
         <Section title="Related">
           <ul className="space-y-2">
             {allParentBackLinks.map((backLink) => (
-              <li className="pdpp-caption" key={backLink.parentStream}>
+              <li
+                className="pdpp-caption"
+                key={parentBackLinkDedupKey(backLink.parentStream, backLink.childParentKeyField)}
+              >
                 <span className="text-muted-foreground">{backLink.parentStream} · </span>
                 <Link
                   className="font-mono text-foreground underline underline-offset-2 hover:no-underline"
