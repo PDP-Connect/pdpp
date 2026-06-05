@@ -19,7 +19,14 @@
 import pRetry, { AbortError } from "p-retry";
 import type { Page } from "playwright";
 import { ensureAmazonSession } from "../../src/auto-login/amazon.ts";
-import { type BrowserCollectContext, nowIso, politeDelay, runConnector } from "../../src/connector-runtime.ts";
+import {
+  type BrowserCollectContext,
+  type DetailGapMessage,
+  emitDetailCoverage,
+  nowIso,
+  politeDelay,
+  runConnector,
+} from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import {
@@ -250,12 +257,143 @@ export interface RunFlags {
   detailCaptured: boolean;
 }
 
+/**
+ * Per-run, order-item detail coverage accumulator.
+ *
+ * Amazon enumerates the full order list per scraped year BEFORE hydrating any
+ * order-detail page, so the set of list-page order ids it processes is a real
+ * "considered" denominator (not a gap-only inference). The `order_items` stream
+ * is enriched by the per-order detail page (seller, unit_price, item image,
+ * detail-only items). When that detail fetch succeeds the order's items are
+ * hydrated; when it returns null the list-page items still emit but the detail
+ * enrichment is missing — an honest degraded-coverage signal, not silence.
+ *
+ * Each set holds order ids (globally unique across years), so the accumulator
+ * spans every scraped year and is reported once after the year loop:
+ *   - `required`  — every order considered for detail hydration (denominator).
+ *   - `hydrated`  — orders whose detail page fetched and parsed (numerator).
+ *   - `gap`       — orders whose detail fetch was attempted but degraded (null).
+ *   - `optionalSkip` — orders whose detail was skipped by explicit policy
+ *                      (`PDPP_AMAZON_SKIP_DETAIL=1`), a scope choice, not a gap.
+ */
+export interface OrderItemsCoverage {
+  gap: string[];
+  hydrated: string[];
+  optionalSkip: string[];
+  required: string[];
+}
+
+export function newOrderItemsCoverage(): OrderItemsCoverage {
+  return { gap: [], hydrated: [], optionalSkip: [], required: [] };
+}
+
+/** The detail-hydration outcome for one considered order. */
+export type DetailOutcome = "hydrated" | "gap" | "skipped";
+
+/**
+ * Classify one order's detail outcome. Detail skipped by explicit policy is an
+ * `optional_skip` (a scope choice); an attempted detail that came back null is
+ * a degraded `gap`; a parsed detail is `hydrated`. Pure so the branch is unit
+ * testable without driving the browser detail stack.
+ */
+export function classifyDetailOutcome(skipDetail: boolean, detail: OrderDetail | null): DetailOutcome {
+  if (skipDetail) {
+    return "skipped";
+  }
+  return detail ? "hydrated" : "gap";
+}
+
+/**
+ * Record one order's detail outcome into the run-level coverage accumulator.
+ * Pure aside from mutating the passed accumulator; only the order id (an opaque
+ * Amazon order number, already carried in SKIP_RESULT diagnostics) crosses in,
+ * never recipient/address/payment fields. Every recorded order joins
+ * `required` (the denominator); the outcome decides which numerator/skip set it
+ * also joins.
+ */
+export function recordDetailOutcome(coverage: OrderItemsCoverage, orderId: string, outcome: DetailOutcome): void {
+  coverage.required.push(orderId);
+  if (outcome === "hydrated") {
+    coverage.hydrated.push(orderId);
+  } else if (outcome === "gap") {
+    coverage.gap.push(orderId);
+  } else {
+    coverage.optionalSkip.push(orderId);
+  }
+}
+
+/**
+ * Build the per-order pending DETAIL_GAP for an order whose detail fetch was
+ * attempted but came back null (a degraded gap, not a policy skip). The runtime
+ * treats `DETAIL_COVERAGE.gap_keys` as a projection only — a `required` key is
+ * satisfied at state-commit solely by a hydration, an optional skip, or a
+ * durable pending DETAIL_GAP with a matching `record_key`
+ * (`assertDetailCoverageSatisfiedBeforeCommit`). Emitting `gap_keys` without the
+ * matching DETAIL_GAP would fail an otherwise-successful run at commit, so every
+ * gap order MUST carry exactly one pending DETAIL_GAP on `order_items` (the same
+ * stream the coverage report describes, so the runtime's
+ * `gap.stream === coverage.stream` match holds).
+ *
+ * Reference-only and redacted: the opaque Amazon order id is the only datum that
+ * crosses (it is already the `record_key`/`detail_locator.order_id`); no
+ * recipient, address, payment, item title, or item text is carried. `reason` is
+ * `temporary_unavailable` (retryable): the null-detail paths are mixed — a
+ * pRetry-exhausted transient nav/timeout/5xx, an AbortError redirect (e.g.
+ * Amazon Fresh `/uff/...`), or a structure-less parse — so `retry_exhausted`
+ * would overclaim for the non-exhaustion paths. Retrying next run is the honest,
+ * non-destructive default; the list-page items already emitted regardless.
+ */
+export function buildOrderDetailGap(orderId: string): DetailGapMessage {
+  return {
+    type: "DETAIL_GAP",
+    stream: "order_items",
+    parent_stream: "orders",
+    record_key: orderId,
+    status: "pending",
+    reason: "temporary_unavailable",
+    retryable: true,
+    reference_only: true,
+    detail_locator: {
+      kind: "amazon.order_detail",
+      order_id: orderId,
+    },
+  };
+}
+
+/**
+ * Emit the run-level `order_items` DETAIL_COVERAGE once after the year loop,
+ * using the shared `emitDetailCoverage` helper. The detail stream described is
+ * `order_items` (enriched by the per-order detail page); its cursor is anchored
+ * by the `orders` list stream (`state_stream`). No-ops when no order was
+ * considered, so a run that scraped zero in-scope years emits nothing rather
+ * than an empty coverage report. Reuses DETAIL_COVERAGE as a reference-only
+ * projection; it is not promoted to portable protocol.
+ */
+export async function emitOrderItemsCoverage(deps: EmitDeps, coverage: OrderItemsCoverage): Promise<void> {
+  if (coverage.required.length === 0) {
+    return;
+  }
+  await emitDetailCoverage(deps, {
+    stream: "order_items",
+    stateStream: "orders",
+    requiredKeys: coverage.required,
+    hydratedKeys: coverage.hydrated,
+    gapKeys: coverage.gap,
+    optionalSkipKeys: coverage.optionalSkip,
+  });
+}
+
 /** Per-run dependencies threaded through processListOrder → emitOrderAndItems. */
 export interface EmitDeps {
   capture: CaptureDep;
   emit: EmitFn;
   emitRecord: EmitRecordFn;
   emittedAt: string;
+  /** Run-level `order_items` detail coverage accumulator. Optional so legacy
+   *  callers/tests that only exercise emit ordering can omit it; when present,
+   *  processListOrder records each considered order's detail outcome here and
+   *  collect() emits one DETAIL_COVERAGE after the year loop. */
+  orderItemsCoverage?: OrderItemsCoverage | undefined;
   /** Per-order fingerprint cursor (excludes the run-clock `fetched_at`).
    *  Shared across all years for the whole orders stream because order ids
    *  are globally unique. Optional so legacy callers/tests emit
@@ -480,12 +618,30 @@ export async function processListOrder(
 ): Promise<boolean> {
   const orderDate = parseOrderDate(listOrder.orderDateRaw);
   if (!orderDate) {
+    // A list row whose date does not parse never reaches the detail lane, so it
+    // is not counted toward order-item coverage; runYear already accounts for
+    // it via the bounded per-year drop SKIP_RESULT.
     return false;
   }
   const detail: OrderDetail | null = deps.skipDetail ? null : await fetchOrderDetail(page, listOrder.orderId);
   if (deps.capture && !(flags.detailCaptured || deps.skipDetail) && detail) {
     await deps.capture.captureDom(page, `order-detail-${listOrder.orderId}`);
     flags.detailCaptured = true;
+  }
+  if (deps.orderItemsCoverage) {
+    // The list-page items still emit in every case; this only records whether
+    // the order's detail enrichment was hydrated, degraded, or policy-skipped.
+    const outcome = classifyDetailOutcome(deps.skipDetail, detail);
+    recordDetailOutcome(deps.orderItemsCoverage, listOrder.orderId, outcome);
+    // A degraded (attempted-but-null) detail must back its coverage `gap_key`
+    // with a durable pending DETAIL_GAP, or the run fails at state-commit (see
+    // buildOrderDetailGap). One gap per gap order — processListOrder runs once
+    // per order, and these emit during the year loop, strictly before the
+    // run-level DETAIL_COVERAGE. A policy skip (`optional_skip`) and a hydration
+    // emit no gap.
+    if (outcome === "gap") {
+      await deps.emit(buildOrderDetailGap(listOrder.orderId));
+    }
   }
   await emitOrderAndItems(deps, listOrder, detail, orderDate);
   return true;
@@ -717,15 +873,21 @@ if (isMainModule(import.meta.url)) {
       // page per year and one order-detail page overall is enough to drive
       // offline parser tests — more just bloats the fixture tree.
       const flags: RunFlags = { detailCaptured: false };
+      // Order-item detail coverage is only meaningful when the detail-enriched
+      // `order_items` stream is in scope. When it is not requested, the
+      // accumulator stays undefined and processListOrder records nothing.
+      const wantsItems = requested.has("order_items");
+      const orderItemsCoverage = wantsItems ? newOrderItemsCoverage() : undefined;
       const deps: EmitDeps = {
         capture,
         emit,
         emitRecord,
         emittedAt,
+        orderItemsCoverage,
         ordersFingerprintCursor,
         progress,
         skipDetail: process.env.PDPP_AMAZON_SKIP_DETAIL === "1",
-        wantsItems: requested.has("order_items"),
+        wantsItems,
         wantsOrders: requested.has("orders"),
       };
 
@@ -762,6 +924,15 @@ if (isMainModule(import.meta.url)) {
           stream: "orders",
           cursor,
         });
+      }
+
+      // After every scraped year settles, emit one run-level `order_items`
+      // DETAIL_COVERAGE: the order list is a real "considered" denominator, so
+      // the console can tell a fully-hydrated run from one that degraded some
+      // order-detail fetches without inferring it from gaps alone. No-ops when
+      // order_items is out of scope or no order was considered.
+      if (orderItemsCoverage) {
+        await emitOrderItemsCoverage(deps, orderItemsCoverage);
       }
     },
   });
