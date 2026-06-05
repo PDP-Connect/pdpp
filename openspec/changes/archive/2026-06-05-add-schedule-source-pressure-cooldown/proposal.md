@@ -24,3 +24,23 @@ Modified:
 - Affects the reference scheduler dispatch gate (`reference-implementation/runtime/scheduler.ts`) and the schedule/health projection (`reference-implementation/runtime/controller.ts`).
 - Reads pending gaps from the existing durable `connector_detail_gaps` store; no new table, column, or migration.
 - Does not change Collection Profile JSONL messages, connector manifests, run terminal statuses, intra-run adaptive-lane behavior, or public PDPP protocol semantics.
+
+## Residual Risks
+
+The pure cooldown module, scheduler dispatch wiring, projection honesty, the
+production probe, and the console cooling-off rendering are implemented, tested,
+and spec'd; the code/test/spec scope of this change is complete and green
+(§1–§7). The only remaining work is the owner-only live cadence observation in
+task §8, deferred from this change. It is preserved here as a residual rather
+than keeping the change pseudo-active on an owner-only step:
+
+- One owner-attended, cold-start ChatGPT scheduled-cadence observation: enable a
+  schedule, let one run record source-pressure detail gaps, confirm the next
+  automatic tick defers (cooling-off skip + deferred `next_run_at`), and confirm
+  a later clean/recovered run resumes the normal cadence. The governor behavior
+  (cooling-off skip one-per-identity, deferred `next_run_at`, decay/cap, recovery
+  resume, reason-scoping, fail-open) is already proven deterministically by the
+  §5/§6 pure-function, scheduler-gate, projection, and cross-layer
+  connection-health tests, so this is a live confirmation of cadence under real
+  source pressure, not a correctness gate. Run it against the deployed revision,
+  not a worktree build.
