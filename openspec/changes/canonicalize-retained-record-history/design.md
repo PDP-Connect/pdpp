@@ -7,7 +7,7 @@ Prior-art lanes produced these constraints:
 - Kafka-style compaction keeps key-ordered logical state, does not renumber offsets, and treats tombstones as boundaries.
 - Debezium snapshot/stream reconciliation makes the authoritative current stream event win over a redundant snapshot read.
 - Airbyte/Singer/dlt-style connectors require explicit identity, cursor/state, scan-kind, and stable change detection; leaving those semantics in ad-hoc connector code prevents a second component from proving compaction.
-- Temporal/versioned storage guidance is still in flight; the design avoids depending on physical history rewrites beyond backed-up row deletion.
+- Temporal/versioned storage prior art supports a three-layer model: semantic history in retained record versions, observation noise suppressed or compacted, and operational provenance on a separate retention clock.
 
 ## Goals / Non-Goals
 
@@ -58,6 +58,12 @@ Alternative considered: let compaction own independent field exclusions. Rejecte
 The SLVP ideal is owner-visible canonical data convergence. If run-clock or acquisition metadata remains in `record_json`, exact byte equality across two environments is impossible. The first implementation slice therefore proves semantic/version-boundary convergence and current-state preservation; a later connector/data-shape change should relocate non-versioning acquisition metadata into run/audit/provenance telemetry.
 
 Alternative considered: rewrite old `record_json` payloads during compaction to strip metadata. Rejected for this slice because it changes record payloads and grant-visible fields, requiring a broader data-shape proposal.
+
+### Keep operational storage visibility separate
+
+Canonical compaction may reduce retained history, but physical database footprint also includes indexes, search storage, operational events, and backup tables. Operator-visible physical storage accounting belongs in the deployment diagnostics surface, not in the canonical compaction tool.
+
+Alternative considered: fold database footprint cleanup into this change. Rejected because storage visibility changes `/_ref/deployment` and backup retention policy, which are separate operator-surface contracts.
 
 ## Risks / Trade-offs
 
