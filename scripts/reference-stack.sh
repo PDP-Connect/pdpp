@@ -32,6 +32,11 @@ Defaults:
 The stack always uses docker-compose.yml + docker-compose.neko.yml with the
 neko-dynamic profile. That is the required shape for browser-backed connectors
 that are configured through PDPP_NEKO_MANAGED_CONNECTORS.
+
+up --build-app and up --build-all refuse to run when the working tree has
+uncommitted tracked changes, so a deployed image reflects a reviewed commit.
+Untracked/ignored scratch (e.g. tmp/) does not block. Set
+PDPP_ALLOW_DIRTY_REFERENCE_BUILD=1 to build a dirty tree anyway.
 USAGE
 }
 
@@ -54,6 +59,39 @@ inject_revision() {
   fi
   export PDPP_REFERENCE_REVISION
   echo "reference-stack: revision=${PDPP_REFERENCE_REVISION}"
+}
+
+# Refuse to build images from a tracked-dirty working tree by default.
+#
+# The owner has previously deployed from a dirty `main` by accident, baking
+# unreviewed tracked edits into a live image even though PDPP_REFERENCE_REVISION
+# named a commit. Only `up --build-app` / `up --build-all` call this; --no-build,
+# verify, ps, and logs never require cleanliness.
+#
+# "Dirty" means tracked unstaged or staged changes only. Untracked and ignored
+# files (e.g. scratch under tmp/) do not block. Set
+# PDPP_ALLOW_DIRTY_REFERENCE_BUILD=1 to override; we print an explicit warning
+# and proceed (the revision will carry git describe's `-dirty` suffix).
+guard_clean_tree() {
+  # Not a git work tree (e.g. building from an exported tarball): nothing to
+  # guard. Mirrors inject_revision's tolerance of an absent git context.
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+
+  if git diff --quiet && git diff --cached --quiet; then
+    return 0
+  fi
+
+  if [[ "${PDPP_ALLOW_DIRTY_REFERENCE_BUILD:-}" == "1" ]]; then
+    echo "reference-stack: WARNING: PDPP_ALLOW_DIRTY_REFERENCE_BUILD=1 — building uncommitted tracked changes into the image:" >&2
+    git status --short --untracked-files=no >&2
+    return 0
+  fi
+
+  echo "reference-stack: refusing to build: the working tree has uncommitted tracked changes." >&2
+  echo "reference-stack: a deployed image must reflect a reviewed commit, not local edits." >&2
+  git status --short --untracked-files=no >&2
+  echo "reference-stack: commit/stash the changes, or set PDPP_ALLOW_DIRTY_REFERENCE_BUILD=1 to build them anyway." >&2
+  exit 1
 }
 
 service_container() {
@@ -166,11 +204,13 @@ case "$cmd" in
     [[ $# -eq 0 ]] || fail "unexpected extra arguments: $*"
     case "$mode" in
       --build-app)
+        guard_clean_tree
         inject_revision
         "${COMPOSE[@]}" build reference web neko-allocator
         "${COMPOSE[@]}" up -d --no-build "${SERVICES[@]}"
         ;;
       --build-all)
+        guard_clean_tree
         inject_revision
         "${COMPOSE[@]}" up -d --build "${SERVICES[@]}"
         ;;
