@@ -197,7 +197,10 @@ export default async function StreamPage({
   // `mergeParentBackLinks` does on the detail page.
   const parentLinkForCell = (record: StreamRecord, column: string) => {
     if (expandCapabilityLinkFields.has(column)) {
-      return findParentBackLink(streamName, record.data, parentRelations, { connectionId });
+      return findParentBackLink(streamName, record.data, parentRelations, {
+        childParentKeyField: column,
+        connectionId,
+      });
     }
     if (childDeclaredLinkFields.has(column)) {
       return childHasOneBackLinkForField(childManifestStream ?? undefined, record.data, column, { connectionId });

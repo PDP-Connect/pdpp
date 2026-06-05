@@ -113,6 +113,27 @@ test("child field matching a declared relation links back to the parent record",
   assert.equal(link.href, "/dashboard/records/github/user/101");
 });
 
+test("child back-link can be resolved for the requested relation field", () => {
+  const ownerStatsCap: ExpandCapability = {
+    ...USER_STATS_CAP,
+    child_parent_key_field: "owner_id",
+    foreign_key: "owner_id",
+  };
+  const link = findParentBackLink(
+    "user_stats",
+    { id: "101:2026-04-01", owner_id: "owner-1", user_id: "user-1" },
+    [
+      { parentStream: "user", capability: USER_STATS_CAP },
+      { parentStream: "owners", capability: ownerStatsCap },
+    ],
+    { childParentKeyField: "owner_id", connectionId: "github" }
+  );
+  assert.ok(link);
+  assert.equal(link.parentStream, "owners");
+  assert.equal(link.childParentKeyField, "owner_id");
+  assert.equal(link.href, "/dashboard/records/github/owners/owner-1");
+});
+
 test("child back-link is absent when no declared relation targets the child stream", () => {
   // A field that merely looks like a foreign key (repository_id) but is not
   // covered by any declared relation must NOT produce a link.

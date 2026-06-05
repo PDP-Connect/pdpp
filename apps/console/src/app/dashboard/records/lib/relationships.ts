@@ -485,7 +485,7 @@ export function findParentBackLink(
   childStream: string,
   childRecordData: Record<string, unknown> | undefined,
   parentRelations: Array<{ parentStream: string; capability: ExpandCapability }>,
-  args: { connectionId: string }
+  args: { childParentKeyField?: string; connectionId: string }
 ): ParentBackLink | null {
   if (!(childRecordData && typeof childRecordData === "object")) {
     return null;
@@ -499,6 +499,9 @@ export function findParentBackLink(
     }
     const childParentKeyField = capability.child_parent_key_field ?? capability.foreign_key;
     if (!childParentKeyField) {
+      continue;
+    }
+    if (args.childParentKeyField && childParentKeyField !== args.childParentKeyField) {
       continue;
     }
     const value = childRecordData[childParentKeyField];
