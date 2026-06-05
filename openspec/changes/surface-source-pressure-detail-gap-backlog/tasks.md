@@ -1,8 +1,12 @@
 # Tasks — surface-source-pressure-detail-gap-backlog
 
-This is a design/spec lane. No implementation code is changed here. The tasks
-below sequence the bounded implementation lanes the owner can dispatch after the
-spec delta is accepted. None are marked complete because no code has landed.
+This change began as a design/spec lane. The spec delta (§1) and the bounded
+implementation lanes it sequenced — projection (§2), contract tests (§3), and
+console consumption (§4) — have since landed at HEAD (`f6251af8`): the projection
+shipped in `07d9d4e4` (`feat(ref-control): surface source-pressure detail
+backlog`) and the console cue in `619276b9` (`feat(console): surface
+source-pressure detail-gap backlog cue`). Only §5 (owner closeout) and one
+explicitly-deferred optional aggregate in §2 remain open.
 
 ## 1. Spec delta (this lane)
 
@@ -64,13 +68,23 @@ spec delta is accepted. None are marked complete because no code has landed.
 
 ## 4. Console consumption (implementation lane — depends on §2)
 
-- [ ] Render a compact catch-up cue ("Catching up: N pending" + "K recovered"
-  when present) only on a source-pressure / retryable-gap connection with a
-  positive pending count, keyed on the `source_pressure` reason class.
-- [ ] No cue on `null` (unmeasured), `0` (drained), healthy, idle, or
-  non-source-pressure connections.
-- [ ] No raw `source_pressure` token in owner-facing copy; no connector name.
-- [ ] Console snapshot/voice tests for the cue and for the quiet cases.
+Landed in `619276b9` via `formatSourcePressureBacklogScale` +
+`NextStepGuidance.backlogScale` in
+`apps/console/src/app/dashboard/lib/connection-evidence.ts`, the
+`RefDetailGapBacklog` mirror in `ref-client.ts`, and the cue row in
+`records/connector-row.tsx`.
+
+- [x] Render a compact catch-up cue (count + recovered when present) only on a
+  source-pressure / retryable-gap connection with a positive pending count, keyed
+  on the `source_pressure` reason class. (Shipped copy renders "at least N …"
+  when `pending_is_floor`, plain "N …" otherwise; `backlogScale` is set only on
+  the `cooling_off`-under-`source_pressure` and `degraded`+`retryable_gap` paths.)
+- [x] No cue on `null` (unmeasured), `0` (drained), healthy, idle, or
+  non-source-pressure connections. (`backlogScale` returns `null` for those;
+  a drained `0` with a recovered count reads "caught up — N recovered".)
+- [x] No raw `source_pressure` token in owner-facing copy; no connector name.
+- [x] Console snapshot/voice tests for the cue and for the quiet cases.
+  (`connection-evidence.test.ts` +193 lines, `connector-row.test.ts` +43 lines.)
 
 ## 5. Owner closeout
 
