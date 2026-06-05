@@ -3,7 +3,7 @@
  *
  * These pin the contract both statement connectors (chase, usaa) rely on:
  *   - a previously-hydrated statement that fails hydration this run carries
- *     its prior pointers forward (no value->null flap),
+ *     its prior pointers and content fingerprint forward (no value->null flap),
  *   - a never-hydrated statement that fails hydration stays all-null,
  *   - a successful (re)hydration overwrites the carried pointers,
  *   - prune drops statements no longer listed,
@@ -24,6 +24,8 @@ const HYD: StatementHydration = {
   document_url: "file:///tmp/chase/2026-04-aaaa.pdf",
   pdf_path: "/tmp/chase/2026-04-aaaa.pdf",
   pdf_sha256: "a".repeat(64),
+  pdf_text_sha256: null,
+  pdf_page_count: null,
 };
 
 function priorMapFrom(state: Record<string, unknown>): ReadonlyMap<string, StatementHydration> {
@@ -68,6 +70,8 @@ test("note: a successful (re)hydration overwrites the carried pointers", () => {
     document_url: "file:///tmp/chase/2026-04-bbbb.pdf",
     pdf_path: "/tmp/chase/2026-04-bbbb.pdf",
     pdf_sha256: "b".repeat(64),
+    pdf_text_sha256: "c".repeat(64),
+    pdf_page_count: 3,
   };
   cursorB.note("S1", rehydrated);
   assert.deepEqual(cursorB.toState().S1, rehydrated, "a fresh hydration replaces the prior pointers");
