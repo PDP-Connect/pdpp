@@ -34,6 +34,23 @@ is the service image:
 - `Dockerfile` final stage: public `console`
 - `deploy/railway/reference.Dockerfile` final stage: private `reference`
 
+## Source accessibility gate
+
+The template source must be reusable by an arbitrary Railway user. A local
+`railway up` upload is valid for proving the runtime, but Railway cannot turn an
+upload-only service into a reusable template source. A private GitHub repository
+or private GHCR image is also not a valid public template source unless the
+template includes credentials, which this template SHALL NOT do.
+
+Before publishing the user-facing button, make one source option true:
+
+- The source repository used by both services is public and Railway can build it
+  without organization-specific GitHub access.
+- The app services use public container images that can be pulled anonymously.
+
+If neither is true, stop after the live runtime proof and do not publish the
+button.
+
 ## Variables
 
 Set these on both application services:

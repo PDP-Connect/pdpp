@@ -86,6 +86,13 @@ services plus Postgres, generate the template from that project, publish it,
 deploy a fresh scratch project from the published template, run the live smoke
 and restart smoke, then replace `<template-code>` in the button markup.
 
+The service source is a separate publication gate. A `railway up` local-upload
+deployment proves runtime behavior, but Railway cannot generate a reusable
+template from upload-only services. A private GitHub repository or private GHCR
+image is likewise not sufficient for a public button. The publishable template
+must point at either a public repository source or public container images; the
+template SHALL NOT embed private registry credentials.
+
 ## Alternatives considered
 
 - **Resource-Server-only single service** (current-docs report's SLVP). Rejected
@@ -109,6 +116,10 @@ and restart smoke, then replace `<template-code>` in the button markup.
   current Railway config/schema does not encode the target field, so the
   template would carry hidden manual setup and could deploy the wrong final
   image.
+- **Railway Template generated from local upload.** Rejected for the user-facing
+  button. It is useful for first-live runtime proof, but Railway rejects
+  upload-only services as template sources because another user has no source to
+  rebuild from.
 
 ## Storage decision
 
@@ -216,6 +227,9 @@ first-discovery of application bugs.
 - The user-facing Railway button cannot be final until Railway assigns the
   published template code and a fresh project deployed from that published
   template passes the live smoke plus restart smoke.
+- The source-accessibility gate remains hard: if the repository and GHCR images
+  stay private, the runtime proof can pass but the template cannot be shared with
+  arbitrary Railway users.
 - The `docs/inbox/chatgpt-pro-deployment.txt` strategy note is untracked and
   unversioned; the decisions that survive are the ones promoted into this change,
   not the inbox text. Its aspirational names (`pdpp doctor`,

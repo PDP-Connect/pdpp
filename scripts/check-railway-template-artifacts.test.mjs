@@ -48,5 +48,17 @@ test('Railway runbook and template handoff do not require manual Docker target-s
   assert.match(handoff, /PDPP_DATABASE_URL=\$\{\{Postgres\.DATABASE_URL\}\}/);
   assert.match(handoff, /reference\.railway\.internal:7662/);
   assert.match(handoff, /reference\.railway\.internal:7663/);
+  assert.match(handoff, /Source accessibility gate/);
+  assert.match(handoff, /railway up/);
+  assert.match(handoff, /public container images/);
   assert.doesNotMatch(handoff, /Settings\s*->\s*Build\s*->\s*Docker\s*->\s*Target Stage/i);
+});
+
+test('Railway upload context excludes machine-local agent symlinks', () => {
+  const ignore = read('.railwayignore');
+
+  assert.match(ignore, /^skills$/m);
+  assert.match(ignore, /^\.agents$/m);
+  assert.match(ignore, /^\.claude$/m);
+  assert.match(ignore, /^\.codex$/m);
 });

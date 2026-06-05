@@ -41,6 +41,10 @@ browser-free `core` image are explicit follow-ons, not blockers.
   the rule that the placeholder button URL is not user-facing until Railway
   assigns a template code. (`deploy/railway/template.md`;
   `pnpm railway:template:test`.)
+- [x] 1.7 Add a Railway upload ignore file so local runtime proof deployments do
+  not traverse machine-local agent skill symlinks. Local uploads are proof
+  artifacts only; they are not a valid public template source.
+  (`.railwayignore`.)
 
 ## 2. Storage persistence
 
@@ -118,6 +122,10 @@ browser-free `core` image are explicit follow-ons, not blockers.
   deploy a new scratch project from the published template, run the live smoke
   and restart smoke against the scratch deploy, then replace `<template-code>` in
   the user-facing button surface.
+- [ ] 5.3 (Owner-only) Satisfy the public source gate before publishing the
+  button: either make the template repository source public/reusable by Railway
+  users or use public anonymously pullable app images. Do not publish a template
+  generated from local upload-only services.
 
 ## Acceptance checks
 

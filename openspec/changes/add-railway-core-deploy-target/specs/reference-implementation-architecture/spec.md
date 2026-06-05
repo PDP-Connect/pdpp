@@ -191,6 +191,14 @@ final stage is the intended service image, or by an equivalent platform setting
 that is captured in the published template. The user-facing deploy button SHALL
 NOT be published with a placeholder template code.
 
+The user-facing template SHALL use a source that an arbitrary Railway user can
+deploy without organization-specific repository or registry access. Local-upload
+services MAY be used for runtime proof, but SHALL NOT be published as the
+user-facing template source. Private GitHub repositories and private container
+images SHALL NOT be used for the public button unless the template intentionally
+and safely supplies reusable public access; this template SHALL NOT embed private
+registry credentials.
+
 #### Scenario: Template service selection is encoded by Dockerfile path
 
 - **WHEN** the Railway Template defines the public console service and private reference service
@@ -204,6 +212,13 @@ NOT be published with a placeholder template code.
 - **THEN** the template SHALL define the private console-to-reference URLs, composed-mode public origin, owner password, and Postgres database binding needed for first boot
 - **AND** the reference service SHALL stay private
 - **AND** the public console service SHALL be the only internet-reachable application origin
+
+#### Scenario: Template source is reusable by arbitrary Railway users
+
+- **WHEN** the template is published for user-facing deployment
+- **THEN** each app service SHALL reference a public repository source or a public anonymously pullable image
+- **AND** upload-only services SHALL NOT be used as the public template source
+- **AND** private source credentials SHALL NOT be embedded in the template
 
 #### Scenario: User-facing button is only published after template validation
 
