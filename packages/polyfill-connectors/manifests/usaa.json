@@ -410,7 +410,21 @@
               "string",
               "null"
             ],
-            "description": "SHA-256 of the downloaded PDF bytes. Populated only after blob hydration; null on index-only scrapes."
+            "description": "SHA-256 of the downloaded PDF bytes (raw blob content-address, not the content fingerprint — re-encrypted per download, so it churns on no-op re-fetches). Populated only after blob hydration; null on index-only scrapes."
+          },
+          "pdf_text_sha256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Positive content fingerprint: SHA-256 of the statement's extracted PDF text after deterministic normalization (NFC, whitespace collapse, trim). Stable across raw-byte churn so a re-download with unchanged content is provably a no-op. Null when text extraction failed or returned empty text."
+          },
+          "pdf_page_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Integer page count from the PDF structure. A structural content invariant alongside pdf_text_sha256. Null when extraction failed."
           },
           "fetched_at": {
             "type": "string",

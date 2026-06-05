@@ -122,10 +122,21 @@ export const statementSchema = z.object({
   account_reference: z.string().min(1).max(200).nullable(),
   document_url: z.url().nullable(),
   pdf_path: z.string().min(1).max(500).nullable(),
+  // SHA-256 of the RAW PDF bytes (blob content-address, NOT the content
+  // fingerprint — Chase re-encrypts the PDF per download, so this churns on
+  // no-op re-fetches).
   pdf_sha256: z
     .string()
     .regex(/^[0-9a-f]{64}$/i, "must be SHA-256 hex")
     .nullable(),
+  // Positive content fingerprint: SHA-256 of the normalized extracted PDF
+  // text. Stable across raw-byte churn; null when text extraction failed/empty.
+  pdf_text_sha256: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/i, "must be SHA-256 hex")
+    .nullable(),
+  // Integer page count from the PDF structure; null when extraction failed.
+  pdf_page_count: z.number().int().positive().nullable(),
   fetched_at: isoTimestamp,
 });
 

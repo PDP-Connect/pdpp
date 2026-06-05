@@ -128,6 +128,7 @@ function makeHydrationOk(overrides: Partial<HydrationResultSuccess> = {}): Hydra
     buffer: Buffer.from("pdf-bytes"),
     pdfPath: "/tmp/usaa-test/statement-0.pdf",
     pdfSha256: "deadbeef".repeat(8),
+    content: { pdf_text_sha256: null, pdf_page_count: null },
     ...overrides,
   };
 }

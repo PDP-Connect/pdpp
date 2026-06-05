@@ -62,6 +62,10 @@ function makeHydrationOk(overrides: Partial<HydrationResultSuccess> = {}): Hydra
     buffer: Buffer.from("pdf-bytes"),
     pdfPath: "/tmp/usaa-test/2026-04-deadbeefdeadbeef.pdf",
     pdfSha256: "deadbeef".repeat(8),
+    // Default to no content fingerprint so these legacy-shape tests exercise
+    // the conservative `["fetched_at"]`-only fallback. Content-gated behavior
+    // has its own dedicated tests in statements-content-fingerprint.test.ts.
+    content: { pdf_text_sha256: null, pdf_page_count: null },
     ...overrides,
   };
 }

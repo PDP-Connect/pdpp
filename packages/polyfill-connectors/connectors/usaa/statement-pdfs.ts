@@ -34,6 +34,10 @@ import {
 import { attachDownloadQueue, type DownloadQueue } from "../../src/download-queue.ts";
 import { readPlaywrightDownloadBuffer } from "../../src/playwright-download.ts";
 import {
+  extractStatementContentFingerprint,
+  extractStatementPdfTextAndPages,
+} from "../../src/statement-content-fingerprint.ts";
+import {
   currencyToCentsFromStatement as _currencyFromStatement,
   detectStatementClosing,
   detectStatementYear,
@@ -416,6 +420,7 @@ async function persistHydratedStatement(
       statement,
       pdfPath,
       pdfSha256,
+      content: await extractStatementContentFingerprint(download.buffer),
       buffer: download.buffer,
       suggestedFilename: download.suggestedFilename,
     });
@@ -528,20 +533,11 @@ export function fileUrlForPath(p: string): string {
  * the USAA connector.
  */
 
+// Statement text extraction reuses the shared `pdf-parse` path so the USAA
+// transaction-splitting parse and the content fingerprint hash identically and
+// no second PDF library is introduced.
 async function extractPdfText(buffer: Buffer): Promise<string> {
-  // Lazy-load pdf-parse so the connector doesn't pay startup cost on runs
-  // that don't hit the PDF path.
-  const { PDFParse } = await import("pdf-parse");
-  const parser = new PDFParse({ data: buffer });
-  let textResult: { text?: string };
-  try {
-    textResult = await parser.getText();
-  } finally {
-    await parser.destroy().catch(() => {
-      /* ignore */
-    });
-  }
-  return textResult.text || "";
+  return (await extractStatementPdfTextAndPages(buffer)).text;
 }
 
 /**

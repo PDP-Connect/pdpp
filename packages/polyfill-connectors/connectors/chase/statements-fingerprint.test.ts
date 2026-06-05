@@ -230,9 +230,21 @@ async function emitHydratedSuccess(
     document_url: `file://${pdfPath}`,
     pdf_path: pdfPath,
     pdf_sha256: pdfSha256,
+    // These hydration-flap AC tests exercise the conservative `["fetched_at"]`-
+    // only fallback (no positive content fingerprint), so the content fields
+    // are null here. Content-gated behavior has dedicated coverage in
+    // statements-content-fingerprint.test.ts.
+    pdf_text_sha256: null,
+    pdf_page_count: null,
     fetched_at: deps.emittedAt,
   };
-  hydration.note(id, { document_url: record.document_url, pdf_path: record.pdf_path, pdf_sha256: record.pdf_sha256 });
+  hydration.note(id, {
+    document_url: record.document_url,
+    pdf_path: record.pdf_path,
+    pdf_sha256: record.pdf_sha256,
+    pdf_text_sha256: record.pdf_text_sha256,
+    pdf_page_count: record.pdf_page_count,
+  });
   if (fingerprint.shouldEmit(record)) {
     await deps.emitRecord("statements", record);
   }
