@@ -33,10 +33,7 @@ import {
   type OutboxStalledCause,
   rollupOutboxDiagnosticCounts,
 } from "../runtime/connection-health.ts";
-import {
-  type PendingPressureGap,
-  SOURCE_PRESSURE_GAP_REASONS,
-} from "../runtime/scheduler-source-pressure-cooldown.ts";
+import { type PendingPressureGap, SOURCE_PRESSURE_GAP_REASONS } from "../runtime/scheduler-source-pressure-cooldown.ts";
 import { getConnectorManifest } from "./auth.js";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
@@ -869,20 +866,19 @@ async function getConnectorDetailGapProjection(
 ): Promise<DetailGapProjection> {
   try {
     const store = getDefaultConnectorDetailGapStore() as ConnectorDetailGapStoreLike;
-    // Operator-console projection must surface pending gaps from every
-    // configured source instance (e.g. one device per local Codex/Claude
-    // install). `listPendingGaps` requires a single
-    // `connectorInstanceId` and silently falls back to the default-account
-    // connection when none is given — which drops every real per-device gap from the
-    // dashboard. Prefer the connector-wide listing when the store exposes
-    // it.
+    // Console rollups need connector-wide gaps; the single-instance read can
+    // hide local-collector gaps from non-default devices.
     let gaps: readonly PendingDetailGapSummary[];
     if (connectorInstanceId) {
       gaps = await Promise.resolve(
         store.listPendingGaps({ connectorId, connectorInstanceId, limit: DETAIL_GAP_PROJECTION_LIMIT })
       );
     } else if (typeof store.listPendingGapsForConnector === "function") {
-      gaps = await Promise.resolve(store.listPendingGapsForConnector(connectorId, { limit: DETAIL_GAP_PROJECTION_LIMIT }));
+      gaps = await Promise.resolve(
+        store.listPendingGapsForConnector(connectorId, {
+          limit: DETAIL_GAP_PROJECTION_LIMIT,
+        })
+      );
     } else {
       gaps = await Promise.resolve(store.listPendingGaps({ connectorId, limit: DETAIL_GAP_PROJECTION_LIMIT }));
     }
@@ -904,12 +900,8 @@ async function getConnectorDetailGapProjection(
  * — same connector scope, same `SOURCE_PRESSURE_GAP_REASONS` reason scope —
  * and returns only a scalar integer (no row bodies, locators, or payloads).
  *
- * Honest about absence and decoupled from the pending read:
- *   - `null` when the store does not expose the aggregate (older / mock stores),
- *     so the rollup reports `recovered: null` (unmeasured) rather than `0`.
- *   - `null` when the aggregate throws, independently of whether the pending
- *     read succeeded — a recovered-count failure never flips the pending count
- *     to unreliable, and a pending-read success never fabricates a recovered 0.
+ * `null` means unmeasured, not zero, so the dashboard does not invent recovery
+ * evidence when the aggregate is unavailable.
  */
 async function getRecoveredSourcePressureGapCount(
   store: ConnectorDetailGapStoreLike,
@@ -925,9 +917,7 @@ async function getRecoveredSourcePressureGapCount(
         reasons: [...SOURCE_PRESSURE_GAP_REASONS],
       })
     );
-    return typeof recovered === "number" && Number.isFinite(recovered) && recovered >= 0
-      ? Math.floor(recovered)
-      : null;
+    return typeof recovered === "number" && Number.isFinite(recovered) && recovered >= 0 ? Math.floor(recovered) : null;
   } catch {
     return null;
   }
