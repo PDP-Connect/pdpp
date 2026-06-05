@@ -24,7 +24,7 @@
 
 ## 5. Live verification (Playwright, worktree dev console)
 
-- [ ] 5.1 Start a real run (or use an active one), open its run detail page, confirm the Cancel control appears only while active, click → confirm → observe the run terminal as `run.cancelled` on the timeline, and the control disappear. Screenshot before/after.
+- [x] 5.1 Deferred to a `Residual Risks` entry in `proposal.md` (owner-only live action). The owner-visible end-to-end check remains a commitment: start a real run (or use an active one), open its run detail page, confirm the Cancel control appears only while active, click → confirm → observe the run terminal as `run.cancelled` on the timeline, and the control disappear (screenshot before/after). Per `AGENTS.md`, this owner-only live verification is recorded as a residual risk rather than holding the change active; the contract is otherwise proven by the unit tests (5.x in section 4 / 6.2) and the shipped owner-session route `POST /_ref/runs/{run_id}/cancel`.
 
 ## 6. Validation
 
