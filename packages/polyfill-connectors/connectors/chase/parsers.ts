@@ -66,6 +66,7 @@ const UI_TRANSACTION_ID_ATTRS = [
   "id",
 ] as const;
 const HASHED_ID_RE = /^(?:row-|transaction-|activity-)?[A-Za-z0-9_-]{8,}$/;
+const POSITIONAL_CURRENT_ACTIVITY_ID_RE = /^ovd-recent-activity-table-dataTableId-row-\d+$/;
 
 const MONTH_INDEX: Record<string, string> = {
   jan: "01",
@@ -389,7 +390,7 @@ function parseVisibleDate(text: string, referenceDateIso: string): string | null
 function extractUiTransactionId(el: Element): string | null {
   for (const attr of UI_TRANSACTION_ID_ATTRS) {
     const value = el.getAttribute(attr);
-    if (value && HASHED_ID_RE.test(value)) {
+    if (value && HASHED_ID_RE.test(value) && !POSITIONAL_CURRENT_ACTIVITY_ID_RE.test(value)) {
       return value;
     }
   }

@@ -431,6 +431,36 @@ test("currentActivityId: prefers UI id and otherwise uses deterministic fallback
   assert.equal(currentActivityId("ACC", withoutUiId), fallback);
 });
 
+test("currentActivityId: positional MDS row ids fall back to transaction content", () => {
+  const slotOneHtml = `
+    <table><tbody>
+      <tr
+        id="ovd-recent-activity-table-dataTableId-row-1"
+        class="mds-activity-table__row"
+        data-values="May 14, 2026,STORE MERCHANT,$39.08,"
+      ></tr>
+    </tbody></table>
+  `;
+  const slotOneLaterHtml = `
+    <table><tbody>
+      <tr
+        id="ovd-recent-activity-table-dataTableId-row-1"
+        class="mds-activity-table__row"
+        data-values="May 14, 2026,OTHER MERCHANT,$98.84,"
+      ></tr>
+    </tbody></table>
+  `;
+
+  const first = parseCurrentActivityDom(slotOneHtml, "2026-05-15")[0];
+  const later = parseCurrentActivityDom(slotOneLaterHtml, "2026-05-15")[0];
+  assert.ok(first);
+  assert.ok(later);
+  assert.equal(first.ui_transaction_id, null);
+  assert.equal(later.ui_transaction_id, null);
+  assert.match(currentActivityId("ACC", first), /^ACC\|fallback:[0-9a-f]{32}$/);
+  assert.notEqual(currentActivityId("ACC", first), currentActivityId("ACC", later));
+});
+
 test("parseCurrentActivityDom: ignores ancestor activity containers and emits only leaf rows", () => {
   const rows = parseCurrentActivityDom(readFixture("current-activity-wrapped-rows.html"), "2026-05-15");
   assert.equal(rows.length, 2);
@@ -469,11 +499,7 @@ test("parseCurrentActivityDom: real dashboard overview shape (committed extract)
     [15_804, 10_124, 3908, 9884, 7099]
   );
   for (const r of rows) {
-    assert.match(
-      r.ui_transaction_id ?? "",
-      /^ovd-recent-activity-table-dataTableId-row-\d+$/,
-      "MDS row tr#id should propagate as ui_transaction_id"
-    );
+    assert.equal(r.ui_transaction_id, null, "positional MDS row ids must not become stable transaction ids");
   }
 });
 

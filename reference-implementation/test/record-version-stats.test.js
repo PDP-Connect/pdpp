@@ -16,10 +16,15 @@ import {
   createSqliteConnectorInstanceStore,
   makeDefaultAccountConnectorInstanceId,
 } from '../server/stores/connector-instance-store.js';
+import { REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT } from '../server/version-disposition.js';
 
 const CONNECTOR_ID = 'https://test.pdpp.dev/connectors/version-churn';
 const CONNECTOR_INSTANCE_ID = 'cin_test_version_churn';
 const NOW = '2026-05-26T12:00:00.000Z';
+
+function oneMillisecondAfter(iso) {
+  return new Date(new Date(iso).getTime() + 1).toISOString();
+}
 
 async function closeServer(server) {
   server.schedulerManager?.stop?.();
@@ -406,6 +411,8 @@ function projectionRowFor(gt) {
 }
 
 test('AC-4: reviewed residue re-alarms to lossless_compaction_candidate after the review timestamp', async () => {
+  const reviewedAt = REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT.get('usaa/accounts');
+  assert.ok(reviewedAt);
   // Within window → reviewed_historical_residue.
   const withinGt = {
     connector_id: 'usaa',
@@ -415,7 +422,7 @@ test('AC-4: reviewed residue re-alarms to lossless_compaction_candidate after th
     record_history_count: 80,
     record_key_count: 4,
     last_current_at: NOW,
-    last_history_at: '2026-06-03T12:00:00.000Z',
+    last_history_at: reviewedAt,
   };
   const within = await envelopeFor([projectionRowFor(withinGt)], [withinGt]);
   assert.equal(within.data[0].version_disposition, 'reviewed_historical_residue');
@@ -429,7 +436,7 @@ test('AC-4: reviewed residue re-alarms to lossless_compaction_candidate after th
     record_history_count: 80,
     record_key_count: 4,
     last_current_at: NOW,
-    last_history_at: '2026-06-03T19:19:53.634Z',
+    last_history_at: oneMillisecondAfter(reviewedAt),
   };
   const after = await envelopeFor([projectionRowFor(afterGt)], [afterGt]);
   assert.equal(after.data[0].version_disposition, 'lossless_compaction_candidate');

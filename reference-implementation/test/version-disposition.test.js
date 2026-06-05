@@ -26,6 +26,10 @@ import {
   VERSION_DISPOSITIONS,
 } from '../server/version-disposition.js';
 
+function oneMillisecondAfter(iso) {
+  return new Date(new Date(iso).getTime() + 1).toISOString();
+}
+
 // ─── Recurring point-in-time snapshots (disposition #5, the new construction) ─
 
 test('classifyVersionDisposition: claude-code/sessions is a recurring point-in-time snapshot', () => {
@@ -148,11 +152,15 @@ test('classifyVersionDisposition: reviewed residue classifies #2 when last_histo
 });
 
 test('classifyVersionDisposition: reviewed residue re-alarms to #4 after the review timestamp (AC-4)', () => {
+  const usaaReviewedAt = REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT.get('usaa/accounts');
+  const chaseReviewedAt = REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT.get('chase/statements');
+  assert.ok(usaaReviewedAt);
+  assert.ok(chaseReviewedAt);
   assert.equal(
     classifyVersionDisposition({
       connectorId: 'usaa',
       stream: 'accounts',
-      lastHistoryAt: '2026-06-03T19:19:53.634Z',
+      lastHistoryAt: oneMillisecondAfter(usaaReviewedAt),
       hasCompactionPolicy: true,
     }),
     'lossless_compaction_candidate',
@@ -161,7 +169,7 @@ test('classifyVersionDisposition: reviewed residue re-alarms to #4 after the rev
     classifyVersionDisposition({
       connectorId: 'chase',
       stream: 'statements',
-      lastHistoryAt: '2026-06-03T16:03:36.644Z',
+      lastHistoryAt: oneMillisecondAfter(chaseReviewedAt),
       hasCompactionPolicy: true,
     }),
     'lossless_compaction_candidate',

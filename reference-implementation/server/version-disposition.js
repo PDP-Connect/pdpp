@@ -115,9 +115,9 @@ export const RECURRING_POINT_IN_TIME_SNAPSHOT_STREAMS = Object.freeze([
  */
 export const REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT = Object.freeze(
   new Map([
-    ['usaa/accounts', '2026-06-03T19:19:53.633Z'],
-    ['usaa/statements', '2026-06-03T04:23:03.255Z'],
-    ['chase/statements', '2026-06-03T16:03:36.643Z'],
+    ['usaa/accounts', '2026-06-05T13:57:05.707Z'],
+    ['usaa/statements', '2026-06-05T13:57:05.707Z'],
+    ['chase/statements', '2026-06-05T13:57:05.707Z'],
   ]),
 );
 
