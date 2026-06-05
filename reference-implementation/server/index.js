@@ -10,6 +10,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { closeDb, getDb, initDb } from './db.js';
 import {
   closePostgresStorage,
+  collectPhysicalFootprint,
   initPostgresStorage,
   isPostgresStorageBackend,
   postgresQuery,
@@ -2943,6 +2944,7 @@ function buildAsApp(opts = {}) {
       {
         getBackend: () => getSemanticBackend(),
         getDb: () => getDb(),
+        getPhysicalFootprint: () => collectPhysicalFootprint(),
         computeIndexState: () => computeSemanticIndexState(),
         getBackfillProgress: () => getSemanticIndexBackfillProgress(),
         getLexicalBackfillProgress: () => getLexicalIndexBackfillProgress(),

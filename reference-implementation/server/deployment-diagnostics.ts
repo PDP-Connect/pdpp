@@ -91,6 +91,29 @@ export interface DiagnosticsDb {
   readonly vectorIndexKind: VectorIndexKind;
 }
 
+// Physical on-disk database footprint (Postgres-only, read-only). Surfaced so
+// the operator can reconcile the database's on-disk size against the logical
+// retained payload without a `psql` session. Honest about absence: both fields
+// are `null` on a SQLite backend or when the size read fails — never a
+// fabricated `0`. The relation sizes are an approximate composition; they do
+// not sum to `physical_bytes` (shared catalogs, free space, and WAL are not
+// attributed per relation).
+//
+// Spec: openspec/changes/surface-database-physical-footprint/specs/
+//       reference-implementation-architecture/spec.md
+export interface PhysicalRelationSize {
+  readonly bytes: number;
+  readonly name: string;
+}
+
+export interface PhysicalFootprint {
+  // pg_database_size(current_database()); null on SQLite / read failure.
+  readonly physical_bytes: number | null;
+  // Largest relations by pg_total_relation_size(relid), ordered largest-first
+  // and bounded to a small top-N. null/empty on SQLite / read failure.
+  readonly top_relations: readonly PhysicalRelationSize[] | null;
+}
+
 export interface DiagnosticsEnv {
   readonly [key: string]: string | undefined;
 }
@@ -104,6 +127,11 @@ export interface DeploymentDiagnosticsInput {
   readonly indexState: SemanticIndexState | null;
   readonly lexicalBackfillProgress?: LexicalBackfillProgress | null;
   readonly manifests: readonly DiagnosticsManifestEntry[];
+  // Physical on-disk database footprint. Optional and pre-computed by the
+  // runtime adapter (the pure builder does no I/O). Absent/undefined and an
+  // explicit SQLite/failure `{ physical_bytes: null, top_relations: null }`
+  // both surface as unmeasured.
+  readonly physicalFootprint?: PhysicalFootprint | null;
   readonly runtimeCapabilities?: RuntimeCapabilityPosture | null;
 }
 
@@ -201,6 +229,11 @@ export interface EnvValueReport {
 export interface DeploymentDiagnosticsReport {
   readonly database: {
     readonly path: string;
+    // Read-only physical footprint (Postgres-only). `null` on SQLite or read
+    // failure — never a fabricated `0`. Distinct from the logical retained
+    // payload (`total_retained_bytes`); never aliased to or summed with it.
+    readonly physical_bytes: number | null;
+    readonly top_relations: readonly PhysicalRelationSize[] | null;
   };
   readonly environment: readonly EnvValueReport[];
   readonly lexical: {
@@ -562,6 +595,32 @@ function summarizeManifests(manifests: readonly DiagnosticsManifestEntry[]): Dep
     });
 }
 
+// ─── Physical footprint normalization ──────────────────────────────────────
+//
+// The runtime adapter pre-computes the footprint (the pure builder does no
+// I/O). This collapses the three "unmeasured" inputs — absent/undefined, an
+// explicit `{ physical_bytes: null, ... }`, or a non-numeric total — into the
+// same honest shape: `physical_bytes: null` with `top_relations: null`. It
+// never fabricates a `0`, and it never reports relations against an unknown
+// total. When a real total is present, it carries through the bounded
+// relation list (defaulting a missing list to `[]`, distinct from the
+// unmeasured `null`).
+
+function normalizePhysicalFootprint(footprint: PhysicalFootprint | null | undefined): {
+  physical_bytes: number | null;
+  top_relations: readonly PhysicalRelationSize[] | null;
+} {
+  const total = footprint?.physical_bytes;
+  if (typeof total !== "number" || !Number.isFinite(total) || total < 0) {
+    return { physical_bytes: null, top_relations: null };
+  }
+  const relations = footprint?.top_relations;
+  return {
+    physical_bytes: total,
+    top_relations: Array.isArray(relations) ? relations : [],
+  };
+}
+
 // ─── Blended-search gating decision ────────────────────────────────────────
 //
 // The dashboard's blended search attempts a semantic uplift only when
@@ -602,6 +661,10 @@ export interface DeploymentDiagnosticsRuntimeDeps {
   readonly getConnectorManifest: (connectorId: string) => Promise<DiagnosticsManifest | null>;
   readonly getDb: () => DiagnosticsDb | null;
   readonly getLexicalBackfillProgress?: () => LexicalBackfillProgress | null;
+  // Optional: read-only physical footprint of the database. The adapter calls
+  // it and degrades cleanly to unmeasured on absence or rejection — the page
+  // never fails because the footprint could not be read.
+  readonly getPhysicalFootprint?: () => PhysicalFootprint | Promise<PhysicalFootprint> | null;
   readonly getRuntimeCapabilityPosture?: () => RuntimeCapabilityPosture | Promise<RuntimeCapabilityPosture> | null;
   readonly listRegisteredConnectorIds: () => Promise<readonly string[]>;
 }
@@ -641,6 +704,18 @@ export async function collectDeploymentDiagnostics(
     ? await Promise.resolve(deps.getRuntimeCapabilityPosture())
     : null;
 
+  // Physical footprint is best-effort and read-only. A rejected promise (or a
+  // missing dep) degrades to unmeasured rather than failing the whole page;
+  // the builder collapses null/undefined to `physical_bytes: null`.
+  let physicalFootprint: PhysicalFootprint | null = null;
+  if (deps.getPhysicalFootprint) {
+    try {
+      physicalFootprint = await Promise.resolve(deps.getPhysicalFootprint());
+    } catch {
+      physicalFootprint = null;
+    }
+  }
+
   return buildDeploymentDiagnostics({
     backend,
     db,
@@ -649,6 +724,7 @@ export async function collectDeploymentDiagnostics(
     lexicalBackfillProgress: deps.getLexicalBackfillProgress ? deps.getLexicalBackfillProgress() : null,
     manifests,
     indexState,
+    physicalFootprint,
     runtimeCapabilities,
     env,
   });
@@ -693,6 +769,7 @@ export function buildDeploymentDiagnostics(input: DeploymentDiagnosticsInput): D
     },
     database: {
       path: input.dbPath,
+      ...normalizePhysicalFootprint(input.physicalFootprint),
     },
     manifests: summarizeManifests(input.manifests),
     environment: buildEnvironmentReport(input.env),

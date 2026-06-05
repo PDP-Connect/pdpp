@@ -850,7 +850,16 @@ export async function getDatasetSummary(): Promise<DatasetSummary> {
 // server/deployment-diagnostics.ts; the RS redacts secrets before sending,
 // and the dashboard must not re-assemble them.
 export interface DeploymentDiagnostics {
-  database: { path: string };
+  database: {
+    path: string;
+    // Read-only physical on-disk footprint (Postgres-only). `null` on a
+    // SQLite backend or when the size read fails — never a fabricated `0`.
+    // Distinct from the logical retained payload (`total_retained_bytes`);
+    // rendered as a labeled comparison, never aliased or summed. Optional so
+    // a server that omits them still parses; absence is unmeasured.
+    physical_bytes?: number | null;
+    top_relations?: ReadonlyArray<{ name: string; bytes: number }> | null;
+  };
   environment: ReadonlyArray<{
     name: string;
     value: string | null;

@@ -154,6 +154,110 @@ export async function postgresQuery(sql, params = []) {
   return getPostgresPool().query(sql, params);
 }
 
+// ─── Physical storage footprint (read-only operator diagnostics) ─────────────
+//
+// Surfaces the database's on-disk size so an operator can reconcile the
+// logical retained payload (record/history/blob JSON byte length, reported by
+// `/_ref/dataset/summary`) against what the database process actually occupies
+// on disk. The two are deliberately different measurements: the physical
+// number includes index storage (the `lexical_search_*` / `semantic_search_*`
+// tables), the operational event log, TOAST overhead, page bloat, and free
+// space — none of which the logical projection counts.
+//
+// Strictly read-only by construction: only the pure `pg_database_size` and
+// `pg_total_relation_size` read functions are used. No DDL, no DML, no
+// vacuum/analyze/reindex side effect. Surfacing footprint must never change
+// footprint.
+//
+// Spec: openspec/changes/surface-database-physical-footprint/specs/
+//       reference-implementation-architecture/spec.md
+
+// Bound the relation list so the payload stays small and the operator gets the
+// size drivers, not a full table census. The sizes are an approximate
+// composition: they do not sum to pg_database_size (shared catalogs, the free
+// space map, and WAL are not attributed per relation).
+const PHYSICAL_FOOTPRINT_TOP_RELATIONS = 8;
+
+/**
+ * Read the physical on-disk database footprint for a Postgres backend.
+ *
+ * Returns `{ physical_bytes, top_relations }` where `physical_bytes` is
+ * `pg_database_size(current_database())` and `top_relations` is the largest
+ * relations by `pg_total_relation_size(relid)` (table + indexes + TOAST),
+ * ordered largest-first and bounded to a small top-N.
+ *
+ * Honest about backend and absence: returns `{ physical_bytes: null,
+ * top_relations: null }` on a non-Postgres backend and on any read failure,
+ * mirroring the fail-open diagnostics stance. Never fabricates a `0`.
+ *
+ * @returns {Promise<{ physical_bytes: number | null, top_relations: Array<{ name: string, bytes: number }> | null }>}
+ */
+export async function collectPhysicalFootprint() {
+  if (!isPostgresStorageBackend()) {
+    return { physical_bytes: null, top_relations: null };
+  }
+  try {
+    const totalResult = await postgresQuery(
+      'SELECT pg_database_size(current_database()) AS bytes'
+    );
+    const physicalBytes = coerceByteCount(totalResult?.rows?.[0]?.bytes);
+    if (physicalBytes === null) {
+      // Could not read a usable total — degrade rather than report relations
+      // against an unknown whole.
+      return { physical_bytes: null, top_relations: null };
+    }
+
+    // `relkind = 'r'` restricts to ordinary tables; pg_total_relation_size
+    // already folds in each table's indexes and TOAST, so we do not also
+    // enumerate index relkinds (that would double-count). Catalog/system
+    // relations under pg_catalog / information_schema are excluded so the
+    // operator sees their own data relations.
+    const relationsResult = await postgresQuery(
+      `SELECT c.relname AS name,
+              pg_total_relation_size(c.oid) AS bytes
+         FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relkind = 'r'
+          AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+          AND n.nspname NOT LIKE 'pg_toast%'
+        ORDER BY pg_total_relation_size(c.oid) DESC
+        LIMIT $1`,
+      [PHYSICAL_FOOTPRINT_TOP_RELATIONS]
+    );
+    const topRelations = [];
+    for (const row of relationsResult?.rows ?? []) {
+      const name = typeof row?.name === 'string' ? row.name : null;
+      const bytes = coerceByteCount(row?.bytes);
+      if (name === null || bytes === null) {
+        continue;
+      }
+      topRelations.push({ name, bytes });
+    }
+
+    return { physical_bytes: physicalBytes, top_relations: topRelations };
+  } catch {
+    // Read failure (permissions, connection drop, etc.) surfaces as
+    // unmeasured, not as a fabricated zero. The rest of diagnostics still
+    // renders.
+    return { physical_bytes: null, top_relations: null };
+  }
+}
+
+// pg returns BIGINT as a string to avoid JS precision loss. The sizes here are
+// well within Number.MAX_SAFE_INTEGER (a ~51 GB database is ~5.5e10, safe to
+// ~9e15), so we coerce to a finite non-negative Number. Anything that does not
+// coerce to a finite non-negative number degrades to `null`.
+function coerceByteCount(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const n = typeof value === 'bigint' ? Number(value) : Number(value);
+  if (!Number.isFinite(n) || n < 0) {
+    return null;
+  }
+  return n;
+}
+
 export async function withPostgresTransaction(fn) {
   const client = await getPostgresPool().connect();
   try {

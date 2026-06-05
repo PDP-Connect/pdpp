@@ -10,7 +10,7 @@ import { extractReadinessInputs } from "../components/deployment-readiness-rows.
 import { LivePoller } from "../components/live-poller.tsx";
 import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
-import { type DeploymentDiagnostics, getDeploymentDiagnostics } from "../lib/ref-client.ts";
+import { type DeploymentDiagnostics, getDatasetSummary, getDeploymentDiagnostics } from "../lib/ref-client.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -40,6 +40,18 @@ export default async function DeploymentPage() {
     }
   }
 
+  // The logical retained payload is rendered beside the physical footprint as
+  // a labeled comparison. It is a best-effort fetch — a failed summary read
+  // hides the comparison line rather than failing the deployment page, which
+  // is primarily a retrieval-diagnostics surface.
+  let retainedBytes: number | null = null;
+  try {
+    const summary = await getDatasetSummary();
+    retainedBytes = typeof summary.total_retained_bytes === "number" ? summary.total_retained_bytes : null;
+  } catch {
+    retainedBytes = null;
+  }
+
   if (unreachable || !report) {
     return (
       <DashboardShell active="deployment">
@@ -62,6 +74,7 @@ export default async function DeploymentPage() {
         breadcrumbs={[{ href: "/dashboard", label: "Dashboard" }, { label: "Deployment" }]}
         description="Operator diagnostics for the reference retrieval surfaces. Read-only. Secret environment values are redacted before reaching this page."
         report={report}
+        retainedBytes={retainedBytes}
       />
     </DashboardShell>
   );

@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { formatConnectorKeyForDisplay } from "../../lib/connector-display.ts";
 import type { DeploymentDiagnostics } from "../../lib/ref-client.ts";
+import { buildStorageFootprintModel } from "../../lib/storage-footprint.ts";
 import { Timestamp } from "../../ui/timestamp.tsx";
 import { EmptyState } from "../empty-state.tsx";
 import { Callout, PageHeader, Section } from "../primitives.tsx";
@@ -12,6 +13,11 @@ interface DeploymentDiagnosticsViewProps {
   breadcrumbs?: { href?: string; label: string }[];
   description: string;
   report: DeploymentDiagnostics;
+  // The logical retained payload (`total_retained_bytes` from
+  // `/_ref/dataset/summary`), rendered beside the physical footprint as a
+  // labeled comparison. Optional: when omitted the comparison line is hidden
+  // rather than guessed. Never combined with the physical size.
+  retainedBytes?: number | null;
   title?: string;
 }
 
@@ -22,6 +28,7 @@ export function DeploymentDiagnosticsView({
   breadcrumbs,
   description,
   report,
+  retainedBytes,
   title = "Deployment",
 }: DeploymentDiagnosticsViewProps) {
   return (
@@ -35,7 +42,11 @@ export function DeploymentDiagnosticsView({
       <SemanticSection report={report} />
       <ParticipationSection participation={report.semantic.participation} />
       <ManifestsSection manifests={report.manifests} />
-      <DatabaseSection database={report.database} indexKind={report.semantic.index.kind} />
+      <DatabaseSection
+        database={report.database}
+        indexKind={report.semantic.index.kind}
+        retainedBytes={retainedBytes}
+      />
       <EnvironmentSection environment={report.environment} />
       {afterDiagnostics}
     </>
@@ -341,17 +352,65 @@ function ManifestsSection({ manifests }: { manifests: DeploymentDiagnostics["man
 function DatabaseSection({
   database,
   indexKind,
+  retainedBytes,
 }: {
   database: DeploymentDiagnostics["database"];
   indexKind: DeploymentDiagnostics["semantic"]["index"]["kind"];
+  retainedBytes?: number | null;
 }) {
+  const footprint = buildStorageFootprintModel(database, retainedBytes);
   return (
-    <Section title="Database">
+    <Section
+      description="On-disk database size is operator diagnostics. It is a different measurement from the retained payload (the JSON/blob byte length of records, history, and blobs) and is never summed with it: the physical size also includes index storage, the event log, TOAST, page bloat, and free space."
+      title="Database"
+    >
       <dl className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
         <Field label="Path" value={database.path} />
         <Field label="Vector index kind" value={indexKind ?? "—"} />
+        <Field label="On disk (physical)" value={footprint.physicalLabel} />
+        <Field label="Retained payload (logical)" value={footprint.retainedLabel ?? "—"} />
       </dl>
+
+      {footprint.measured ? (
+        <DatabaseRelations relations={footprint.relations} />
+      ) : (
+        <Callout
+          className="mt-4"
+          description={footprint.unmeasuredNote ?? ""}
+          surface="neutral"
+          title="On-disk size unmeasured"
+        />
+      )}
     </Section>
+  );
+}
+
+function DatabaseRelations({ relations }: { relations: ReturnType<typeof buildStorageFootprintModel>["relations"] }) {
+  if (relations.length === 0) {
+    return null;
+  }
+  return (
+    <div className="mt-4">
+      <p className="pdpp-eyebrow text-muted-foreground">
+        Largest relations (approximate — does not sum to the on-disk total)
+      </p>
+      <table className="mt-2 w-full border-border/80 border-y text-left text-sm">
+        <thead>
+          <tr className="text-muted-foreground text-xs uppercase tracking-wide">
+            <th className="px-2 py-2 font-medium">Relation</th>
+            <th className="px-2 py-2 text-right font-medium">Size</th>
+          </tr>
+        </thead>
+        <tbody>
+          {relations.map((relation) => (
+            <tr className="border-border/60 border-t" key={relation.name}>
+              <td className="px-2 py-1.5 font-mono text-xs">{relation.name}</td>
+              <td className="px-2 py-1.5 text-right tabular-nums">{relation.label}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

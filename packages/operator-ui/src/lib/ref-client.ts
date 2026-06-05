@@ -418,7 +418,18 @@ export interface DatasetSummaryProjectionMetadata {
 // server/deployment-diagnostics.ts; the RS redacts secrets before sending,
 // and the dashboard must not re-assemble them.
 export interface DeploymentDiagnostics {
-  database: { path: string };
+  database: {
+    path: string;
+    // Read-only physical on-disk footprint (Postgres-only). `null` on a
+    // SQLite backend or when the size read fails — never a fabricated `0`.
+    // Distinct from the logical retained payload (`total_retained_bytes`);
+    // the console renders them as a labeled comparison and never aliases or
+    // sums them. The relation sizes are an approximate composition.
+    // Optional so an older server (or the sandbox specimen) that omits them
+    // still parses; absence is treated as unmeasured.
+    physical_bytes?: number | null;
+    top_relations?: ReadonlyArray<{ name: string; bytes: number }> | null;
+  };
   environment: ReadonlyArray<{
     name: string;
     value: string | null;
