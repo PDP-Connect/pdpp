@@ -74,7 +74,12 @@ export interface RolloutPayload {
   arguments?: string | null;
   call_id?: string;
   cli_version?: string;
-  content?: Array<{ text?: string }>;
+  // Each content part carries a `type` discriminator on disk
+  // (e.g. "input_text" for user/developer turns, "output_text" for
+  // assistant turns). extractMessageText only reads `text`, but the type is
+  // declared so the real rollout shape — including developer `input_text`
+  // parts whose `text` is an empty string — is represented accurately.
+  content?: Array<{ type?: string; text?: string }>;
   cwd?: string;
   git?: {
     commit_hash?: string;

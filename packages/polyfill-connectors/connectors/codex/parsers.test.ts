@@ -51,6 +51,37 @@ test("extractMessageText: all-empty content → null", () => {
   assert.equal(extractMessageText({ content: [{}, {}] }), null);
 });
 
+// Regression: the exact on-disk shape of a Codex developer-role `message`
+// item whose single `input_text` part carries an EMPTY-STRING `text`. This is
+// the dominant shape in live rollouts (≈99% of developer messages observed in
+// a 1.4 GB rollout were `input_text` parts with `text: ""`), and it is the
+// reason live `messages` records for developer turns are retained with
+// `content: null`. Empty source text → null is FAITHFUL, not a defect: the
+// part exists but has no user-visible text, so there is nothing to preview.
+// Pin both directions so a future refactor of extractMessageText cannot start
+// emitting "" (record churn) or crash on the empty-text part.
+test("extractMessageText: developer input_text part with empty text → null (live shape)", () => {
+  assert.equal(
+    extractMessageText({
+      role: "developer",
+      type: "message",
+      content: [{ type: "input_text", text: "" }],
+    }),
+    null
+  );
+});
+
+test("extractMessageText: developer input_text part with real text → joined string", () => {
+  assert.equal(
+    extractMessageText({
+      role: "developer",
+      type: "message",
+      content: [{ type: "input_text", text: "do the thing" }],
+    }),
+    "do the thing"
+  );
+});
+
 // ─── payloadOutputPreview ────────────────────────────────────────────────
 
 test("payloadOutputPreview: string output passes through under cap", () => {
