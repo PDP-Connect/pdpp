@@ -1229,3 +1229,114 @@ test('a connector with no resolvable binding is rejected with a typed 400, never
     assert.equal(instances.n, 0);
   });
 });
+
+// Directly overwrite the stored heartbeat timestamp so the staleness badge can
+// be exercised against a controlled age without sleeping. The heartbeat route
+// always stamps `received_at = now`, so the only way to age a heartbeat in a
+// test is to write the column.
+function setDeviceLastHeartbeatAt(deviceId, isoTimestamp) {
+  const result = getDb()
+    .prepare('UPDATE device_exporters SET last_heartbeat_at = ? WHERE device_id = ?')
+    .run(isoTimestamp, deviceId);
+  assert.equal(result.changes, 1, `expected to age heartbeat for device ${deviceId}`);
+}
+
+async function diagnosticsForDevice(asUrl, deviceId) {
+  const resp = await fetch(`${asUrl}/_ref/device-exporters/diagnostics`, {
+    headers: { Accept: 'application/json' },
+  });
+  assert.equal(resp.status, 200);
+  const body = await resp.json();
+  const device = body.data.find((d) => d.device_id === deviceId);
+  assert.ok(device, `expected diagnostics to include device ${deviceId}`);
+  return device;
+}
+
+test('device staleness badge follows the connector refresh policy, not a fixed 5-minute window', async () => {
+  await withServer(async ({ asUrl }) => {
+    // The codex catalog manifest declares
+    // capabilities.refresh_policy.maximum_staleness_seconds = 21600 (6h).
+    const device = await enrollDevice(asUrl, 'codex-laptop', 'codex');
+
+    // A heartbeat establishes an active source instance for the device. The
+    // connector_id on the projected source instance is what selects the policy.
+    const heartbeat = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/heartbeat`,
+      {
+        connector_id: 'codex',
+        records_pending: 0,
+        source_instance_id: device.source_instance_id,
+        status: 'healthy',
+      },
+      authHeaders(device.device_token),
+    );
+    assert.equal(heartbeat.status, 200);
+
+    // 10 minutes old: well past the legacy hard-coded 5-minute window, but far
+    // inside the connector's 6-hour policy. The policy-aware badge must NOT
+    // flag this device as stale. (Under the old fixed window this was `true`,
+    // which is exactly the admin-badge bug being fixed.)
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    setDeviceLastHeartbeatAt(device.device_id, tenMinutesAgo);
+    const fresh = await diagnosticsForDevice(asUrl, device.device_id);
+    assert.equal(fresh.last_heartbeat_at, tenMinutesAgo);
+    assert.equal(
+      fresh.stale,
+      false,
+      'a 10-minute-old heartbeat must not be stale under a 6-hour refresh policy',
+    );
+
+    // 7 hours old: past the connector's 6-hour policy window. A genuinely
+    // overdue collector must still be flagged stale.
+    const sevenHoursAgo = new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString();
+    setDeviceLastHeartbeatAt(device.device_id, sevenHoursAgo);
+    const overdue = await diagnosticsForDevice(asUrl, device.device_id);
+    assert.equal(overdue.last_heartbeat_at, sevenHoursAgo);
+    assert.equal(
+      overdue.stale,
+      true,
+      'a heartbeat older than the policy window must remain stale',
+    );
+  });
+});
+
+test('device staleness badge stays honestly non-stale when no refresh policy resolves', async () => {
+  await withServer(async ({ asUrl }) => {
+    // Enroll a codex device (the only enrollable path requires a manifest with
+    // a resolvable binding), then point its source instance at a connector that
+    // has no resolvable manifest at all. With no manifest — and therefore no
+    // declared staleness window — the badge must report `unknown` freshness,
+    // i.e. not stale, rather than re-inventing a hard-coded window.
+    const device = await enrollDevice(asUrl, 'no-policy-laptop', 'codex');
+    await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/heartbeat`,
+      {
+        connector_id: 'codex',
+        records_pending: 0,
+        source_instance_id: device.source_instance_id,
+        status: 'healthy',
+      },
+      authHeaders(device.device_token),
+    );
+
+    // Repoint the source instance at an unregistered connector id. The catalog
+    // and registered-manifest lookups both return null for it, so the staleness
+    // window resolves to null (unknown).
+    const repointed = getDb()
+      .prepare('UPDATE device_source_instances SET connector_id = ? WHERE source_instance_id = ?')
+      .run('unregistered-policyless-connector', device.source_instance_id);
+    assert.equal(repointed.changes, 1);
+
+    // Heartbeat far older than any plausible default window. With no policy the
+    // honest answer is not-stale (unknown), never a fixed-window stale.
+    const longAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    setDeviceLastHeartbeatAt(device.device_id, longAgo);
+    const projected = await diagnosticsForDevice(asUrl, device.device_id);
+    assert.equal(projected.last_heartbeat_at, longAgo);
+    assert.equal(
+      projected.stale,
+      false,
+      'with no resolvable refresh policy the badge must stay honestly non-stale',
+    );
+  });
+});

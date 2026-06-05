@@ -22,6 +22,7 @@
 // are host-injected via ctx so the adapter never imports the substrate
 // directly.
 
+import { deriveReferenceFreshness } from "../freshness.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 import {
   type EnrolledSourceKind,
@@ -394,6 +395,90 @@ async function resolveEnrollmentSourceKind(
   const localManifest = ctx.readReferenceLocalConnectorCatalogManifest(connectorKey);
   const manifest = localManifest ?? (await ctx.getConnectorManifest(connectorKey));
   return resolveEnrolledSourceKind({ connectorId: connectorKey, manifest, requestedSourceKind });
+}
+
+// Read `capabilities.refresh_policy.maximum_staleness_seconds` off a connector
+// manifest, returning a positive number of seconds or `null`. This is the same
+// policy value the connection-health freshness projection consumes in
+// `ref-control.ts` (`getMaximumStalenessSeconds`); the admin device-exporter
+// staleness badge reads it from here so the two surfaces agree on when a
+// collector is overdue rather than the badge hard-coding its own window.
+function extractManifestMaximumStalenessSeconds(manifest: unknown): number | null {
+  if (!manifest || typeof manifest !== "object") {
+    return null;
+  }
+  const caps = (manifest as { capabilities?: unknown }).capabilities;
+  if (!caps || typeof caps !== "object") {
+    return null;
+  }
+  const refreshPolicy = (caps as { refresh_policy?: unknown }).refresh_policy;
+  if (!refreshPolicy || typeof refreshPolicy !== "object" || Array.isArray(refreshPolicy)) {
+    return null;
+  }
+  const value = (refreshPolicy as { maximum_staleness_seconds?: unknown }).maximum_staleness_seconds;
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+// Resolve the manifest-declared maximum-staleness window (seconds) for a
+// connector key, mirroring `resolveEnrollmentSourceKind`'s resolution order:
+// the local-collector catalog first (claude-code/codex), then a registered
+// connector manifest. Returns `null` when no manifest resolves or the manifest
+// declares no positive `maximum_staleness_seconds`, so the caller can keep an
+// honest "unknown" posture instead of inventing a freshness window.
+async function resolveConnectorMaximumStalenessSeconds(
+  ctx: MountRefDeviceExportersContext,
+  connectorId: string
+): Promise<number | null> {
+  const connectorKey = ctx.canonicalConnectorKey(connectorId) ?? connectorId;
+  const localManifest = ctx.readReferenceLocalConnectorCatalogManifest(connectorKey);
+  if (localManifest) {
+    return extractManifestMaximumStalenessSeconds(localManifest);
+  }
+  try {
+    const manifest = await ctx.getConnectorManifest(connectorKey);
+    return extractManifestMaximumStalenessSeconds(manifest);
+  } catch {
+    return null;
+  }
+}
+
+// Build a connector-id → maximum-staleness-seconds map for the connectors a set
+// of source instances reference. Reads each distinct connector's manifest once.
+async function resolveStalenessWindowsByConnector(
+  ctx: MountRefDeviceExportersContext,
+  connectorIds: Iterable<string>
+): Promise<Map<string, number | null>> {
+  const windows = new Map<string, number | null>();
+  for (const connectorId of new Set(connectorIds)) {
+    windows.set(connectorId, await resolveConnectorMaximumStalenessSeconds(ctx, connectorId));
+  }
+  return windows;
+}
+
+// A device hosts one or more source instances, each potentially for a different
+// connector. Pick the device's staleness window as the most lenient (largest)
+// policy across its source instances: a heartbeat is only "stale" once it
+// exceeds the longest legitimate refresh window any of the device's connectors
+// declares, so a single short-window connector cannot over-alarm a device whose
+// other connectors refresh slowly. Returns `null` when no source instance
+// resolves a policy, so the device stays honestly non-stale rather than falling
+// back to a hard-coded window.
+function deviceMaximumStalenessSeconds(
+  sourceList: readonly unknown[],
+  windowsByConnector: Map<string, number | null>
+): number | null {
+  let maxSeconds: number | null = null;
+  for (const source of sourceList) {
+    const connectorId = (source as { connector_id?: unknown }).connector_id;
+    if (typeof connectorId !== "string") {
+      continue;
+    }
+    const seconds = windowsByConnector.get(connectorId) ?? null;
+    if (seconds != null && (maxSeconds == null || seconds > maxSeconds)) {
+      maxSeconds = seconds;
+    }
+  }
+  return maxSeconds;
 }
 
 function deriveSourceInstanceOutboxState(diagnostics: unknown): string {
@@ -778,15 +863,30 @@ const EMPTY_LOCAL_COVERAGE: LocalCoverageProjection = Object.freeze({
   unaccounted_stores: Object.freeze([]) as unknown as string[],
 });
 
-function projectDeviceExporter(device: DeviceRow, sourceList: unknown[], now: number): unknown {
+function projectDeviceExporter(
+  device: DeviceRow,
+  sourceList: unknown[],
+  now: number,
+  maximumStalenessSeconds: number | null
+): unknown {
   const lastIngestAt = sourceList.reduce((latest: string | null, source) => {
     const s = source as { last_ingest_at?: string | null };
     return !latest || (s.last_ingest_at && s.last_ingest_at > latest) ? (s.last_ingest_at ?? latest) : latest;
   }, null);
   const lastHeartbeatAt = device.lastHeartbeatAt ?? null;
-  const stale = Boolean(
-    lastHeartbeatAt && Number.isFinite(Date.parse(lastHeartbeatAt)) && now - Date.parse(lastHeartbeatAt) > 5 * 60 * 1000
-  );
+  // Policy-aware staleness: a heartbeat is "stale" once it exceeds the
+  // connector's declared `maximum_staleness_seconds`, the same policy the
+  // connection-health freshness projection uses. `deriveReferenceFreshness`
+  // anchors freshness on the heartbeat timestamp (there is no scheduler run for
+  // a push-mode local collector) and returns `unknown` — never `stale` — when
+  // no policy resolves, so an unknown-policy device is honestly not flagged
+  // rather than alarmed on a hard-coded window.
+  const stale =
+    deriveReferenceFreshness({
+      recordLastUpdatedAt: lastHeartbeatAt,
+      maximumStalenessSeconds,
+      now,
+    }).status === "stale";
   return {
     object: "device_exporter",
     device_id: device.deviceId,
@@ -823,6 +923,7 @@ async function buildDeviceExporterDiagnostics(
   const connectorIds = new Set(sourceInstances.map((s) => s.connectorId).filter(Boolean));
   const { stats: gapStats, unreliableIds } = await aggregateLocalCollectorGapStats(ctx, connectorIds);
   const outcomeStats = aggregateOutcomeStats(outcomes);
+  const stalenessWindowsByConnector = await resolveStalenessWindowsByConnector(ctx, connectorIds);
   const coverageByConnectorInstance = await aggregateLocalCoverage(ctx, sourceInstances, {
     connectorInstancesById,
     connectorInstancesByBinding,
@@ -845,7 +946,15 @@ async function buildDeviceExporterDiagnostics(
     list.push(projected);
     sourcesByDevice.set(source.deviceId, list);
   }
-  return devices.map((device) => projectDeviceExporter(device, sourcesByDevice.get(device.deviceId) ?? [], now));
+  return devices.map((device) => {
+    const sourceList = sourcesByDevice.get(device.deviceId) ?? [];
+    return projectDeviceExporter(
+      device,
+      sourceList,
+      now,
+      deviceMaximumStalenessSeconds(sourceList, stalenessWindowsByConnector)
+    );
+  });
 }
 
 async function resolveAuthorizedDeviceSource(
