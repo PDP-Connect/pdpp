@@ -145,6 +145,16 @@ export interface DetailGapMessage {
 }
 
 export interface DetailCoverageMessage {
+  /**
+   * Optional connector-declared `considered` denominator: how many items the run
+   * weighed for this stream (an inventory size, or the boundary the run took into
+   * account). The runtime normalizes it to a trusted safe non-negative integer or
+   * `unknown` (task 2.1) and prefers it over the `required_keys.length` fallback
+   * when deriving the per-stream collection-fact `considered`. It is evidence
+   * only and is NEVER inferred from the collected count — a list stream that
+   * enumerated its boundary may declare it with empty key arrays.
+   */
+  considered?: number;
   gap_keys?: Array<string | number>;
   hydrated_keys: Array<string | number>;
   optional_skip_keys?: Array<string | number>;

@@ -279,8 +279,28 @@
 
 ## 4. Follow-up lanes (NOT this change — sequenced for green-page value)
 
-- [ ] 4.1 Connector honesty lane: GitHub declares a `considered` value (issues /
+- [x] 4.1 Connector honesty lane: GitHub declares a `considered` value (issues /
   repos / starred inventory) so partial-vs-complete is real, not gap-only.
+  Mechanism: a list stream with no detail-hydration phase declares its enumerated
+  inventory by emitting a DETAIL_COVERAGE for the list stream itself
+  (`state_stream === stream`) with EMPTY `required_keys`/`hydrated_keys` and an
+  explicit `considered` (the optional count accepted in 2.1). Empty key arrays
+  mean `assertDetailCoverageSatisfiedBeforeCommit` has nothing to mark missing
+  (the committed STATE still commits) and the terminal collection-fact block
+  reads `considered` via `declaredConsideredForStream`. The SDK
+  `buildDetailCoverageMessage`/`DetailCoverageParams` gained an optional
+  `considered` (dropped at the builder unless a non-negative integer); the
+  protocol `DetailCoverageMessage` gained the optional field. `considered` is the
+  count enumerated from the source within the run's boundary (`totalSeen` /
+  `fetched`), measured at the pagination site — NEVER aliased to the emitted
+  count — so `collected < considered` (an `until` filter, a dropped malformed
+  starred entry) reads a real `partial`. Streams wired: `repositories`,
+  `starred`, `issues`, `gists`, and `pull_requests` (the last only when no search
+  window was cap-truncated, so an unknowable inventory stays `unknown` and relies
+  on its existing `pr_search_cap_truncated` terminal gap). No runtime contract
+  change — the runtime already accepts `DETAIL_COVERAGE.considered`. Proven by a
+  runtime integration test (list-level coverage carries the denominator without
+  blocking commit) plus connector unit tests for each stream's honest count.
 - [ ] 4.2 Connector honesty lane: Slack declares considered for collected streams
   and a `terminal` disposition for its known unsupported streams.
 - [ ] 4.3 Dashboard consumes per-stream report + forward disposition directly;

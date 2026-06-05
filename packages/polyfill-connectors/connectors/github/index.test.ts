@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import type { StreamScope } from "../../src/connector-runtime.ts";
 import {
+  collectGists,
+  collectIssues,
   collectPullRequests,
+  collectRepositories,
   collectStarred,
   collectUser,
   isoYear,
@@ -42,11 +45,20 @@ interface CapturedSkip {
   stream: string;
 }
 
+interface CapturedCoverage {
+  considered: number | undefined;
+  hydratedKeys: number;
+  requiredKeys: number;
+  stateStream: string;
+  stream: string;
+}
+
 function makeCtx(
   requestedStreams: readonly string[],
   state: Record<string, unknown> = {}
 ): {
   ctx: StreamCtx;
+  coverages: CapturedCoverage[];
   records: Array<{ stream: string; data: Record<string, unknown> }>;
   skips: CapturedSkip[];
   states: Array<{ stream: string; cursor: unknown }>;
@@ -54,12 +66,21 @@ function makeCtx(
   const records: Array<{ stream: string; data: Record<string, unknown> }> = [];
   const states: Array<{ stream: string; cursor: unknown }> = [];
   const skips: CapturedSkip[] = [];
+  const coverages: CapturedCoverage[] = [];
   const requested = new Map<string, StreamScope>(requestedStreams.map((name) => [name, { name }]));
   return {
     ctx: {
       emit: (msg) => {
         if (msg.type === "SKIP_RESULT") {
           skips.push({ stream: msg.stream, reason: msg.reason, message: msg.message, diagnostics: msg.diagnostics });
+        } else if (msg.type === "DETAIL_COVERAGE") {
+          coverages.push({
+            stream: msg.stream,
+            stateStream: msg.state_stream,
+            requiredKeys: msg.required_keys.length,
+            hydratedKeys: msg.hydrated_keys.length,
+            considered: msg.considered,
+          });
         } else {
           states.push({ stream: msg.stream, cursor: msg.cursor });
         }
@@ -74,6 +95,7 @@ function makeCtx(
       state,
       token: "fake-token",
     },
+    coverages,
     records,
     skips,
     states,
@@ -471,4 +493,167 @@ test("collectPullRequests: incremental run (cursor set) issues one unwindowed up
   assert.match(decoded, /updated:>=2026-05-01/);
   assert.doesNotMatch(decoded, /created:/);
   assert.equal(records.filter((r) => r.stream === "pull_requests").length, 2);
+});
+
+// ─── List-stream `considered` declaration (OpenSpec task 4.1) ─────────────
+//
+// Each list collector declares an objective `considered` denominator for the
+// Collection Report: a list-level DETAIL_COVERAGE with EMPTY required/hydrated
+// keys carrying the count of items the run enumerated from the source. The count
+// is measured at the pagination site (totalSeen / fetched), never aliased to the
+// emitted count, so `collected < considered` reads a real `partial` and a stream
+// that cannot know its inventory (PR search-cap truncation) declares nothing.
+
+function repoItem(id: number, pushedAt: string): Record<string, unknown> {
+  return {
+    id,
+    name: `repo-${String(id)}`,
+    full_name: `octocat/repo-${String(id)}`,
+    pushed_at: pushedAt,
+    private: false,
+  };
+}
+
+function issueItem(id: number, updatedAt: string): Record<string, unknown> {
+  return {
+    id,
+    number: id,
+    title: `Issue ${String(id)}`,
+    state: "open",
+    updated_at: updatedAt,
+    repository_url: "https://api.github.com/repos/octocat/repo-1",
+    user: { login: "octocat", id: 42 },
+  };
+}
+
+function gistItem(id: number, updatedAt: string): Record<string, unknown> {
+  return {
+    id: `gist-${String(id)}`,
+    description: `Gist ${String(id)}`,
+    public: true,
+    updated_at: updatedAt,
+    created_at: updatedAt,
+    files: {},
+  };
+}
+
+test("collectRepositories: declares considered = repositories enumerated (complete when all emitted)", async () => {
+  globalThis.fetch = () =>
+    Promise.resolve(jsonResponse([repoItem(1, "2026-06-01T00:00:00Z"), repoItem(2, "2026-05-01T00:00:00Z")]));
+  const { ctx, records, coverages } = makeCtx(["repositories"]);
+  await collectRepositories(ctx);
+
+  assert.equal(records.filter((r) => r.stream === "repositories").length, 2);
+  const cov = coverages.find((c) => c.stream === "repositories");
+  assert.ok(cov, "expected a repositories considered declaration");
+  assert.equal(cov?.stateStream, "repositories");
+  assert.equal(cov?.requiredKeys, 0);
+  assert.equal(cov?.hydratedKeys, 0);
+  // Both repos enumerated and emitted → considered equals collected → complete.
+  assert.equal(cov?.considered, 2);
+});
+
+test("collectRepositories: cursor-stop page counts toward considered (enumerated, not collected)", async () => {
+  // Page has a new repo then one at/older than the cursor → stop after the first.
+  globalThis.fetch = () =>
+    Promise.resolve(jsonResponse([repoItem(1, "2026-06-01T00:00:00Z"), repoItem(2, "2026-01-01T00:00:00Z")]));
+  const { ctx, records, coverages } = makeCtx(["repositories"], {
+    repositories: { last_pushed_at: "2026-03-01T00:00:00Z" },
+  });
+  await collectRepositories(ctx);
+
+  // Only the newer repo is collected; the older one stopped the walk.
+  assert.equal(records.filter((r) => r.stream === "repositories").length, 1);
+  const cov = coverages.find((c) => c.stream === "repositories");
+  // The run enumerated both items on the page before stopping → considered counts
+  // the page it saw. collected(1) < considered(2) → an honest partial.
+  assert.equal(cov?.considered, 2);
+});
+
+test("collectStarred: dropped malformed entries make considered exceed collected (honest partial)", async () => {
+  globalThis.fetch = () =>
+    Promise.resolve(jsonResponse([starredEntry(1, true), starredEntry(2, false), starredEntry(3, true)]));
+  const { ctx, records, coverages } = makeCtx(["starred"]);
+  await collectStarred(ctx);
+
+  // Two emitted, one dropped (no repo) — but all three were considered.
+  assert.equal(records.filter((r) => r.stream === "starred").length, 2);
+  const cov = coverages.find((c) => c.stream === "starred");
+  assert.equal(cov?.considered, 3);
+});
+
+test("collectIssues: until-filtered issues are considered-not-collected (considered > collected)", async () => {
+  globalThis.fetch = () =>
+    Promise.resolve(
+      jsonResponse([
+        issueItem(1, "2026-06-01T00:00:00Z"),
+        issueItem(2, "2026-06-10T00:00:00Z"),
+        issueItem(3, "2026-05-01T00:00:00Z"),
+      ])
+    );
+  const { ctx, records, coverages } = makeCtx(["issues"]);
+  // until cutoff excludes the two issues updated at/after it; they were still
+  // fetched and weighed → considered counts them, collected does not.
+  ctx.requested.set("issues", { name: "issues", time_range: { until: "2026-06-05T00:00:00Z" } });
+  await collectIssues(ctx);
+
+  assert.equal(records.filter((r) => r.stream === "issues").length, 2);
+  const cov = coverages.find((c) => c.stream === "issues");
+  assert.equal(cov?.considered, 3);
+});
+
+test("collectGists: declares considered = gists enumerated", async () => {
+  globalThis.fetch = () =>
+    Promise.resolve(jsonResponse([gistItem(1, "2026-06-01T00:00:00Z"), gistItem(2, "2026-05-20T00:00:00Z")]));
+  const { ctx, records, coverages } = makeCtx(["gists"]);
+  await collectGists(ctx);
+
+  assert.equal(records.filter((r) => r.stream === "gists").length, 2);
+  const cov = coverages.find((c) => c.stream === "gists");
+  assert.equal(cov?.considered, 2);
+});
+
+test("collectPullRequests: declares considered = search hits drained when no window is cap-truncated", async () => {
+  const items = [prSearchItem(1, "owner/a"), prSearchItem(2, "owner/b")];
+  installPrFetch(items, new Set());
+  const { ctx, coverages } = makeCtx(["pull_requests"]);
+  await collectPullRequests(ctx);
+
+  const cov = coverages.find((c) => c.stream === "pull_requests");
+  assert.ok(cov, "expected a pull_requests considered declaration");
+  assert.equal(cov?.considered, 2);
+});
+
+test("collectPullRequests: a cap-truncated window declares NO considered (inventory unknowable)", async () => {
+  // 1023 reported > 1000 cap → the full inventory cannot be enumerated, so the
+  // run must leave considered unknown and rely on its terminal-gap SKIP_RESULT.
+  installWindowedPrFetch(
+    "2026-01-01T00:00:00Z",
+    { 2026: [prSearchItemCreated(1, "owner/a", 2026), prSearchItemCreated(2, "owner/b", 2026)] },
+    { 2026: 1023 }
+  );
+  const { ctx, coverages, skips } = makeCtx(["pull_requests"]);
+  await collectPullRequests(ctx);
+
+  assert.equal(
+    coverages.filter((c) => c.stream === "pull_requests").length,
+    0,
+    "cap-truncated run must not declare a considered denominator"
+  );
+  // The incompleteness is still surfaced — just by the terminal gap, not a count.
+  assert.ok(skips.some((s) => s.reason === "pr_search_cap_truncated"));
+});
+
+test("declareListConsidered: never aliases considered to the emitted count", async () => {
+  // A repositories page where every item is collected still declares considered
+  // from the enumerated page size, not by reading back the emit counter. Proven
+  // by an empty page: zero enumerated → considered 0, never omitted-as-unknown.
+  globalThis.fetch = () => Promise.resolve(jsonResponse([]));
+  const { ctx, records, coverages } = makeCtx(["repositories"]);
+  await collectRepositories(ctx);
+
+  assert.equal(records.filter((r) => r.stream === "repositories").length, 0);
+  const cov = coverages.find((c) => c.stream === "repositories");
+  assert.ok(cov, "an empty enumeration still declares considered: 0 (a fact, not unknown)");
+  assert.equal(cov?.considered, 0);
 });

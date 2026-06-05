@@ -756,6 +756,59 @@ test("buildDetailCoverageMessage carries optional_skip_keys when present", () =>
   assert.equal("gap_keys" in msg, false);
 });
 
+test("buildDetailCoverageMessage carries a non-negative-integer considered (list-stream denominator)", () => {
+  // A list stream with no detail-hydration phase declares its enumerated
+  // inventory via empty key arrays + an explicit considered (task 4.1).
+  const msg = buildDetailCoverageMessage({
+    stream: "repositories",
+    stateStream: "repositories",
+    requiredKeys: [],
+    hydratedKeys: [],
+    considered: 12,
+  });
+  assert.equal(msg.considered, 12);
+  assert.deepEqual(msg.required_keys, []);
+  assert.deepEqual(msg.hydrated_keys, []);
+  assert.equal("gap_keys" in msg, false);
+});
+
+test("buildDetailCoverageMessage carries considered: 0 (an empty enumeration is a fact, not unknown)", () => {
+  const msg = buildDetailCoverageMessage({
+    stream: "repositories",
+    stateStream: "repositories",
+    requiredKeys: [],
+    hydratedKeys: [],
+    considered: 0,
+  });
+  assert.equal("considered" in msg, true, "considered: 0 must be carried, not dropped as falsy");
+  assert.equal(msg.considered, 0);
+});
+
+test("buildDetailCoverageMessage omits considered when absent or not a non-negative integer", () => {
+  const absent = buildDetailCoverageMessage({
+    stream: "messages",
+    stateStream: "conversations",
+    requiredKeys: ["a"],
+    hydratedKeys: ["a"],
+  });
+  assert.equal("considered" in absent, false, "no considered passed -> key omitted (unknown)");
+
+  for (const bad of [-1, 3.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    const msg = buildDetailCoverageMessage({
+      stream: "messages",
+      stateStream: "conversations",
+      requiredKeys: ["a"],
+      hydratedKeys: ["a"],
+      considered: bad,
+    });
+    assert.equal(
+      "considered" in msg,
+      false,
+      `considered=${String(bad)} must be omitted at the builder, never fabricated`
+    );
+  }
+});
+
 test("buildDetailCoverageMessage copies input arrays", () => {
   const requiredKeys = ["a", "b"];
   const hydratedKeys = ["a"];

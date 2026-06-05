@@ -277,6 +277,16 @@ function makeShapeCheckSkip(
  * partial run from a complete one without inferring it from gaps.
  */
 export interface DetailCoverageParams {
+  /**
+   * Optional explicit `considered` denominator: how many items the run weighed
+   * for this stream (the source inventory or boundary it enumerated). When
+   * present it is preferred over `requiredKeys.length` so a list stream that has
+   * no detail-hydration phase can still declare partial-vs-complete by passing
+   * empty `requiredKeys`/`hydratedKeys` and a measured `considered` count. It
+   * MUST be measured independently at the enumeration site, never aliased to the
+   * collected/emitted count — the runtime never infers it from collected.
+   */
+  considered?: number;
   /** Keys for which a DETAIL_GAP was emitted and should be retried next run. */
   gapKeys?: ReadonlyArray<string | number>;
   /** Subset of requiredKeys whose detail was fetched and emitted. */
@@ -297,7 +307,7 @@ export interface DetailCoverageParams {
  * optional key sets are omitted so a fully hydrated run carries no gap fields.
  */
 export function buildDetailCoverageMessage(params: DetailCoverageParams): DetailCoverageMessage {
-  const { stream, stateStream, requiredKeys, hydratedKeys, gapKeys, optionalSkipKeys } = params;
+  const { stream, stateStream, requiredKeys, hydratedKeys, gapKeys, optionalSkipKeys, considered } = params;
   return {
     type: "DETAIL_COVERAGE",
     reference_only: true,
@@ -305,6 +315,10 @@ export function buildDetailCoverageMessage(params: DetailCoverageParams): Detail
     state_stream: stateStream,
     required_keys: [...requiredKeys],
     hydrated_keys: [...hydratedKeys],
+    // Only emit `considered` when the connector supplied a non-negative integer.
+    // The runtime re-validates and drops anything unsafe to `unknown`; omitting
+    // it here keeps a no-considered run byte-identical to the prior shape.
+    ...(typeof considered === "number" && Number.isInteger(considered) && considered >= 0 ? { considered } : {}),
     ...(gapKeys?.length ? { gap_keys: [...gapKeys] } : {}),
     ...(optionalSkipKeys?.length ? { optional_skip_keys: [...optionalSkipKeys] } : {}),
   };

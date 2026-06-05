@@ -3160,6 +3160,70 @@ rl.on('line', (line) => {
     }
   });
 
+  await t.test('2.2a: a list-stream DETAIL_COVERAGE (empty keys + considered) declares the considered denominator without blocking commit (task 4.1 mechanism)', async () => {
+    // The mechanism GitHub's list collectors use (task 4.1): a list stream that
+    // has no detail-hydration phase declares its enumerated inventory as
+    // `considered` by emitting a DETAIL_COVERAGE for the LIST stream itself
+    // (state_stream === stream) with EMPTY required_keys/hydrated_keys and an
+    // explicit `considered`. Empty required_keys means the pre-commit coverage
+    // gate has nothing to mark missing, so the committed STATE still commits, and
+    // the terminal facts block carries the declared considered for that stream.
+    const manifest = buildMultiStreamManifest('facts-list-considered');
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
+    const asUrl = `http://localhost:${asPort}`;
+
+    const { connectorPath, cleanup } = createTestConnector([
+      { type: 'RECORD', stream: 'items', key: 'i1', data: { id: 'i1', value: 'a' }, emitted_at: new Date().toISOString() },
+      { type: 'RECORD', stream: 'items', key: 'i2', data: { id: 'i2', value: 'b' }, emitted_at: new Date().toISOString() },
+      // List-level considered declaration: the run enumerated 5 items in its
+      // boundary and emitted 2 of them (the other 3 were considered-not-collected,
+      // e.g. filtered). Empty key arrays => no detail-hydration claim.
+      {
+        type: 'DETAIL_COVERAGE',
+        reference_only: true,
+        state_stream: 'items',
+        stream: 'items',
+        required_keys: [],
+        hydrated_keys: [],
+        considered: 5,
+      },
+      { type: 'STATE', stream: 'items', cursor: { last: 'i2' } },
+      { type: 'DONE', status: 'succeeded', records_emitted: 2 },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest,
+        scope: { streams: [{ name: 'items' }] },
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+      });
+
+      // The list-level coverage entry must NOT trip assertDetailCoverageSatisfiedBeforeCommit.
+      assert.equal(result.status, 'succeeded', 'empty-key list coverage must not block the run');
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const completedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.completed');
+      const facts = completedEvent.data.collection_facts;
+      const items = facts.streams.find((entry) => entry.stream === 'items');
+      assert.ok(items, 'items entry present in the facts block');
+      assert.equal(items.collected, 2, 'collected is the runtime emit count, not the declared considered');
+      assert.equal(items.considered, 5, 'the list-level DETAIL_COVERAGE.considered is carried as the denominator');
+      assert.equal(items.checkpoint, 'committed', 'the committed STATE still commits despite the coverage entry');
+      assert.equal(items.pending_detail_gaps, 0, 'no detail gaps from an empty-key coverage entry');
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
   await t.test('2.2a: a RECORD/STATE/DONE-only connector still yields a valid facts block with unknown considered (task 2.6 at runtime scope)', async () => {
     // The portability floor: a connector that emits only RECORD/STATE/DONE — no
     // DETAIL_COVERAGE, no SKIP_RESULT — still produces a valid per-stream facts
