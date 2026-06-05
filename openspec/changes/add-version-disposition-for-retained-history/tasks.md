@@ -1,92 +1,118 @@
 # Tasks — version disposition for retained history
 
-This is proposal/packet work. The boxes below sequence the eventual
-implementation lane; they are NOT done in this change. The owner accepts the
-proposal first (see `design.md` "Owner decision"), then dispatches the
-implementation lane.
+Implementation status (lane `ri-version-disposition-implementation-v1`): the
+server derivation, reference contract, console consumption, and tests are
+implemented and green on this branch. Section 1 (owner acceptance) and task 6.7
+(owner-cookie live probe) remain owner-only. The implementation adopted one
+derivation-rule correction vs. the first draft — disposition #5 keys on an
+explicit recurring-snapshot list with precedence, NOT on "no compaction policy,"
+because the session streams DO carry a policy (see `design.md` correction note).
 
 ## 1. Owner acceptance (gate)
 
 - [ ] 1.1 Owner confirms `version_disposition` is **server-derived** (Option A),
       or requests the manifest-authored hint (Option B) as a follow-up.
+      (Implementation lane proceeded on Option A as the dispatched approach.)
 - [ ] 1.2 Owner confirms the disposition #5 name
       (`recurring_point_in_time_snapshot`) or supplies a preferred name.
+      (Implemented as `recurring_point_in_time_snapshot`.)
 
 ## 2. Reference contract (durable surface)
 
-- [ ] 2.1 Add `version_disposition` to `RecordVersionStatsRowSchema` in
+- [x] 2.1 Add `version_disposition` to `RecordVersionStatsRowSchema` in
       `packages/reference-contract/src/reference/index.ts` as a required string
       enum: `active_defect_or_unclassified | reviewed_historical_residue |
       point_in_time_retained_history | lossless_compaction_candidate |
-      recurring_point_in_time_snapshot`.
-- [ ] 2.2 Assert in the envelope `meta` (or per-row) that disposition does not
-      alter `risk_thresholds` (e.g. a `disposition_affects_thresholds: false`
-      constant, or a doc-comment + test). Keep `risk_thresholds` byte-identical.
-- [ ] 2.3 Regenerate/verify generated contract artifacts
-      (`pnpm --filter @pdpp/reference-contract run verify` / `check:generated`).
+      recurring_point_in_time_snapshot`. (Also mirrored in the console's
+      `RefRecordVersionStatsRow` type in `ref-client.ts`.)
+- [x] 2.2 Assert in the envelope `meta` that disposition does not alter
+      `risk_thresholds`: `disposition_affects_thresholds: { const: false }`
+      added to the schema (required) and emitted by the server. `risk_thresholds`
+      kept byte-identical (pinned by AC-2 test).
+- [x] 2.3 Regenerated generated contract artifacts: only
+      `reference-implementation/openapi/reference-full.openapi.json` changed
+      (reference-only route); `reference-public.openapi.json` and the generated
+      docs are unchanged. `node --test packages/reference-contract/test/*` green.
 
 ## 3. Server derivation (single source of truth)
 
-- [ ] 3.1 Add a pure `classifyVersionDisposition(row, signals)` to
-      `reference-implementation/server/record-version-stats.js` that derives the
-      five-way disposition from: manifest `semantics`, registered compaction
-      policy presence, append-split sibling presence, the reviewed-at evidence
-      map, and the session-style recurring-growth rule. Do NOT modify
+- [x] 3.1 Add a pure `classifyVersionDisposition({connectorId, stream,
+      lastHistoryAt, hasCompactionPolicy})` in a new `pg`-free module
+      `reference-implementation/server/version-disposition.js` that derives the
+      five-way disposition from: the recurring point-in-time snapshot list, the
+      point-in-time split list, the reviewed-at evidence map, and the injected
+      registered-compaction-policy boolean — applied with fixed precedence
+      (recurring → point-in-time → reviewed → policy → unclassified). `semantics`
+      is NOT an input (every relevant stream is `mutable_state`; the explicit
+      lists carry the distinguishing information). Do NOT modify
       `classifyRecordVersionChurn` (numeric path stays as-is).
-- [ ] 3.2 Make `compact-record-history.mjs`'s `COMPACTION_POLICIES` the source
-      the server reads for the "registered policy" signal (import or shared
-      module; no behavior change to the tool).
-- [ ] 3.3 Move the `REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT` evidence map
-      server-side so derivation reads it directly.
-- [ ] 3.4 Define the `recurring_point_in_time_snapshot` rule: `mutable_state`
-      semantics, no registered compaction policy, no append-split sibling,
-      re-versions on monotonic real growth (session-style). Cover
-      `claude-code/sessions` and `codex/sessions`.
-- [ ] 3.5 Populate `version_disposition` on every row in
-      `buildRecordVersionStatsEnvelope`.
+- [x] 3.2 `record-version-stats.js` resolves the "registered policy" signal from
+      `compact-record-history.mjs`'s `COMPACTION_POLICIES` via the exported
+      `findPolicy` (single source of truth; no behavior change to the tool; the
+      server module already transitively loads `pg`, so no new dependency).
+- [x] 3.3 Move the `REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT` evidence map
+      server-side (into `version-disposition.js`) so derivation reads it
+      directly. `claude-code/sessions` is removed from it — it is now classified
+      by the recurring-snapshot list instead.
+- [x] 3.4 Define the `recurring_point_in_time_snapshot` rule: explicit
+      membership in a reference-maintained recurring-snapshot list
+      (`claude-code/sessions`, `codex/sessions`), evaluated with PRECEDENCE over
+      the reviewed-residue and compaction-policy signals. These streams DO carry
+      a registered compaction policy (the no-op regression safety net), so the
+      rule cannot key on policy absence — list membership is the signal.
+- [x] 3.5 Populate `version_disposition` on every row in
+      `buildRecordVersionStatsEnvelope`, plus `disposition_affects_thresholds:
+      false` on the envelope `meta`.
 
 ## 4. Console consumption (remove duplication)
 
-- [ ] 4.1 `apps/console/src/app/dashboard/lib/version-churn-summary.ts` consumes
+- [x] 4.1 `apps/console/src/app/dashboard/lib/version-churn-summary.ts` consumes
       the server-derived `version_disposition` instead of the local hardcoded
-      `POINT_IN_TIME_REAL_FIELD_STREAMS` / `LOSSLESS_COMPACTION_POLICY_STREAMS` /
-      `REVIEWED_COMPACTION_RESIDUE_*` lists. Preserve the existing headline copy
-      and the "needs review" = unclassified-only behavior.
-- [ ] 4.2 Add the disposition #5 operator copy ("recurring point-in-time
-      snapshots — expected retained history; not compactable").
-- [ ] 4.3 Keep numeric counts, `risk_level`, and `versions_per_record` rendered
-      unchanged — no row is hidden.
+      lists. The `POINT_IN_TIME_REAL_FIELD_STREAMS` /
+      `LOSSLESS_COMPACTION_POLICY_STREAMS` / `REVIEWED_COMPACTION_RESIDUE_*`
+      exports are removed (a display-only real-field description map remains for
+      guidance copy). `ChurnRemediation` is now the server disposition union.
+      Headline copy and the "needs review" = unclassified-only behavior preserved.
+- [x] 4.2 Added the disposition #5 operator copy ("Recurring point-in-time
+      snapshot — expected retained history … cannot be append-split or
+      compacted") in `pointInTimeGuidance` and the `recurring snapshot` badge in
+      `records-list-view.tsx`.
+- [x] 4.3 Numeric counts, `risk_level`, and `versions_per_record` rendered
+      unchanged — no row is hidden (drilldown still maps every supplied row).
 
 ## 5. Tests (acceptance contract)
 
-- [ ] 5.1 AC-1: envelope returns `version_disposition` enum on every row;
-      owner-only auth unchanged; no payload leak
-      (`reference-implementation/test/record-version-stats.test.js`).
-- [ ] 5.2 AC-2: `risk_thresholds` byte-identical; `risk_level`/`risk_reasons`
-      unchanged by disposition for all fixtures.
-- [ ] 5.3 AC-3: unknown `(connector, stream)` high/watch →
-      `active_defect_or_unclassified`, counts toward needs-review.
-- [ ] 5.4 AC-4: reviewed-residue row with `last_history_at > reviewed_at` →
-      `lossless_compaction_candidate` (re-alarm).
-- [ ] 5.5 AC-5: `claude-code/sessions` + `codex/sessions` →
+- [x] 5.1 AC-1: envelope returns `version_disposition` enum on every row; no
+      payload leak (`record-version-stats.test.js` "AC-1"). Owner-auth path
+      unchanged (existing `/_ref/records/version-stats` owner test still green).
+- [x] 5.2 AC-2: `risk_thresholds` deep-equal to the contract; disposition does
+      not change `risk_level`/`risk_reasons`; `disposition_affects_thresholds`
+      asserted (`record-version-stats.test.js` "AC-2").
+- [x] 5.3 AC-3: unknown `(connector, stream)` → `active_defect_or_unclassified`
+      (server module + envelope tests).
+- [x] 5.4 AC-4: reviewed-residue row with `last_history_at > reviewed_at` →
+      `lossless_compaction_candidate` (server module + envelope tests).
+- [x] 5.5 AC-5: `claude-code/sessions` + `codex/sessions` →
       `recurring_point_in_time_snapshot`; not needs-review; no re-alarm on
-      `last_history_at` advance.
-- [ ] 5.6 AC-6: `github/user`, `slack/channels`, `ynab/accounts` →
-      `point_in_time_retained_history`; no compaction command offered.
-- [ ] 5.7 AC-7: a connector manifest change cannot alter a row's
-      `version_disposition` (derivation reads only server registries + reviewed
-      map + ground-truth).
-- [ ] 5.8 AC-8: `version-churn-summary.test.ts` behavioral expectations hold
-      against the relocated logic; no second source of truth remains.
+      `last_history_at` advance (server module + envelope tests).
+- [x] 5.6 AC-6: `github/user`, `slack/channels`, `ynab/accounts` →
+      `point_in_time_retained_history`; no compaction command offered (server +
+      console drilldown tests).
+- [x] 5.7 AC-7: a connector-authored field cannot alter `version_disposition`
+      (server module "only reference-controlled inputs" + envelope "AC-7").
+- [x] 5.8 AC-8: `version-churn-summary.test.ts` rewritten to assert the console
+      consumes the server field; the former console-source mirror tests in
+      `compact-record-history.test.js` now import the server registries directly
+      — no second source of truth remains.
 
 ## 6. Acceptance checks (reproducible)
 
-- [ ] 6.1 `npx openspec validate add-version-disposition-for-retained-history --strict`
-- [ ] 6.2 `npx openspec validate --all --strict`
-- [ ] 6.3 `node --test reference-implementation/test/record-version-stats.test.js`
-- [ ] 6.4 `node --import tsx --test apps/console/src/app/dashboard/lib/version-churn-summary.test.ts`
-- [ ] 6.5 `pnpm --filter @pdpp/reference-contract run verify`
-- [ ] 6.6 `npx tsc --noEmit` for the touched packages (console + reference-contract)
+- [x] 6.1 `openspec validate add-version-disposition-for-retained-history --strict` → valid
+- [x] 6.2 `openspec validate --all --strict` → 43 passed, 0 failed
+- [x] 6.3 `node --test reference-implementation/test/{version-disposition,record-version-stats,compact-record-history}.test.js` → 66 pass, 1 PG-gated skip
+- [x] 6.4 `node --import tsx --test apps/console/.../version-churn-summary.test.ts` (+ records-list-view.test.ts) → 65 pass
+- [x] 6.5 reference-contract: `node --test test/*.test.js` → 64 pass; `tsc --noEmit` clean; generated artifacts regenerated + idempotent (`ultracite check` not run in lane — see note)
+- [x] 6.6 `tsc --noEmit` clean for reference-contract, reference-implementation, and console
 - [ ] 6.7 Owner-cookie live probe of `/_ref/records/version-stats` confirms every
       row carries a disposition and the banner reads "no review needed" with the
       session rows reclassified (owner-gated; do from a deployed instance).

@@ -34897,6 +34897,16 @@
                             "items": {
                               "type": "string"
                             }
+                          },
+                          "version_disposition": {
+                            "type": "string",
+                            "enum": [
+                              "active_defect_or_unclassified",
+                              "reviewed_historical_residue",
+                              "point_in_time_retained_history",
+                              "lossless_compaction_candidate",
+                              "recurring_point_in_time_snapshot"
+                            ]
                           }
                         },
                         "required": [
@@ -34914,7 +34924,8 @@
                           "projection_missing",
                           "projection_authority",
                           "risk_level",
-                          "risk_reasons"
+                          "risk_reasons",
+                          "version_disposition"
                         ]
                       }
                     },
@@ -34999,6 +35010,9 @@
                             "high_history_count",
                             "high_history_versions_per_record"
                           ]
+                        },
+                        "disposition_affects_thresholds": {
+                          "const": false
                         }
                       },
                       "required": [
@@ -35008,7 +35022,8 @@
                         "limit",
                         "filters",
                         "source",
-                        "risk_thresholds"
+                        "risk_thresholds",
+                        "disposition_affects_thresholds"
                       ]
                     },
                     "projection": {

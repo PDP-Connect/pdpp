@@ -3,10 +3,19 @@
  * in Node's test runner without a JSX resolver because the module is plain
  * TypeScript — the JSX view imports these helpers rather than re-deriving the
  * logic inline.
+ *
+ * Disposition is now SERVER-DERIVED (`version_disposition` on each row). The
+ * console consumes it; it no longer mirrors the reference server's compaction /
+ * point-in-time registries. So these fixtures set `version_disposition`
+ * explicitly (that is what the route returns) and the tests assert the console
+ * renders/aggregates the field honestly — not that the console re-derives it.
+ * The derivation itself is pinned server-side in
+ * `reference-implementation/test/version-disposition.test.js` and
+ * `record-version-stats.test.js`.
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { RefRecordVersionStatsRow } from "./ref-client.ts";
+import type { RefRecordVersionDisposition, RefRecordVersionStatsRow } from "./ref-client.ts";
 import {
   buildChurnDrilldownRows,
   churnDryRunCommand,
@@ -14,17 +23,14 @@ import {
   classifyChurnRow,
   countChurnDispositions,
   isExpectedRetainedHistory,
-  LOSSLESS_COMPACTION_POLICY_STREAMS,
   needsReview,
-  POINT_IN_TIME_REAL_FIELD_STREAMS,
   pointInTimeGuidance,
-  REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT,
-  REVIEWED_COMPACTION_RESIDUE_STREAMS,
   summarizeVersionChurn,
 } from "./version-churn-summary.ts";
 
 const HIGHEST_SIGNAL_RE = /ynab \/ budgets retains 273\.75 versions per current record\./;
 const NOT_COMPACTABLE_RE = /[Nn]ot compactable/;
+const CANNOT_COMPACT_RE = /compact(able|ed)/;
 const APPEND_KEYED_RE = /append-keyed/;
 const FOLLOWER_RE = /follower/;
 const NEEDS_REVIEW_RE = /needs review/;
@@ -39,6 +45,7 @@ const BALANCE_RE = /balance/;
 const REVIEWED_RESIDUE_RE = /reviewed residue/;
 const COMPACTION_CANDIDATE_RE = /compaction candidate/;
 const EXPECTED_RETAINED_HISTORY_RE = /expected retained history/;
+const RECURRING_SNAPSHOT_RE = /[Rr]ecurring point-in-time snapshot/;
 
 function row(overrides: Partial<RefRecordVersionStatsRow> = {}): RefRecordVersionStatsRow {
   return {
@@ -56,36 +63,51 @@ function row(overrides: Partial<RefRecordVersionStatsRow> = {}): RefRecordVersio
     risk_level: "high",
     risk_reasons: ["versions_per_record_high"],
     stream: "budgets",
+    version_disposition: "lossless_compaction_candidate",
     versions_per_record: 273.75,
     ...overrides,
   };
 }
 
-// An unclassified high-churn stream: neither a known real-field stream nor a
-// registered compaction policy. This is the only class that "needs review".
-function unclassifiedRow(overrides: Partial<RefRecordVersionStatsRow> = {}): RefRecordVersionStatsRow {
-  return row({ connector_id: "mystery", stream: "widgets", ...overrides });
+/** A row with a given server-derived disposition (the route's output). */
+function rowWith(
+  disposition: RefRecordVersionDisposition,
+  overrides: Partial<RefRecordVersionStatsRow> = {}
+): RefRecordVersionStatsRow {
+  return row({ version_disposition: disposition, ...overrides });
 }
+
+const candidateRow = (o: Partial<RefRecordVersionStatsRow> = {}) => rowWith("lossless_compaction_candidate", o);
+const expectedRow = (o: Partial<RefRecordVersionStatsRow> = {}) =>
+  rowWith("point_in_time_retained_history", { connector_id: "github", stream: "user", ...o });
+const reviewedRow = (o: Partial<RefRecordVersionStatsRow> = {}) =>
+  rowWith("reviewed_historical_residue", { connector_id: "usaa", stream: "accounts", ...o });
+const recurringRow = (o: Partial<RefRecordVersionStatsRow> = {}) =>
+  rowWith("recurring_point_in_time_snapshot", { connector_id: "claude-code", stream: "sessions", ...o });
+const unclassifiedRow = (o: Partial<RefRecordVersionStatsRow> = {}) =>
+  rowWith("active_defect_or_unclassified", { connector_id: "mystery", stream: "widgets", ...o });
+
+// ─── classifyChurnRow is now a straight read of the server field ─────────────
+
+test("classifyChurnRow reads the server-derived version_disposition", () => {
+  assert.equal(classifyChurnRow(candidateRow()), "lossless_compaction_candidate");
+  assert.equal(classifyChurnRow(expectedRow()), "point_in_time_retained_history");
+  assert.equal(classifyChurnRow(reviewedRow()), "reviewed_historical_residue");
+  assert.equal(classifyChurnRow(recurringRow()), "recurring_point_in_time_snapshot");
+  assert.equal(classifyChurnRow(unclassifiedRow()), "active_defect_or_unclassified");
+});
+
+// ─── Disposition-honest headline (the product bug) ───────────────────────────
 
 test("summarizeVersionChurn returns null for an empty row set", () => {
   assert.equal(summarizeVersionChurn([]), null);
 });
 
-// ─── Disposition-honest headline (the product bug) ───────────────────────
-//
-// The banner must not scream "needs review" for rows that are already
-// classified as expected retained point-in-time history or as known-safe
-// compaction candidates. Only an UNCLASSIFIED row makes the banner say review
-// is needed. This is acceptance criterion #1: known expected retained history
-// is no longer treated as unresolved.
-
 test("summarizeVersionChurn does NOT say 'needs review' when every row is expected retained history", () => {
-  // github/user, slack/channels, ynab/accounts are all point-in-time real-field
-  // — expected retained history, not a defect.
   const rows = [
-    row({ connector_id: "github", stream: "user", risk_level: "high" }),
-    row({ connector_id: "slack", stream: "channels", risk_level: "high" }),
-    row({ connector_id: "ynab", stream: "accounts", risk_level: "watch" }),
+    expectedRow({ connector_id: "github", stream: "user", risk_level: "high" }),
+    expectedRow({ connector_id: "slack", stream: "channels", risk_level: "high" }),
+    expectedRow({ connector_id: "ynab", stream: "accounts", risk_level: "watch" }),
   ];
   const summary = summarizeVersionChurn(rows);
   assert.ok(summary);
@@ -97,14 +119,25 @@ test("summarizeVersionChurn does NOT say 'needs review' when every row is expect
   assert.equal(summary.dispositions.needsReview, 0);
 });
 
-test("summarizeVersionChurn does NOT say 'needs review' when every row is a registered compaction candidate", () => {
-  // ynab/budgets, gmail/labels, amazon/orders all have registered lossless
-  // compaction policies and are NOT in the reviewed-residue set — actionable
-  // cleanup, not "something is wrong".
+test("recurring snapshots fold into the 'expected retained history' headline bucket", () => {
   const rows = [
-    row({ connector_id: "ynab", stream: "budgets", risk_level: "high" }),
-    row({ connector_id: "gmail", stream: "labels", risk_level: "watch" }),
-    row({ connector_id: "amazon", stream: "orders", risk_level: "watch" }),
+    recurringRow({ connector_id: "claude-code", stream: "sessions", risk_level: "watch" }),
+    recurringRow({ connector_id: "codex", stream: "sessions", risk_level: "watch" }),
+    expectedRow({ connector_id: "github", stream: "user", risk_level: "high" }),
+  ];
+  const summary = summarizeVersionChurn(rows);
+  assert.ok(summary);
+  assert.equal(summary.needsReview, false);
+  assert.match(summary.headline, NO_REVIEW_NEEDED_RE);
+  assert.match(summary.headline, THREE_EXPECTED_RETAINED_RE);
+  assert.equal(summary.dispositions.expectedRetained, 3);
+});
+
+test("summarizeVersionChurn does NOT say 'needs review' when every row is a registered compaction candidate", () => {
+  const rows = [
+    candidateRow({ connector_id: "ynab", stream: "budgets", risk_level: "high" }),
+    candidateRow({ connector_id: "gmail", stream: "labels", risk_level: "watch" }),
+    candidateRow({ connector_id: "amazon", stream: "orders", risk_level: "watch" }),
   ];
   const summary = summarizeVersionChurn(rows);
   assert.ok(summary);
@@ -116,9 +149,9 @@ test("summarizeVersionChurn does NOT say 'needs review' when every row is a regi
 
 test("summarizeVersionChurn SAYS 'needs review' when at least one row is unclassified", () => {
   const rows = [
-    row({ connector_id: "github", stream: "user", risk_level: "high" }), // expected
-    row({ connector_id: "ynab", stream: "budgets", risk_level: "high" }), // compaction
-    unclassifiedRow({ risk_level: "high" }), // genuinely needs review
+    expectedRow({ connector_id: "github", stream: "user", risk_level: "high" }),
+    candidateRow({ connector_id: "ynab", stream: "budgets", risk_level: "high" }),
+    unclassifiedRow({ risk_level: "high" }),
   ];
   const summary = summarizeVersionChurn(rows);
   assert.ok(summary);
@@ -134,8 +167,8 @@ test("summarizeVersionChurn headline names every non-zero disposition (never sil
   const rows = [
     unclassifiedRow({ stream: "a" }),
     unclassifiedRow({ stream: "b" }),
-    row({ connector_id: "ynab", stream: "budgets" }),
-    row({ connector_id: "github", stream: "user" }),
+    candidateRow({ connector_id: "ynab", stream: "budgets" }),
+    expectedRow({ connector_id: "github", stream: "user" }),
   ];
   const summary = summarizeVersionChurn(rows);
   assert.ok(summary);
@@ -150,28 +183,37 @@ test("summarizeVersionChurn highest signal reflects the first (highest-risk) row
   assert.match(summary.highestSignal, HIGHEST_SIGNAL_RE);
 });
 
-// ─── countChurnDispositions ──────────────────────────────────────────────
+// ─── countChurnDispositions ──────────────────────────────────────────────────
 
-test("countChurnDispositions buckets rows by remediation disposition", () => {
+test("countChurnDispositions buckets rows by disposition", () => {
   const counts = countChurnDispositions([
-    row({ connector_id: "github", stream: "user" }), // expected retained
-    row({ connector_id: "slack", stream: "channels" }), // expected retained
-    row({ connector_id: "ynab", stream: "budgets" }), // compaction candidate
-    unclassifiedRow(), // needs review
+    expectedRow({ connector_id: "github", stream: "user" }),
+    expectedRow({ connector_id: "slack", stream: "channels" }),
+    candidateRow({ connector_id: "ynab", stream: "budgets" }),
+    unclassifiedRow(),
   ]);
   assert.deepEqual(counts, { needsReview: 1, compactionCandidates: 1, expectedRetained: 2, reviewedResidueCount: 0 });
 });
 
-test("isExpectedRetainedHistory / needsReview predicates agree with classifyChurnRow", () => {
-  const realField = row({ connector_id: "github", stream: "user" });
-  const compaction = row({ connector_id: "ynab", stream: "budgets" });
-  const unclassified = unclassifiedRow();
-  assert.equal(isExpectedRetainedHistory(realField), true);
-  assert.equal(isExpectedRetainedHistory(compaction), false);
-  assert.equal(isExpectedRetainedHistory(unclassified), false);
-  assert.equal(needsReview(realField), false);
-  assert.equal(needsReview(compaction), false);
-  assert.equal(needsReview(unclassified), true);
+test("countChurnDispositions folds recurring snapshots into expectedRetained", () => {
+  const counts = countChurnDispositions([
+    recurringRow({ connector_id: "claude-code", stream: "sessions" }),
+    recurringRow({ connector_id: "codex", stream: "sessions" }),
+    expectedRow({ connector_id: "github", stream: "user" }),
+  ]);
+  assert.deepEqual(counts, { needsReview: 0, compactionCandidates: 0, expectedRetained: 3, reviewedResidueCount: 0 });
+});
+
+test("isExpectedRetainedHistory / needsReview predicates agree with the disposition", () => {
+  assert.equal(isExpectedRetainedHistory(expectedRow()), true);
+  assert.equal(isExpectedRetainedHistory(recurringRow()), true);
+  assert.equal(isExpectedRetainedHistory(reviewedRow()), true);
+  assert.equal(isExpectedRetainedHistory(candidateRow()), false);
+  assert.equal(isExpectedRetainedHistory(unclassifiedRow()), false);
+  assert.equal(needsReview(expectedRow()), false);
+  assert.equal(needsReview(recurringRow()), false);
+  assert.equal(needsReview(candidateRow()), false);
+  assert.equal(needsReview(unclassifiedRow()), true);
 });
 
 test("churnRowLabel falls back to the connector key when no display name is set", () => {
@@ -182,8 +224,10 @@ test("churnRowLabel prefers an owner-set display name", () => {
   assert.equal(churnRowLabel(row({ display_name: "Household YNAB" })), "Household YNAB / budgets");
 });
 
+// ─── buildChurnDrilldownRows ─────────────────────────────────────────────────
+
 test("buildChurnDrilldownRows surfaces all supplied rows in order", () => {
-  const rows = [row({ stream: "budgets" }), row({ stream: "accounts", risk_level: "watch" })];
+  const rows = [candidateRow({ stream: "budgets" }), candidateRow({ stream: "accounts", risk_level: "watch" })];
   const built = buildChurnDrilldownRows(rows);
   assert.equal(built.length, 2);
   assert.equal(built[0]?.label, "ynab / budgets");
@@ -207,7 +251,6 @@ test("buildChurnDrilldownRows marks a null key count as unknown rather than zero
   const built = buildChurnDrilldownRows([row({ record_key_count: null })]);
   assert.equal(built[0]?.keys.label, "—");
   assert.equal(built[0]?.keys.unknown, true);
-  // A present count is never flagged unknown.
   assert.equal(built[0]?.current.unknown, undefined);
 });
 
@@ -241,132 +284,6 @@ test("churnDryRunCommand builds the default read-only maintenance command", () =
   );
 });
 
-// ─── Three-way remediation classification ────────────────────────────────
-//
-// 1. point_in_time_real_field — github/user, slack/channels, ynab/accounts:
-//    genuinely changing real field, NO compaction policy (script exits 2),
-//    expected retained history; must be split, not compacted.
-// 2. lossless_compaction_candidate — has a registered policy in
-//    COMPACTION_POLICIES (ynab/budgets, gmail/labels, usaa/*, etc.): the
-//    dry-run command is a real remediation.
-// 3. unclassified — neither: genuinely needs review.
-
-test("classifyChurnRow flags github/user as a real-field point-in-time stream", () => {
-  assert.equal(classifyChurnRow(row({ connector_id: "github", stream: "user" })), "point_in_time_real_field");
-});
-
-test("classifyChurnRow flags slack/channels as a real-field point-in-time stream", () => {
-  assert.equal(classifyChurnRow(row({ connector_id: "slack", stream: "channels" })), "point_in_time_real_field");
-});
-
-test("classifyChurnRow flags ynab/accounts as a real-field point-in-time stream", () => {
-  // ynab/accounts split its balances into the append-keyed account_stats
-  // observation stream; the retained accounts history churns only on the
-  // now-removed balance fields. The split stream holds no backfill, so this
-  // history is the sole surviving copy — it must be retained, never compacted.
-  assert.equal(classifyChurnRow(row({ connector_id: "ynab", stream: "accounts" })), "point_in_time_real_field");
-});
-
-test("classifyChurnRow resolves the registry-URL connector-id form too", () => {
-  assert.equal(
-    classifyChurnRow(row({ connector_id: "https://registry.pdpp.org/connectors/github", stream: "user" })),
-    "point_in_time_real_field"
-  );
-  assert.equal(
-    classifyChurnRow(row({ connector_id: "https://registry.pdpp.org/connectors/slack", stream: "channels" })),
-    "point_in_time_real_field"
-  );
-  assert.equal(
-    classifyChurnRow(row({ connector_id: "https://registry.pdpp.org/connectors/ynab", stream: "accounts" })),
-    "point_in_time_real_field"
-  );
-});
-
-test("classifyChurnRow flags policied no-op/run-clock streams as lossless compaction candidates", () => {
-  // These all have a registered policy in COMPACTION_POLICIES and are NOT in
-  // the reviewed-residue set; the dry-run command is a real remediation.
-  // Note: usaa/accounts, usaa/statements, chase/statements, claude-code/sessions
-  // are omitted here — they are in REVIEWED_COMPACTION_RESIDUE_STREAMS and
-  // classify as reviewed_compaction_residue, not lossless_compaction_candidate.
-  const compactable: [string, string][] = [
-    ["gmail", "labels"],
-    ["slack", "channel_memberships"],
-    ["usaa", "credit_card_billing"],
-    ["chase", "accounts"],
-    ["ynab", "budgets"],
-    ["amazon", "orders"],
-    ["chatgpt", "custom_instructions"],
-    ["codex", "messages"],
-  ];
-  for (const [connector_id, stream] of compactable) {
-    assert.equal(
-      classifyChurnRow(row({ connector_id, stream })),
-      "lossless_compaction_candidate",
-      `${connector_id}/${stream} should be a lossless compaction candidate`
-    );
-  }
-});
-
-test("classifyChurnRow resolves the registry-URL form for compaction-policy streams", () => {
-  assert.equal(
-    classifyChurnRow(row({ connector_id: "https://registry.pdpp.org/connectors/gmail", stream: "labels" })),
-    "lossless_compaction_candidate"
-  );
-});
-
-test("classifyChurnRow returns 'unclassified' for a stream with no policy and not a known real-field", () => {
-  // A genuinely unknown high-churn stream — the only class that needs review.
-  assert.equal(classifyChurnRow(unclassifiedRow()), "unclassified");
-  // slack/users and github/repos are NOT real-field exceptions; slack/users
-  // happens to have a policy (compaction candidate); github/repos has neither.
-  assert.equal(classifyChurnRow(row({ connector_id: "slack", stream: "users" })), "lossless_compaction_candidate");
-  assert.equal(classifyChurnRow(row({ connector_id: "github", stream: "repos" })), "unclassified");
-});
-
-test("classifyChurnRow does not over-match: a different ynab stream is not silently a real-field", () => {
-  // Only ynab/accounts is the real-field exception; ynab/payees is unclassified
-  // (no policy registered for it, not in the real-field list).
-  assert.equal(classifyChurnRow(row({ connector_id: "ynab", stream: "payees" })), "unclassified");
-});
-
-test("buildChurnDrilldownRows omits the dry-run command for real-field rows and carries guidance", () => {
-  const built = buildChurnDrilldownRows([
-    row({ connector_id: "github", stream: "user", connector_instance_id: "cin_gh_1" }),
-  ]);
-  assert.equal(built[0]?.remediation, "point_in_time_real_field");
-  assert.equal(built[0]?.dryRunCommand, null, "real-field rows must not offer a (failing) compaction command");
-  assert.ok(built[0]?.pointInTimeGuidance, "real-field rows must carry redesign guidance");
-  const guidance = built[0]?.pointInTimeGuidance ?? "";
-  assert.match(guidance, NOT_COMPACTABLE_RE);
-  assert.match(guidance, APPEND_KEYED_RE);
-  assert.match(guidance, FOLLOWER_RE);
-});
-
-test("buildChurnDrilldownRows keeps the dry-run command and no guidance for compaction candidates", () => {
-  const built = buildChurnDrilldownRows([row({ connector_id: "ynab", stream: "budgets" })]);
-  assert.equal(built[0]?.remediation, "lossless_compaction_candidate");
-  assert.ok(built[0]?.dryRunCommand, "compaction candidates keep their dry-run command");
-  assert.equal(built[0]?.pointInTimeGuidance, null);
-});
-
-test("buildChurnDrilldownRows keeps the dry-run command (as a diagnostic) for unclassified rows", () => {
-  const built = buildChurnDrilldownRows([unclassifiedRow({ connector_instance_id: "cin_x" })]);
-  assert.equal(built[0]?.remediation, "unclassified");
-  assert.ok(built[0]?.dryRunCommand, "unclassified rows keep the read-only dry-run as a safe diagnostic");
-  assert.equal(built[0]?.pointInTimeGuidance, null);
-});
-
-test("pointInTimeGuidance returns null for a compaction candidate", () => {
-  assert.equal(pointInTimeGuidance(row({ connector_id: "ynab", stream: "budgets" })), null);
-});
-
-test("pointInTimeGuidance names the ynab/accounts balance fields", () => {
-  const guidance = pointInTimeGuidance(row({ connector_id: "ynab", stream: "accounts" })) ?? "";
-  assert.match(guidance, NOT_COMPACTABLE_RE);
-  assert.match(guidance, APPEND_KEYED_RE);
-  assert.match(guidance, BALANCE_RE);
-});
-
 test("churnDryRunCommand shell-quotes metadata and omits absent connector id", () => {
   assert.equal(
     churnDryRunCommand(
@@ -380,64 +297,86 @@ test("churnDryRunCommand shell-quotes metadata and omits absent connector id", (
   );
 });
 
-// ─── reviewed_compaction_residue classification ──────────────────────────
-//
-// The four live streams that accumulated pre-fingerprint-fix history:
-// usaa/accounts, usaa/statements, chase/statements, claude-code/sessions.
-// All have compaction policies; the connector is now fingerprint-correct;
-// dry-run confirms removableVersions=0. These are reviewed/expected residue,
-// not actively-growing no-op churn.
+// ─── Drilldown command/guidance per disposition ──────────────────────────────
 
-test("classifyChurnRow returns reviewed_compaction_residue for the four live reviewed streams", () => {
-  const reviewedPairs: [string, string][] = [
-    ["usaa", "accounts"],
-    ["usaa", "statements"],
-    ["chase", "statements"],
-    ["claude-code", "sessions"],
-  ];
-  for (const [connector_id, stream] of reviewedPairs) {
-    assert.equal(
-      classifyChurnRow(row({ connector_id, stream })),
-      "reviewed_compaction_residue",
-      `${connector_id}/${stream} should be classified as reviewed_compaction_residue`
-    );
-  }
-});
-
-test("isExpectedRetainedHistory returns true for reviewed_compaction_residue", () => {
-  assert.equal(isExpectedRetainedHistory(row({ connector_id: "usaa", stream: "accounts" })), true);
-  assert.equal(isExpectedRetainedHistory(row({ connector_id: "claude-code", stream: "sessions" })), true);
-});
-
-test("needsReview returns false for reviewed_compaction_residue", () => {
-  assert.equal(needsReview(row({ connector_id: "usaa", stream: "statements" })), false);
-  assert.equal(needsReview(row({ connector_id: "chase", stream: "statements" })), false);
-});
-
-test("countChurnDispositions buckets reviewed_compaction_residue into reviewedResidueCount", () => {
-  const counts = countChurnDispositions([
-    row({ connector_id: "usaa", stream: "accounts" }), // reviewed_compaction_residue
-    row({ connector_id: "usaa", stream: "statements" }), // reviewed_compaction_residue
-    row({ connector_id: "chase", stream: "statements" }), // reviewed_compaction_residue
-    row({ connector_id: "claude-code", stream: "sessions" }), // reviewed_compaction_residue
-    row({ connector_id: "github", stream: "user" }), // point_in_time_real_field
-    row({ connector_id: "ynab", stream: "budgets" }), // lossless_compaction_candidate
-    unclassifiedRow(), // unclassified
+test("buildChurnDrilldownRows omits the dry-run command for point-in-time rows and carries guidance", () => {
+  const built = buildChurnDrilldownRows([
+    expectedRow({ connector_id: "github", stream: "user", connector_instance_id: "cin_gh_1" }),
   ]);
-  assert.deepEqual(counts, {
-    needsReview: 1,
-    compactionCandidates: 1,
-    expectedRetained: 1,
-    reviewedResidueCount: 4,
-  });
+  assert.equal(built[0]?.remediation, "point_in_time_retained_history");
+  assert.equal(built[0]?.dryRunCommand, null, "point-in-time rows must not offer a (failing) compaction command");
+  assert.ok(built[0]?.pointInTimeGuidance, "point-in-time rows must carry redesign guidance");
+  const guidance = built[0]?.pointInTimeGuidance ?? "";
+  assert.match(guidance, NOT_COMPACTABLE_RE);
+  assert.match(guidance, APPEND_KEYED_RE);
+  assert.match(guidance, FOLLOWER_RE);
 });
+
+test("buildChurnDrilldownRows omits the dry-run command for recurring snapshots and carries guidance", () => {
+  const built = buildChurnDrilldownRows([
+    recurringRow({ connector_id: "claude-code", stream: "sessions", connector_instance_id: "cin_cc_1" }),
+  ]);
+  assert.equal(built[0]?.remediation, "recurring_point_in_time_snapshot");
+  assert.equal(built[0]?.dryRunCommand, null, "recurring snapshots are not compactable — no command");
+  assert.ok(built[0]?.pointInTimeGuidance, "recurring snapshots carry expected-history guidance");
+  assert.match(built[0]?.pointInTimeGuidance ?? "", RECURRING_SNAPSHOT_RE);
+  assert.match(built[0]?.pointInTimeGuidance ?? "", CANNOT_COMPACT_RE);
+});
+
+test("buildChurnDrilldownRows keeps the dry-run command and no guidance for compaction candidates", () => {
+  const built = buildChurnDrilldownRows([candidateRow({ connector_id: "ynab", stream: "budgets" })]);
+  assert.equal(built[0]?.remediation, "lossless_compaction_candidate");
+  assert.ok(built[0]?.dryRunCommand, "compaction candidates keep their dry-run command");
+  assert.equal(built[0]?.pointInTimeGuidance, null);
+});
+
+test("buildChurnDrilldownRows keeps the dry-run command (as a diagnostic) for unclassified rows", () => {
+  const built = buildChurnDrilldownRows([unclassifiedRow({ connector_instance_id: "cin_x" })]);
+  assert.equal(built[0]?.remediation, "active_defect_or_unclassified");
+  assert.ok(built[0]?.dryRunCommand, "unclassified rows keep the read-only dry-run as a safe diagnostic");
+  assert.equal(built[0]?.pointInTimeGuidance, null);
+});
+
+test("buildChurnDrilldownRows keeps the dry-run command for reviewed residue rows", () => {
+  const built = buildChurnDrilldownRows([
+    reviewedRow({ connector_id: "usaa", stream: "accounts", connector_instance_id: "cin_usaa_1" }),
+  ]);
+  assert.equal(built[0]?.remediation, "reviewed_historical_residue");
+  assert.ok(built[0]?.dryRunCommand, "reviewed residue rows keep the dry-run command (--apply frees disk)");
+  assert.equal(built[0]?.pointInTimeGuidance, null);
+});
+
+// ─── pointInTimeGuidance copy ────────────────────────────────────────────────
+
+test("pointInTimeGuidance returns null for a compaction candidate", () => {
+  assert.equal(pointInTimeGuidance(candidateRow({ connector_id: "ynab", stream: "budgets" })), null);
+});
+
+test("pointInTimeGuidance returns null for reviewed residue", () => {
+  assert.equal(pointInTimeGuidance(reviewedRow({ connector_id: "usaa", stream: "accounts" })), null);
+});
+
+test("pointInTimeGuidance names the ynab/accounts balance fields", () => {
+  const guidance = pointInTimeGuidance(expectedRow({ connector_id: "ynab", stream: "accounts" })) ?? "";
+  assert.match(guidance, NOT_COMPACTABLE_RE);
+  assert.match(guidance, APPEND_KEYED_RE);
+  assert.match(guidance, BALANCE_RE);
+});
+
+test("pointInTimeGuidance describes recurring snapshots as expected non-compactable history", () => {
+  const guidance = pointInTimeGuidance(recurringRow()) ?? "";
+  assert.match(guidance, RECURRING_SNAPSHOT_RE);
+  assert.match(guidance, CANNOT_COMPACT_RE);
+});
+
+// ─── Reviewed residue + recurring snapshots in the headline together ─────────
 
 test("summarizeVersionChurn names reviewed residue streams and says no review needed when all classified", () => {
   const rows = [
-    row({ connector_id: "usaa", stream: "accounts", risk_level: "watch" }),
-    row({ connector_id: "usaa", stream: "statements", risk_level: "watch" }),
-    row({ connector_id: "chase", stream: "statements", risk_level: "watch" }),
-    row({ connector_id: "claude-code", stream: "sessions", risk_level: "watch" }),
+    reviewedRow({ connector_id: "usaa", stream: "accounts", risk_level: "watch" }),
+    reviewedRow({ connector_id: "usaa", stream: "statements", risk_level: "watch" }),
+    reviewedRow({ connector_id: "chase", stream: "statements", risk_level: "watch" }),
+    recurringRow({ connector_id: "claude-code", stream: "sessions", risk_level: "watch" }),
   ];
   const summary = summarizeVersionChurn(rows);
   assert.ok(summary);
@@ -445,17 +384,18 @@ test("summarizeVersionChurn names reviewed residue streams and says no review ne
   assert.doesNotMatch(summary.headline, NEEDS_REVIEW_RE);
   assert.match(summary.headline, NO_REVIEW_NEEDED_RE);
   assert.match(summary.headline, REVIEWED_RESIDUE_RE);
-  assert.equal(summary.dispositions.reviewedResidueCount, 4);
+  // 3 reviewed residue + 1 recurring snapshot (folded into expected retained).
+  assert.equal(summary.dispositions.reviewedResidueCount, 3);
+  assert.equal(summary.dispositions.expectedRetained, 1);
   assert.equal(summary.dispositions.needsReview, 0);
   assert.equal(summary.dispositions.compactionCandidates, 0);
-  assert.equal(summary.dispositions.expectedRetained, 0);
 });
 
 test("summarizeVersionChurn includes reviewed residue count even alongside other dispositions", () => {
   const rows = [
-    row({ connector_id: "usaa", stream: "accounts", risk_level: "watch" }),
-    row({ connector_id: "ynab", stream: "budgets", risk_level: "high" }),
-    row({ connector_id: "github", stream: "user", risk_level: "high" }),
+    reviewedRow({ connector_id: "usaa", stream: "accounts", risk_level: "watch" }),
+    candidateRow({ connector_id: "ynab", stream: "budgets", risk_level: "high" }),
+    expectedRow({ connector_id: "github", stream: "user", risk_level: "high" }),
   ];
   const summary = summarizeVersionChurn(rows);
   assert.ok(summary);
@@ -466,142 +406,14 @@ test("summarizeVersionChurn includes reviewed residue count even alongside other
   assert.match(summary.headline, EXPECTED_RETAINED_HISTORY_RE);
 });
 
-test("buildChurnDrilldownRows keeps the dry-run command for reviewed_compaction_residue rows", () => {
-  const built = buildChurnDrilldownRows([
-    row({ connector_id: "usaa", stream: "accounts", connector_instance_id: "cin_usaa_1" }),
-  ]);
-  assert.equal(built[0]?.remediation, "reviewed_compaction_residue");
-  assert.ok(built[0]?.dryRunCommand, "reviewed residue rows keep the dry-run command (--apply frees disk)");
-  assert.equal(built[0]?.pointInTimeGuidance, null);
-});
+// ─── Defensive: a row missing the field falls back to needs-review ───────────
 
-// ─── Mirror-set integrity ────────────────────────────────────────────────
-//
-// The two known-lists are the dashboard's mirror of the reference server's
-// truth. POINT_IN_TIME_REAL_FIELD_STREAMS mirrors the script's real-field
-// guardrail; LOSSLESS_COMPACTION_POLICY_STREAMS mirrors COMPACTION_POLICIES.
-// Both are pinned in-sync against the script in
-// reference-implementation/test/compact-record-history.test.js. Here we guard
-// the local invariant: the two sets must be DISJOINT — a pair can never be
-// both "expected retained, never compact" and "has a compaction policy".
-// REVIEWED_COMPACTION_RESIDUE_STREAMS must be a SUBSET of
-// LOSSLESS_COMPACTION_POLICY_STREAMS — reviewed residue is still policied.
-
-test("the real-field list and the compaction-policy list are disjoint", () => {
-  for (const { connector, stream } of POINT_IN_TIME_REAL_FIELD_STREAMS) {
-    assert.equal(
-      LOSSLESS_COMPACTION_POLICY_STREAMS.has(`${connector}/${stream}`),
-      false,
-      `${connector}/${stream} must not be both a real-field stream and a compaction-policy stream`
-    );
-  }
-});
-
-test("REVIEWED_COMPACTION_RESIDUE_STREAMS is a subset of LOSSLESS_COMPACTION_POLICY_STREAMS", () => {
-  for (const pair of REVIEWED_COMPACTION_RESIDUE_STREAMS) {
-    assert.equal(
-      LOSSLESS_COMPACTION_POLICY_STREAMS.has(pair),
-      true,
-      `${pair} is in reviewed-residue set but NOT in compaction-policy set — every reviewed stream must have a registered policy`
-    );
-  }
-});
-
-test("REVIEWED_COMPACTION_RESIDUE_STREAMS keys match REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT keys", () => {
-  // The set is derived from the map; this guards that the derivation is correct.
-  assert.deepEqual(new Set(REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT.keys()), REVIEWED_COMPACTION_RESIDUE_STREAMS);
-});
-
-// ─── Recurrence guard: timestamp-gated reviewed-residue classification ───
-//
-// A stream stays classified as reviewed_compaction_residue ONLY when its
-// last_history_at is at or before the review timestamp. If new history has
-// been written after the review, the stream re-alarms as a
-// lossless_compaction_candidate so the dashboard surfaces growing churn.
-
-test("classifyChurnRow returns reviewed_compaction_residue when last_history_at is before reviewedAt", () => {
-  // Review timestamp for usaa/accounts is the observed max history write:
-  // 2026-06-03T19:19:53.633Z.
-  // last_history_at is one day earlier → within review window → classified.
-  assert.equal(
-    classifyChurnRow(row({ connector_id: "usaa", stream: "accounts", last_history_at: "2026-06-03T12:00:00.000Z" })),
-    "reviewed_compaction_residue"
-  );
-});
-
-test("classifyChurnRow returns reviewed_compaction_residue when last_history_at equals reviewedAt exactly", () => {
-  const reviewedAt = REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT.get("usaa/accounts");
-  assert.ok(reviewedAt, "usaa/accounts must have a review timestamp");
-  assert.equal(
-    classifyChurnRow(row({ connector_id: "usaa", stream: "accounts", last_history_at: reviewedAt })),
-    "reviewed_compaction_residue"
-  );
-});
-
-test("classifyChurnRow re-alarms as lossless_compaction_candidate when last_history_at is after reviewedAt", () => {
-  // A history write after the review timestamp means new churn
-  // has accumulated since the review — should re-alarm, not stay suppressed.
-  assert.equal(
-    classifyChurnRow(row({ connector_id: "usaa", stream: "accounts", last_history_at: "2026-06-03T19:19:53.634Z" })),
-    "lossless_compaction_candidate"
-  );
-  assert.equal(
-    classifyChurnRow(row({ connector_id: "chase", stream: "statements", last_history_at: "2026-06-03T16:03:36.644Z" })),
-    "lossless_compaction_candidate"
-  );
-  assert.equal(
-    classifyChurnRow(
-      row({ connector_id: "claude-code", stream: "sessions", last_history_at: "2026-06-10T00:00:00.000Z" })
-    ),
-    "lossless_compaction_candidate"
-  );
-});
-
-test("classifyChurnRow re-alarms as lossless_compaction_candidate when last_history_at is null (ground-truth unavailable)", () => {
-  // When last_history_at is null the guard is unverifiable. Conservative
-  // choice: demote to lossless_compaction_candidate rather than silently
-  // suppressing what might be growing churn.
-  assert.equal(
-    classifyChurnRow(row({ connector_id: "usaa", stream: "accounts", last_history_at: null })),
-    "lossless_compaction_candidate"
-  );
-  assert.equal(
-    classifyChurnRow(row({ connector_id: "usaa", stream: "statements", last_history_at: null })),
-    "lossless_compaction_candidate"
-  );
-});
-
-test("isExpectedRetainedHistory returns true for reviewed_compaction_residue within review window", () => {
-  assert.equal(
-    isExpectedRetainedHistory(
-      row({ connector_id: "usaa", stream: "accounts", last_history_at: "2026-06-03T12:00:00.000Z" })
-    ),
-    true
-  );
-});
-
-test("isExpectedRetainedHistory returns false for reviewed_compaction_residue with post-review last_history_at", () => {
-  assert.equal(
-    isExpectedRetainedHistory(
-      row({ connector_id: "usaa", stream: "accounts", last_history_at: "2026-06-03T19:19:53.634Z" })
-    ),
-    false
-  );
-});
-
-test("needsReview returns false for reviewed_compaction_residue within review window", () => {
-  assert.equal(
-    needsReview(row({ connector_id: "chase", stream: "statements", last_history_at: "2026-06-03T16:03:36.643Z" })),
-    false
-  );
-});
-
-test("needsReview returns false even for reviewed_compaction_residue with post-review last_history_at (re-alarms as candidate, not unclassified)", () => {
-  // A re-alarmed stream is a lossless_compaction_candidate, not unclassified —
-  // it still has a registered policy. needsReview only returns true for
-  // unclassified rows with no known policy at all.
-  assert.equal(
-    needsReview(row({ connector_id: "usaa", stream: "accounts", last_history_at: "2026-06-05T00:00:00.000Z" })),
-    false
-  );
+test("classifyChurnRow falls back to active_defect_or_unclassified when the field is absent", () => {
+  // The contract requires version_disposition, but the console must not crash if
+  // an older server omits it — conservative fallback is "needs review". Build the
+  // row WITHOUT the field rather than deleting it (and exercise the same path an
+  // older envelope would produce).
+  const { version_disposition: _omitted, ...legacy } = row();
+  assert.equal(classifyChurnRow(legacy as RefRecordVersionStatsRow), "active_defect_or_unclassified");
+  assert.equal(needsReview(legacy as RefRecordVersionStatsRow), true);
 });

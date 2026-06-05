@@ -870,11 +870,11 @@ function ChurnRiskBadge({ risk, title }: { risk: RefRecordVersionStatsRow["risk_
  * are expected retained history or known compaction candidates.
  */
 const CHURN_DISPOSITION_META: Record<ChurnRemediation, { label: string; tone: string; title: string }> = {
-  unclassified: {
+  active_defect_or_unclassified: {
     label: "needs review",
     tone: "bg-destructive/10 text-destructive",
     title:
-      "No registered compaction policy and not a known point-in-time stream — investigate as a possible new no-op churn bug or unmodeled real-field stream.",
+      "No registered compaction policy and not a known point-in-time or recurring-snapshot stream — investigate as a possible new no-op churn bug or unmodeled real-field stream.",
   },
   lossless_compaction_candidate: {
     label: "compaction candidate",
@@ -882,17 +882,23 @@ const CHURN_DISPOSITION_META: Record<ChurnRemediation, { label: string; tone: st
     title:
       "Has a registered, fingerprint-mirrored compaction policy — the dry-run command reports what redundant history it would remove.",
   },
-  reviewed_compaction_residue: {
+  reviewed_historical_residue: {
     label: "reviewed residue",
     tone: "bg-muted text-muted-foreground",
     title:
       "Owner-reviewed: the compaction policy is registered and the connector is now fingerprint-correct. The dry-run confirms removableVersions=0 — this is pre-fix history that accumulated before the policy was applied. Not actively growing; safe to leave or compact with --apply.",
   },
-  point_in_time_real_field: {
+  point_in_time_retained_history: {
     label: "expected history",
     tone: "bg-muted text-muted-foreground",
     title:
-      "Genuine point-in-time observations (a real field that legitimately changes). Expected retained history — not compactable; the durable fix is an append-keyed point-in-time stream split.",
+      "Genuine point-in-time observations (a real field that legitimately changes). Expected retained history — not compactable; the sampled metric was split into an append-keyed point-in-time stream and this retained history is its sole surviving copy.",
+  },
+  recurring_point_in_time_snapshot: {
+    label: "recurring snapshot",
+    tone: "bg-muted text-muted-foreground",
+    title:
+      "Recurring point-in-time snapshots — expected retained history. The whole record is the evolving observation (it grows on each real session pass), so it cannot be append-split or compacted. Growth is expected and does not re-alarm.",
   },
 };
 

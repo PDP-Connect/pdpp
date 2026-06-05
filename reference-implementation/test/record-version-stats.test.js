@@ -287,6 +287,148 @@ test('record version stats envelope prefers ground-truth counts over stale proje
   assert.equal(envelope.data[0].projection_missing, false);
 });
 
+// ─── version_disposition derivation (OpenSpec add-version-disposition-…) ─────
+
+function dispositionRow(overrides = {}) {
+  return {
+    connector_id: overrides.connector_id ?? 'github',
+    connector_instance_id: overrides.connector_instance_id ?? 'cin_disp',
+    stream: overrides.stream ?? 'user',
+    record_count: overrides.record_count ?? 2,
+    record_history_count: overrides.record_history_count ?? 20_000,
+    dirty: false,
+    computed_at: NOW,
+  };
+}
+
+async function envelopeFor(streamRows, groundTruthRows = []) {
+  return buildRecordVersionStatsEnvelope({}, {
+    connectorInstanceStore: null,
+    getProjection: async () => ({ computed_at: NOW, dirty: false, metadata: { state: 'fresh' } }),
+    listStreams: async () => streamRows,
+    listGroundTruthStreams: async () => groundTruthRows,
+  });
+}
+
+test('AC-1: every version-stats row carries a version_disposition enum value', async () => {
+  const envelope = await envelopeFor([
+    dispositionRow({ connector_id: 'github', stream: 'user', connector_instance_id: 'cin_gh' }),
+    dispositionRow({ connector_id: 'gmail', stream: 'labels', connector_instance_id: 'cin_gm' }),
+    dispositionRow({ connector_id: 'mystery', stream: 'widgets', connector_instance_id: 'cin_my' }),
+  ]);
+  const allowed = new Set([
+    'active_defect_or_unclassified',
+    'reviewed_historical_residue',
+    'point_in_time_retained_history',
+    'lossless_compaction_candidate',
+    'recurring_point_in_time_snapshot',
+  ]);
+  assert.equal(envelope.data.length, 3);
+  for (const row of envelope.data) {
+    assert.ok('version_disposition' in row, 'each row must carry version_disposition');
+    assert.ok(allowed.has(row.version_disposition), `unexpected disposition ${row.version_disposition}`);
+  }
+  // No payloads leak alongside the new field.
+  for (const row of envelope.data) {
+    assert.equal('record_json' in row, false);
+    assert.equal('record_changes' in row, false);
+  }
+});
+
+test('AC-2: disposition does not change risk_thresholds and the meta asserts independence', async () => {
+  const envelope = await envelopeFor([dispositionRow()]);
+  // Byte-identical thresholds to the documented contract.
+  assert.deepEqual(envelope.meta.risk_thresholds, {
+    watch_versions_per_record: 5,
+    high_versions_per_record: 50,
+    high_history_count: 10_000,
+    high_history_versions_per_record: 10,
+  });
+  assert.equal(envelope.meta.disposition_affects_thresholds, false);
+  // risk_level/risk_reasons computed exactly as the numeric classifier would,
+  // independent of the derived disposition.
+  const row = envelope.data[0];
+  const numeric = classifyRecordVersionChurn({ currentRecordCount: 2, recordHistoryCount: 20_000 });
+  assert.equal(row.risk_level, numeric.riskLevel);
+  assert.deepEqual(row.risk_reasons, numeric.riskReasons);
+});
+
+test('AC-3: an unknown high/watch stream classifies active_defect_or_unclassified', async () => {
+  const envelope = await envelopeFor([dispositionRow({ connector_id: 'mystery', stream: 'widgets' })]);
+  assert.equal(envelope.data[0].version_disposition, 'active_defect_or_unclassified');
+});
+
+test('AC-4: reviewed residue re-alarms to lossless_compaction_candidate after the review timestamp', async () => {
+  // Within window → reviewed_historical_residue.
+  const within = await envelopeFor([], [{
+    connector_id: 'usaa',
+    connector_instance_id: 'cin_usaa',
+    stream: 'accounts',
+    current_record_count: 4,
+    record_history_count: 80,
+    record_key_count: 4,
+    last_current_at: NOW,
+    last_history_at: '2026-06-03T12:00:00.000Z',
+  }]);
+  assert.equal(within.data[0].version_disposition, 'reviewed_historical_residue');
+
+  // After window → re-alarm.
+  const after = await envelopeFor([], [{
+    connector_id: 'usaa',
+    connector_instance_id: 'cin_usaa',
+    stream: 'accounts',
+    current_record_count: 4,
+    record_history_count: 80,
+    record_key_count: 4,
+    last_current_at: NOW,
+    last_history_at: '2026-06-03T19:19:53.634Z',
+  }]);
+  assert.equal(after.data[0].version_disposition, 'lossless_compaction_candidate');
+});
+
+test('AC-5: sessions classify recurring_point_in_time_snapshot and do not re-alarm on growth', async () => {
+  for (const connector_id of ['claude-code', 'codex', 'local-device:claude-code']) {
+    const grown = await envelopeFor([], [{
+      connector_id,
+      connector_instance_id: 'cin_sessions',
+      stream: 'sessions',
+      current_record_count: 60,
+      record_history_count: 600,
+      record_key_count: 60,
+      last_current_at: NOW,
+      // Far in the future relative to any prior review timestamp.
+      last_history_at: '2027-01-01T00:00:00.000Z',
+    }]);
+    assert.equal(
+      grown.data[0].version_disposition,
+      'recurring_point_in_time_snapshot',
+      `${connector_id}/sessions must stay #5 even after history grows`,
+    );
+  }
+});
+
+test('AC-6: split residual entity streams classify point_in_time_retained_history (no compaction offered)', async () => {
+  for (const [connector_id, stream] of [['github', 'user'], ['slack', 'channels'], ['ynab', 'accounts']]) {
+    const envelope = await envelopeFor([dispositionRow({ connector_id, stream, connector_instance_id: `cin_${connector_id}` })]);
+    assert.equal(
+      envelope.data[0].version_disposition,
+      'point_in_time_retained_history',
+      `${connector_id}/${stream} must be point_in_time_retained_history`,
+    );
+  }
+});
+
+test('AC-7: a connector-authored field in the source row cannot alter version_disposition', async () => {
+  // The stream row carries a hostile self-declared disposition; the server must
+  // ignore it and derive from reference signals only (unknown stream → #1).
+  const envelope = await envelopeFor([{
+    ...dispositionRow({ connector_id: 'mystery', stream: 'widgets' }),
+    version_disposition: 'point_in_time_retained_history',
+    semantics: 'append',
+  }]);
+  assert.equal(envelope.data[0].version_disposition, 'active_defect_or_unclassified');
+});
+
 test('/_ref/records/version-stats reads projection-backed high-churn rows', async () => {
   const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:', ownerAuthPassword: '' });
   try {

@@ -289,6 +289,19 @@ export interface RefRetainedBytesBreakdown {
 
 export type RefRecordVersionRisk = "high" | "normal" | "watch";
 
+/**
+ * Reference-DERIVED disposition explaining why a churn row's retained history
+ * exists. Computed server-side from reference-controlled signals — a connector
+ * cannot set or override it. Only `active_defect_or_unclassified` counts toward
+ * an operator "needs review" signal. A label only: it never alters risk.
+ */
+export type RefRecordVersionDisposition =
+  | "active_defect_or_unclassified"
+  | "reviewed_historical_residue"
+  | "point_in_time_retained_history"
+  | "lossless_compaction_candidate"
+  | "recurring_point_in_time_snapshot";
+
 export interface RefRecordVersionStatsRow {
   connector_id: string | null;
   connector_instance_id: string;
@@ -304,12 +317,15 @@ export interface RefRecordVersionStatsRow {
   risk_level: RefRecordVersionRisk;
   risk_reasons: string[];
   stream: string;
+  version_disposition: RefRecordVersionDisposition;
   versions_per_record: number;
 }
 
 export interface RefRecordVersionStatsEnvelope {
   data: RefRecordVersionStatsRow[];
   meta: {
+    /** Normative assertion that disposition never alters the risk thresholds. */
+    disposition_affects_thresholds: false;
     filters: {
       connector_instance_id: string | null;
       risk: RefRecordVersionRisk | null;

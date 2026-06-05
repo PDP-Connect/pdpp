@@ -7,6 +7,11 @@ import {
   isPostgresStorageBackend,
   postgresQuery,
 } from './postgres-storage.js';
+import { classifyVersionDisposition } from './version-disposition.js';
+// COMPACTION_POLICIES is the single source of truth for the "registered
+// compaction policy" signal — the same registry the maintenance tool resolves.
+// `findPolicy` resolves the short, registry-URL, and local-device id forms.
+import { findPolicy } from '../scripts/compact-record-history.mjs';
 
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 500;
@@ -258,6 +263,19 @@ export async function buildRecordVersionStatsEnvelope({
       if (Boolean(row.dirty)) {
         riskReasons.push('projection_dirty');
       }
+      const lastHistoryAt = groundTruth?.last_history_at || null;
+      // version_disposition is a derived label only — it never participates in
+      // and never alters the numeric risk classification above. It is computed
+      // from reference-controlled signals: the registered compaction-policy
+      // presence (COMPACTION_POLICIES via findPolicy) plus the server-side
+      // point-in-time / recurring-snapshot / reviewed-residue registries. No
+      // connector-authored value feeds it.
+      const versionDisposition = classifyVersionDisposition({
+        connectorId: row.connector_id || null,
+        stream: row.stream,
+        lastHistoryAt,
+        hasCompactionPolicy: findPolicy(row.connector_id || '', row.stream) != null,
+      });
       return {
         connector_id: row.connector_id || null,
         connector_instance_id: row.connector_instance_id,
@@ -270,12 +288,13 @@ export async function buildRecordVersionStatsEnvelope({
         // The retained-size projection tracks when aggregate facts were
         // computed, not separate current/history write timestamps.
         last_current_at: groundTruth?.last_current_at || null,
-        last_history_at: groundTruth?.last_history_at || null,
+        last_history_at: lastHistoryAt,
         projection_dirty: Boolean(row.dirty),
         projection_missing: projectionMissing,
         projection_authority: groundTruth ? 'record_changes_ground_truth' : 'retained_size_projection',
         risk_level: classification.riskLevel,
         risk_reasons: riskReasons,
+        version_disposition: versionDisposition,
       };
     })
     .filter((row) => (riskFilter ? row.risk_level === riskFilter : true))
@@ -312,6 +331,12 @@ export async function buildRecordVersionStatsEnvelope({
         high_history_count: 10_000,
         high_history_versions_per_record: 10,
       },
+      // version_disposition is a label, never a threshold knob. The numeric
+      // risk_thresholds above and each row's risk_level/risk_reasons are
+      // computed independently of disposition. This assertion makes that
+      // explicit so a reader cannot mistake disposition for a threshold
+      // override.
+      disposition_affects_thresholds: false,
     },
     projection: {
       computed_at: projection.computed_at || null,

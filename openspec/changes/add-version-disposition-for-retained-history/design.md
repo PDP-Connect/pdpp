@@ -27,12 +27,15 @@ churn defect:
    byte-identical no-op churn. But unlike `github/user → user_stats`, you cannot
    append-split a session: the entire record (`message_count`, `last_event_at`,
    …) *is* the moving observation, not a metric carried alongside a stable
-   identity. So these streams have no compaction policy and are not real-field
-   split candidates. The console today falls them through to
-   `lossless_compaction_candidate`, and the reviewed-at timestamp guard
-   correctly re-alarms them every time new session history is written. The guard
-   is doing its job, but the label is wrong: this is expected, retained,
-   never-compactable history that should not read as an actionable candidate.
+   identity. So these streams are not real-field split candidates. They DO carry
+   a registered compaction policy (the exact-stable-JSON family) — but only as
+   the regression catch for a broken mtime gate; under normal growth there is
+   nothing to remove. The console today parks them in the reviewed-residue map,
+   so the reviewed-at timestamp guard re-alarms them as
+   `lossless_compaction_candidate` every time new session history is written. The
+   guard is doing its job, but the label is wrong: this is expected, retained
+   history that no compaction would usefully remove, and it should not read as an
+   actionable candidate.
 
 The deliverable is the smallest durable construction that lets the records page
 read "no review needed" **without** asserting "no retained history exists," while
@@ -63,25 +66,43 @@ the disposition is authored**. Two options were considered.
 
 ### Option A — server-derived disposition (RECOMMENDED, specified here)
 
-The reference computes `version_disposition` from signals it already trusts:
+The reference computes `version_disposition` from signals it already trusts,
+applied with a fixed precedence (recurring-snapshot → point-in-time →
+reviewed-residue → compaction-policy → unclassified):
 
-- **manifest stream `semantics`** (`mutable_state` | `append` | `append_only`) —
-  an input, not the output (see "Why not `semantics` alone");
-- **registered compaction policy presence** — the `COMPACTION_POLICIES` registry
-  in `compact-record-history.mjs`, which the script already treats as
-  authoritative;
-- **append-keyed split shipped** — the stream is the residual entity stream of a
-  real-field split (its volatile metric now lives in a sibling `*_stats` /
-  `*_balances` append stream);
+- **recurring point-in-time snapshot list** — a reference-maintained list of
+  evolving session streams (`claude-code/sessions`, `codex/sessions`) whose whole
+  record is the moving observation. Checked FIRST so the registered compaction
+  policy these streams carry does not pull them into the candidate bucket;
+- **point-in-time split list** — the residual entity streams of a real-field
+  split (`github/user`, `slack/channels`, `ynab/accounts`), whose volatile metric
+  now lives in a sibling append stream. These have NO compaction policy;
 - **owner-reviewed residue evidence** — the
-  `REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT` map (moves server-side), compared
+  `REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT` map (moved server-side), compared
   against the ground-truth `last_history_at`;
-- **session-style recurring growth** — `mutable_state`, no compaction policy, no
-  split sibling, re-versions monotonically on real growth.
+- **registered compaction policy presence** — the `COMPACTION_POLICIES` registry
+  in `compact-record-history.mjs`, resolved via `findPolicy`, which the script
+  already treats as authoritative.
 
 The console drops its hardcoded lists and renders the field. Classification is
 computed once, in the auditable contract, from the same registries the
 compaction tool uses.
+
+> **Correction adopted during implementation.** The first draft of this design
+> derived `recurring_point_in_time_snapshot` from "`mutable_state`, **no
+> registered compaction policy**, no split sibling." That rule is wrong: the
+> motivating streams `claude-code/sessions` and `codex/sessions` BOTH carry a
+> registered compaction policy (the exact-stable-JSON family in
+> `compact-record-history.mjs` — kept as the regression safety net for a broken
+> mtime no-op gate, exactly as the "Anti-self-declaration" section below relies
+> on). Applied literally, the draft rule would classify the very example streams
+> it named as `lossless_compaction_candidate`. The implemented derivation
+> instead keys disposition #5 on **explicit membership in the recurring-snapshot
+> list, evaluated with precedence over the policy signal**. `semantics` is not
+> used at all (every relevant stream is `mutable_state`, so it carries no
+> distinguishing information — see "Why not `semantics` alone"); the explicit
+> lists do the work. This is a derivation-rule correction within the approved
+> Option A, not a change of approach.
 
 **Why recommended:**
 
@@ -213,8 +234,10 @@ out of the re-alarming compaction-candidate bucket.
   `last_history_at` is after `reviewed_at` classifies
   `lossless_compaction_candidate`, not `reviewed_historical_residue`.
 - **AC-5 sessions are recurring snapshots.** `claude-code/sessions` and
-  `codex/sessions` classify `recurring_point_in_time_snapshot`, do not count as
-  needs-review, and do not re-alarm when `last_history_at` advances.
+  `codex/sessions` classify `recurring_point_in_time_snapshot` (via explicit
+  recurring-snapshot list membership, which takes precedence over their
+  registered compaction policy), do not count as needs-review, and do not
+  re-alarm when `last_history_at` advances.
 - **AC-6 point-in-time is never compactable.** A split residual entity stream
   (`github/user`, `slack/channels`, `ynab/accounts`) classifies
   `point_in_time_retained_history` and is offered no compaction command.

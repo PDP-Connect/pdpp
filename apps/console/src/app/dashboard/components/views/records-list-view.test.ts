@@ -482,8 +482,8 @@ const CHURN_CTA_HONEST_WHEN_CLASSIFIED = /needsReview \? "Review version churn â
 // candidates â€” the in-table counterpart to the honest headline.
 const CHURN_HAS_DISPOSITION_COLUMN = />\s*Disposition\s*</;
 const CHURN_RENDERS_DISPOSITION_BADGE = /<ChurnDispositionBadge remediation=\{row\.remediation\}/;
-const CHURN_DISPOSITION_NAMES_THREE_BUCKETS =
-  /unclassified:[\s\S]*?lossless_compaction_candidate:[\s\S]*?point_in_time_real_field:/;
+const CHURN_DISPOSITION_NAMES_ALL_BUCKETS =
+  /active_defect_or_unclassified:[\s\S]*?lossless_compaction_candidate:[\s\S]*?reviewed_historical_residue:[\s\S]*?point_in_time_retained_history:[\s\S]*?recurring_point_in_time_snapshot:/;
 
 test("version-churn banner branches its tone and CTA on whether review is actually needed", async () => {
   const src = await readFile(VIEW_FILE, "utf8");
@@ -493,11 +493,11 @@ test("version-churn banner branches its tone and CTA on whether review is actual
   assert.match(src, CHURN_CTA_HONEST_WHEN_CLASSIFIED);
 });
 
-test("version-churn disclosure surfaces a per-row disposition with all three buckets", async () => {
+test("version-churn disclosure surfaces a per-row disposition with all five buckets", async () => {
   const src = await readFile(VIEW_FILE, "utf8");
   assert.match(src, CHURN_HAS_DISPOSITION_COLUMN);
   assert.match(src, CHURN_RENDERS_DISPOSITION_BADGE);
-  // The badge metadata must name all three remediation buckets so none is
+  // The badge metadata must name all five remediation buckets so none is
   // silently dropped from the operator's vocabulary.
-  assert.match(src, CHURN_DISPOSITION_NAMES_THREE_BUCKETS);
+  assert.match(src, CHURN_DISPOSITION_NAMES_ALL_BUCKETS);
 });

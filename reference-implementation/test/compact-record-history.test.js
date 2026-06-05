@@ -31,6 +31,10 @@ import {
   recordFingerprint,
   selectRemovableVersions,
 } from '../scripts/compact-record-history.mjs';
+import {
+  POINT_IN_TIME_REAL_FIELD_STREAMS as SERVER_POINT_IN_TIME_STREAMS,
+  RECURRING_POINT_IN_TIME_SNAPSHOT_STREAMS as SERVER_RECURRING_SNAPSHOT_STREAMS,
+} from '../server/version-disposition.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT_PATH = path.resolve(__dirname, '..', 'scripts', 'compact-record-history.mjs');
@@ -267,72 +271,71 @@ for (const stream of ['accounts', 'credit_card_billing']) {
   });
 }
 
-// ─── Dashboard mirror in-sync guardrail ──────────────────────────────────
+// ─── Server disposition-registry in-sync guardrail ────────────────────────
 //
-// The console's version-churn notice classifies each churn row into three
-// dispositions (apps/console/src/app/dashboard/lib/version-churn-summary.ts):
-//   - POINT_IN_TIME_REAL_FIELD_STREAMS — expected retained history, NO policy;
-//   - LOSSLESS_COMPACTION_POLICY_STREAMS — the dry-run command is a real fix;
-//   - everything else — "unclassified", genuinely needs review.
-// Both lists are a MIRROR of this script's truth (the real-field guardrail
-// above and COMPACTION_POLICIES respectively). The console module is browser-
-// bundled TypeScript and cannot import this Node `.mjs` tool (it would pull in
-// `pg`), so the pair-sets are duplicated there. These tests pin the mirror by
-// parsing the console source so a registry change here that is not reflected in
-// the dashboard — which would mis-classify a row (offer a failing command, or
-// alarm on expected history) — fails loudly. We parse rather than import to
-// avoid coupling this server test to the console's build/tsx loader.
-const CONSOLE_SUMMARY_SRC = readFileSync(
-  path.resolve(__dirname, '..', '..', 'apps', 'console', 'src', 'app', 'dashboard', 'lib', 'version-churn-summary.ts'),
-  'utf8',
-);
+// version_disposition is now DERIVED server-side
+// (reference-implementation/server/version-disposition.js) from this script's
+// COMPACTION_POLICIES registry plus two reference-maintained stream lists. The
+// server module is intentionally `pg`-free, so this Node test imports it
+// directly (no source-parsing of the browser bundle, which is what the prior
+// console-mirror tests did before the lists moved server-side).
+//
+// These tests pin the structural invariants the derivation relies on:
+//   - point-in-time split residuals must have NO compaction policy (a policy
+//     would let `--apply` delete real history);
+//   - recurring point-in-time snapshots (sessions) MUST have a compaction
+//     policy — it is the regression safety net for a broken no-op gate — which
+//     is exactly why the disposition cannot key on policy ABSENCE and must use
+//     explicit list membership with precedence.
 
-/** Extract the `const <NAME> ... = [...]`/`new Set([...])` block body as text. */
-function extractDashboardListBlock(src, name) {
-  const start = src.indexOf(name);
-  assert.notEqual(start, -1, `dashboard source must declare ${name}`);
-  const open = src.indexOf('[', start);
-  assert.notEqual(open, -1, `${name} must be an array/Set literal`);
-  let depth = 0;
-  for (let i = open; i < src.length; i++) {
-    const ch = src[i];
-    if (ch === '[') depth += 1;
-    else if (ch === ']') {
-      depth -= 1;
-      if (depth === 0) return src.slice(open, i + 1);
-    }
+test('server point-in-time real-field streams have NO compaction policy (split, never compact)', () => {
+  for (const { connector, stream } of SERVER_POINT_IN_TIME_STREAMS) {
+    assert.equal(
+      findPolicy(connector, stream),
+      null,
+      `${connector}/${stream} is a point-in-time split residual; it must NOT have a compaction policy`,
+    );
+    assert.equal(
+      findPolicy(`https://registry.pdpp.org/connectors/${connector}`, stream),
+      null,
+      `${connector}/${stream} (registry-URL form) must also have no compaction policy`,
+    );
   }
-  throw new Error(`unterminated literal for ${name}`);
-}
+});
 
-test('dashboard POINT_IN_TIME_REAL_FIELD_STREAMS mirrors this script\'s real-field guardrail list', () => {
-  const block = extractDashboardListBlock(CONSOLE_SUMMARY_SRC, 'POINT_IN_TIME_REAL_FIELD_STREAMS');
-  // Pull every `{ connector: "x", stream: "y", ... }` pair out of the block.
-  const pairs = [...block.matchAll(/connector:\s*"([^"]+)",\s*stream:\s*"([^"]+)"/g)].map(
-    (m) => `${m[1]}/${m[2]}`,
-  );
-  const dashboardSet = new Set(pairs);
+test('server point-in-time list matches this script\'s real-field guardrail list', () => {
+  const serverSet = new Set(SERVER_POINT_IN_TIME_STREAMS.map(({ connector, stream }) => `${connector}/${stream}`));
   const scriptSet = new Set(
     POINT_IN_TIME_REAL_FIELD_STREAMS.map(({ connector, stream }) => `${connector}/${stream}`),
   );
   assert.deepEqual(
-    [...dashboardSet].sort(),
+    [...serverSet].sort(),
     [...scriptSet].sort(),
-    'dashboard real-field list and script real-field guardrail must list the same (connector, stream) pairs',
+    'server disposition point-in-time list and script real-field guardrail must list the same pairs',
   );
 });
 
-test('dashboard LOSSLESS_COMPACTION_POLICY_STREAMS mirrors COMPACTION_POLICIES exactly', () => {
-  const block = extractDashboardListBlock(CONSOLE_SUMMARY_SRC, 'LOSSLESS_COMPACTION_POLICY_STREAMS');
-  // The Set is seeded with bare "connector/stream" string literals.
-  const dashboardPairs = new Set([...block.matchAll(/"([a-z0-9-]+\/[a-z0-9_]+)"/g)].map((m) => m[1]));
-  // The script registry's canonical short-name pair set.
-  const scriptPairs = new Set(COMPACTION_POLICIES.map((p) => `${p.connectorIds[0]}/${p.stream}`));
-  assert.deepEqual(
-    [...dashboardPairs].sort(),
-    [...scriptPairs].sort(),
-    'dashboard compaction-policy mirror must list exactly the (connector, stream) pairs registered in COMPACTION_POLICIES',
-  );
+test('server recurring point-in-time snapshot streams DO have a registered compaction policy (regression safety net)', () => {
+  // The design relies on this: sessions keep their policy as the catch for a
+  // broken mtime gate, so the disposition must classify them by explicit list
+  // membership with precedence, NOT by policy absence.
+  for (const { connector, stream } of SERVER_RECURRING_SNAPSHOT_STREAMS) {
+    assert.ok(
+      findPolicy(connector, stream),
+      `${connector}/${stream} is a recurring snapshot; it MUST keep a compaction policy as the no-op regression safety net`,
+    );
+  }
+});
+
+test('server recurring-snapshot list and point-in-time list are disjoint', () => {
+  const piSet = new Set(SERVER_POINT_IN_TIME_STREAMS.map(({ connector, stream }) => `${connector}/${stream}`));
+  for (const { connector, stream } of SERVER_RECURRING_SNAPSHOT_STREAMS) {
+    assert.equal(
+      piSet.has(`${connector}/${stream}`),
+      false,
+      `${connector}/${stream} cannot be both a recurring snapshot and a point-in-time split residual`,
+    );
+  }
 });
 
 test('parseLimitKeys accepts positive integers, rejects everything else', () => {

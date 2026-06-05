@@ -30,11 +30,21 @@ disposition SHALL be one of:
   observation). This is expected retained history.
 
 The `version_disposition` SHALL be **derived by the reference implementation**
-from signals it controls — the manifest stream `semantics`, the presence of a
-registered compaction policy, the presence of an append-keyed split sibling
-stream, the owner-maintained reviewed-residue evidence, and the recurring
-real-growth rule. A connector SHALL NOT be able to set, override, or suppress a
-row's `version_disposition` through any manifest field or emitted payload.
+from signals it controls — the presence of a registered compaction policy, the
+reference-maintained point-in-time split list, the reference-maintained
+recurring point-in-time snapshot list, and the owner-maintained reviewed-residue
+evidence. A connector SHALL NOT be able to set, override, or suppress a row's
+`version_disposition` through any manifest field or emitted payload.
+
+The derivation SHALL apply the recognized lists with a fixed precedence so that
+a stream which is BOTH a recurring point-in-time snapshot AND carries a
+registered compaction policy classifies as `recurring_point_in_time_snapshot`,
+not `lossless_compaction_candidate`. The recurring-snapshot list and the
+point-in-time split list SHALL therefore be evaluated before the compaction
+policy signal. (The session streams that motivate
+`recurring_point_in_time_snapshot` DO carry a registered compaction policy — it
+is the regression safety net for a broken no-op gate — so policy presence cannot
+be the distinguishing signal; explicit list membership is.)
 
 The `version_disposition` SHALL be a label only. It SHALL NOT alter the numeric
 `risk_thresholds`, the computed `risk_level`, or the `risk_reasons`. An
@@ -101,9 +111,9 @@ explicit so a reader cannot mistake disposition for a threshold override.
 - **THEN** the reference SHALL ignore that field when deriving
   `version_disposition`
 - **AND** the derived disposition SHALL depend only on reference-controlled
-  signals (manifest `semantics`, registered compaction policy presence,
-  append-split sibling presence, owner reviewed-residue evidence, and the
-  recurring real-growth rule).
+  signals (registered compaction policy presence, the reference-maintained
+  point-in-time split list, the reference-maintained recurring point-in-time
+  snapshot list, and owner reviewed-residue evidence).
 
 #### Scenario: Reviewed residue re-alarms when history grows after review
 
@@ -114,10 +124,12 @@ explicit so a reader cannot mistake disposition for a threshold override.
 
 #### Scenario: A recurring point-in-time snapshot stream is expected retained history
 
-- **WHEN** a `mutable_state` stream that re-versions only on real growth, has no
-  registered compaction policy, and has no append-keyed split sibling (for
-  example an evolving local agent `sessions` stream) crosses a churn threshold
-- **THEN** the reference SHALL classify the row `recurring_point_in_time_snapshot`
+- **WHEN** a stream on the reference-maintained recurring point-in-time snapshot
+  list (an evolving local agent `sessions` stream — `claude-code/sessions` or
+  `codex/sessions`) crosses a churn threshold
+- **THEN** the reference SHALL classify the row `recurring_point_in_time_snapshot`,
+  taking precedence over the row's registered compaction policy and any
+  reviewed-residue evidence
 - **AND** the row SHALL NOT count toward the operator "needs review" signal
 - **AND** an advance in the row's most recent history timestamp SHALL NOT
   re-alarm the row, because growth is its expected, non-removable signal.

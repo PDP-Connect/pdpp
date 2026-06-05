@@ -871,6 +871,20 @@ const RecordVersionStatsRowSchema = {
     projection_authority: { type: "string", enum: ["record_changes_ground_truth", "retained_size_projection"] },
     risk_level: { type: "string", enum: ["normal", "watch", "high"] },
     risk_reasons: { type: "array", items: { type: "string" } },
+    // Reference-DERIVED disposition (never connector-authored). A label only:
+    // it does not alter risk_level/risk_reasons/risk_thresholds. Only
+    // `active_defect_or_unclassified` counts toward an operator needs-review
+    // signal.
+    version_disposition: {
+      type: "string",
+      enum: [
+        "active_defect_or_unclassified",
+        "reviewed_historical_residue",
+        "point_in_time_retained_history",
+        "lossless_compaction_candidate",
+        "recurring_point_in_time_snapshot",
+      ],
+    },
   },
   required: [
     "connector_id",
@@ -888,6 +902,7 @@ const RecordVersionStatsRowSchema = {
     "projection_authority",
     "risk_level",
     "risk_reasons",
+    "version_disposition",
   ],
 };
 
@@ -932,8 +947,20 @@ const RecordVersionStatsResponseSchema = {
             "high_history_versions_per_record",
           ],
         },
+        // Normative assertion that version_disposition is a label and never
+        // alters the numeric risk thresholds above. Always false.
+        disposition_affects_thresholds: { const: false },
       },
-      required: ["returned", "total_matching", "has_more", "limit", "filters", "source", "risk_thresholds"],
+      required: [
+        "returned",
+        "total_matching",
+        "has_more",
+        "limit",
+        "filters",
+        "source",
+        "risk_thresholds",
+        "disposition_affects_thresholds",
+      ],
     },
     projection: RetainedSizeProjectionSchema,
   },
