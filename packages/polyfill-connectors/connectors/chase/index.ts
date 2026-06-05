@@ -1197,15 +1197,14 @@ export async function emitTransactionsForAccount(
       source: `qfx_download_${activity}_${t.date}`,
       fetched_at: deps.emittedAt,
     };
-    // Gate on a per-transaction fingerprint that excludes the run-clock
-    // `fetched_at`. A posted transaction's identity (id = account_id|fitid)
-    // and its fields (date, amount, name, memo, …) are immutable, but the
-    // incremental window re-downloads an overlapping date range every run
-    // and re-emits each transaction with a fresh `fetched_at` — ~308
-    // versions/record of pure run-clock churn. With this gate an
-    // already-seen transaction whose body is byte-identical modulo
-    // `fetched_at` is suppressed; a genuinely-new transaction (new id) or a
-    // real field move is a fingerprint boundary and still emits.
+    // Gate on a per-transaction fingerprint that excludes run/acquisition
+    // metadata (`fetched_at`, `source`). A posted transaction's identity
+    // (id = account_id|fitid) and its fields (date, amount, name, memo, …)
+    // are immutable, but overlapping windows re-download transactions with
+    // a fresh run clock and sometimes a different activity-mode source. With
+    // this gate an already-seen transaction whose transaction fields are
+    // unchanged is suppressed; a genuinely-new transaction (new id) or a real
+    // field move is a fingerprint boundary and still emits.
     //
     // NOTE: transactions is a PARTIAL scan (per-account incremental
     // windows), so this cursor is never `pruneStale()`d — pruning ids the
@@ -2016,7 +2015,7 @@ if (isMainModule(import.meta.url)) {
       // emitTransactionsForAccount).
       const transactionsFingerprintCursor = requested.has("transactions")
         ? openFingerprintCursor(startState.transactions, {
-            excludeFromFingerprint: ["fetched_at"],
+            excludeFromFingerprint: ["fetched_at", "source"],
             priorFingerprints: readPriorTransactionFingerprints(startState),
           })
         : undefined;

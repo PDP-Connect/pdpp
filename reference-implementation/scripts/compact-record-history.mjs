@@ -248,18 +248,21 @@ export const COMPACTION_POLICIES = [
     // between runs was `fetched_at`. Because the connector re-downloads an
     // overlapping incremental QFX window every run, every already-seen
     // transaction was re-emitted with a fresh `fetched_at` (~308
-    // versions/record — the worst churn stream by ratio). The connector now
-    // gates emit through a per-transaction fingerprint cursor with
-    // excludeFromFingerprint ["fetched_at"]; this policy mirrors that
-    // exclusion one-for-one. Excluding ONLY `fetched_at` is lossless: a new
+    // versions/record — the worst churn stream by ratio). Later live review
+    // also found acquisition-mode `source` flapping
+    // (`qfx_download_all_*` ↔ `qfx_download_since_last_statement_*`) for the
+    // same QFX transaction. The connector now gates emit through a
+    // per-transaction fingerprint cursor with excludeFromFingerprint
+    // ["fetched_at", "source"]; this policy mirrors that exclusion
+    // one-for-one. Excluding only run/acquisition metadata is lossless: a new
     // transaction (new id) or a real field move is always a fingerprint
-    // boundary that survives; only a re-downloaded byte-identical
-    // transaction (modulo the run clock) collapses.
+    // boundary that survives; only a re-downloaded byte-identical transaction
+    // modulo those metadata fields collapses.
     connectorIds: ['chase', 'https://registry.pdpp.org/connectors/chase'],
     stream: 'transactions',
-    excludeKeys: ['fetched_at'],
+    excludeKeys: ['fetched_at', 'source'],
     connectorSource:
-      'packages/polyfill-connectors/connectors/chase/index.ts:emitTransactionsForAccount → openFingerprintCursor({excludeFromFingerprint:["fetched_at"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
+      'packages/polyfill-connectors/connectors/chase/index.ts:emitTransactionsForAccount → openFingerprintCursor({excludeFromFingerprint:["fetched_at","source"]}) → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
   },
   {
     // `accounts` (USAA) post-split carries identity/settings only

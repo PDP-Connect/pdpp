@@ -311,12 +311,13 @@ if (canonicalRecordFingerprint) {
     assert.equal(h1, h2, 'fetched_at delta must not change the statements fingerprint');
   });
 
-  test('parity: chase transactions excludes fetched_at but a REAL field move is a boundary', () => {
+  test('parity: chase transactions excludes fetched_at/source but a REAL field move is a boundary', () => {
     const policy = findPolicy('chase', 'transactions');
     // A posted transaction's identity (id = account_id|fitid) and fields
-    // are immutable; only `fetched_at` moves when the incremental window
-    // re-downloads it. Excluding ONLY fetched_at is lossless: a no-op
-    // re-download collapses, a real field move does not.
+    // are immutable; run-clock `fetched_at` and acquisition-mode `source`
+    // move when overlapping QFX windows re-download it. Excluding only
+    // those metadata fields is lossless: a no-op re-download collapses, a
+    // real field move does not.
     const base = {
       id: 'INTACC123|FITID-0001',
       account_id: 'INTACC123',
@@ -335,8 +336,15 @@ if (canonicalRecordFingerprint) {
     expectParity({ ...base, fetched_at: '2026-06-01T10:00:00.000Z' }, policy.excludeKeys, 'chase/transactions t1');
     expectParity({ ...base, fetched_at: '2026-06-02T10:00:00.000Z' }, policy.excludeKeys, 'chase/transactions t2');
     const noop1 = scriptRecordFingerprint({ ...base, fetched_at: '2026-06-01T10:00:00.000Z' }, policy.excludeKeys);
-    const noop2 = scriptRecordFingerprint({ ...base, fetched_at: '2026-06-02T10:00:00.000Z' }, policy.excludeKeys);
-    assert.equal(noop1, noop2, 'fetched_at delta must not change the transactions fingerprint (re-download collapses)');
+    const noop2 = scriptRecordFingerprint(
+      {
+        ...base,
+        fetched_at: '2026-06-02T10:00:00.000Z',
+        source: 'qfx_download_all_2026-04-10',
+      },
+      policy.excludeKeys,
+    );
+    assert.equal(noop1, noop2, 'metadata deltas must not change the transactions fingerprint (re-download collapses)');
     const amountMoved = scriptRecordFingerprint(
       { ...base, amount: -5000, fetched_at: '2026-06-02T10:00:00.000Z' },
       policy.excludeKeys,
