@@ -227,6 +227,49 @@ test("the stalled-outbox count cue lives inside the detail-linked guidance row, 
   assert.ok(scaleIndex > detailHrefIndex, "scale cue must render inside the detail-linked guidance Link");
 });
 
+// ─── source-pressure backlog cue ──────────────────────────────────────────
+//
+// The source-pressure paths carry a SEPARATE, gated count cue
+// (`guidance.backlogScale`), rendered inside the same detail-linked guidance
+// row. It is distinct from the device-outbox scale and uses backlog copy, never
+// device copy. Gating + formatting live in `deriveConnectionNextStep`
+// (unit-tested in connection-evidence.test.ts); these assert the row renders it
+// only when present and never reuses the device "stuck on the device" copy.
+
+const NEXT_STEP_BACKLOG_GATED = /\{guidance\.backlogScale \?/;
+const NEXT_STEP_BACKLOG_TESTID = /data-testid="next-step-backlog-scale"/;
+const NEXT_STEP_BACKLOG_RENDERS_VALUE = /\{guidance\.backlogScale\}/;
+const STUCK_ON_DEVICE_RE = /Stuck on the device/;
+const BACKLOG_WORD_RE = /backlog/i;
+
+test("connector-row renders the source-pressure backlog cue only when a backlog scale is present", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  const block = src.slice(src.indexOf("function NextStepGuidanceRow"), src.indexOf("function StatusDot"));
+  assert.match(block, NEXT_STEP_BACKLOG_GATED);
+  assert.match(block, NEXT_STEP_BACKLOG_TESTID);
+  assert.match(block, NEXT_STEP_BACKLOG_RENDERS_VALUE);
+});
+
+test("the source-pressure backlog cue uses backlog copy, not the device-outbox copy", async () => {
+  // The backlog is scheduler-managed catch-up, not stuck device work — it must
+  // never inherit the "Stuck on the device" framing or imply a host command.
+  const src = await readFile(ROW_FILE, "utf8");
+  const block = src.slice(src.indexOf("function NextStepGuidanceRow"), src.indexOf("function StatusDot"));
+  const backlogSpanStart = block.indexOf('data-testid="next-step-backlog-scale"');
+  const backlogSpanEnd = block.indexOf("</span>", backlogSpanStart);
+  const backlogSpan = block.slice(backlogSpanStart, backlogSpanEnd);
+  assert.doesNotMatch(backlogSpan, STUCK_ON_DEVICE_RE);
+  assert.match(backlogSpan, BACKLOG_WORD_RE);
+});
+
+test("the source-pressure backlog cue renders inside the detail-linked guidance Link", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  const block = src.slice(src.indexOf("function NextStepGuidanceRow"), src.indexOf("function StatusDot"));
+  const detailHrefIndex = block.indexOf("href={detailHref}");
+  const backlogIndex = block.indexOf('data-testid="next-step-backlog-scale"');
+  assert.ok(backlogIndex > detailHrefIndex, "backlog cue must render inside the detail-linked guidance Link");
+});
+
 // ─── AxisChipBadge dimension/value rendering ─────────────────────────────
 //
 // The chip must render dimension (muted) and value (prominent) as

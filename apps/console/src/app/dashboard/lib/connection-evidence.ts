@@ -18,6 +18,7 @@
 import type {
   DeviceSourceInstance,
   RefConnectionHealthSnapshot,
+  RefDetailGapBacklog,
   RefForwardDisposition,
   RefLocalDeviceProgress,
   RefSchedule,
@@ -697,6 +698,56 @@ function formatOutboxCountScale(counts: RefLocalDeviceProgress["outbox_counts"] 
   return parts.length > 0 ? parts.join(" · ") : null;
 }
 
+/**
+ * Render the reference's source-pressure detail-gap backlog rollup
+ * ({@link RefDetailGapBacklog}) as one short, honest operator line for the
+ * scheduler-managed `cooling_off` / `retryable_gap` paths. It is the
+ * scheduler-side analogue of {@link formatOutboxCountScale}, and obeys the same
+ * "never invent precision" discipline plus the backlog's own honesty contract:
+ *
+ *   - `null`/absent backlog → `null`. The reference could not read the durable
+ *     gap store, so we say nothing rather than fabricate "0 left".
+ *   - `pending > 0` → a count, made a floor ("at least N") when
+ *     `pending_is_floor` is set, because the durable read was bounded. The
+ *     `next_attempt_at` retry floor is appended as a resume time, framed as
+ *     "resumes after …" so it never overpromises automatic completion.
+ *   - `pending === 0` with a positive `recovered` → reads as drained/caught up
+ *     ("caught up — N recovered"), not broken.
+ *   - `pending === 0` with no recovered aggregate → "caught up" (the readable-
+ *     but-drained `0`, distinct from the `null` "unmeasured" case above).
+ *
+ * Returns the line, or `null` to render no backlog cue.
+ */
+function formatSourcePressureBacklogScale(backlog: RefDetailGapBacklog | null | undefined): string | null {
+  // `null`/absent means the durable gap store was unreadable (unmeasured). Never
+  // invent a count: stay silent and let the surrounding copy carry the state.
+  if (!backlog) {
+    return null;
+  }
+  const pending = typeof backlog.pending === "number" && backlog.pending > 0 ? Math.floor(backlog.pending) : 0;
+  if (pending > 0) {
+    // `pending_is_floor` means the durable read was bounded and hit the bound, so
+    // `pending` is a floor, not an exact total — present it as "at least N".
+    const noun = pending === 1 ? "detail item" : "detail items";
+    const count = backlog.pending_is_floor
+      ? `at least ${pending.toLocaleString()} ${noun}`
+      : `${pending.toLocaleString()} ${noun}`;
+    const line = `${count} to catch up`;
+    // The backlog's own `next_attempt_at` is its retry floor (Retry-After /
+    // cooldown), set even for manual connectors whose scheduler dispatch is null.
+    // Frame it as a resume floor, never a completion promise.
+    return backlog.next_attempt_at ? `${line} · resumes after ${backlog.next_attempt_at}` : line;
+  }
+  // A readable, drained backlog (real `0`). When the reference also produced a
+  // recovered count, surface it so the drained state reads as caught-up progress
+  // rather than an empty / broken cue.
+  const recovered = typeof backlog.recovered === "number" && backlog.recovered > 0 ? Math.floor(backlog.recovered) : 0;
+  if (recovered > 0) {
+    return `caught up — ${recovered.toLocaleString()} recovered`;
+  }
+  return "caught up";
+}
+
 export function summarizeOutboxStallRemediation(
   snapshot: RefConnectionHealthSnapshot | null | undefined,
   localDeviceProgress?: RefLocalDeviceProgress | null
@@ -1060,6 +1111,18 @@ function dominantConditionTitle(snapshot: RefConnectionHealthSnapshot): string |
  * without a browser harness.
  */
 export interface NextStepGuidance {
+  /**
+   * Count-backed scale of the *source-pressure detail-gap backlog*, e.g. "at
+   * least 100 detail items to catch up · resumes after 2026-05-19T13:00:00Z" or
+   * "caught up — 12 recovered". Set only on the scheduler-managed source-pressure
+   * paths (`cooling_off` under `source_pressure`, and `degraded` +
+   * `retryable_gap`) when the reference attached a readable
+   * `detail_gap_backlog` rollup. `null` when the rollup is absent/unreadable, so
+   * the row never invents a count. Distinct from {@link scale}: this is the
+   * scheduler-side analogue of the device outbox scale and renders backlog copy,
+   * not device copy.
+   */
+  backlogScale: string | null;
   /** One-line operator detail expanding on the label. */
   detail: string;
   /** Short imperative label, e.g. "Sync now" or "Check the collector host". */
@@ -1086,6 +1149,7 @@ export interface NextStepGuidance {
 function staleFreshnessGuidance(supportsOwnerSync: boolean): NextStepGuidance {
   if (supportsOwnerSync) {
     return {
+      backlogScale: null,
       label: "Sync now",
       detail: "The last successful sync is outside the freshness window. Sync now to refresh this connection.",
       scale: null,
@@ -1093,6 +1157,7 @@ function staleFreshnessGuidance(supportsOwnerSync: boolean): NextStepGuidance {
     };
   }
   return {
+    backlogScale: null,
     label: "Check the collector",
     detail:
       "The last successful sync is outside the freshness window. This connection fills in when its local-collector device pushes — confirm the collector is running on the host.",
@@ -1119,16 +1184,23 @@ function staleFreshnessGuidance(supportsOwnerSync: boolean): NextStepGuidance {
  */
 function coolingOffGuidance(health: RefConnectionHealthSnapshot): NextStepGuidance {
   if (health.reason_code === SOURCE_PRESSURE_REASON_CODE) {
+    // The reference's source-pressure backlog rollup turns the vague "see how
+    // much is left" into a concrete, honest cue. When it is readable we attach
+    // the count via `backlogScale` and drop the unkeepable promise from the
+    // detail copy; when it is `null` (unmeasured) we keep the qualitative copy.
+    const backlogScale = formatSourcePressureBacklogScale(health.detail_gap_backlog);
     return {
+      backlogScale,
       label: "Catching up — cooling off",
       detail: health.next_attempt_at
-        ? `The source is throttling this connection, so the scheduler is spacing out automatic attempts; the captured progress is retained and it resumes at ${health.next_attempt_at}. Open the connection to see how much is left to catch up.`
-        : "The source is throttling this connection, so the scheduler is spacing out automatic attempts. The captured progress is retained and it resumes on the next scheduled attempt. Open the connection to see how much is left to catch up.",
+        ? `The source is throttling this connection, so the scheduler is spacing out automatic attempts; the captured progress is retained and it resumes at ${health.next_attempt_at}.`
+        : "The source is throttling this connection, so the scheduler is spacing out automatic attempts. The captured progress is retained and it resumes on the next scheduled attempt.",
       scale: null,
       tone: "warning",
     };
   }
   return {
+    backlogScale: null,
     label: "Wait for the next retry",
     detail: health.next_attempt_at
       ? `In scheduler backoff after recent failures; the next automatic attempt is at ${health.next_attempt_at}. Open the connection to see the failure detail.`
@@ -1144,8 +1216,14 @@ function degradedGuidance(health: RefConnectionHealthSnapshot, supportsOwnerSync
     if (health.next_attempt_at) {
       return null;
     }
+    // A retryable source-pressure gap is the backlog rollup's other home: this is
+    // the manual path (no scheduled automatic attempt), so the count tells the
+    // owner how much an ordinary run still has to catch up. `null` rollup → no
+    // cue (we never invent a count).
+    const backlogScale = formatSourcePressureBacklogScale(health.detail_gap_backlog);
     if (supportsOwnerSync) {
       return {
+        backlogScale,
         label: "Continue the sync",
         detail:
           "Some required detail is still outstanding. The records already collected stay valid; sync this connection when you're ready and an ordinary run fills the rest.",
@@ -1154,6 +1232,7 @@ function degradedGuidance(health: RefConnectionHealthSnapshot, supportsOwnerSync
       };
     }
     return {
+      backlogScale,
       label: "Check the collector",
       detail:
         "Some required detail is still outstanding. The records already collected stay valid; this connection fills in when its local-collector device pushes the rest — confirm the collector is running on the host.",
@@ -1163,6 +1242,7 @@ function degradedGuidance(health: RefConnectionHealthSnapshot, supportsOwnerSync
   }
   if (health.axes.coverage === "gaps" || health.axes.coverage === "partial") {
     return {
+      backlogScale: null,
       label: "Review partial coverage",
       detail:
         "Useful data exists, but some required streams have gaps. Open the connection's latest run to see which streams are incomplete.",
@@ -1174,6 +1254,7 @@ function degradedGuidance(health: RefConnectionHealthSnapshot, supportsOwnerSync
     return staleFreshnessGuidance(supportsOwnerSync);
   }
   return {
+    backlogScale: null,
     label: "Open the connection",
     detail: "Coverage or freshness is incomplete. Open the connection to see which axis is degraded.",
     scale: null,
@@ -1218,6 +1299,7 @@ export function deriveConnectionNextStep(input: {
   // omitted (null) when the summary reports no counts.
   if (health.axes.outbox === "stalled") {
     return {
+      backlogScale: null,
       label: "Check the collector host",
       detail:
         "Retryable work on the local collector is not draining. Open the connection for the exact command to run on the host that holds the data.",
@@ -1233,6 +1315,7 @@ export function deriveConnectionNextStep(input: {
       return hasDominantCondition
         ? null
         : {
+            backlogScale: null,
             label: "Open the connection",
             detail: "This connection cannot make progress. Open it to read the blocking condition and how to clear it.",
             scale: null,
@@ -1244,6 +1327,7 @@ export function deriveConnectionNextStep(input: {
       return hasDominantCondition
         ? null
         : {
+            backlogScale: null,
             label: "Open the connection",
             detail: "Owner action is required. Open the connection to see exactly what's needed.",
             scale: null,

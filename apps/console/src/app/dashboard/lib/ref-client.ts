@@ -479,6 +479,37 @@ export type RefForwardDisposition = "awaiting_owner" | "complete" | "owner_refre
 
 export type RefOutboxAxis = "active" | "idle" | "stalled" | "unknown";
 
+/**
+ * Source-pressure detail-gap backlog rollup mirror — the reference's additive,
+ * nullable `connection_health.detail_gap_backlog` (`DetailGapBacklog` in the
+ * runtime's `connection-health.ts`, defined by
+ * `surface-source-pressure-detail-gap-backlog`). It is owner-only diagnostic
+ * scale for retryable *source-pressure* detail gaps; it never changes the
+ * headline `state`, the coverage/freshness/attention axes, the
+ * `forward_disposition`, or `next_action`.
+ *
+ * Honesty contract the console MUST respect (it does not re-derive any of this):
+ *   - The whole object is `null` only when the durable gap evidence could not be
+ *     read. A readable-but-empty backlog is a real `0` pending — a surface must
+ *     be able to tell "drained" from "unmeasured" and never invent a count.
+ *   - `pending` counts only pending source-pressure gaps.
+ *   - `pending_is_floor` is `true` when the durable read was bounded and hit the
+ *     bound, so `pending` is a floor ("at least N"), never an exact total.
+ *   - `recovered` is `null` when no count-by-status aggregate was available (the
+ *     first projection tranche always leaves it `null`); never fabricated.
+ *   - `next_attempt_at` is the backlog's retry floor (Retry-After / cooldown). It
+ *     can be set for a manual connector even when the connection-level
+ *     `next_attempt_at` (the scheduler's next automatic dispatch) is `null`, so a
+ *     surface must show it as a resume floor, not a promise of completion.
+ */
+export interface RefDetailGapBacklog {
+  max_attempt_count: number;
+  next_attempt_at: string | null;
+  pending: number;
+  pending_is_floor: boolean;
+  recovered: number | null;
+}
+
 export type RefRemoteSurfaceAxis = "failed" | "idle" | "leased" | "none" | "unknown" | "waiting";
 
 export interface RefConnectionConditionRemediation {
@@ -516,6 +547,18 @@ export interface RefConnectionHealthSnapshot {
     syncing: boolean;
   };
   conditions?: readonly RefConnectionHealthCondition[];
+  /**
+   * Additive, nullable source-pressure detail-gap backlog rollup
+   * ({@link RefDetailGapBacklog}). `null` when no backlog evidence was supplied
+   * or the durable gap store was unreadable; a readable-but-drained backlog is a
+   * real `0` pending count.
+   *
+   * Optional on the mirror because it is an additive field on the reference's
+   * `connection_health` snapshot (passed through `GET /_ref/connectors`); a
+   * reference predating the field omits it and the console renders no backlog cue
+   * rather than inventing a count.
+   */
+  detail_gap_backlog?: RefDetailGapBacklog | null;
   dominant_condition_id?: string | null;
   /**
    * Connection-level forward disposition: the reference's single answer to

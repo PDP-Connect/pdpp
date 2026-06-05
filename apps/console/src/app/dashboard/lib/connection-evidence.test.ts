@@ -27,8 +27,24 @@ import {
   summarizeSchedule,
   syncStartFailureLead,
 } from "./connection-evidence.ts";
-import type { RefConnectionHealthCondition, RefConnectionHealthSnapshot, RefSchedule } from "./ref-client.ts";
+import type {
+  RefConnectionHealthCondition,
+  RefConnectionHealthSnapshot,
+  RefDetailGapBacklog,
+  RefSchedule,
+} from "./ref-client.ts";
 import type { ConnectorOverview } from "./rs-client.ts";
+
+function backlog(overrides: Partial<RefDetailGapBacklog> = {}): RefDetailGapBacklog {
+  return {
+    pending: 0,
+    pending_is_floor: false,
+    max_attempt_count: 0,
+    next_attempt_at: null,
+    recovered: null,
+    ...overrides,
+  };
+}
 
 function snapshot(overrides: Partial<RefConnectionHealthSnapshot> = {}): RefConnectionHealthSnapshot {
   return {
@@ -1026,6 +1042,10 @@ const COVERAGE_RE = /coverage/i;
 const SYNC_NOW_RE = /sync now/i;
 const COLLECTOR_RE = /collector/i;
 const HOST_RE = /host/i;
+const HOW_MUCH_IS_LEFT_RE = /how much is left/i;
+const RESUMES_AFTER_RE = /resumes after/;
+const AT_LEAST_100_RE = /at least 100 detail items/;
+const BACKLOG_NOT_BROKEN_RE = /broken|error|fail/i;
 
 test("next-step guidance is suppressed when a structured next_action already renders", () => {
   const out = deriveConnectionNextStep({
@@ -1152,6 +1172,177 @@ test("source-pressure cooling_off without a next attempt still reads as catching
   assert.ok(out);
   assert.match(out?.detail ?? "", /throttl|source/i);
   assert.doesNotMatch(out?.detail ?? "", /failure/i);
+});
+
+// ─── source-pressure detail-gap backlog cue ───────────────────────────────
+//
+// The reference's additive `detail_gap_backlog` rollup turns the old, unkeepable
+// "open the connection to see how much is left" into a concrete, honest cue on
+// the source-pressure paths (`cooling_off` under `source_pressure` and
+// `degraded` + `retryable_gap`). The cue MUST:
+//   - never invent a count (a `null`/absent rollup yields no `backlogScale`);
+//   - present a bounded read as a floor ("at least N"), never as exact;
+//   - read a drained backlog as caught-up, not broken;
+//   - show the backlog's own retry floor as a resume time, not a completion
+//     promise.
+
+test("source-pressure cooling_off attaches a backlog count plus the backlog's own resume floor", () => {
+  // The resume floor sourced into the cue is the *backlog's* `next_attempt_at`
+  // (its Retry-After / cooldown), not the connection-level scheduler dispatch —
+  // the contract keeps them separate so a manual connector can carry a backlog
+  // retry floor even when its scheduler `next_attempt_at` is null.
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: snapshot({
+      state: "cooling_off",
+      reason_code: "source_pressure",
+      next_attempt_at: "2026-05-19T13:00:00Z",
+      detail_gap_backlog: backlog({ pending: 42, next_attempt_at: "2026-05-19T13:30:00Z" }),
+    }),
+    supportsOwnerSync: true,
+  });
+  assert.ok(out);
+  assert.equal(out?.backlogScale, "42 detail items to catch up · resumes after 2026-05-19T13:30:00Z");
+  // The unkeepable "see how much is left to catch up" promise is gone from the
+  // detail copy now that the count is carried by the cue.
+  assert.doesNotMatch(out?.detail ?? "", HOW_MUCH_IS_LEFT_RE);
+});
+
+test("the backlog resume floor is independent of the connection-level scheduler dispatch", () => {
+  // Manual connector: scheduler `next_attempt_at` is null, but the backlog still
+  // carries its own Retry-After floor. The cue must show the backlog floor.
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: snapshot({
+      state: "cooling_off",
+      reason_code: "source_pressure",
+      next_attempt_at: null,
+      detail_gap_backlog: backlog({ pending: 8, next_attempt_at: "2026-05-19T14:00:00Z" }),
+    }),
+    supportsOwnerSync: true,
+  });
+  assert.ok(out);
+  assert.equal(out?.backlogScale, "8 detail items to catch up · resumes after 2026-05-19T14:00:00Z");
+});
+
+test("source-pressure backlog with a bounded read reads as a floor, never exact", () => {
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: snapshot({
+      state: "cooling_off",
+      reason_code: "source_pressure",
+      next_attempt_at: null,
+      detail_gap_backlog: backlog({ pending: 100, pending_is_floor: true }),
+    }),
+    supportsOwnerSync: true,
+  });
+  assert.ok(out);
+  assert.match(out?.backlogScale ?? "", AT_LEAST_100_RE);
+  // No backlog-level retry floor → no "resumes after" overpromise.
+  assert.doesNotMatch(out?.backlogScale ?? "", RESUMES_AFTER_RE);
+});
+
+test("an unreadable backlog rollup never invents a count", () => {
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: snapshot({
+      state: "cooling_off",
+      reason_code: "source_pressure",
+      next_attempt_at: "2026-05-19T13:00:00Z",
+      detail_gap_backlog: null,
+    }),
+    supportsOwnerSync: true,
+  });
+  assert.ok(out);
+  assert.equal(out?.backlogScale, null);
+});
+
+test("a drained backlog with recoveries reads as caught up, not broken", () => {
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: snapshot({
+      state: "cooling_off",
+      reason_code: "source_pressure",
+      next_attempt_at: null,
+      detail_gap_backlog: backlog({ pending: 0, recovered: 17 }),
+    }),
+    supportsOwnerSync: true,
+  });
+  assert.ok(out);
+  assert.equal(out?.backlogScale, "caught up — 17 recovered");
+  assert.doesNotMatch(out?.backlogScale ?? "", BACKLOG_NOT_BROKEN_RE);
+});
+
+test("a drained backlog with no recovery aggregate still reads as caught up (real 0, not null)", () => {
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: snapshot({
+      state: "cooling_off",
+      reason_code: "source_pressure",
+      next_attempt_at: null,
+      detail_gap_backlog: backlog({ pending: 0, recovered: null }),
+    }),
+    supportsOwnerSync: true,
+  });
+  assert.ok(out);
+  assert.equal(out?.backlogScale, "caught up");
+});
+
+test("degraded+retryable_gap manual path carries the backlog count", () => {
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: snapshot({
+      state: "degraded",
+      next_attempt_at: null,
+      axes: { coverage: "retryable_gap", freshness: "unknown", attention: "none", outbox: "unknown" },
+      detail_gap_backlog: backlog({ pending: 3 }),
+    }),
+    supportsOwnerSync: true,
+  });
+  assert.ok(out);
+  assert.equal(out?.label, "Continue the sync");
+  assert.equal(out?.backlogScale, "3 detail items to catch up");
+});
+
+test("a singular pending gap uses singular noun", () => {
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: snapshot({
+      state: "degraded",
+      next_attempt_at: null,
+      axes: { coverage: "retryable_gap", freshness: "unknown", attention: "none", outbox: "idle" },
+      detail_gap_backlog: backlog({ pending: 1 }),
+    }),
+    supportsOwnerSync: false,
+  });
+  assert.ok(out);
+  assert.equal(out?.backlogScale, "1 detail item to catch up");
+});
+
+test("the device-outbox scale and the source-pressure backlog scale never collide on one row", () => {
+  // The cooling-off / retryable-gap source-pressure paths carry a backlog scale
+  // but no device-outbox scale; the stalled-outbox path carries the device scale
+  // but no backlog scale. They are distinct slots and must not cross-render.
+  const sourcePressure = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: snapshot({
+      state: "cooling_off",
+      reason_code: "source_pressure",
+      detail_gap_backlog: backlog({ pending: 5 }),
+    }),
+    supportsOwnerSync: true,
+  });
+  assert.ok(sourcePressure?.backlogScale);
+  assert.equal(sourcePressure?.scale, null);
 });
 
 test("degraded+partial coverage routes to a coverage review, not a sync", () => {

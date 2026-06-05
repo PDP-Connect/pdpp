@@ -1054,6 +1054,15 @@ function NextStepGuidanceRow({ detailHref, guidance }: { detailHref: string; gui
           Stuck on the device: {guidance.scale}
         </span>
       ) : null}
+      {guidance.backlogScale ? (
+        <span
+          className="pdpp-caption text-muted-foreground tabular-nums"
+          data-testid="next-step-backlog-scale"
+          title="How much retryable detail the source is still throttling. The captured records stay valid; this resumes on its own — it is not an error to clear."
+        >
+          Source-pressure backlog: {guidance.backlogScale}
+        </span>
+      ) : null}
     </Link>
   );
 }
