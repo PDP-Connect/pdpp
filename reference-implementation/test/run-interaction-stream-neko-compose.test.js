@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
+import { resolveNekoBrowserSurfaceControllerOptions } from '../server/index.js';
+
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const OVERLAY_FILE = `${REPO_ROOT}docker-compose.neko.yml`;
 const ENV_EXAMPLE_FILE = `${REPO_ROOT}.env.docker.example`;
@@ -109,3 +111,59 @@ test('Reddit remains an owner-present managed n.eko connector, not background-sa
   assert.equal(redditManifest.capabilities.refresh_policy.background_safe, false);
   assert.match(envExample, new RegExp(`PDPP_NEKO_MANAGED_CONNECTORS=.*${REDDIT_CONNECTOR_ID}`));
 });
+
+// The tests above assert that USAA is present in the env-template string. That
+// proves config but not routing: the controller does not grep the env file, it
+// gates managed-surface acquisition on
+// `browserSurfaceLeaseManager.isManagedConnector(connectorId)`
+// (reference-implementation/runtime/controller.ts). A refactor of the
+// connector-id alias/canonical-key resolution could leave USAA in the env
+// template yet stop the parser from recognising it, silently dropping USAA back
+// to the plain Docker path and `headed_browser_unavailable`. This test runs the
+// real runtime config off the committed managed-connector list and asserts the
+// parser still routes USAA — by both its canonical registry URL and its short
+// connector key.
+test('runtime config routes USAA to a managed n.eko surface from the committed connector list', async () => {
+  const envExample = await readFile(ENV_EXAMPLE_FILE, 'utf8');
+  const managedLine = envExample
+    .split('\n')
+    .find((line) => line.startsWith('PDPP_NEKO_MANAGED_CONNECTORS='));
+  assert.ok(managedLine, 'PDPP_NEKO_MANAGED_CONNECTORS must be defined in .env.docker.example');
+  const managedConnectors = managedLine.slice('PDPP_NEKO_MANAGED_CONNECTORS='.length);
+  assert.ok(
+    managedConnectors.split(',').includes(USAA_CONNECTOR_ID),
+    'committed managed-connector list must include the USAA connector id',
+  );
+
+  const options = await resolveNekoBrowserSurfaceControllerOptions({
+    env: {
+      PDPP_NEKO_MANAGED_CONNECTORS: managedConnectors,
+      PDPP_NEKO_SURFACE_MODE: 'dynamic',
+      PDPP_NEKO_SURFACE_CAP: '3',
+      PDPP_NEKO_ALLOCATOR_URL: 'http://allocator.test/api',
+      PDPP_NEKO_PROFILE_STORAGE_POLICY: 'persistent',
+      PDPP_NEKO_PROFILE_STORAGE_ROOT: '/var/lib/pdpp/neko-profiles',
+    },
+    getBrowserSurfaceLeaseStore: () => createEmptyLeaseStore(),
+    createBrowserSurfaceAllocator: () => ({ ensureSurface: async () => undefined }),
+  });
+
+  assert.ok(options.browserSurfaceLeaseManager);
+  // The controller calls isManagedConnector with whatever connector id the run
+  // carries. Both the canonical registry URL and the short key must resolve so
+  // USAA acquires a managed surface instead of failing headed_browser_unavailable.
+  assert.equal(options.browserSurfaceLeaseManager.isManagedConnector(USAA_CONNECTOR_ID), true);
+  assert.equal(options.browserSurfaceLeaseManager.isManagedConnector('usaa'), true);
+});
+
+function createEmptyLeaseStore() {
+  return {
+    async listSurfaces() {
+      return [];
+    },
+    async listNonTerminalLeases() {
+      return [];
+    },
+    async repairStaleSurfaceActiveLeases() {},
+  };
+}
