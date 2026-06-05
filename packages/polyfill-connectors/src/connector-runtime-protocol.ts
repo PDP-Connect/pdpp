@@ -98,20 +98,30 @@ export interface AssistanceCompletion {
   status: AssistanceCompletionStatus;
 }
 
+/**
+ * Pre-redacted source-pressure diagnostic carried on a `DETAIL_GAP`'s `detail`
+ * and `last_error`. It MUST carry only safe, bounded fields (endpoint route,
+ * method, error class, optional status/retry-after metadata) — never bearer tokens,
+ * cookies, secret-bearing URLs, request bodies, or raw payloads. The
+ * attempt/max-attempt budget is internal and SHOULD be stripped before the gap
+ * is deferred (see the connector source-pressure defer paths).
+ */
+export interface DetailGapNetworkPressure {
+  attempt?: number;
+  endpoint_route: string;
+  error_class: string;
+  max_attempts?: number;
+  method: string;
+  retry_after_ms?: number;
+  safe_headers?: Record<string, string | number>;
+  status?: number;
+}
+
 export interface DetailGapMessage {
   detail?: {
     class?: string;
     http_status?: number;
-    network_pressure?: {
-      attempt?: number;
-      endpoint_route: string;
-      error_class: string;
-      max_attempts?: number;
-      method: string;
-      retry_after_ms?: number;
-      safe_headers?: Record<string, string | number>;
-      status?: number;
-    };
+    network_pressure?: DetailGapNetworkPressure;
   };
   detail_locator: {
     kind: string;
@@ -121,16 +131,7 @@ export interface DetailGapMessage {
     class?: string;
     http_status?: number;
     message?: string;
-    network_pressure?: {
-      attempt?: number;
-      endpoint_route: string;
-      error_class: string;
-      max_attempts?: number;
-      method: string;
-      retry_after_ms?: number;
-      safe_headers?: Record<string, string | number>;
-      status?: number;
-    };
+    network_pressure?: DetailGapNetworkPressure;
   };
   list_cursor?: unknown;
   parent_stream?: string;

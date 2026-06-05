@@ -1339,8 +1339,6 @@ test("runConversationsAndMessagesStreams: isolated recoverable detail exhaustion
         endpoint_route: "GET /conversation/{conversation_id}",
         error_class: "http_429",
         method: "GET",
-        attempt: 12,
-        max_attempts: 12,
         status: 429,
         retry_after_ms: 120_000,
         safe_headers: { "retry-after-ms": 120_000 },
@@ -1353,8 +1351,6 @@ test("runConversationsAndMessagesStreams: isolated recoverable detail exhaustion
         endpoint_route: "GET /conversation/{conversation_id}",
         error_class: "http_429",
         method: "GET",
-        attempt: 12,
-        max_attempts: 12,
         status: 429,
         retry_after_ms: 120_000,
         safe_headers: { "retry-after-ms": 120_000 },
@@ -1363,6 +1359,14 @@ test("runConversationsAndMessagesStreams: isolated recoverable detail exhaustion
   });
   const serializedGap = JSON.stringify(gap);
   assert.equal(serializedGap.includes("/conversation/convo-gap"), false, "gap must not expose raw API paths");
+  assert.equal(gap.detail?.network_pressure?.attempt, undefined, "gap must not persist attempt counters");
+  assert.equal(gap.detail?.network_pressure?.max_attempts, undefined, "gap must not persist max-attempt counters");
+  assert.equal(gap.last_error?.network_pressure?.attempt, undefined, "last_error must not persist attempt counters");
+  assert.equal(
+    gap.last_error?.network_pressure?.max_attempts,
+    undefined,
+    "last_error must not persist max-attempt counters"
+  );
   assert.equal(
     serializedGap.includes("GET /conversation/{conversation_id}"),
     true,
@@ -1518,8 +1522,6 @@ test("runConversationsAndMessagesStreams: 30/278 pressure exhaustion records a d
         endpoint_route: "GET /conversation/{conversation_id}",
         error_class: "http_429",
         method: "GET",
-        attempt: 12,
-        max_attempts: 12,
         status: 429,
         retry_after_ms: 120_000,
         safe_headers: { "retry-after-ms": 120_000 },
@@ -1532,8 +1534,6 @@ test("runConversationsAndMessagesStreams: 30/278 pressure exhaustion records a d
         endpoint_route: "GET /conversation/{conversation_id}",
         error_class: "http_429",
         method: "GET",
-        attempt: 12,
-        max_attempts: 12,
         status: 429,
         retry_after_ms: 120_000,
         safe_headers: { "retry-after-ms": 120_000 },
@@ -1545,6 +1545,14 @@ test("runConversationsAndMessagesStreams: 30/278 pressure exhaustion records a d
     serializedGap.includes(`/conversation/${pressureItem.id}`),
     false,
     "gap diagnostic must not expose raw API paths"
+  );
+  assert.equal(gap.detail?.network_pressure?.attempt, undefined, "gap must not persist attempt counters");
+  assert.equal(gap.detail?.network_pressure?.max_attempts, undefined, "gap must not persist max-attempt counters");
+  assert.equal(gap.last_error?.network_pressure?.attempt, undefined, "last_error must not persist attempt counters");
+  assert.equal(
+    gap.last_error?.network_pressure?.max_attempts,
+    undefined,
+    "last_error must not persist max-attempt counters"
   );
   assert.equal(serializedGap.includes("bearer"), false, "gap diagnostic must not expose raw auth text");
   assert.equal(serializedGap.includes("secret"), false, "gap diagnostic must not expose raw auth text");

@@ -5,11 +5,13 @@ import {
   type BrowserLaunchSource,
   type BrowserRuntimeVisibility,
   buildDetailCoverageMessage,
+  buildDetailGap,
   captureBrowserPage,
   closeBrowserContextPagesExcept,
   closeBrowserPage,
   decorateBrowserManualAction,
   emitDetailCoverage,
+  emitDetailGap,
   type InteractionRequest,
   isContextDisconnected,
   makeBrowserInteractionKeepalive,
@@ -798,5 +800,196 @@ test("emitDetailCoverage forwards exactly one built message to ctx.emit", async 
       gapKeys: ["b"],
     }),
     "emitDetailCoverage must emit precisely what buildDetailCoverageMessage builds"
+  );
+});
+
+test("buildDetailGap emits a valid reference-only pending retryable DETAIL_GAP", () => {
+  const msg = buildDetailGap({
+    stream: "messages",
+    recordKey: "conv-1",
+    reason: "upstream_pressure",
+    locator: { kind: "chatgpt.conversation", conversation_id: "conv-1" },
+    error: {
+      class: "upstream_pressure",
+      httpStatus: 429,
+      networkPressure: { endpoint_route: "/conversation/{id}", error_class: "rate_limit_density", method: "GET" },
+    },
+  });
+  assert.equal(msg.type, "DETAIL_GAP");
+  assert.equal(msg.reference_only, true);
+  assert.equal(msg.status, "pending");
+  assert.equal(msg.retryable, true);
+  assert.equal(msg.stream, "messages");
+  assert.equal(msg.record_key, "conv-1");
+  assert.equal(msg.reason, "upstream_pressure");
+  assert.deepEqual(msg.detail_locator, { kind: "chatgpt.conversation", conversation_id: "conv-1" });
+});
+
+test("buildDetailGap fans identical error context into detail and last_error", () => {
+  const msg = buildDetailGap({
+    stream: "messages",
+    recordKey: 7,
+    reason: "rate_limited",
+    locator: { kind: "x.item" },
+    error: {
+      class: "rate_limited",
+      httpStatus: 429,
+      networkPressure: { endpoint_route: "/r", error_class: "rate", method: "GET", retry_after_ms: 1000 },
+    },
+  });
+  // The connector hand-rolled two identical copies; the helper must keep them
+  // deep-equal so a downstream reader sees one consistent error shape.
+  assert.deepEqual(msg.detail, msg.last_error);
+  assert.equal(msg.detail?.class, "rate_limited");
+  assert.equal(msg.detail?.http_status, 429);
+  assert.deepEqual(msg.detail?.network_pressure, {
+    endpoint_route: "/r",
+    error_class: "rate",
+    method: "GET",
+    retry_after_ms: 1000,
+  });
+});
+
+test("buildDetailGap omits empty optional error fields", () => {
+  const msg = buildDetailGap({
+    stream: "messages",
+    recordKey: "conv-2",
+    reason: "retry_exhausted",
+    locator: { kind: "chatgpt.conversation", conversation_id: "conv-2" },
+    error: { class: "retry_exhausted" },
+  });
+  assert.equal(msg.detail?.class, "retry_exhausted");
+  assert.equal("http_status" in (msg.detail ?? {}), false, "absent http status must be omitted, not undefined");
+  assert.equal(
+    "network_pressure" in (msg.detail ?? {}),
+    false,
+    "absent network pressure must be omitted, not undefined"
+  );
+  assert.deepEqual(msg.detail, msg.last_error);
+});
+
+test("emitDetailGap forwards exactly one built message to ctx.emit", async () => {
+  const emitted: EmittedMessage[] = [];
+  const ctx = {
+    emit: (msg: EmittedMessage): Promise<void> => {
+      emitted.push(msg);
+      return Promise.resolve();
+    },
+  };
+  const params = {
+    stream: "messages",
+    recordKey: "conv-3",
+    reason: "upstream_pressure" as const,
+    locator: { kind: "chatgpt.conversation", conversation_id: "conv-3" },
+    error: { class: "upstream_pressure_deferred" },
+  };
+  await emitDetailGap(ctx, params);
+  assert.equal(emitted.length, 1);
+  const msg = emitted[0];
+  assert.ok(msg, "exactly one message must be emitted");
+  assert.equal(msg.type, "DETAIL_GAP");
+  assert.deepEqual(msg, buildDetailGap(params), "emitDetailGap must emit precisely what buildDetailGap builds");
+});
+
+test("buildDetailGap carries an optional parent_stream for list-plus-detail fan-outs", () => {
+  // Chase's accounts -> transactions detail pass: the gap names its parent
+  // stream so a reader can attribute the partial detail to the right list.
+  const msg = buildDetailGap({
+    stream: "transactions",
+    parentStream: "accounts",
+    recordKey: "acct-1",
+    reason: "temporary_unavailable",
+    locator: { kind: "chase.account", account_id: "acct-1" },
+    error: { class: "qfx_download_failed" },
+  });
+  assert.equal(msg.parent_stream, "accounts");
+  assert.equal(msg.stream, "transactions");
+  assert.equal(msg.record_key, "acct-1");
+  assert.equal(msg.detail?.class, "qfx_download_failed");
+});
+
+test("buildDetailGap carries an optional list_cursor for resuming the parent list", () => {
+  // Amazon-style: the next run resumes the order list at this opaque cursor
+  // rather than re-walking from the top to reach the gapped item's detail.
+  const cursor = { page_token: "opaque-123", index: 42 };
+  const msg = buildDetailGap({
+    stream: "order_items",
+    parentStream: "orders",
+    listCursor: cursor,
+    recordKey: "order-9",
+    reason: "rate_limited",
+    locator: { kind: "amazon.order", order_id: "order-9" },
+    error: { class: "rate_limited", httpStatus: 429 },
+  });
+  assert.deepEqual(msg.list_cursor, cursor);
+  assert.equal(msg.parent_stream, "orders");
+  assert.equal(msg.detail?.http_status, 429);
+});
+
+test("buildDetailGap omits absent optional protocol fields entirely", () => {
+  // USAA's statement gap: no parent stream, no list cursor, and — crucially —
+  // no error context at all, so neither detail nor last_error is on the wire.
+  const msg = buildDetailGap({
+    stream: "statements",
+    recordKey: "stmt-hash",
+    reason: "temporary_unavailable",
+    locator: { kind: "usaa.statement", statement_id: "stmt-hash" },
+  });
+  assert.equal("parent_stream" in msg, false, "absent parent_stream must be omitted, not undefined");
+  assert.equal("list_cursor" in msg, false, "absent list_cursor must be omitted, not undefined");
+  assert.equal("detail" in msg, false, "an error-less gap must omit detail, not emit an empty block");
+  assert.equal("last_error" in msg, false, "an error-less gap must omit last_error, not emit an empty block");
+  // The fixed reference-only / pending / retryable spine is still intact.
+  assert.equal(msg.type, "DETAIL_GAP");
+  assert.equal(msg.reference_only, true);
+  assert.equal(msg.status, "pending");
+  assert.equal(msg.retryable, true);
+});
+
+test("buildDetailGap puts error.message on last_error only (detail has no message field)", () => {
+  const msg = buildDetailGap({
+    stream: "messages",
+    recordKey: "conv-4",
+    reason: "retry_exhausted",
+    locator: { kind: "chatgpt.conversation", conversation_id: "conv-4" },
+    error: { class: "retry_exhausted", httpStatus: 503, message: "apiFetch retry budget exhausted" },
+  });
+  assert.equal(msg.last_error?.message, "apiFetch retry budget exhausted");
+  assert.equal("message" in (msg.detail ?? {}), false, "detail must not carry a message field");
+  // Shared error fields still agree across the two blocks.
+  assert.equal(msg.detail?.class, "retry_exhausted");
+  assert.equal(msg.last_error?.class, "retry_exhausted");
+  assert.equal(msg.detail?.http_status, 503);
+  assert.equal(msg.last_error?.http_status, 503);
+});
+
+test("emitDetailGap forwards a gap with optional parent_stream and list_cursor verbatim", async () => {
+  const emitted: EmittedMessage[] = [];
+  const ctx = {
+    emit: (msg: EmittedMessage): Promise<void> => {
+      emitted.push(msg);
+      return Promise.resolve();
+    },
+  };
+  const params = {
+    stream: "transactions",
+    parentStream: "accounts",
+    listCursor: { page: 2 },
+    recordKey: "acct-2",
+    reason: "upstream_pressure" as const,
+    locator: { kind: "chase.account", account_id: "acct-2" },
+    error: {
+      class: "upstream_pressure_deferred",
+      networkPressure: { endpoint_route: "/qfx/{id}", error_class: "rate_limit_density", method: "GET" },
+    },
+  };
+  await emitDetailGap(ctx, params);
+  assert.equal(emitted.length, 1);
+  const msg = emitted[0];
+  assert.ok(msg, "exactly one message must be emitted");
+  assert.deepEqual(
+    msg,
+    buildDetailGap(params),
+    "emitDetailGap must emit precisely what buildDetailGap builds, including optional fields"
   );
 });

@@ -20,6 +20,7 @@ import { ensureChatGptSession } from "../../src/auto-login/chatgpt.ts";
 import {
   type BrowserCollectContext,
   buildDetailCoverageMessage,
+  buildDetailGap,
   type CollectContext,
   type DetailCoverageMessage,
   type DetailGapMessage,
@@ -1706,30 +1707,22 @@ function makeConversationDetailGap(
   c: ConversationListItem,
   error: ChatGptRecoverableRetryExhaustedError
 ): DetailGapMessage {
-  return {
-    type: "DETAIL_GAP",
+  const networkPressure = omitAttemptBudget(error.networkPressure);
+  return buildDetailGap({
     stream: "messages",
-    record_key: c.id,
-    status: "pending",
+    recordKey: c.id,
     reason: error.class,
-    detail_locator: {
+    locator: {
       kind: "chatgpt.conversation",
       conversation_id: c.id,
       list_item: safeConversationListItemHint(c),
     },
-    retryable: true,
-    reference_only: true,
-    detail: {
+    error: {
       class: error.class,
-      ...(error.httpStatus == null ? {} : { http_status: error.httpStatus }),
-      ...(error.networkPressure == null ? {} : { network_pressure: error.networkPressure }),
+      ...(error.httpStatus == null ? {} : { httpStatus: error.httpStatus }),
+      ...(networkPressure == null ? {} : { networkPressure }),
     },
-    last_error: {
-      class: error.class,
-      ...(error.httpStatus == null ? {} : { http_status: error.httpStatus }),
-      ...(error.networkPressure == null ? {} : { network_pressure: error.networkPressure }),
-    },
-  };
+  });
 }
 
 function omitAttemptBudget(
@@ -1747,30 +1740,21 @@ function makeDeferredConversationDetailGap(
   observedPressure: ChatGptRecoverableRetryExhaustedError
 ): DetailGapMessage {
   const networkPressure = omitAttemptBudget(observedPressure.networkPressure);
-  return {
-    type: "DETAIL_GAP",
+  return buildDetailGap({
     stream: "messages",
-    record_key: c.id,
-    status: "pending",
+    recordKey: c.id,
     reason: "upstream_pressure",
-    detail_locator: {
+    locator: {
       kind: "chatgpt.conversation",
       conversation_id: c.id,
       list_item: safeConversationListItemHint(c),
     },
-    retryable: true,
-    reference_only: true,
-    detail: {
+    error: {
       class: "upstream_pressure_deferred",
-      ...(observedPressure.httpStatus == null ? {} : { http_status: observedPressure.httpStatus }),
-      ...(networkPressure == null ? {} : { network_pressure: networkPressure }),
+      ...(observedPressure.httpStatus == null ? {} : { httpStatus: observedPressure.httpStatus }),
+      ...(networkPressure == null ? {} : { networkPressure }),
     },
-    last_error: {
-      class: "upstream_pressure_deferred",
-      ...(observedPressure.httpStatus == null ? {} : { http_status: observedPressure.httpStatus }),
-      ...(networkPressure == null ? {} : { network_pressure: networkPressure }),
-    },
-  };
+  });
 }
 
 /**

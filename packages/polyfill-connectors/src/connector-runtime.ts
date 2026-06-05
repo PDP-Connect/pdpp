@@ -49,6 +49,8 @@ import type {
   AssistanceCompletionStatus,
   AssistanceRequest,
   DetailCoverageMessage,
+  DetailGapMessage,
+  DetailGapNetworkPressure,
   DetailGapStartEntry,
   EmittedMessage,
   InteractionRequest,
@@ -81,6 +83,7 @@ export type {
   AssistanceSensitivity,
   DetailCoverageMessage,
   DetailGapMessage,
+  DetailGapNetworkPressure,
   DetailGapRecoveredMessage,
   DetailGapStartEntry,
   EmittedMessage,
@@ -317,6 +320,119 @@ export function emitDetailCoverage(
   params: DetailCoverageParams
 ): Promise<void> {
   return ctx.emit(buildDetailCoverageMessage(params));
+}
+
+/**
+ * Bounded error context for a recoverable detail gap. The same fields feed both
+ * the `detail` and `last_error` blocks on the emitted `DETAIL_GAP` — connectors
+ * built one identical copy for each by hand, which this helper centralizes.
+ *
+ * The helper copies these fields onto the wire verbatim; it does NOT redact
+ * them. The connector is responsible for passing only safe, bounded values: a
+ * connector-chosen error class, an optional HTTP status, an optional human
+ * message, and an optional pre-redacted `network_pressure` diagnostic. Do NOT
+ * pass bearer tokens, cookies, secret-bearing URLs, request bodies, or raw
+ * payloads. In particular, the helper does not strip the attempt/max-attempt
+ * budget from `network_pressure` — redact it at the source before passing it
+ * here (see ChatGPT's `omitAttemptBudget`). Downstream the runtime applies the
+ * same redaction policy as `known_gaps` / `SKIP_RESULT.diagnostics`, but the
+ * connector is the only line of redaction inside this helper.
+ */
+export interface DetailGapErrorContext {
+  /** Connector-chosen error class (e.g. `upstream_pressure`, the deferred class). */
+  class: string;
+  /** Optional upstream HTTP status that triggered the gap. */
+  httpStatus?: number;
+  /** Optional human-readable message. Carried on `last_error` only — the protocol's `detail` block has no `message` field. */
+  message?: string;
+  /** Pre-redacted network-pressure diagnostic (endpoint route, method, error class). Copied verbatim — redact at the source. */
+  networkPressure?: DetailGapNetworkPressure;
+}
+
+/**
+ * Inputs for a recoverable `DETAIL_GAP` — a per-record marker that detail for
+ * `recordKey` could not be hydrated this run but is expected to be retried. The
+ * shape mirrors `DetailCoverageParams`: the caller owns when to emit; the helper
+ * owns the fixed reference-only / retryable / pending shape so connectors stop
+ * hand-rolling it.
+ *
+ * `stream`, `recordKey`, `reason`, and `locator` are required. `parentStream`,
+ * `listCursor`, and `error` are optional, first-class `DETAIL_GAP` protocol
+ * fields and are omitted from the message when absent — a gap with no error
+ * context carries neither `detail` nor `last_error` (matching connectors such as
+ * USAA's statement gaps), and a flat detail stream carries no `parent_stream`.
+ *
+ * Only the source-pressure reasons (`rate_limited`, `upstream_pressure`) feed the
+ * cross-run source-pressure cooldown governor; `retry_exhausted` and
+ * `temporary_unavailable` record a resumable gap without arming a cooldown.
+ */
+export interface DetailGapParams {
+  /** Optional bounded error context fanned into `detail` and `last_error`. Omit both blocks when absent. */
+  error?: DetailGapErrorContext;
+  /** Optional opaque cursor the next run uses to resume the parent list at this gap. */
+  listCursor?: DetailGapMessage["list_cursor"];
+  /** Locator the next run uses to re-hydrate this record's detail. */
+  locator: DetailGapMessage["detail_locator"];
+  /** Optional list/parent stream this detail stream hangs off (e.g. `accounts` for `transactions`). */
+  parentStream?: string;
+  /** Why detail could not be hydrated; drives retryability and any cooldown. */
+  reason: DetailGapMessage["reason"];
+  /** Key of the record whose detail is gapped. */
+  recordKey: string | number;
+  /** The detail stream the gap belongs to. */
+  stream: string;
+}
+
+/**
+ * Build a recoverable `DETAIL_GAP` message. Pure: the caller owns when/whether to
+ * emit. The fixed reference-only shape (`status: "pending"`, `retryable: true`,
+ * `reference_only: true`) is centralized here so a connector states only what
+ * varies. Optional protocol fields (`parent_stream`, `list_cursor`, `detail`,
+ * `last_error`) are omitted from the wire message when their input is absent, so
+ * a minimal gap carries no empty blocks. When `error` is supplied, the `detail`
+ * and `last_error` blocks share the same class / http_status / network_pressure;
+ * `error.message` (if any) is added to `last_error` only, since the protocol's
+ * `detail` block has no `message` field.
+ */
+export function buildDetailGap(params: DetailGapParams): DetailGapMessage {
+  const { stream, recordKey, reason, locator, parentStream, listCursor, error } = params;
+  let errorBlocks: Pick<DetailGapMessage, "detail" | "last_error"> = {};
+  if (error) {
+    const sharedBlock = {
+      class: error.class,
+      ...(error.httpStatus == null ? {} : { http_status: error.httpStatus }),
+      ...(error.networkPressure == null ? {} : { network_pressure: error.networkPressure }),
+    };
+    errorBlocks = {
+      detail: sharedBlock,
+      last_error: error.message == null ? sharedBlock : { ...sharedBlock, message: error.message },
+    };
+  }
+  return {
+    type: "DETAIL_GAP",
+    stream,
+    ...(parentStream == null ? {} : { parent_stream: parentStream }),
+    record_key: recordKey,
+    status: "pending",
+    reason,
+    detail_locator: locator,
+    ...(listCursor === undefined ? {} : { list_cursor: listCursor }),
+    retryable: true,
+    reference_only: true,
+    ...errorBlocks,
+  };
+}
+
+/**
+ * Thin emit wrapper for connectors adopting the detail-gap contract. `ctx` is
+ * structural so both the collect context and connector-local dependency bags can
+ * use it without importing a heavier runtime type. Mirrors `emitDetailCoverage`.
+ */
+export function emitDetailGap(
+  ctx: { emit: (msg: EmittedMessage) => Promise<void> },
+  params: DetailGapParams
+): Promise<void> {
+  return ctx.emit(buildDetailGap(params));
 }
 
 export const nowIso = (): string => new Date().toISOString();
