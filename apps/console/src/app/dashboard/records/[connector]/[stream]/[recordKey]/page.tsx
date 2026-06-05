@@ -10,6 +10,7 @@ import {
   getRecord,
   getStreamMetadata,
   listConnectorManifests,
+  type StreamMetadata,
   type StreamRecord,
 } from "../../../../lib/rs-client.ts";
 import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } from "../../../connection-route.ts";
@@ -26,6 +27,7 @@ import {
   reverseChildListDedupKey,
   reverseChildListLinksFromManifest,
 } from "../../../lib/relationships.ts";
+import { RecordFields } from "./record-fields.tsx";
 
 export const dynamic = "force-dynamic";
 
@@ -41,6 +43,7 @@ export default async function RecordDetailPage({
 
   let record: StreamRecord;
   let connectionId = routeId;
+  let recordMetadata: StreamMetadata | null = null;
   let expandCapabilities: ExpandCapability[] = [];
   let parentRelations: Array<{ parentStream: string; capability: ExpandCapability }> = [];
   type ManifestStream = {
@@ -70,6 +73,7 @@ export default async function RecordDetailPage({
       listConnectorManifests().catch(() => []),
     ]);
     record = recordResult;
+    recordMetadata = metadataResult;
     expandCapabilities = Array.isArray(metadataResult?.expand_capabilities) ? metadataResult.expand_capabilities : [];
     const connectorManifest = findManifestForConnectorId(manifests, connection.connector_id);
     connectorStreams = (connectorManifest?.streams ?? []) as ManifestStream[];
@@ -168,9 +172,15 @@ export default async function RecordDetailPage({
       <WarningsBanner warnings={record.warnings} />
 
       <Section title="Record">
-        <pre className="pdpp-caption overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border/80 bg-muted/30 p-4 font-mono">
-          {pretty}
-        </pre>
+        <RecordFields data={record.data} metadata={recordMetadata} />
+        <details className="mt-4">
+          <summary className="pdpp-caption cursor-pointer text-muted-foreground hover:text-foreground">
+            Raw JSON
+          </summary>
+          <pre className="pdpp-caption mt-2 overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border/80 bg-muted/30 p-4 font-mono">
+            {pretty}
+          </pre>
+        </details>
       </Section>
 
       {(relatedLinks.length > 0 || allParentBackLinks.length > 0 || reverseChildListLinks.length > 0) && (

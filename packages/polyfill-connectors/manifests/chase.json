@@ -403,6 +403,7 @@
           },
           "amount": {
             "type": "integer",
+            "x_pdpp_type": "currency",
             "description": "Signed amount in cents. Negative for visible debits, positive for visible credits."
           },
           "currency": {

@@ -1,4 +1,6 @@
 import { PageHeader, Pager } from "@pdpp/operator-ui/components/primitives";
+import { deriveDeclaredFieldTypes, formatDeclaredAmount } from "@pdpp/operator-ui/lib/record-field-format";
+import type { DeclaredFieldTypes } from "@pdpp/operator-ui/lib/record-kind";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Fragment } from "react";
@@ -83,6 +85,7 @@ export default async function StreamPage({
 
   let page: RecordsPage;
   let streamManifest: StreamManifest | null = null;
+  let declaredFieldTypes: DeclaredFieldTypes = {};
   let parentRelations: Array<{ parentStream: string; capability: ExpandCapability }> = [];
   // All streams in this connector's manifest — used to enumerate child streams
   // whose declared `has_one` points back at the displayed (parent) stream, for
@@ -100,7 +103,7 @@ export default async function StreamPage({
     connectorId = connection.connector_id;
     connectionId = connection.connection_id;
     connectorInstanceId = connectorInstanceIdForConnection(connection);
-    const [pageResult, manifests] = await Promise.all([
+    const [pageResult, manifests, streamMetadata] = await Promise.all([
       queryRecords(connectorId, streamName, {
         connectorInstanceId,
         limit: PAGE_SIZE,
@@ -108,8 +111,13 @@ export default async function StreamPage({
         ...(Object.keys(exactFilters).length > 0 ? { filter: exactFilters } : {}),
       }),
       listConnectorManifests().catch(() => []),
+      // Declared presentation types for THIS stream's fields, so currency
+      // minor-unit cells render as money (chase `amount` → `$30.00`). Soft:
+      // a metadata read failure leaves cells on plain stringification.
+      getStreamMetadata(connectorId, streamName, { connectorInstanceId }).catch(() => null),
     ]);
     page = pageResult;
+    declaredFieldTypes = deriveDeclaredFieldTypes(streamMetadata);
     const connectorManifest = findManifestForConnectorId(manifests, connectorId);
     connectorStreams = (connectorManifest?.streams ?? []) as ManifestStream[];
     const maybeStream = connectorStreams.find((s) => s.name === streamName);
@@ -220,6 +228,15 @@ export default async function StreamPage({
     return null;
   };
 
+  // Format a non-linked cell, preferring declared-currency formatting (chase
+  // `amount` → `$30.00`) over plain stringification. Returns "" for absent
+  // values, matching `stringifyCell` so the existing empty-cell handling holds.
+  const cellText = (record: StreamRecord, column: string): string => {
+    const value = record.data?.[column];
+    const amount = formatDeclaredAmount(value, declaredFieldTypes[column]);
+    return amount ? amount.text : stringifyCell(value);
+  };
+
   // Reverse parent → filtered-child-list links, rendered per row. The displayed
   // stream is the same for every row, so the set of child streams that declare a
   // `has_one` back to it is constant per page and computed once here; each row
@@ -279,7 +296,7 @@ export default async function StreamPage({
               return (
                 <li key={r.id}>
                   <Link className="block px-3 pt-3 hover:bg-muted/40" href={recordHref(r.id)}>
-                    <RecordCard columns={columns} record={r} />
+                    <RecordCard columns={columns} declaredFieldTypes={declaredFieldTypes} record={r} />
                   </Link>
                   {reverseLinks.length > 0 && (
                     <div className="px-3 pt-1 pb-3">
@@ -337,11 +354,12 @@ export default async function StreamPage({
                           </td>
                         );
                       }
+                      const display = cellText(r, c);
                       return (
                         <td className={`${TD} align-top`} key={c}>
                           <Link className="block" href={recordHref(r.id)}>
-                            <span className="block max-w-[24rem] truncate" title={stringifyCell(r.data?.[c])}>
-                              {stringifyCell(r.data?.[c])}
+                            <span className="block max-w-[24rem] truncate" title={display}>
+                              {display}
                             </span>
                           </Link>
                         </td>
@@ -389,7 +407,15 @@ function ReverseChildLinks({ links }: { links: ReverseChildListLink[] }) {
   );
 }
 
-function RecordCard({ record, columns }: { record: StreamRecord; columns: string[] }) {
+function RecordCard({
+  record,
+  columns,
+  declaredFieldTypes,
+}: {
+  record: StreamRecord;
+  columns: string[];
+  declaredFieldTypes: DeclaredFieldTypes;
+}) {
   return (
     <dl className="pdpp-caption grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
       <dt className="text-muted-foreground">emitted_at</dt>
@@ -399,7 +425,8 @@ function RecordCard({ record, columns }: { record: StreamRecord; columns: string
       <dt className="text-muted-foreground">id</dt>
       <dd className="break-all font-mono">{truncate(record.id, 48)}</dd>
       {columns.map((c) => {
-        const v = stringifyCell(record.data?.[c]);
+        const amount = formatDeclaredAmount(record.data?.[c], declaredFieldTypes[c]);
+        const v = amount ? amount.text : stringifyCell(record.data?.[c]);
         if (!v) {
           return null;
         }

@@ -8,6 +8,7 @@
     "./lib/data-source": "./src/lib/data-source.ts",
     "./lib/ref-client": "./src/lib/ref-client.ts",
     "./lib/rs-client": "./src/lib/rs-client.ts",
+    "./lib/record-field-format": "./src/lib/record-field-format.ts",
     "./lib/record-kind": "./src/lib/record-kind.ts",
     "./lib/record-preview": "./src/lib/record-preview.ts",
     "./lib/search-record-timestamps": "./src/lib/search-record-timestamps.ts",
