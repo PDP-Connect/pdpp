@@ -2260,6 +2260,183 @@ test("runCollectorConnector leaves streamed batches durable when the child fails
   }
 });
 
+test("runCollectorConnector corrects the heartbeat off 'starting' to an outbox-derived status when the child fails mid-stream", async () => {
+  // Regression for the codex collector stuck at "starting": the run emits a
+  // "starting" heartbeat before streaming, then the child fails mid-stream and
+  // the run throws BEFORE the final heartbeat. Without a corrective heartbeat
+  // the last persisted status stays "starting" forever even though the
+  // collector keeps delivering across runs. The runner must instead leave a
+  // status derived from the durable outbox: here two streamed batches are left
+  // pending (undrained), so the honest terminal status is "retrying", never
+  // "starting".
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        for (let i = 0; i < 40; i++) {
+          process.stdout.write(JSON.stringify({
+            type: "RECORD",
+            stream: "messages",
+            key: "m-" + i,
+            data: { id: "m-" + i },
+            emitted_at: new Date().toISOString(),
+          }) + "\\n");
+        }
+        await new Promise((r) => process.stdout.write("", () => r(undefined)));
+        process.stderr.write("synthetic mid-stream failure\\n");
+        process.exit(9);
+      `,
+    });
+
+    await assert.rejects(
+      () =>
+        runCollectorConnector({
+          baseUrl: harness.url,
+          batchSize: 20,
+          connector: {
+            args: [fixture],
+            command: "node",
+            connector_id: "fixture-mid-stream-heartbeat",
+            runtime_requirements: { bindings: {} },
+            streams: ["messages"],
+          },
+          deviceId: "device-1",
+          deviceToken: "device-token",
+          outboxPolicy: { retryBackoffMs: 60_000 },
+          queuePath,
+          sourceInstanceId: "src-1",
+        }),
+      /fixture-mid-stream-heartbeat connector exited 9/
+    );
+
+    const startingCount = harness.heartbeats.filter((h) => h.status === "starting").length;
+    assert.ok(startingCount >= 1, "the run must still emit the initial 'starting' heartbeat");
+    const last = harness.heartbeats.at(-1);
+    assert.equal(
+      last?.status,
+      "retrying",
+      `child-failure terminal heartbeat must reflect pending outbox work, not 'starting'; saw ${harness.heartbeats
+        .map((h) => h.status)
+        .join(",")}`
+    );
+    // Two streamed record batches plus the durable connector_child_failure gap
+    // row the runner persists for partial coverage all remain pending.
+    assert.equal(
+      last?.records_pending,
+      3,
+      "two streamed batches and one gap row remain pending after the mid-stream failure"
+    );
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector reports 'healthy' on the codex shape: prior backlog drains, then the child fails before streaming", async () => {
+  // Faithful reproduction of the live codex collector: an earlier pass left
+  // record batches in the durable outbox, this pass's pre-scan drain delivers
+  // them successfully (the source is healthily delivering), and then the child
+  // fails before emitting any record of its own. The run throws, but because
+  // the outbox is genuinely drained the corrective terminal heartbeat must read
+  // "healthy" — not the "starting" status emitted before the scan. Healthy is
+  // tied to a concrete drain (zero pending, zero dead-letter), not to the
+  // process having booted.
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const seedOutbox = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      const records = transformRecordsToCollectorEnvelopes({
+        batchId: "prior-backlog-1",
+        batchSeq: 1,
+        connectorId: "codex",
+        deviceId: "device-1",
+        messages: [
+          {
+            data: { id: "prior-1" },
+            emitted_at: "2026-06-01T00:00:00.000Z",
+            key: "prior-1",
+            stream: "sessions",
+            type: "RECORD",
+          },
+        ],
+        sourceInstanceId: "src-1",
+      });
+      seedOutbox.enqueue({
+        id: buildLocalDeviceOutboxId({
+          kind: "record_batch",
+          parts: ["prior-backlog-1"],
+          sourceInstanceId: "src-1",
+        }),
+        kind: "record_batch",
+        payload: {
+          batchId: "prior-backlog-1",
+          batchSeq: 1,
+          connectorId: "codex",
+          deviceId: "device-1",
+          records,
+          sourceInstanceId: "src-1",
+        },
+        sourceInstanceId: "src-1",
+      });
+    } finally {
+      seedOutbox.close();
+    }
+
+    // Child fails immediately after START without emitting any record, so the
+    // backlog the pre-scan drain cleared is the only outbox state.
+    const fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        process.stderr.write("synthetic startup failure after backlog drain\\n");
+        process.exit(7);
+      `,
+    });
+
+    await assert.rejects(
+      () =>
+        runCollectorConnector({
+          baseUrl: harness.url,
+          connector: {
+            args: [fixture],
+            command: "node",
+            connector_id: "codex",
+            runtime_requirements: { bindings: {} },
+            streams: ["sessions"],
+          },
+          deviceId: "device-1",
+          deviceToken: "device-token",
+          queuePath,
+          sourceInstanceId: "src-1",
+        }),
+      /codex connector exited 7/
+    );
+
+    // The seeded backlog was delivered by the pre-scan drain.
+    assert.equal(harness.ingestedBatches.length, 1, "pre-scan drain must deliver the prior backlog");
+    const last = harness.heartbeats.at(-1);
+    assert.equal(
+      last?.status,
+      "healthy",
+      `a drained outbox after a child failure must report healthy, not starting; saw ${harness.heartbeats
+        .map((h) => h.status)
+        .join(",")}`
+    );
+    assert.equal(last?.records_pending, 0, "no outbox work remains after the pre-scan drain");
+  } finally {
+    await harness.close();
+  }
+});
+
 test("runCollectorConnector flushes a partial trailing batch when the child fails mid-stream and still does not advance the checkpoint", async () => {
   // Emit one full batch plus a partial trailing batch (less than batchSize),
   // then exit non-zero before emitting STATE or DONE. The runner must throw,

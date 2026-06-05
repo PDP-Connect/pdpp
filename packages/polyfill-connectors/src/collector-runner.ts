@@ -508,6 +508,12 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     deviceToken: config.deviceToken,
   });
 
+  // Tracks whether the pre-scan "starting" heartbeat has been sent. The
+  // corrective heartbeat below only fires once it has, so a failure that
+  // happens *before* "starting" (notably the state-read block, which emits its
+  // own honest "blocked") keeps its deliberate status instead of being
+  // overwritten by an outbox-derived one.
+  let startingHeartbeatSent = false;
   try {
     const recoveredLeases = outbox.recoverExpiredLeases({ sourceInstanceId: config.sourceInstanceId });
     const preScanDrain = await drainCollectorOutbox({
@@ -551,6 +557,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       source_instance_id: config.sourceInstanceId,
       status: "starting",
     });
+    startingHeartbeatSent = true;
 
     const streamResult = await streamConnectorIntoOutbox({
       ...(config.abortSignal ? { abortSignal: config.abortSignal } : {}),
@@ -644,9 +651,50 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       statePutFailed: checkpointResult.statePutFailed,
       streamingBufferHighWaterMark: streamResult.bufferHighWaterMark,
     };
+  } catch (error) {
+    // A throw after the "starting" heartbeat (connector child failure, unclean
+    // exit, abort, protocol-parse error, drain transition error, …) would
+    // otherwise leave "starting" as the last status the server ever saw — even
+    // though the collector is healthily delivering: its already-queued work
+    // drains on the *next* pass's pre-scan drain. Re-derive the status from the
+    // durable outbox so the last heartbeat is honest. Skipped when "starting"
+    // was never sent, preserving the honest "blocked" the state-read block
+    // emits on its own.
+    if (startingHeartbeatSent) {
+      await emitCorrectiveHeartbeatFromOutbox({ client, config, outbox, policy });
+    }
+    throw error;
   } finally {
     outbox.close();
   }
+}
+
+/**
+ * Best-effort terminal heartbeat re-derived from the durable outbox after a
+ * collector run threw past its final heartbeat. A drained source reports
+ * "healthy", a source with pending work "retrying", and a dead-letter backlog
+ * "blocked" — tying "healthy" to a concrete drain, never merely to the process
+ * having booted. Emitted before the caller re-raises, so it never masks the
+ * original failure.
+ */
+async function emitCorrectiveHeartbeatFromOutbox(input: {
+  client: Pick<LocalDeviceClient, "heartbeat">;
+  config: CollectorRunConfig;
+  outbox: LocalDeviceOutbox;
+  policy: CollectorOutboxPolicy;
+}): Promise<void> {
+  const summary = input.outbox.summary({ sourceInstanceId: input.config.sourceInstanceId });
+  const deadLetterError = buildHeartbeatDeadLetterError(input.outbox, input.config.sourceInstanceId);
+  await safeHeartbeat(input.client, {
+    connector_id: input.config.connector.connector_id,
+    ...(deadLetterError ? { last_error: deadLetterError } : {}),
+    outbox: buildHeartbeatOutboxDiagnostics(summary, {
+      backlogOpen: countOpenBacklogGaps(input.outbox, input.config.sourceInstanceId),
+    }),
+    records_pending: pendingOutboxWorkCount(summary),
+    source_instance_id: input.config.sourceInstanceId,
+    status: heartbeatStatusForSummary(summary, input.policy),
+  });
 }
 
 interface MaybeSkipScanInput {
