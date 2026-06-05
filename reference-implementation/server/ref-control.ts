@@ -2369,6 +2369,47 @@ export async function getConnectorBrowserSurfaceProjection(
   // evidence we cannot classify.
   return BROWSER_SURFACE_UNKNOWN_PROJECTION;
 }
+
+/**
+ * Reads the two global browser-surface tables (`listNonTerminalLeases` +
+ * `listSurfaces`) ONCE and returns a {@link BrowserSurfaceLeaseStoreReader}
+ * that replays the snapshot for every connector. `getConnectorBrowserSurfaceProjection`
+ * already filters those global rows by `connector_id` in memory, so the rows do
+ * not depend on which connector is asking — reading them once per
+ * `listConnectorSummaries` call instead of once per connector turns a 2N
+ * full-table read into 2. The per-connector projection (filter / pick / classify)
+ * is unchanged.
+ *
+ * Failure parity: if the single snapshot read throws, the returned reader
+ * re-throws on every call, so each connector still routes through the existing
+ * per-projection `catch` to `BROWSER_SURFACE_UNRELIABLE_PROJECTION`. The output
+ * is byte-identical to the prior per-connector reads on both the success and the
+ * store-outage paths; only the query count drops.
+ */
+export async function loadSharedBrowserSurfaceReader(
+  injectedStore?: BrowserSurfaceLeaseStoreReader
+): Promise<BrowserSurfaceLeaseStoreReader> {
+  const store = injectedStore ?? (getDefaultBrowserSurfaceLeaseStore() as BrowserSurfaceLeaseStoreReader);
+  let snapshot: { leases: readonly BrowserSurfaceLease[]; surfaces: readonly BrowserSurface[] } | null = null;
+  let snapshotError: unknown = null;
+  try {
+    const [leases, surfaces] = await Promise.all([store.listNonTerminalLeases(), store.listSurfaces()]);
+    snapshot = { leases, surfaces };
+  } catch (err) {
+    snapshotError = err;
+  }
+  // The replay accessors return resolved/rejected promises rather than `async`
+  // closures: there is nothing left to await once the snapshot is captured, and
+  // the reject branch preserves the prior per-connector failure path so each
+  // projection still routes to `BROWSER_SURFACE_UNRELIABLE_PROJECTION`.
+  return {
+    listNonTerminalLeases: () =>
+      snapshot === null ? Promise.reject(snapshotError) : Promise.resolve(snapshot.leases),
+    listSurfaces: () =>
+      snapshot === null ? Promise.reject(snapshotError) : Promise.resolve(snapshot.surfaces),
+  };
+}
+
 export function projectConnectorSummaryConnectionHealth(input: {
   /**
    * Durable structured attention records the caller has already filtered
@@ -2675,6 +2716,13 @@ export async function listConnectorSummaries(
     connectorRows.map((row) => [row.connector_id, parseManifest(row.manifest, row.connector_id)])
   );
   const rows = await listConnectorInstanceRowsForDashboard();
+  // The browser-surface leases/surfaces tables are global, unscoped reads that
+  // `getConnectorBrowserSurfaceProjection` filters by `connector_id` in memory.
+  // Read them once here and replay the snapshot per connector instead of issuing
+  // two full-table reads inside every loop iteration (2N -> 2). This path runs on
+  // every records-dashboard poll, so the saved reads compound under the active-run
+  // poll cadence.
+  const sharedBrowserSurfaceReader = await loadSharedBrowserSurfaceReader();
   const summaries = await mapWithConcurrency(
     rows,
     options.concurrency ?? LIST_CONNECTOR_SUMMARIES_CONCURRENCY,
@@ -2702,6 +2750,7 @@ export async function listConnectorSummaries(
           getConnectorAttentionProjection(connectorId, { connectorInstanceId }),
           getConnectorBrowserSurfaceProjection(connectorId, {
             profileKey: readBrowserSurfaceProfileKey(connectorId, connectorInstanceId, manifest),
+            store: sharedBrowserSurfaceReader,
           }),
           getConnectorLocalCoverageAxis(connectorId, connectorInstanceId),
         ]);
