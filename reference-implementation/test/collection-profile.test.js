@@ -2414,8 +2414,9 @@ rl.on('line', (line) => {
   // a connector may declare an optional bounded `considered` count on
   // DETAIL_COVERAGE and inside SKIP_RESULT.diagnostics so partial-vs-complete is
   // real, not gap-only. It is treated as evidence only: a trusted value is a safe
-  // non-negative integer in bounds; anything malformed or over-bound is dropped
-  // to `unknown` (omitted) rather than fabricating a completeness denominator.
+  // non-negative integer; anything malformed or outside JavaScript's precise
+  // integer range is dropped to `unknown` (omitted) rather than fabricating a
+  // completeness denominator.
   // This tranche carries the value onto the existing per-stream spine events only;
   // it introduces no collection_report / coverage_axis / forward_disposition.
 
@@ -2467,11 +2468,11 @@ rl.on('line', (line) => {
     }
   });
 
-  await t.test('runtime drops malformed / out-of-bound DETAIL_COVERAGE.considered to unknown without rejecting', async () => {
-    // Each value is NOT a safe non-negative integer in bounds, so none may be
+  await t.test('runtime drops malformed / unsafe DETAIL_COVERAGE.considered to unknown without rejecting', async () => {
+    // Each value is NOT a safe non-negative integer, so none may be
     // trusted as a denominator: the field must be omitted (unknown), and the
     // run must still succeed (drop, don't reject) with its other coverage counts.
-    for (const considered of [-1, 3.5, Number.NaN, Number.POSITIVE_INFINITY, '7', 10_000_001, null]) {
+    for (const considered of [-1, 3.5, Number.NaN, Number.POSITIVE_INFINITY, '7', Number.MAX_SAFE_INTEGER + 1, null]) {
       const manifest = buildMultiStreamManifest('considered-coverage-bad');
       const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
       const { asPort, rsPort } = server;
@@ -2522,8 +2523,8 @@ rl.on('line', (line) => {
     }
   });
 
-  await t.test('runtime accepts a boundary DETAIL_COVERAGE.considered of 0 and the max bound', async () => {
-    for (const considered of [0, 10_000_000]) {
+  await t.test('runtime accepts a boundary DETAIL_COVERAGE.considered of 0 and the max safe integer', async () => {
+    for (const considered of [0, Number.MAX_SAFE_INTEGER]) {
       const manifest = buildMultiStreamManifest('considered-coverage-edge');
       const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
       const { asPort, rsPort } = server;
@@ -2559,7 +2560,7 @@ rl.on('line', (line) => {
         assert.equal(result.status, 'succeeded');
         const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
         const coverageEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.detail_coverage_declared');
-        assert.equal(coverageEvent.data.considered, considered, `boundary considered=${considered} is trusted`);
+        assert.equal(coverageEvent.data.considered, considered, `safe boundary considered=${considered} is trusted`);
       } finally {
         cleanup();
         await closeServer(server);
@@ -2662,8 +2663,8 @@ rl.on('line', (line) => {
     }
   });
 
-  await t.test('runtime drops malformed SKIP_RESULT.diagnostics.considered while keeping the rest of diagnostics', async () => {
-    for (const considered of [-5, 2.5, '900', Number.NaN, 10_000_001]) {
+  await t.test('runtime drops malformed / unsafe SKIP_RESULT.diagnostics.considered while keeping the rest of diagnostics', async () => {
+    for (const considered of [-5, 2.5, '900', Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
       const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
       const { asPort, rsPort } = server;
       const { ownerToken, connectorId } = await setupConnector(server, asPort);

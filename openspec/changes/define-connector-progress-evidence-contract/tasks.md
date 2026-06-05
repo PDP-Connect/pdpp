@@ -24,20 +24,21 @@
   the same path as existing diagnostics. No existing field changes.
   Landed in `reference-implementation/runtime/index.js`: a shared
   `boundConsideredCount()` normalizes the value to a trusted safe non-negative
-  integer at or below `GAP_CONSIDERED_MAX` (10,000,000) or to `null` (= `unknown`,
-  field omitted). `DETAIL_COVERAGE.considered` is normalized at emission and added
-  as an optional `considered` on the existing `run.detail_coverage_declared` spine
-  event (no existing field changed). `SKIP_RESULT.diagnostics.considered` rides the
-  existing `boundGapDiagnostics` redaction/bounding path and is then re-validated by
-  `normalizeConsideredInDiagnostics()` so a malformed/out-of-bound value is dropped
-  while sibling diagnostics keys survive — flowing through to the `run.stream_skipped`
+  integer or to `null` (= `unknown`, field omitted). The precision bound is
+  JavaScript's native `Number.isSafeInteger` boundary, not a product-specific
+  stream-size cap. `DETAIL_COVERAGE.considered` is normalized at emission and
+  added as an optional `considered` on the existing `run.detail_coverage_declared`
+  spine event (no existing field changed). `SKIP_RESULT.diagnostics.considered`
+  rides the existing `boundGapDiagnostics` redaction/bounding path and is then
+  re-validated by `normalizeConsideredInDiagnostics()` so a malformed/unsafe value
+  is dropped while sibling diagnostics keys survive — flowing through to the `run.stream_skipped`
   spine event and the terminal `known_gaps[].diagnostics`. Drop-don't-reject (mirrors
   the non-object-diagnostics posture): a malformed `considered` never fails the run and
   never fabricates a denominator; absence stays `unknown` (never inferred from
   collected). Strictly additive: no `collection_report` / `coverage_axis` /
   `forward_disposition` is emitted on terminal events. Tests:
   `reference-implementation/test/collection-profile.test.js` adds seven focused cases
-  (valid preserve, malformed/out-of-bound drop, 0-and-max boundary, absence-stays-
+  (valid preserve, malformed/unsafe drop, 0-and-max-safe boundary, absence-stays-
   unknown for DETAIL_COVERAGE; valid preserve and malformed-drop for
   SKIP_RESULT.diagnostics; and a 2.7 layer-boundary guard asserting no
   collection_report/coverage_axis/forward_disposition appears on `run.completed`).

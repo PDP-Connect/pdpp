@@ -284,12 +284,6 @@ const KNOWN_GAPS_MAX = 50;
 const GAP_DIAGNOSTICS_BYTES_MAX = 8 * 1024;
 const GAP_DIAGNOSTICS_DEPTH_MAX = 6;
 const GAP_DIAGNOSTICS_LIST_MAX = 32;
-// Upper bound on an optional connector-declared `considered` denominator
-// (DETAIL_COVERAGE / SKIP_RESULT.diagnostics). A `considered` value is only
-// ever a count label; anything that is not a safe non-negative integer at or
-// below this cap is dropped to `unknown` (omitted) rather than trusted. See
-// openspec/changes/define-connector-progress-evidence-contract (task 2.1).
-const GAP_CONSIDERED_MAX = 10_000_000;
 const GAP_SEVERITIES = new Set(['actionable', 'informational', 'recoverable', 'transient']);
 const INFORMATIONAL_GAP_REASONS = new Set(['not_available_in_mode', 'out_of_scope', 'user_disabled']);
 const TRANSIENT_GAP_REASONS = new Set([
@@ -465,24 +459,22 @@ function projectDiagnosticsNode(value, depth) {
  *
  * A `considered` value is evidence only: it labels how many items the connector
  * claims it weighed for a stream/boundary. It is never trusted unless it is a
- * safe non-negative integer at or below {@link GAP_CONSIDERED_MAX}. Anything
- * else — non-number, NaN/Infinity, negative, fractional, or over-bound — is
- * dropped to `null` so it cannot fabricate a completeness denominator. The
+ * safe non-negative integer. Anything else — non-number, NaN/Infinity, negative,
+ * fractional, or outside JavaScript's precise integer range — is dropped to
+ * `null` so it cannot fabricate a completeness denominator. The
  * runtime never infers `considered` from collected counts (that conflation is
  * explicitly rejected by the progress-evidence contract); absence stays
  * `unknown`. Mirrors the drop-don't-reject posture of `boundGapDiagnostics`:
  * malformed evidence is omitted, not a protocol violation.
  */
 function boundConsideredCount(value) {
-  if (typeof value !== 'number' || !Number.isInteger(value)) return null;
-  if (value < 0 || value > GAP_CONSIDERED_MAX) return null;
-  return value;
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 /**
  * Normalize a top-level `considered` key inside a bounded diagnostics object
  * (SKIP_RESULT.diagnostics). `boundGapDiagnostics` already preserved numbers as
- * raw leaves; this re-validates the one denominator key so an out-of-bound,
+ * raw leaves; this re-validates the one denominator key so an unsafe,
  * fractional, or non-integer `considered` is dropped to `unknown` (deleted)
  * instead of surviving as an untrusted number. A trusted value is rewritten in
  * its normalized form. Truncation sentinels and non-object inputs pass through
@@ -2784,7 +2776,7 @@ export async function runConnector(opts) {
               gap_keys: msg.gap_keys?.length || 0,
               optional_skip_keys: msg.optional_skip_keys?.length || 0,
               // Optional connector-declared denominator; omitted (= `unknown`)
-              // unless it is a trusted safe non-negative integer in bounds.
+              // unless it is a trusted safe non-negative integer.
               ...(coverageConsidered == null ? {} : { considered: coverageConsidered }),
             },
           });
