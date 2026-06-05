@@ -30,3 +30,19 @@ The existing mid-wait surface-loss detector (`detect-midwait-browser-surface-los
 - Adds tests under `packages/polyfill-connectors/src/` and `packages/polyfill-connectors/connectors/amazon/`.
 - Does not change PDPP Core, resource-server public APIs, grant semantics, connector manifests, the controller spine event set, the Patchright/n.eko stealth posture, connector scraping logic, `packages/remote-surface`, Docker compose, or deployment scripts.
 - Does not touch the live wedged run, the live deployment, or any container lifecycle.
+
+## Residual Risks
+
+- Live Amazon re-run validation is owner-only and out of this lane's scope. The
+  watchdog, checkpoints, bounded metadata read, and bounded teardown capture are
+  proven offline by `connector-runtime-session-watchdog.test.js`,
+  `browser-handoff.test.js`, and the Amazon checkpoint test (a never-checkpointing
+  `ensureSession` fails closed with `*_session_establish_timeout`, a
+  steadily-checkpointing flow survives past the deadline, the watchdog pauses on
+  an open interaction, `captureBrowserPage` returns within its deadline when
+  `captureDom` hangs, and `ensureAmazonSession` checkpoints each auth phase). What
+  remains unproven is the deployment-side behavior: that a same-shape live wedge
+  now yields a terminal failure with retained establishment-phase diagnostics
+  instead of an indefinitely-active run. This requires an owner-attended live
+  Amazon run against the deployment and is tracked as the lone open box in
+  `tasks.md`.
