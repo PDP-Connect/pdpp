@@ -5,6 +5,7 @@ import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { pdppLocalCollectorDoctorCommand, pdppLocalCollectorRetryDeadLettersCommand } from "@/lib/pdpp-cli-command.ts";
 import {
   formatDominantCondition,
+  formatForwardDisposition,
   formatProjectionFreshness,
   formatSourceOutboxState,
   summarizeAxisChips,
@@ -146,6 +147,7 @@ function ProjectedStateDiagnostics({
     isLocalDeviceBacked: Boolean(localDeviceProgress),
   });
   const outboxRemediation = summarizeOutboxStallRemediation(connectionHealth, localDeviceProgress);
+  const forwardDisposition = formatForwardDisposition(connectionHealth.forward_disposition);
   const dominantCondition = formatDominantCondition(connectionHealth);
   const conditionById = new Map((connectionHealth.conditions ?? []).map((condition) => [condition.id, condition]));
   const visibleConditions = (connectionHealth.supporting_condition_ids ?? [])
@@ -163,6 +165,20 @@ function ProjectedStateDiagnostics({
           </>
         ) : null}
       </p>
+      {forwardDisposition ? (
+        <p
+          className="pdpp-caption text-muted-foreground"
+          data-disposition={forwardDisposition.value}
+          data-testid="diagnostics-forward-disposition"
+          title={forwardDisposition.title}
+        >
+          Next run:{" "}
+          <span className={forwardDispositionTextClass(forwardDisposition.tone)}>{forwardDisposition.label}</span>
+          {forwardDisposition.ownerActionNeeded ? (
+            <span className="ml-1 text-muted-foreground">(needs you)</span>
+          ) : null}
+        </p>
+      ) : null}
       {dominantCondition ? (
         <p
           className="pdpp-caption text-muted-foreground"
@@ -228,6 +244,25 @@ function ProjectedStateDiagnostics({
       )}
     </div>
   );
+}
+
+/**
+ * Inline text colour for the forward-disposition word. It is one word in a muted
+ * sentence (not a chip), so we tint only the value text by tone and leave the
+ * surrounding "Next run:" / "(needs you)" muted. Mirrors the axis-chip tone
+ * vocabulary so the disposition reads consistently with the rest of the block.
+ */
+function forwardDispositionTextClass(tone: "neutral" | "success" | "warning" | "danger"): string {
+  if (tone === "success") {
+    return "text-emerald-700 dark:text-emerald-300";
+  }
+  if (tone === "warning") {
+    return "text-[color:var(--warning)]";
+  }
+  if (tone === "danger") {
+    return "text-destructive";
+  }
+  return "text-foreground";
 }
 
 function diagnosticsAxisChipClass(tone: "neutral" | "success" | "warning" | "danger"): string {

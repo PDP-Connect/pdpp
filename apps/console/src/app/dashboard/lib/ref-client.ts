@@ -412,6 +412,17 @@ export type RefCoverageAxis =
 
 export type RefFreshnessAxis = "fresh" | "stale" | "unknown";
 
+/**
+ * Connection-level forward disposition mirror — the reference's answer to
+ * "what is the next run expected to do?" (`ForwardDisposition` in the reference
+ * runtime's `connection-health.ts`, defined by
+ * `define-connector-progress-evidence-contract`). It is a fusion of the coverage,
+ * gap-retryability, attention, freshness, and refresh-policy evidence, not a
+ * sixth axis: it answers what the next run does, distinct from current state,
+ * coverage, freshness, and outbox.
+ */
+export type RefForwardDisposition = "awaiting_owner" | "complete" | "owner_refresh_due" | "resumable" | "terminal";
+
 export type RefOutboxAxis = "active" | "idle" | "stalled" | "unknown";
 
 export type RefRemoteSurfaceAxis = "failed" | "idle" | "leased" | "none" | "unknown" | "waiting";
@@ -452,6 +463,18 @@ export interface RefConnectionHealthSnapshot {
   };
   conditions?: readonly RefConnectionHealthCondition[];
   dominant_condition_id?: string | null;
+  /**
+   * Connection-level forward disposition: the reference's single answer to
+   * "what is the next run expected to do?", rolled up from the coverage,
+   * gap-retryability, open-attention, freshness, and refresh-policy evidence the
+   * snapshot already carries (`define-connector-progress-evidence-contract`).
+   *
+   * Optional on the mirror because it is an additive field surfaced on the
+   * reference's `connection_health` snapshot (passed through `GET /_ref/connectors`
+   * as the canonical projection); a reference predating the field omits it and the
+   * console renders nothing rather than inventing a disposition.
+   */
+  forward_disposition?: RefForwardDisposition;
   last_success_at: string | null;
   /** Non-secret owner CTA, or null when no attention is required. */
   next_action: RefNextAction | null;

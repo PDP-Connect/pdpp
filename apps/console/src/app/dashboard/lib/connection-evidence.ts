@@ -18,6 +18,7 @@
 import type {
   DeviceSourceInstance,
   RefConnectionHealthSnapshot,
+  RefForwardDisposition,
   RefLocalDeviceProgress,
   RefSchedule,
 } from "./ref-client.ts";
@@ -344,6 +345,102 @@ export function summarizeAxisChips(
     }
   }
   return out;
+}
+
+/**
+ * Owner-facing copy for the connection-level forward disposition — the
+ * reference's single answer to "what is the next run expected to do?". This is
+ * deliberately NOT another axis chip: coverage / freshness / outbox / attention
+ * each describe one dimension of the *current* state, whereas the disposition
+ * fuses them into a forward statement. The dashboard renders it as one short
+ * line so the two never blur together.
+ *
+ * Wording stays protocol/reference-accurate: the reference describes what a
+ * run on the owner's own instance is expected to do. It never promises a
+ * hosted sync service ("we'll refresh nightly"), and the label is connector-
+ * agnostic — the same five values mean the same thing for every connector.
+ */
+export interface ForwardDispositionSummary {
+  /**
+   * Short bare label for the line, e.g. "nothing owed". The renderer supplies
+   * the "Next run:" lead-in, so the label stays free of it.
+   */
+  label: string;
+  /** Whether the owner must act before a run can make progress. */
+  ownerActionNeeded: boolean;
+  /** Long-form hover/title describing what the next run does. */
+  title: string;
+  tone: EvidenceTone;
+  /** The bare disposition value, kept for data-attributes and tooltips. */
+  value: RefForwardDisposition;
+}
+
+const FORWARD_DISPOSITION_LABELS: Record<RefForwardDisposition, ForwardDispositionSummary> = {
+  complete: {
+    value: "complete",
+    label: "nothing owed",
+    ownerActionNeeded: false,
+    title:
+      "Coverage is established and fresh. A future run re-checks the source but is not expected to collect anything new or fill a gap.",
+    tone: "success",
+  },
+  resumable: {
+    value: "resumable",
+    label: "resumes collection",
+    ownerActionNeeded: false,
+    title:
+      "There is outstanding work an ordinary future run is expected to pick up — an open boundary, a retryable gap, or coverage not yet established. Records already collected stay valid; no owner action is needed.",
+    tone: "warning",
+  },
+  awaiting_owner: {
+    value: "awaiting_owner",
+    label: "blocked on you",
+    ownerActionNeeded: true,
+    title:
+      "A coverage gap is blocked on open owner attention (such as re-auth or a prompt). A run cannot make progress until you act; open the connection's attention to resolve it.",
+    tone: "warning",
+  },
+  owner_refresh_due: {
+    value: "owner_refresh_due",
+    label: "refresh due",
+    ownerActionNeeded: true,
+    title:
+      "Coverage is complete but the retained data has gone stale, and this connection refreshes only when you run it. The reference will not refresh it on its own — start a run on your instance to bring it current. This is aged data, not missing data.",
+    tone: "warning",
+  },
+  terminal: {
+    value: "terminal",
+    label: "won't backfill",
+    ownerActionNeeded: false,
+    title:
+      "An outstanding gap will not backfill on its own — the source or connector cannot recover it without a change. Records already collected stay valid and usable; open the latest run to see which streams are affected.",
+    tone: "danger",
+  },
+};
+
+/**
+ * Format the connection-level forward disposition for display. Returns `null`
+ * when the reference did not supply the field (e.g. a reference predating
+ * `define-connector-progress-evidence-contract`), so the console renders nothing
+ * rather than inventing a disposition. An unrecognized value is surfaced
+ * honestly as a neutral "unknown to this console" line rather than dropped.
+ */
+export function formatForwardDisposition(
+  disposition: RefForwardDisposition | null | string | undefined
+): ForwardDispositionSummary | null {
+  if (disposition == null) {
+    return null;
+  }
+  if (Object.hasOwn(FORWARD_DISPOSITION_LABELS, disposition)) {
+    return FORWARD_DISPOSITION_LABELS[disposition as RefForwardDisposition];
+  }
+  return {
+    value: disposition as RefForwardDisposition,
+    label: "unknown",
+    ownerActionNeeded: false,
+    title: `The reference reported a forward disposition "${disposition}" this console does not recognize.`,
+    tone: "neutral",
+  };
 }
 
 export interface ProjectionFreshness {

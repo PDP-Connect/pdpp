@@ -73,6 +73,36 @@
   access to freshness / refresh-policy evidence — that lives in the
   connection-health projection downstream — so the full per-stream block would
   require a layering change beyond this tranche).
+- [x] 2.3b Make the connection-level `forward_disposition` visible to the owner
+  in the console — the smallest valuable surface after 2.3a, which surfaced the
+  field on the snapshot but left it unrendered. No new server contract was
+  needed: `listConnectorSummaries` already returns the full `connection_health`
+  snapshot and `GET /_ref/connectors` passes it through verbatim
+  (`ref-connectors-list` carries `connection_health: unknown`), so the field is
+  already on the wire. The console (a) mirrors the field as an optional
+  `forward_disposition?: RefForwardDisposition` on `RefConnectionHealthSnapshot`
+  + a `RefForwardDisposition` union in `apps/console/.../lib/ref-client.ts`;
+  (b) adds a pure `formatForwardDisposition()` + `ForwardDispositionSummary` to
+  `apps/console/.../lib/connection-evidence.ts` mapping each disposition to
+  connector-agnostic, protocol-accurate copy and a tone (no hosted-service
+  promise, no connector name); (c) renders one short "Next run: <disposition>
+  (needs you)" line in the diagnostics "Projected state" block
+  (`connection-diagnostics.tsx`), inside the already-collapsed diagnostics
+  `<details>` so it adds no headline-row noise. It answers "what is the next run
+  expected to do?" as a forward statement distinct from the coverage / freshness
+  / outbox / attention axis chips (current state) and the headline pill. The
+  field is optional on the mirror, so a reference predating it renders nothing
+  rather than an invented disposition; an unrecognized value is surfaced
+  honestly as neutral. Tests: `apps/console/.../lib/forward-disposition.test.ts`
+  (10 cases — five-disposition mapping, complete-only-success honesty,
+  owner-action set, aged-vs-missing seam copy, unknown-value honesty, and a
+  voice-and-framing guard rejecting hosted-service / connector-name copy) and a
+  new structural assertion in `connection-diagnostics.test.ts` pinning the
+  shared-formatter wiring + absence guard. The narrow `OwnerConnectionDiagnostics`
+  REST/owner-agent projection is intentionally NOT widened here — that picked
+  field set is a separately-reviewable owner-agent contract change and is not
+  needed for the dashboard surface. Strictly additive: RI untouched; console
+  typecheck clean, 271/271 dashboard-lib + 27/27 diagnostics tests green.
 - [ ] 2.4 `considered: unknown` when no connector-declared value exists; prove a
   collected-records, no-gaps, no-considered run is NOT projected `complete`.
 - [ ] 2.5 Prove the report is absent from grant-scoped `/v1` reads (records,
@@ -104,15 +134,19 @@
   cannot all land green, ship the spec (section 1) and record tranche 2 as the
   next implementation lane rather than landing a partial runtime change.
 - Tranche-2 increments landed so far: 2.3 (the pure `deriveForwardDisposition`
-  helper and its tests) and 2.3a (wiring that helper into `computeConnectionHealth`
-  so a connection-level `forward_disposition` is surfaced on the health snapshot).
-  Both are strictly additive and emit nothing new on any spine event, so neither
-  perturbs an existing terminal-event field, status code, or commit semantic (the
-  2.7 invariant): 2.3 adds a pure function + unit tests; 2.3a adds one optional
-  snapshot field consumed only by the internal `ConnectorSummary` server type, not
-  by any `additionalProperties: false` contract schema. 2.3a delivers the first
-  real dashboard value — the owner-facing "what will the next run do?" answer on
-  every connection — while staying inside the existing health projection. The
+  helper and its tests), 2.3a (wiring that helper into `computeConnectionHealth`
+  so a connection-level `forward_disposition` is surfaced on the health snapshot),
+  and 2.3b (rendering that connection-level disposition in the console so the
+  owner can actually see it). All three are strictly additive and emit nothing new
+  on any spine event, so none perturbs an existing terminal-event field, status
+  code, or commit semantic (the 2.7 invariant): 2.3 adds a pure function + unit
+  tests; 2.3a adds one optional snapshot field consumed only by the internal
+  `ConnectorSummary` server type, not by any `additionalProperties: false` contract
+  schema; 2.3b adds a console-only formatter + one diagnostics line, reading the
+  field already passed through `GET /_ref/connectors` — no new server contract.
+  2.3a + 2.3b together deliver the first real, owner-VISIBLE dashboard value — the
+  "what will the next run do?" answer rendered on the connection detail page —
+  while staying inside the existing health projection and surface. The
   remaining tranche-2 tasks (2.1 considered input; 2.2 the per-run, per-stream
   `buildRunTerminalData()` Collection Report block; 2.4–2.7 honesty / absence /
   portability proofs) are the next implementation lane. 2.2 specifically is NOT yet

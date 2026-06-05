@@ -89,6 +89,12 @@ const AXIS_CHIP_DANGER_CLASS = /function diagnosticsAxisChipClass[\s\S]*destruct
 const REDUNDANT_OUTBOX_LINE_TESTID = /data-testid="diagnostics-outbox"/;
 const REDUNDANT_OUTBOX_HELPER = /summarizeOutboxForRow/;
 
+const FORWARD_DISPOSITION_TESTID = /data-testid="diagnostics-forward-disposition"/;
+const FORWARD_DISPOSITION_HELPER = /formatForwardDisposition\(connectionHealth\.forward_disposition\)/;
+const FORWARD_DISPOSITION_GUARDED = /forwardDisposition \? \(/;
+const FORWARD_DISPOSITION_TONE_CLASS = /forwardDispositionTextClass\(forwardDisposition\.tone\)/;
+const FORWARD_DISPOSITION_NEXT_RUN_COPY = /Next run:/;
+
 test("connection-diagnostics renders the outbox axis as a colored chip, the source of truth", async () => {
   // The axis chip (data-axis-tone + label) is the single owner-visible
   // surface for Outbox · active/stalled/unknown color and label. The
@@ -118,6 +124,20 @@ test("connection-diagnostics does not render a redundant plain-text outbox line"
   const src = await readFile(DIAG_FILE, "utf8");
   assert.doesNotMatch(src, REDUNDANT_OUTBOX_LINE_TESTID);
   assert.doesNotMatch(src, REDUNDANT_OUTBOX_HELPER);
+});
+
+test("connection-diagnostics surfaces the forward disposition via the shared formatter, guarded for absence", async () => {
+  // The connection-level forward disposition answers "what will the next run
+  // do?". It must come from the shared `formatForwardDisposition` helper (not
+  // re-derived in the component), be tone-coloured by the helper's tone, and be
+  // guarded so a reference predating the field renders nothing rather than an
+  // invented disposition.
+  const src = await readFile(DIAG_FILE, "utf8");
+  assert.match(src, FORWARD_DISPOSITION_HELPER);
+  assert.match(src, FORWARD_DISPOSITION_GUARDED);
+  assert.match(src, FORWARD_DISPOSITION_TESTID);
+  assert.match(src, FORWARD_DISPOSITION_TONE_CLASS);
+  assert.match(src, FORWARD_DISPOSITION_NEXT_RUN_COPY);
 });
 
 test("connection-diagnostics renders an unavailable branch when connection_health is null", async () => {
