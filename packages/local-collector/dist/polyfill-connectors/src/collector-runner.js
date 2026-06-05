@@ -4,10 +4,12 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import { buildAgentVersion } from "./collector-build-info.js";
 import { LocalDeviceClient, } from "./local-device-client.js";
 import { buildLocalDeviceRecordEnvelope, hashCanonicalJson, } from "./local-device-envelope.js";
 import { buildLocalDeviceOutboxId, LocalDeviceOutbox, } from "./local-device-outbox.js";
 import { assertPlacementOrThrow, COLLECTOR_RUNTIME_CAPABILITIES, } from "./runtime-capabilities.js";
+const COLLECTOR_AGENT_VERSION = buildAgentVersion();
 export const COLLECTOR_STDERR_MAX_BYTES = 256 * 1024;
 const COLLECTOR_GAP_DETAILS_MAX_CHARS = 300;
 const KEYED_SECRET_RE = /\b(authorization|bearer|token|password|passwd|cookie|secret|otp|api[_-]?key)\b\s*[:=]\s*["']?[^"',\s}]+/gi;
@@ -130,6 +132,7 @@ export async function runCollectorConnector(config) {
             recordsPending: pendingOutboxWorkCount(postDrainSummary),
         });
         await client.heartbeat({
+            agent_version: COLLECTOR_AGENT_VERSION,
             connector_id: config.connector.connector_id,
             outbox: buildHeartbeatOutboxDiagnostics(postDrainSummary, {
                 backlogOpen: countOpenBacklogGaps(outbox, config.sourceInstanceId),
@@ -188,6 +191,7 @@ export async function runCollectorConnector(config) {
         if (!checkpointResult.statePutFailed) {
             const finalDeadLetterError = buildHeartbeatDeadLetterError(outbox, config.sourceInstanceId);
             await client.heartbeat({
+                agent_version: COLLECTOR_AGENT_VERSION,
                 connector_id: config.connector.connector_id,
                 ...(finalDeadLetterError ? { last_error: finalDeadLetterError } : {}),
                 outbox: buildHeartbeatOutboxDiagnostics(finalSummary, {
@@ -707,7 +711,7 @@ async function recoverResolvedLocalCollectorGaps(input) {
 }
 async function safeHeartbeat(client, request) {
     try {
-        await client.heartbeat(request);
+        await client.heartbeat({ agent_version: COLLECTOR_AGENT_VERSION, ...request });
     }
     catch {
     }

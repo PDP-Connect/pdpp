@@ -45,6 +45,7 @@ export interface HeartbeatLastError {
     }[];
 }
 export interface HeartbeatRequest {
+    agent_version?: string;
     connector_id: string;
     last_error?: HeartbeatLastError | null;
     outbox?: HeartbeatOutboxDiagnostics;
