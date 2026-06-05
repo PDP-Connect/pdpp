@@ -435,41 +435,16 @@
   `collection-profile.test.js` 149/149 unchanged.
 - [x] 4.3 Dashboard consumes per-stream report + forward disposition directly;
   deprecate per-connector freshness/gap reconstruction heuristics.
-  Largely landed before this lane: the connector DETAIL page already consumes the
-  server-projected per-stream `collection_report` directly (`indexCollectionReportByStream`
-  + `formatStreamCollectionFacts`, rendering each stream's coverage chip and
-  forward disposition — commits `0973b0fc` + `98eb7a04`), and the connection-level
-  `forward_disposition` is rendered in `connection-diagnostics.tsx` (task 2.3b).
-  The headline pill (`deriveConnectionStatusDisplay`) already reads the server
-  `connection_health.state` + coverage axis directly, and the console carries NO
-  `now - heartbeat` / `Date.now()` freshness reconstruction (freshness is consumed
-  from the server `freshness` axis verbatim).
-  This lane closed the one remaining gap-reconstruction heuristic: the records
-  LIST row's "Partial source coverage" cue (and the no-health-fallback "Partial"
-  badge) were reconstructed from the last run's raw `known_gaps`
-  (`connectorHasPartialCoverageHint`, reading `lastRun.known_gaps` + `totalRecords`)
-  EVEN when the server projected a per-stream `coverage_condition` — because
-  `toConnectorOverview` dropped `summary.collection_report` before it reached the
-  row. Fix (additive, console-only): `ConnectorOverview` gained an optional
-  `collectionReport`; both `toConnectorOverview` builders (records index +
-  connector detail) thread `summary.collection_report` through; a new pure
-  `connectorHasPartialCoverageFromReport()` reads the server-projected per-stream
-  `coverage_condition` (`partial` | `gaps` | `retryable_gap`) directly; and
-  `resolvePartialCoverageCue()` prefers the report over the `known_gaps` heuristic,
-  falling back to the heuristic ONLY when the reference returns no report (a
-  deployment predating Tranche C). An unknown denominator reads
-  `coverage_condition: "unknown"`, which is not in the partial set, so an honestly
-  unknown stream never trips the cue; a present-but-empty report is an
-  authoritative "no partial streams" answer, not absence. No new server contract,
-  no `/v1` exposure, no manifest/wire change. Tests: `run-gaps.test.ts` (+8 pure
-  cases — the partial-condition set incl. unknown/terminal exclusions, any-stream
-  partial, report-preference over the heuristic, empty-report-is-authoritative,
-  legacy absent-report fallback) and `connector-row.test.ts` (+4 structural wiring
-  cases — resolver wired with `overview.collectionReport` on both the cue and the
-  RunStatus fallback, bare heuristic no longer called from the row). 624/627
-  dashboard tests green (the 3 fails are a PROVEN baseline: `web-push-settings.test.ts`
-  ENOENT on un-tracked `app/manifest.ts`, absent on main, unrelated); console
-  `types:check` exit 0; biome clean on all changed files.
+  Landed in `75db6e9b`: the records row now carries `summary.collection_report`
+  through `ConnectorOverview` and derives its partial-coverage cue from the
+  server-projected per-stream `coverage_condition`. The legacy `known_gaps`
+  heuristic remains only as a fallback for references that omit
+  `collection_report`; a present empty report is authoritative. No server
+  contract, `/v1`, manifest, or wire change. Validation: `run-gaps.test.ts` (+8),
+  `connector-row.test.ts` (+4), console `types:check`, biome on changed files,
+  `openspec validate define-connector-progress-evidence-contract --strict`, and
+  `openspec validate --all --strict`. The broader dashboard glob was 624/627 with
+  only the pre-existing `web-push-settings.test.ts` `app/manifest.ts` ENOENT.
 
 ## Notes
 

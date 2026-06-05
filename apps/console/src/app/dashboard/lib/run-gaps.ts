@@ -62,21 +62,6 @@ export function connectorHasPartialCoverageHint({
   return classifyKnownGaps(lastRunKnownGaps).coverageGaps.length > 0;
 }
 
-/**
- * The per-stream coverage conditions that mean "this run produced records but
- * did not cover the full source boundary, and an ordinary later run is expected
- * to fill the rest". These are the warning-tone, recoverable conditions in the
- * reference's coverage vocabulary — the exact set the row's "Partial source
- * coverage" cue should flag.
- *
- * `terminal_gap`, `unsupported`, `unavailable`, `deferred`, and `inventory_only`
- * are deliberately excluded: a terminal/unsupported condition is not "partial
- * coverage the next run will fill" (the headline pill already surfaces those as
- * "won't backfill" / "Blocked"), and the manifest-accepted conditions are not
- * gaps at all. `complete` / `unknown` are excluded by definition — an unknown
- * denominator never reads partial (the honesty contract), and complete is not a
- * gap.
- */
 const PARTIAL_COVERAGE_CONDITIONS: ReadonlySet<RefCoverageAxis> = new Set<RefCoverageAxis>([
   "partial",
   "gaps",
@@ -84,23 +69,8 @@ const PARTIAL_COVERAGE_CONDITIONS: ReadonlySet<RefCoverageAxis> = new Set<RefCov
 ]);
 
 /**
- * Direct-consumption replacement for {@link connectorHasPartialCoverageHint}:
- * derive the row's "Partial source coverage" cue from the reference's
- * server-projected per-stream `coverage_condition` (the
- * `define-connector-progress-evidence-contract` Collection Report) instead of
- * reconstructing it from the last run's raw `known_gaps`.
- *
- * The Collection Report is the authoritative per-stream coverage verdict: the
- * control-plane projection already folds the run's `known_gaps`, detail-gap
- * backlog, considered/covered denominators, and skip results into one
- * `coverage_condition` per stream. Reading it here means the row agrees with the
- * connection headline and the connector detail page's per-stream chips rather
- * than re-deriving a parallel, lower-fidelity verdict from a single signal.
- *
- * Returns `true` iff any in-scope stream entry reads a partial-coverage
- * condition ({@link PARTIAL_COVERAGE_CONDITIONS}). An unknown denominator reads
- * `coverage_condition: "unknown"`, which is not in the set, so an honestly
- * unknown stream never trips the cue.
+ * Read the server-projected per-stream coverage verdict instead of
+ * reconstructing partial coverage from raw run gaps.
  */
 export function connectorHasPartialCoverageFromReport(
   report: readonly RefCollectionReportEntry[] | null | undefined
@@ -112,18 +82,8 @@ export function connectorHasPartialCoverageFromReport(
 }
 
 /**
- * Resolve the row's "Partial source coverage" cue, preferring the
- * server-projected Collection Report over the legacy `known_gaps` heuristic.
- *
- * When the reference supplies a `collection_report` (any reference at or after
- * `define-connector-progress-evidence-contract` Tranche C), the cue is derived
- * directly from the per-stream `coverage_condition` — the
- * {@link connectorHasPartialCoverageFromReport} path. The `known_gaps`
- * reconstruction is used ONLY as a fallback for a reference predating the
- * report, so an older deployment keeps its existing behavior and a current one
- * never double-derives. The presence of a report (even an empty one — a real
- * "no partial streams" answer) takes precedence; absence is the only trigger
- * for the heuristic.
+ * Prefer the current Collection Report. Fall back to the legacy raw-gap
+ * heuristic only when the reference predates `collection_report`.
  */
 export function resolvePartialCoverageCue({
   collectionReport,

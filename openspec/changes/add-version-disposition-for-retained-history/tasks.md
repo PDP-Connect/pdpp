@@ -131,14 +131,12 @@ on "no compaction policy," because the session streams DO carry a policy (see
       `removableVersions = 0` on all four watch instances. The derivation module
       `version-disposition.js` is byte-identical to HEAD: its last commit is the
       implementation merge `6aacee2d` and nothing has touched it since. The
-      version-stats route (`record-version-stats.js`) DID change after the f625
+      version-stats route (`record-version-stats.js`) did change after the f625
       probe (`38cf79a9`, `e88d361f`: projection hot-path / churn-ratio candidate
       narrowing — neither alters the disposition wiring), so the live result was
-      re-verified at the later deployed rev `43f63825` by lane
-      `ri-live-records-after-43f-proof-v1`
-      (`tmp/workstreams/ri-live-records-after-43f-proof-v1-report.md`): a 95-row
-      `/_ref/records/version-stats` probe (200, projection clean, 30ms) showed
-      every row still carrying a `version_disposition`, the banner still neutral
-      ("Version churn is classified — no review needed"), and
-      `claude-code/sessions` still classified `recurring_point_in_time_snapshot`.
+      re-verified at the later deployed rev `43f63825`: a 95-row
+      `/_ref/records/version-stats` probe showed every row still carrying a
+      `version_disposition`, the banner still neutral ("Version churn is classified
+      — no review needed"), and `claude-code/sessions` still classified
+      `recurring_point_in_time_snapshot`.
       The disposition surface therefore holds across the post-probe route changes.
