@@ -29,6 +29,9 @@ import {
   findManifestForConnectorId,
   findParentBackLink,
   parentRelationsForChild,
+  type ReverseChildListLink,
+  reverseChildListEdgesFromManifest,
+  reverseChildListLinksFromManifest,
 } from "../../lib/relationships.ts";
 import { ColumnsMenu } from "./columns-menu.tsx";
 
@@ -81,6 +84,14 @@ export default async function StreamPage({
   let page: RecordsPage;
   let streamManifest: StreamManifest | null = null;
   let parentRelations: Array<{ parentStream: string; capability: ExpandCapability }> = [];
+  // All streams in this connector's manifest — used to enumerate child streams
+  // whose declared `has_one` points back at the displayed (parent) stream, for
+  // per-row reverse parent → filtered-child-list links.
+  interface ManifestStream {
+    name: string;
+    relationships?: Array<{ name: string; stream?: string; foreign_key?: string; cardinality?: string }>;
+  }
+  let connectorStreams: ManifestStream[] = [];
   try {
     const connection = await resolveConnectionForRecordsRoute(routeId);
     if (!connection) {
@@ -100,7 +111,8 @@ export default async function StreamPage({
     ]);
     page = pageResult;
     const connectorManifest = findManifestForConnectorId(manifests, connectorId);
-    const maybeStream = connectorManifest?.streams?.find((s: { name: string }) => s.name === streamName);
+    connectorStreams = (connectorManifest?.streams ?? []) as ManifestStream[];
+    const maybeStream = connectorStreams.find((s) => s.name === streamName);
     streamManifest = (maybeStream ?? null) as StreamManifest | null;
     // The manifest is used only to prune parent metadata reads. Link semantics
     // come from the parent streams' live `expand_capabilities`, never from
@@ -208,6 +220,25 @@ export default async function StreamPage({
     return null;
   };
 
+  // Reverse parent → filtered-child-list links, rendered per row. The displayed
+  // stream is the same for every row, so the set of child streams that declare a
+  // `has_one` back to it is constant per page and computed once here; each row
+  // then substitutes its own record key as the filter value. When no child
+  // declares a `has_one` against this stream the set is empty and no per-row
+  // reverse work is done. This is the list-page counterpart to the parent detail
+  // page's reverse links, and the inverse of the per-cell child → parent links
+  // above; it loads no child records (href construction only) and reuses the
+  // detail page's link semantics via `reverseChildListLinksFromManifest`.
+  const hasReverseChildEdges = reverseChildListEdgesFromManifest(connectorStreams, streamName).length > 0;
+  const reverseChildListLinksForRow = (record: StreamRecord): ReverseChildListLink[] =>
+    hasReverseChildEdges
+      ? reverseChildListLinksFromManifest(connectorStreams, {
+          connectionId,
+          parentStream: streamName,
+          parentRecordKey: record.id,
+        })
+      : [];
+
   return (
     <DashboardShell active="records">
       <PageHeader
@@ -243,13 +274,21 @@ export default async function StreamPage({
         <>
           {/* Mobile list */}
           <ul className="divide-y divide-border/70 border-border/70 border-y sm:hidden">
-            {page.data.map((r) => (
-              <li key={r.id}>
-                <Link className="block px-3 py-3 hover:bg-muted/40" href={recordHref(r.id)}>
-                  <RecordCard columns={columns} record={r} />
-                </Link>
-              </li>
-            ))}
+            {page.data.map((r) => {
+              const reverseLinks = reverseChildListLinksForRow(r);
+              return (
+                <li key={r.id}>
+                  <Link className="block px-3 pt-3 hover:bg-muted/40" href={recordHref(r.id)}>
+                    <RecordCard columns={columns} record={r} />
+                  </Link>
+                  {reverseLinks.length > 0 && (
+                    <div className="px-3 pt-1 pb-3">
+                      <ReverseChildLinks links={reverseLinks} />
+                    </div>
+                  )}
+                </li>
+              );
+            })}
           </ul>
 
           {/* Desktop table */}
@@ -264,6 +303,7 @@ export default async function StreamPage({
                       {c}
                     </th>
                   ))}
+                  {hasReverseChildEdges && <th className={TH}>related</th>}
                 </tr>
               </thead>
               <tbody>
@@ -307,6 +347,11 @@ export default async function StreamPage({
                         </td>
                       );
                     })}
+                    {hasReverseChildEdges && (
+                      <td className={`${TD} whitespace-nowrap align-top`}>
+                        <ReverseChildLinks links={reverseChildListLinksForRow(r)} />
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -317,6 +362,30 @@ export default async function StreamPage({
 
       <Pager next={nextHref} prev={prevHref} />
     </DashboardShell>
+  );
+}
+
+// Per-row reverse parent → filtered-child-list links. Each link points at a
+// child stream's record-list page filtered by this row's record key — never an
+// inline child load and never a child record-detail URL. Renders nothing when a
+// row has no reverse child edges (it always has at least one when the page-level
+// `hasReverseChildEdges` gate is true, but guard anyway for the mobile caller).
+function ReverseChildLinks({ links }: { links: ReverseChildListLink[] }) {
+  if (links.length === 0) {
+    return null;
+  }
+  return (
+    <div className="flex flex-wrap gap-x-3 gap-y-1">
+      {links.map((link) => (
+        <Link
+          className="pdpp-caption font-mono text-foreground underline underline-offset-2 hover:no-underline"
+          href={link.href}
+          key={`reverse:${link.childStream}:${link.foreignKey}`}
+        >
+          {link.childStream} (has_many) →
+        </Link>
+      ))}
+    </div>
   );
 }
 

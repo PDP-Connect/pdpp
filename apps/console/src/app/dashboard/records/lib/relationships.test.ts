@@ -16,6 +16,7 @@ import {
   parentBackLinkDedupKey,
   parentRelationsForChild,
   reverseChildListDedupKey,
+  reverseChildListEdgesFromManifest,
   reverseChildListLinksFromManifest,
 } from "./relationships.ts";
 
@@ -663,6 +664,116 @@ test("reverseChildListDedupKey is stable and distinguishes stream from field", (
     reverseChildListDedupKey("transactions", "account_id"),
     reverseChildListDedupKey("transfers", "account_id")
   );
+});
+
+// ── reverseChildListEdgesFromManifest (list-page per-row prerequisite) ─────────
+
+test("reverseChildListEdgesFromManifest returns the child-stream edge set for a parent", () => {
+  // The page-level "does this stream have reverse child edges?" set, computed
+  // once per list page from the already-loaded connector manifest.
+  const edges = reverseChildListEdgesFromManifest(CHASE_STREAMS, "accounts");
+  assert.deepEqual(edges, [{ childStream: "transactions", foreignKey: "account_id" }]);
+});
+
+test("reverseChildListEdgesFromManifest is empty for a childless parent stream", () => {
+  // `transactions` is the child here; nothing declares a has_one back to it, so
+  // its list page does no per-row reverse work.
+  assert.deepEqual(reverseChildListEdgesFromManifest(CHASE_STREAMS, "transactions"), []);
+});
+
+test("reverseChildListEdgesFromManifest is empty for missing manifest or empty parent stream", () => {
+  assert.deepEqual(reverseChildListEdgesFromManifest(undefined, "accounts"), []);
+  assert.deepEqual(reverseChildListEdgesFromManifest(CHASE_STREAMS, ""), []);
+});
+
+test("reverseChildListEdgesFromManifest ignores a child-declared has_many", () => {
+  const streams = [
+    { name: "transactions" },
+    {
+      name: "tags",
+      relationships: [
+        { name: "transaction", stream: "transactions", foreign_key: "transaction_id", cardinality: "has_many" },
+      ],
+    },
+  ];
+  assert.deepEqual(reverseChildListEdgesFromManifest(streams, "transactions"), []);
+});
+
+test("reverseChildListEdgesFromManifest self-dedups a child declaring the same has_one twice", () => {
+  const streams = [
+    { name: "accounts" },
+    {
+      name: "transactions",
+      relationships: [
+        { name: "account", stream: "accounts", foreign_key: "account_id", cardinality: "has_one" },
+        { name: "owning_account", stream: "accounts", foreign_key: "account_id", cardinality: "has_one" },
+      ],
+    },
+  ];
+  assert.deepEqual(reverseChildListEdgesFromManifest(streams, "accounts"), [
+    { childStream: "transactions", foreignKey: "account_id" },
+  ]);
+});
+
+test("reverseChildListEdgesFromManifest lists multiple distinct child streams and the per-edge has_one fields", () => {
+  // A Chase-like `accounts` parent with several belongs-to children, mirroring
+  // the real manifest (balances/current_activity/statements/transactions all
+  // declare has_one → accounts).
+  const streams = [
+    { name: "accounts" },
+    { name: "balances", relationships: [{ name: "account", stream: "accounts", foreign_key: "account_id", cardinality: "has_one" }] },
+    { name: "statements", relationships: [{ name: "account", stream: "accounts", foreign_key: "account_id", cardinality: "has_one" }] },
+    { name: "transactions", relationships: [{ name: "account", stream: "accounts", foreign_key: "account_id", cardinality: "has_one" }] },
+    // A non-matching child (points at a different parent) must not appear.
+    { name: "merchants", relationships: [{ name: "category", stream: "categories", foreign_key: "category_id", cardinality: "has_one" }] },
+  ];
+  assert.deepEqual(reverseChildListEdgesFromManifest(streams, "accounts"), [
+    { childStream: "balances", foreignKey: "account_id" },
+    { childStream: "statements", foreignKey: "account_id" },
+    { childStream: "transactions", foreignKey: "account_id" },
+  ]);
+});
+
+// ── list-page per-row reverse links (the wiring this change adds) ──────────────
+
+test("a Chase accounts list renders a distinct filtered-transactions link per row", () => {
+  // The list page computes the edge set once, then builds each row's links by
+  // substituting that row's own record key as the filter value. This models the
+  // page's per-row call to reverseChildListLinksFromManifest(..., parentRecordKey:
+  // row.id).
+  assert.ok(reverseChildListEdgesFromManifest(CHASE_STREAMS, "accounts").length > 0, "edge set must be non-empty");
+  const rows = [{ id: "1212486749" }, { id: "9988776655" }];
+  const perRow = rows.map((row) =>
+    reverseChildListLinksFromManifest(CHASE_STREAMS, {
+      connectionId: "cin_live",
+      parentStream: "accounts",
+      parentRecordKey: row.id,
+    })
+  );
+  assert.equal(perRow[0]?.length, 1);
+  assert.equal(perRow[1]?.length, 1);
+  // Each row's link filters by THAT row's key — distinct filter values, never a
+  // child record-detail URL built from the parent key.
+  assert.equal(perRow[0]?.[0]?.href, "/dashboard/records/cin_live/transactions?filter[account_id]=1212486749");
+  assert.equal(perRow[1]?.[0]?.href, "/dashboard/records/cin_live/transactions?filter[account_id]=9988776655");
+  assert.notEqual(perRow[0]?.[0]?.href, perRow[1]?.[0]?.href);
+  for (const links of perRow) {
+    for (const link of links) {
+      assert.ok(!link.href.includes("/transactions/12"), "must not build a child detail URL from the parent key");
+    }
+  }
+});
+
+test("a list page for a childless stream yields no per-row reverse links", () => {
+  // Standing on `transactions` (a leaf child), the page-level gate is false, so
+  // the page renders no per-row reverse links and does no per-row work.
+  assert.equal(reverseChildListEdgesFromManifest(CHASE_STREAMS, "transactions").length, 0);
+  const links = reverseChildListLinksFromManifest(CHASE_STREAMS, {
+    connectionId: "cin_live",
+    parentStream: "transactions",
+    parentRecordKey: "t1",
+  });
+  assert.deepEqual(links, []);
 });
 
 // ── mergeParentBackLinks ──────────────────────────────────────────────────────

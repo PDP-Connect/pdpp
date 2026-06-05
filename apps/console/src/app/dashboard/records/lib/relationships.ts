@@ -423,6 +423,56 @@ export function reverseChildListLinksFromManifest(
   return out;
 }
 
+/** A child stream that declares a `has_one` back to a given parent stream. */
+export interface ReverseChildEdge {
+  childStream: string;
+  foreignKey: string;
+}
+
+/**
+ * The set of child streams in a connector manifest that declare a `has_one`
+ * targeting `parentStream` — the page-level prerequisite for rendering reverse
+ * parent → filtered-child-list links on the parent **list** page.
+ *
+ * The displayed stream is the same for every row of a list page, so the reverse
+ * child-edge set is constant per page and is computed once here; each row then
+ * substitutes its own record key as the filter value via
+ * `reverseChildListLinksFromManifest`. Returns an empty array when the manifest
+ * is missing, the parent stream is empty, or no child declares a matching
+ * `has_one` — in which case the list page draws no per-row reverse links and does
+ * no per-row work. Reads the same child-declared `has_one` entries (cardinality
+ * `has_one`, related `stream === parentStream`, non-empty `foreign_key`) as
+ * `reverseChildListLinksFromManifest`, so the edge set and the per-row links stay
+ * in agreement; `has_many` declarations and payload field names never contribute.
+ */
+export function reverseChildListEdgesFromManifest(
+  connectorStreams: ManifestStreamShape[] | undefined,
+  parentStream: string
+): ReverseChildEdge[] {
+  if (!(Array.isArray(connectorStreams) && parentStream)) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const out: ReverseChildEdge[] = [];
+  for (const childStream of connectorStreams) {
+    if (!childStream?.name) {
+      continue;
+    }
+    for (const rel of childStream.relationships ?? []) {
+      if (rel.cardinality !== "has_one" || rel.stream !== parentStream || !rel.foreign_key) {
+        continue;
+      }
+      const dedupKey = reverseChildListDedupKey(childStream.name, rel.foreign_key);
+      if (seen.has(dedupKey)) {
+        continue;
+      }
+      seen.add(dedupKey);
+      out.push({ childStream: childStream.name, foreignKey: rel.foreign_key });
+    }
+  }
+  return out;
+}
+
 /**
  * Stable key identifying a child → parent back-link as `(parent stream, child
  * field carrying the parent key)`. Two declared `has_one` edges from the same
