@@ -2,10 +2,13 @@
 
 This change authorizes one bounded, manifest-grounded reverse navigation
 affordance (parent detail page → link to the filtered child list) for the
-operator console. This lane delivers the OpenSpec contract only; the console
-implementation is a separate, owner-approved lane. Section 1 is the proposal work
-done in this lane; sections 2–3 are the deferred implementation slice; section 4
-is acceptance.
+operator console. Section 1 was the proposal work; sections 2–3 were the
+console-implementation slice — now **landed and shipped** (commit `e85b068a`,
+`reverseChildListLinksFromManifest` wired into the parent record detail page,
+12 new tests in `relationships.test.ts`) and **proven live** on deployed revision
+`9dc62b5868fc` (see task 3.3); section 4 is acceptance. The header's original
+"implementation deferred to a separate lane" framing is superseded: the
+implementation is on `main`.
 
 ## 1. Proposal (this lane)
 
@@ -37,7 +40,7 @@ is acceptance.
   fold the child → parent and parent → child requirements into one coherent
   durable contract naming both directions and both manifest sources.
 
-## 2. Implementation (deferred — owner-approved lane only)
+## 2. Implementation (landed — commit `e85b068a` on `main`)
 
 - [x] 2.1 Add a pure helper to
   `apps/console/src/app/dashboard/records/lib/relationships.ts` that, given the
@@ -62,7 +65,7 @@ is acceptance.
   `expand_capabilities` entry. (Console-only diff; the reverse link reuses the
   existing `filter[<field>]=<value>` list query already applied server-side.)
 
-## 3. Verification (deferred — with the implementation lane)
+## 3. Verification (landed — with the implementation lane)
 
 - [x] 3.1 Add focused unit tests in
   `apps/console/src/app/dashboard/records/lib/relationships.test.ts`:
@@ -77,12 +80,20 @@ is acceptance.
 - [x] 3.2 Run `node --test --import tsx apps/console/src/app/dashboard/records/lib/relationships.test.ts`
   and `pnpm --filter pdpp-console run types:check`; confirm green.
   (32/32 tests pass; `types:check` clean.)
-- [ ] 3.3 (Owner, optional) Live-verify on a deployed Chase-bearing instance that an
+- [x] 3.3 (Owner, optional) Live-verify on a deployed Chase-bearing instance that an
   `accounts` detail page renders a working "transactions" filtered-list link.
-  Bundled-manifest-derived and deploy-revision-independent, so the unit tests are
-  the authoritative contract proof; the live check only confirms the
-  operator-visible rendering. Owner-gated because it needs an instance with Chase
-  data.
+  **Satisfied live** and converted to a `## Residual Risks` entry in `proposal.md`
+  per `AGENTS.md` (owner-only live check on an otherwise implemented+accepted
+  change). The live records/connections proof
+  (`tmp/workstreams/ri-records-connections-live-proof-v2-report.md`, Warning 4)
+  confirms reverse parent→filtered-child-list navigation on deployed revision
+  `9dc62b5868fc`: a Chase `accounts` record `record_key=1212486749` targets
+  `transactions?filter[account_id]=1212486749`, and
+  `GET /v1/streams/transactions/records?connector_id=chase&filter[account_id]=1212486749`
+  returns HTTP 200 with 3 rows all carrying `account_id=1212486749` (the unfiltered
+  query returns a broader set, so the filter is selective). Bundled-manifest-derived
+  and deploy-revision-independent, so the unit tests remain the authoritative
+  contract proof; the live check only confirms the operator-visible rendering.
 
 ## 4. Acceptance checks
 

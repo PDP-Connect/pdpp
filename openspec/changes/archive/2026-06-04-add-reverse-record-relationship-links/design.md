@@ -208,11 +208,13 @@ The change is acceptable when:
 
 ## Residual risks
 
-- **Implementation deferred.** This lane delivers the authorized contract, not the
-  console code. The next lane implements one pure helper (invert child-declared
-  `has_one` edges into parent-side filtered-list links) plus parent-detail-page
-  wiring and focused tests. Until then the reverse direction remains non-navigable
-  on the deployed console; the contract simply makes the work authorized.
+- **Implementation landed (was: deferred).** The console code shipped on `main`
+  as commit `e85b068a`: one pure helper (`reverseChildListLinksFromManifest`,
+  inverting child-declared `has_one` edges into parent-side filtered-list links)
+  plus parent-detail-page wiring and 12 focused tests in `relationships.test.ts`.
+  The reverse direction is navigable on the deployed console and proven live (see
+  the proposal's Residual Risks and `tmp/workstreams/ri-records-connections-live-proof-v2-report.md`,
+  Warning 4). The original "deferred to a separate lane" framing is superseded.
 - **Dead-link tolerance.** If a parent has no matching children (e.g. the child
   stream is ungranted or empty), the filtered list page renders its calm "No
   records." state — the same bounded-empty behavior the forward `has_many` link

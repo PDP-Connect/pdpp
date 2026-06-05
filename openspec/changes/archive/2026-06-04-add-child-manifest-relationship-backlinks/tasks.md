@@ -18,7 +18,7 @@ This change documents a shipped, tested operator-console affordance and reconcil
 ## 3. Verification against the existing implementation
 
 - [x] 3.1 Run the console relationship unit tests and confirm the scenarios in 2.1 are already proven: `node --test --import tsx apps/console/src/app/dashboard/records/lib/relationships.test.ts` (18/18 green at HEAD; covers Chase-shaped has_one link, percent-encoding, has_many ignored, undeclared field ignored, missing/empty field, undefined inputs).
-- [ ] 3.2 (Owner, optional) Live-verify on the deployed console that a Chase `transactions` detail page renders the related-account back-link. The link is bundled-manifest-derived and deploy-revision-independent, so the unit tests are authoritative for the contract; a live check only confirms the operator-visible rendering. Owner-gated because it needs an instance with Chase data.
+- [x] 3.2 (Owner, optional) Live-verify on the deployed console that a Chase `transactions` detail page renders the related-account back-link. **Satisfied live** and converted to a `## Residual Risks` entry in `proposal.md` per `AGENTS.md` (owner-only live check on an otherwise implemented+accepted change). The live records/connections proof (`tmp/workstreams/ri-records-connections-live-proof-v2-report.md`, Warning 4) confirms forward child→parent navigation on the deployed revision `9dc62b5868fc`: a Chase `transactions` record carrying `account_id=1212486749` resolves to `accounts/1212486749` detail at HTTP 200. The link is bundled-manifest-derived and deploy-revision-independent, so the unit tests remain the authoritative contract proof.
 
 ## 4. Acceptance checks
 

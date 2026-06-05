@@ -83,13 +83,16 @@ navigation gains a safe reverse direction without overbuilding.
 
 ## Impact
 
-- Affected operator console (implementation deferred to a later lane): the
-  parent record detail page
+- Affected operator console (implementation landed on `main`, commit `e85b068a`):
+  the parent record detail page
   `apps/console/src/app/dashboard/records/[connector]/[stream]/[recordKey]/page.tsx`
-  and the relationship helper module
-  `apps/console/src/app/dashboard/records/lib/relationships.ts`. The receiving
-  list page `[connector]/[stream]/page.tsx` (`readExactFilters` → server
-  `filter[…]`) already exists and is unchanged.
+  (wires `reverseChildListLinksFromManifest`, resolves the manifest via
+  `findManifestForConnectorId`, dedups via `reverseChildListDedupKey`) and the
+  relationship helper module
+  `apps/console/src/app/dashboard/records/lib/relationships.ts`
+  (`reverseChildListLinksFromManifest`, sharing `filteredChildListHref` with the
+  forward path). The receiving list page `[connector]/[stream]/page.tsx`
+  (`readExactFilters` → server `filter[…]`) already existed and is unchanged.
 - Affected manifest surface: none. The child-side `has_one` `relationships[]`
   entries (e.g. Chase `transactions -> accounts`) already exist as declared
   metadata and are read in the reverse direction without modification.
@@ -109,3 +112,25 @@ navigation gains a safe reverse direction without overbuilding.
   requirements SHALL be folded into the durable spec as a coherent contract that
   names both navigation directions and both manifest sources (parent
   `expand_capabilities` and child-declared `relationships[]`).
+
+## Residual Risks
+
+- **Owner-only live render check (was task 3.3) — satisfied live.** The
+  deployed-console verification that a Chase `accounts` detail page renders a
+  working filtered "transactions" list link is owner-gated (it needs an instance
+  with Chase data). It is recorded here as a residual risk rather than an open task
+  per `AGENTS.md`, and it is already satisfied by the live records/connections proof
+  (`tmp/workstreams/ri-records-connections-live-proof-v2-report.md`, Warning 4): on
+  deployed revision `9dc62b5868fc`, a Chase `accounts` record `1212486749` targets
+  `transactions?filter[account_id]=1212486749` and
+  `GET /v1/streams/transactions/records?connector_id=chase&filter[account_id]=1212486749`
+  returns HTTP 200 with 3 selectively-filtered rows. The contract proof remains the
+  unit tests in `relationships.test.ts`; the live check only confirms operator-visible
+  rendering, which is bundled-manifest-derived and deploy-revision-independent.
+- **Dead-link tolerance.** If a parent has no matching children (the child stream is
+  ungranted or empty), the filtered list page renders its calm "No records." state —
+  the same bounded-empty behavior the forward `has_many` link already accepts. No
+  crash, no error toast.
+- **Single-scalar `foreign_key` assumption.** The rule serves a child-declared
+  `has_one` with a single scalar `foreign_key`. A composite or array foreign key is a
+  follow-up rule extension, not served here.

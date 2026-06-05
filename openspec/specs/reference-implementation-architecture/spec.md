@@ -8690,17 +8690,63 @@ For a `has_many` relation, the navigation target SHALL be the related child stre
 
 ### Requirement: Operator console SHALL render manifest-declared parent links on the child record page
 
-The reference operator console SHALL render a field on a child record (on the record list page `/dashboard/records/<connection>/<stream>` and on the record detail page) that matches the `child_parent_key_field` of a declared forward relation as a navigable link to the **parent** record's detail page. The console SHALL discover these renderings exclusively from `expand_capabilities` returned by the relevant parent stream's metadata, not from raw payload inspection. The link target SHALL be the parent record keyed by the child field's value, because the child's `child_parent_key_field` holds the parent record's key.
+The reference operator console SHALL render a field on a child record (on the record list page `/dashboard/records/<connection>/<stream>` and on the record detail page) that holds a parent record's key as a navigable link to the **parent** record's detail page. The console SHALL discover these renderings from manifest declarations only — never from raw payload field-name inspection — and SHALL accept either of two manifest sources:
 
-#### Scenario: Child parent-key field links to the declared parent record
+- a forward relation advertised in `expand_capabilities` returned by the relevant parent stream's metadata, whose `child_parent_key_field` names the field on the displayed child record that carries the parent's key; or
+- a `has_one` relationship declared on the displayed child stream's **own** manifest entry, whose `foreign_key` names that field.
+
+Both sources are manifest declarations and resolve to the same parent: the link target SHALL be the parent record keyed by the value the child record carries in the relation's parent-key field (`child_parent_key_field` for the `expand_capabilities` source, `foreign_key` for the child-declared source), because that field holds the parent record's key. The two sources are complementary, not exclusive: a child stream whose parent declares no `query.expand[]` (so the parent emits no `expand_capabilities`) still renders a parent link from its own declared `has_one` — this is the path that serves the belongs-to edges (Chase, USAA, YNAB, and the other child-declared relationships) the forward `expand_capabilities` path cannot.
+
+The console SHALL apply the following constraints to the child-declared source:
+
+- Only `has_one` relationships declared on the child stream, with a non-empty related `stream` and a non-empty `foreign_key`, produce a link. A child-declared `has_many` relationship SHALL NOT produce a child-to-parent link by this rule.
+- A link is rendered only when the child record carries a non-empty string value at the declared parent-key field; an absent, empty, or non-string value yields no link.
+- A field not covered by a declared relation (from either source) SHALL render as plain text; the console SHALL NOT construct a record-detail URL from an undeclared field.
+- When a child-declared `has_one` link and a parent-`expand_capabilities`-derived link resolve to the same parent stream, the console SHALL render a single link for that parent stream (deduplicated), not two.
+
+This is a console-only affordance. It SHALL NOT enable server-side reverse expansion, and the console SHALL NOT issue any `expand[]` request to obtain the values needed to draw the link.
+
+#### Scenario: Child parent-key field links to the declared parent record via parent `expand_capabilities`
 
 - **WHEN** a parent stream's metadata advertises a declared forward relation to the displayed child stream `<child>` with `target_stream: "<child>"` and `child_parent_key_field: "<fk>"`
 - **AND** the displayed `<child>` record carries a value `<parentKey>` in field `<fk>`
 - **THEN** the console SHALL render that value as a link to `/dashboard/records/<connection>/<parent_stream>/<parentKey>`
 
+#### Scenario: Chase transaction links to its declared account via the child's own `has_one`
+
+- **WHEN** the operator views a Chase `transactions` record detail page whose stream manifest declares a `has_one` relationship `{ stream: "accounts", cardinality: "has_one", foreign_key: "account_id" }`
+- **AND** the `accounts` parent stream declares no `query.expand[]` (so the parent emits no `expand_capabilities` for this relation)
+- **AND** the displayed record carries a non-empty string value `<accountKey>` in field `account_id`
+- **THEN** the console SHALL render a navigable link to the related account record's detail page `/dashboard/records/<connection>/accounts/<accountKey>`
+
+#### Scenario: Child-declared `has_one` resolves the parent key from the foreign-key field
+
+- **WHEN** a displayed child stream declares a `has_one` relationship to parent stream `<parent>` with `foreign_key <fk>`
+- **AND** the displayed child record carries a non-empty string value `<parentKey>` in field `<fk>`
+- **THEN** the console SHALL render a link to `/dashboard/records/<connection>/<parent>/<parentKey>`
+- **AND** the console SHALL percent-encode the connection, parent stream, and key segments of that link
+
+#### Scenario: Child-declared `has_many` does not produce a back-link by this rule
+
+- **WHEN** a displayed child stream declares a `has_many` relationship in its own `relationships[]`
+- **THEN** the console SHALL NOT render a child-to-parent link from that `has_many` declaration
+- **AND** child-to-parent navigation from the child-declared source SHALL be limited to `has_one` declarations
+
+#### Scenario: Undeclared foreign-key-shaped field renders as plain text
+
+- **WHEN** a displayed child record carries a field whose name resembles a foreign key but neither the parent's `expand_capabilities` nor the child stream's own manifest declares a relation using that field
+- **THEN** the console SHALL render the field as plain text
+- **AND** the console SHALL NOT construct a record-detail URL from that field
+
+#### Scenario: Missing or empty foreign-key value yields no link
+
+- **WHEN** a displayed child stream declares a `has_one` relationship with `foreign_key <fk>`
+- **AND** the displayed child record's `<fk>` value is absent, empty, or not a string
+- **THEN** the console SHALL NOT render a child-to-parent link for that relationship
+
 #### Scenario: Symmetric link does not imply server-side reverse expansion
 
-- **WHEN** the console renders a child-to-parent link as defined above
+- **WHEN** the console renders a child-to-parent link as defined above (from either manifest source)
 - **AND** a client issues `GET /v1/streams/<child>/records?expand=<parent_relation>` against the same parent
 - **THEN** the reference server SHALL reject the request with `invalid_expand` unless a separate accepted change defines reverse expansion semantics
 
@@ -8708,7 +8754,64 @@ The reference operator console SHALL render a field on a child record (on the re
 
 - **WHEN** the console renders the child record list or detail page and draws child-to-parent links
 - **THEN** the console SHALL NOT include any `expand[]` parameter in the underlying `GET /v1/streams/<child>/records` request solely to obtain the values needed to draw the parent links
-- **AND** the parent-key values used to draw links SHALL come from the child record's `child_parent_key_field` value already present in each record's payload
+- **AND** the parent-key values used to draw links SHALL come from the child record's own parent-key field value already present in each record's payload
+
+### Requirement: Operator console SHALL render a reverse parent-to-filtered-child-list link from a child-declared `has_one`
+
+The reference operator console SHALL render, on a **parent** record's detail page (`/dashboard/records/<connection>/<parent>/<parentKey>`), a navigable link to the **filtered child list** for each child stream whose **own** manifest entry declares a `has_one` relationship targeting the displayed parent stream. The relationship structure SHALL be taken from the child stream's declared `relationships[]` (a manifest declaration); the link target SHALL be the child stream's record-**list** page filtered by the relationship's `foreign_key` equal to the displayed parent record's key — addressable as `/dashboard/records/<connection>/<child>?filter[<fk>]=<parentKey>` — because the child's `foreign_key` value holds the parent record's key.
+
+This is the reverse-direction counterpart to the child-to-parent back-links the console renders from the same child-declared `has_one` relationship. It complements, and does not replace, the forward parent-to-child links sourced from a parent stream's `expand_capabilities` `has_many` entries. Both the forward `has_many` path and this reverse path resolve to the same bounded, filterable child-list location for a given `(child stream, foreign-key field, parent key)`.
+
+The console SHALL apply the following constraints:
+
+- Only `has_one` relationships declared on a child stream, whose related `stream` equals the displayed parent stream and which declare a non-empty `foreign_key`, produce a reverse link.
+- The link target SHALL be the child record-**list** page filtered by `filter[<fk>]=<parentKey>`. The console SHALL NOT construct a child record-**detail** URL of the form `/dashboard/records/<connection>/<child>/<parentKey>` (the parent key is not a child record key).
+- The parent detail page SHALL NOT load the child collection inline to render the link; it SHALL emit the filtered-list href only. The children are fetched only when the operator follows the link, by the existing paginated, server-filtered list page.
+- A child-declared `has_many` relationship SHALL NOT produce a reverse link by this rule.
+- A parent field whose name resembles a foreign key, where no child stream declares a `has_one` targeting the displayed parent using that field, SHALL NOT produce a link; the console SHALL NOT infer reverse links from raw payload field-name heuristics.
+- The console SHALL resolve the connector manifest used to enumerate child streams through the dual-namespace resolver that matches both the URL-form `connector_id` and the short `connector_key`, so reverse links resolve for live connections.
+- When a forward `has_many` `expand_capabilities` entry and a child-declared `has_one` resolve to the same `(child stream, foreign-key field, parent key)` filtered list, the console SHALL render a single link for that child stream (deduplicated), not two.
+
+This is a console-only affordance. It SHALL NOT enable server-side reverse expansion, and the console SHALL NOT issue an `expand[]` request to obtain the values needed to draw the link. The reverse link reuses the existing `filter[<field>]=<value>` list query and introduces no new query parameter, endpoint, manifest field, or `expand_capabilities` entry.
+
+#### Scenario: Chase account links to its filtered transactions list
+
+- **WHEN** the operator views a Chase `accounts` record detail page with key `<accountKey>`
+- **AND** the connector's `transactions` stream manifest declares a `has_one` relationship `{ stream: "accounts", cardinality: "has_one", foreign_key: "account_id" }`
+- **THEN** the console SHALL render a navigable link to the transactions list filtered by that account, addressable as `/dashboard/records/<connection>/transactions?filter[account_id]=<accountKey>`
+- **AND** the console SHALL NOT render a link of the form `/dashboard/records/<connection>/transactions/<accountKey>`
+
+#### Scenario: Reverse link targets the filtered child list, not an inline collection
+
+- **WHEN** a displayed parent stream `<parent>` has a child stream `<child>` that declares a `has_one` to `<parent>` with `foreign_key <fk>`, and the displayed parent record has key `<parentKey>`
+- **THEN** the console SHALL render a single navigable element pointing at `/dashboard/records/<connection>/<child>` filtered by `<fk>` equal to `<parentKey>` (for example `filter[<fk>]=<parentKey>`)
+- **AND** the parent detail page SHALL NOT fetch or render the `<child>` records inline to produce that element
+- **AND** the console SHALL percent-encode the connection, child stream, and filter-value segments of the link
+
+#### Scenario: Child-declared `has_many` does not produce a reverse link by this rule
+
+- **WHEN** a child stream declares a `has_many` relationship in its own `relationships[]` targeting the displayed parent stream
+- **THEN** the console SHALL NOT render a reverse parent-to-child link from that `has_many` declaration
+- **AND** reverse parent-to-filtered-child-list navigation SHALL be limited to child-declared `has_one` relationships under this requirement
+
+#### Scenario: Undeclared parent field produces no reverse link
+
+- **WHEN** a displayed parent record carries a field whose name resembles a foreign key but no child stream in the connector manifest declares a `has_one` targeting the displayed parent stream using that field
+- **THEN** the console SHALL render no reverse link for that field
+- **AND** the console SHALL NOT construct a filtered-list URL from raw payload field-name heuristics
+
+#### Scenario: Reverse link deduplicates against a forward `has_many` capability
+
+- **WHEN** the displayed parent stream's metadata advertises a usable `has_many` `expand_capabilities` entry with `target_stream: "<child>"` and `child_parent_key_field: "<fk>"`
+- **AND** the `<child>` stream also declares a `has_one` to the displayed parent with `foreign_key: "<fk>"`
+- **THEN** the console SHALL render a single filtered-child-list link for `<child>` keyed by `filter[<fk>]=<parentKey>`, not two
+
+#### Scenario: Reverse parent-to-child link does not imply server-side reverse expansion
+
+- **WHEN** the console renders a reverse parent-to-filtered-child-list link sourced from a child-declared `has_one` relationship
+- **AND** a client issues `GET /v1/streams/<child>/records?expand=<reverse_relation>` to obtain the children as a server-side expansion of the parent
+- **THEN** the reference server SHALL reject the request with `invalid_expand` unless a separate accepted change defines reverse expansion semantics
+- **AND** the console SHALL NOT have issued any `expand[]` request to draw the link
 
 ### Requirement: Statement connectors SHALL carry forward prior hydrated PDF pointers on a hydration failure
 
