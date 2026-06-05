@@ -79,8 +79,9 @@ test.
   a documented env block (consistent with `.env.docker.example`), a
   `deploy/railway/` config/runbook describing the two services, the storage
   choice, the healthcheck path, and the rollback steps, and an operator-voice
-  "Deploy on Railway" section. No protocol, API, manifest, or connector behavior
-  changes.
+  "Deploy on Railway" section. Add a Railway Template handoff and button
+  placeholder that can be filled only after Railway assigns the published
+  template code. No protocol, API, manifest, or connector behavior changes.
 
 ## Capabilities
 
@@ -112,12 +113,12 @@ Removed:
   collection (off-box via local-collector; fails closed in-container), the
   operator-console-as-separate-public-service variant, semantic retrieval and the
   embedding-cache volume, the scheduler and recurring collection, n.eko, backup /
-  restore tooling, Cloudflare Access / Tunnel / R2 adjuncts, and a published
-  multi-service Railway template with a Deploy button. A `pdpp doctor` CLI and a
-  browser-free `core` image target are **optional follow-on enhancements**, not
-  blockers: the existing `docker-smoke.sh`, `GET /_ref/deployment`, and the
-  `.well-known` healthcheck already make the first live test executable, and the
-  public service (the console image) is already browser-free.
+  restore tooling, and Cloudflare Access / Tunnel / R2 adjuncts. A `pdpp doctor`
+  CLI and a browser-free `core` image target are **optional follow-on
+  enhancements**, not blockers: the existing `docker-smoke.sh`,
+  `GET /_ref/deployment`, and the `.well-known` healthcheck already make the
+  first live test executable, and the public service (the console image) is
+  already browser-free.
 - The `surface-database-physical-footprint` change (active, extends
   `GET /_ref/deployment`) and `reduce-main-docker-image-ci-cost` (CI-publish
   policy) also touch this capability. Neither defines a deploy target, a

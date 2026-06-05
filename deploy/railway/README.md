@@ -15,13 +15,37 @@ Scope of this first slice — and what it deliberately leaves out:
 
 - **In scope:** one public origin, durable storage, owner gating, an
   authenticated MCP query against a small hand-imported record set, and a
-  restart-survival check.
+  restart-survival check. The repo also carries the template-publication handoff
+  needed to turn this deploy target into a Railway "Deploy" button.
 - **Out of scope (by design):** browser-backed connector collection. Browser
   connectors (ChatGPT, USAA, Chase, …) fail closed inside the server container
   (`headed_browser_unavailable`) and run off-box via the local collector, so
   they are not part of a Core query test. Semantic retrieval, the scheduler,
-  recurring collection, n.eko, and a one-click published template are also out
-  of scope here.
+  recurring collection, and n.eko are also out of scope here.
+
+## Pushbutton Railway template
+
+The end-user path is a published Railway Template with this button shape:
+
+```md
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/<template-code>?utm_medium=integration&utm_source=button&utm_campaign=pdpp-core)
+```
+
+Railway assigns `<template-code>` when the template is published. Do not present
+the placeholder URL as a live deploy button. The template owner publishes from a
+validated Railway project using [`template.md`](./template.md), then replaces
+`<template-code>` in the docs or site surface that should carry the button.
+
+The template-safe build shape is:
+
+| Service     | Dockerfile path                         | Why |
+|-------------|------------------------------------------|-----|
+| `console`   | `Dockerfile`                             | The root Dockerfile's final image is the public console. |
+| `reference` | `deploy/railway/reference.Dockerfile`    | The final image is the private reference runtime; no manual Docker target selection is required. |
+
+Railway's config-as-code schema exposes `build.dockerfilePath` but does not
+expose a Docker build target field. The template must therefore select a
+Dockerfile whose final stage is already the desired service image.
 
 ## Topology
 
@@ -56,22 +80,19 @@ for the full rationale and the alternatives that were rejected.
 
 ## Services to create
 
-Create one Railway project with two services built from this repository's root
-`Dockerfile`, plus a storage backend.
+Create one Railway project with two services built from this repository using
+the service-specific Dockerfile paths below, plus a storage backend.
 
-| Service     | Public? | Dockerfile target | Listens on        | Notes |
-|-------------|---------|-------------------|-------------------|-------|
-| `console`   | yes     | `console`         | `$PORT` (Railway) | The single public origin. Generate a public domain for it. |
-| `reference` | no      | `reference`       | `7662`, `7663`    | Private networking only. Do **not** generate a public domain. |
-| `Postgres`  | n/a     | managed plugin    | private           | Option A storage (recommended). |
+| Service     | Public? | Image source | Listens on        | Notes |
+|-------------|---------|--------------|-------------------|-------|
+| `console`   | yes     | final stage in `Dockerfile` | `$PORT` (Railway) | The single public origin. Generate a public domain for it. |
+| `reference` | no      | final stage in `deploy/railway/reference.Dockerfile` | `7662`, `7663` | Private networking only. Do **not** generate a public domain. |
+| `Postgres`  | n/a     | managed plugin | private | Option A storage (recommended). |
 
-Railway's config-as-code does not select a Dockerfile `target`, so set the build
-target per service in the Railway service settings (Settings → Build → Docker →
-Target Stage): `console` for the public service, `reference` for the private
-one. The committed [`railway.console.json`](./railway.console.json) and
+The committed [`railway.console.json`](./railway.console.json) and
 [`railway.reference.json`](./railway.reference.json) carry the builder, the
-healthcheck path, and the restart policy; copy the one you want into a service's
-root as `railway.json` (or paste the values into the service settings).
+Dockerfile path, the healthcheck path, and the restart policy. They are
+service-specific source-of-truth blocks for the Railway template composer.
 
 ## Environment
 

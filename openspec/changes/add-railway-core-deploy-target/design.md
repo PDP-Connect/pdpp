@@ -62,6 +62,30 @@ internet-facing service carries no browser binary; the browser bloat lives only
 on the private reference service (and can be slimmed later by a `core` target —
 a follow-on, not a blocker).
 
+## Template publication decision
+
+**Decision: publish the pushbutton Railway Template from service-specific
+Dockerfile paths, not from a manual Docker target-stage setting.**
+
+Railway's template/share docs and live config schema expose a Dockerfile path
+(`build.dockerfilePath`) but not a Docker build target field. A template that
+depends on a maintainer or end user setting "console" / "reference" as a target
+stage after deploy is therefore not a pushbutton template. The safe construction
+is to make each service selectable by a Dockerfile path whose final stage is the
+desired image:
+
+- `console`: the root `Dockerfile`, whose final image is already the operator
+  console.
+- `reference`: `deploy/railway/reference.Dockerfile`, a template-safe copy of
+  the reference runtime build whose final image is the private AS/RS runtime.
+
+The template publication itself is still an owner/Railway-console action because
+Railway assigns the template code when the workspace publishes the template.
+That owner action is narrow and testable: create a project with the two app
+services plus Postgres, generate the template from that project, publish it,
+deploy a fresh scratch project from the published template, run the live smoke
+and restart smoke, then replace `<template-code>` in the button markup.
+
 ## Alternatives considered
 
 - **Resource-Server-only single service** (current-docs report's SLVP). Rejected
@@ -80,6 +104,11 @@ a follow-on, not a blocker).
 - **Operator console as a separate third public service.** Deferred. The console
   *is* the front door here; a separate split is not needed for a Core test and
   would add a public origin.
+- **Railway Template with manual Docker target-stage settings.** Rejected. It is
+  acceptable for a hand-built operator run, but not for the pushbutton path:
+  current Railway config/schema does not encode the target field, so the
+  template would carry hidden manual setup and could deploy the wrong final
+  image.
 
 ## Storage decision
 
@@ -160,6 +189,8 @@ first-discovery of application bugs.
 
 - `openspec validate add-railway-core-deploy-target --strict` passes.
 - `openspec validate --all --strict` passes.
+- `pnpm railway:template:test` passes for the template-safe Dockerfile paths,
+  deploy-button handoff, and no stale manual target-stage runbook instruction.
 - `pnpm docker:smoke` passes from the main checkout (composed-origin assertions +
   owner-gating redirect on the real images) — the canonical local proxy for
   acceptance steps 2, 3, and 5.
@@ -182,6 +213,9 @@ first-discovery of application bugs.
   composed-origin stack and the routing code; no live platform run is performed
   in this planning lane. The live run is the owner's, and its acceptance is the
   list above.
+- The user-facing Railway button cannot be final until Railway assigns the
+  published template code and a fresh project deployed from that published
+  template passes the live smoke plus restart smoke.
 - The `docs/inbox/chatgpt-pro-deployment.txt` strategy note is untracked and
   unversioned; the decisions that survive are the ones promoted into this change,
   not the inbox text. Its aspirational names (`pdpp doctor`,

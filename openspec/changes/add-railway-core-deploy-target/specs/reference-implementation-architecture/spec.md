@@ -175,3 +175,38 @@ Profile, reference implementation, and operator console distinct.
 - **THEN** it SHALL use operator voice and SHALL NOT describe the reference deployment as a hosted multi-tenant service
 - **AND** it SHALL NOT imply that browser-backed connector collection runs inside the deployed service
 - **AND** it SHALL keep Core, Collection Profile, reference implementation, and operator console distinct
+
+### Requirement: Managed-platform Core deploy target SHALL provide a pushbutton Railway Template handoff
+
+The reference implementation SHALL provide a Railway Template publication
+handoff that can produce a user-facing "Deploy on Railway" button after the
+template owner publishes a validated project. The handoff SHALL define the
+multi-service template shape, service Dockerfile paths, private networking,
+durable storage binding, required owner secret, public-origin binding, smoke
+checks, and button markup.
+
+The template handoff SHALL NOT rely on an unencoded manual Docker build-target
+setting. Each application service SHALL be selectable by a Dockerfile path whose
+final stage is the intended service image, or by an equivalent platform setting
+that is captured in the published template. The user-facing deploy button SHALL
+NOT be published with a placeholder template code.
+
+#### Scenario: Template service selection is encoded by Dockerfile path
+
+- **WHEN** the Railway Template defines the public console service and private reference service
+- **THEN** the console service SHALL select a Dockerfile whose final image is the console
+- **AND** the reference service SHALL select a Dockerfile whose final image is the reference runtime
+- **AND** the template SHALL NOT require the deploying operator to set a manual Docker target stage after clicking the deploy button
+
+#### Scenario: Template variables are sufficient for first boot
+
+- **WHEN** an operator deploys from the published Railway Template
+- **THEN** the template SHALL define the private console-to-reference URLs, composed-mode public origin, owner password, and Postgres database binding needed for first boot
+- **AND** the reference service SHALL stay private
+- **AND** the public console service SHALL be the only internet-reachable application origin
+
+#### Scenario: User-facing button is only published after template validation
+
+- **WHEN** the template owner publishes the Railway Template
+- **THEN** the owner SHALL deploy a scratch project from the published template and run the live smoke plus restart smoke before presenting the button to users
+- **AND** the user-facing button URL SHALL contain Railway's assigned template code, not a placeholder

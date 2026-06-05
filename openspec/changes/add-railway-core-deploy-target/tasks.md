@@ -21,16 +21,26 @@ browser-free `core` image are explicit follow-ons, not blockers.
   `deploy/railway/env.example` — same variable names and meanings as
   `.env.docker.example`, Railway-scoped subset.)
 - [x] 1.3 Add (or reference) a `railway.json` / config-as-code pointing at the
-  root `Dockerfile` targets (console public, reference private) and the
+  service Dockerfile paths (console public, reference private) and the
   healthcheck path; document the `$PORT` mapping for the console standalone server.
   (`deploy/railway/railway.console.json`, `deploy/railway/railway.reference.json`;
-  the README notes Railway selects the Dockerfile target via service settings and
-  that `$PORT` is Railway-injected — do not set `PORT`.)
+  the reference service uses `deploy/railway/reference.Dockerfile` so a Railway
+  template can select it by Dockerfile path, and the README notes that `$PORT`
+  is Railway-injected — do not set `PORT`.)
 - [x] 1.4 Add an operator-voice "Deploy on Railway" section to the deployment
   guide; run the `docs/voice-and-framing.md` self-check (no hosted-service
   language; Core / Collection / reference / console kept distinct; honest cost
   framing). (`deploy/railway/README.md`; self-check run, only match for
   "sign up" is the negation.)
+- [x] 1.5 Add a template-safe reference service Dockerfile so the private service
+  can be selected by Dockerfile path instead of a manual Docker build-target
+  setting. (`deploy/railway/reference.Dockerfile`;
+  `deploy/railway/railway.reference.json`.)
+- [x] 1.6 Add the Railway Template publication handoff and deploy-button markup,
+  including the exact service shape, variable bindings, scratch-template QA, and
+  the rule that the placeholder button URL is not user-facing until Railway
+  assigns a template code. (`deploy/railway/template.md`;
+  `pnpm railway:template:test`.)
 
 ## 2. Storage persistence
 
@@ -104,6 +114,10 @@ browser-free `core` image are explicit follow-ons, not blockers.
   gate in `design.md` (real TLS, real public DNS, durability across a real
   restart). Record the result; if this is the only remaining open task, convert
   it to a Residual Risk and archive per `AGENTS.md`.
+- [ ] 5.2 (Owner-only) Publish the Railway Template from a validated project,
+  deploy a new scratch project from the published template, run the live smoke
+  and restart smoke against the scratch deploy, then replace `<template-code>` in
+  the user-facing button surface.
 
 ## Acceptance checks
 
@@ -112,6 +126,10 @@ Run before handing back and before any live platform run is requested:
 - `openspec validate add-railway-core-deploy-target --strict` — passes.
 - `openspec validate --all --strict` — passes.
 - `git diff --check` — clean.
+- `pnpm railway:template:test` — passes: the reference service uses the
+  template-safe Dockerfile path, the runbook does not require manual target-stage
+  setup, and the handoff carries Railway deploy-button markup plus required
+  variable bindings.
 - `pnpm docker:smoke` (from the main checkout) — passes: composed-origin
   assertions (`issuer` / `resource` / `authorization_servers[0]` equal the public
   origin, no internal-URL leak) and the `/dashboard` -> `/owner/login` redirect on
