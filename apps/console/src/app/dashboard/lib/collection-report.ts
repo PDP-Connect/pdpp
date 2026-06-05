@@ -12,6 +12,9 @@
  *   - they NEVER turn an `unknown` considered denominator into a fabricated
  *     fraction — `considered: "unknown"` reads "considered: unknown", never a
  *     `collected / collected` that would imply completeness;
+ *   - they show a declared `covered` numerator when the reference provides one,
+ *     so steady-state full-sync streams do not look like false `0 / N collected`
+ *     partials;
  *   - they NEVER label a stream `complete` the reference left `unknown`;
  *   - they reuse the existing coverage-axis and forward-disposition formatters
  *     verbatim, so a stream entry never disagrees with the connection-level
@@ -27,11 +30,11 @@ import type { RefCollectionReportEntry } from "./ref-client.ts";
 
 export interface StreamCollectionFacts {
   /**
-   * Owner-facing collected/considered line. When the connector declared a
-   * considered denominator we show `collected / considered`; when it did not,
-   * we show only the raw collected count and an explicit "considered unknown"
-   * — never a fabricated denominator. `null` when there is nothing honest to
-   * say (no collected records and no considered denominator).
+   * Owner-facing coverage/count line. When the connector declared a `covered`
+   * numerator, show `covered / considered covered` plus the raw collected count.
+   * Otherwise show `collected / considered`. Unknown denominators stay explicit
+   * and never become fabricated fractions. `null` when there is nothing honest
+   * to say (no collected records and no considered denominator).
    */
   countsLabel: string | null;
   /** Long-form hover for the counts line. */
@@ -79,17 +82,26 @@ export function indexCollectionReportByStream(
 /**
  * Build the owner-facing counts line for one stream.
  *
- * The honesty gate: a known considered denominator renders `collected /
- * considered`; an `unknown` denominator renders the raw collected count plus an
- * explicit "considered unknown" so the operator can never read a fabricated
- * fraction as completeness. A stream that collected nothing and has no
- * denominator returns `null` — there is no honest progress number to show.
+ * The honesty gate: a known considered denominator renders either `covered /
+ * considered` when the reference provided an accounted-for numerator or
+ * `collected / considered` otherwise. An `unknown` denominator renders the raw
+ * collected count plus an explicit "considered unknown" so the operator can
+ * never read a fabricated fraction as completeness. A stream that collected
+ * nothing and has no denominator returns `null` — there is no honest progress
+ * number to show.
  */
 function buildCountsLine(entry: RefCollectionReportEntry): { label: string | null; title: string } {
   const collected = Number.isFinite(entry.collected) ? entry.collected : 0;
   const collectedText = collected.toLocaleString();
   if (typeof entry.considered === "number" && Number.isFinite(entry.considered)) {
     const considered = entry.considered.toLocaleString();
+    if (typeof entry.covered === "number" && Number.isFinite(entry.covered)) {
+      const covered = entry.covered.toLocaleString();
+      return {
+        label: `${covered} / ${considered} covered · ${collectedText} collected`,
+        title: `This run accounted for ${covered} of ${considered} considered records for this stream. It collected ${collectedText}; covered also includes records deliberately suppressed because they were unchanged.`,
+      };
+    }
     return {
       label: `${collectedText} / ${considered} collected`,
       title: `This run collected ${collectedText} of ${considered} considered records for this stream.`,

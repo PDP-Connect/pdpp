@@ -361,7 +361,9 @@ export interface RefRecordVersionStatsEnvelope {
  * The honesty contract the console MUST preserve: `considered` is `"unknown"`
  * when the connector declared no denominator, and a stream with an unknown
  * considered denominator reads `coverage_condition: "unknown"`, never
- * `"complete"`. `collected` is the raw run-local count, never a verdict.
+ * `"complete"`. `collected` is the raw run-local count, never a verdict. When
+ * the reference supplies `covered`, it is the accounted-for numerator
+ * (emitted plus suppressed-unchanged), not another collected count.
  */
 export interface RefCollectionReportEntry {
   /** Committed-checkpoint status from the runtime fact block, or `"unknown"`. */
@@ -370,6 +372,8 @@ export interface RefCollectionReportEntry {
   collected: number;
   /** Known considered denominator, or `"unknown"` when the connector declared none. */
   considered: number | "unknown";
+  /** Known accounted-for numerator, or `"unknown"` when the connector declared none. */
+  covered?: number | "unknown";
   /** Derived coverage condition, from the same vocabulary as the coverage axis. */
   coverage_condition: RefCoverageAxis;
   /** Derived forward disposition (what the next run is expected to do on this stream). */

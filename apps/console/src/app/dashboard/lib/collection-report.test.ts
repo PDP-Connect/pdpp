@@ -35,6 +35,7 @@ function entry(overrides: Partial<RefCollectionReportEntry>): RefCollectionRepor
     stream: "items",
     collected: 0,
     considered: "unknown",
+    covered: "unknown",
     checkpoint: "unknown",
     coverage_condition: "unknown",
     forward_disposition: "resumable",
@@ -88,6 +89,23 @@ test("a known considered denominator renders collected / considered", () => {
   );
   assert.equal(facts.countsLabel, "7 / 10 collected");
   assert.equal(facts.coverage.value, "partial");
+});
+
+test("a known covered numerator renders covered / considered without hiding the collected count", () => {
+  const facts = formatStreamCollectionFacts(
+    entry({
+      stream: "items",
+      collected: 0,
+      considered: 10,
+      covered: 10,
+      coverage_condition: "complete",
+      forward_disposition: "complete",
+    })
+  );
+  assert.equal(facts.countsLabel, "10 / 10 covered · 0 collected");
+  assert.match(facts.countsTitle, /accounted for 10 of 10/);
+  assert.match(facts.countsTitle, /suppressed because they were unchanged/);
+  assert.equal(facts.coverage.value, "complete");
 });
 
 test("a satisfied known denominator can read complete (the reference's verdict, not ours)", () => {
