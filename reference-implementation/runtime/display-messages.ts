@@ -109,6 +109,14 @@ export const DISPLAY_MESSAGES: Record<string, string> = {
   qfx_download_failed: "We couldn't download the transactions file",
   qfx_parse_failed: "We couldn't read the transactions file",
   records_not_found: "We didn't find any records to import",
+  // ─── Bounded-run cap (ChatGPT detail lane) ─────────────────────────────
+  // A run that hit its own per-run size/time budget and deferred the rest —
+  // not a source failure and not source pressure. `retry_exhausted` is the
+  // wire reason these resumable gaps carry (scanned from the connector source);
+  // `run_cap_deferred` is the error class that distinguishes a self-imposed cap
+  // from a busy-service defer. Both read as "saved so far, will finish next run".
+  retry_exhausted: "We collected a batch this time and saved it; the rest will be collected on the next run",
+  run_cap_deferred: "We collected a batch this time and saved it; the rest will be collected on the next run",
   row_exception: "Something went wrong reading one of the rows",
   schema_validation_failed: "Some data didn't match the expected format and was skipped",
   scrape_failed: "We couldn't read the page contents",

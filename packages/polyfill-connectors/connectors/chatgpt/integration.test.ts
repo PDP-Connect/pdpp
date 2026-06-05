@@ -48,7 +48,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { currentAdaptiveLaneRunContext } from "../../src/adaptive-lane.ts";
-import type { EmittedMessage } from "../../src/connector-runtime.ts";
+import type { CollectContext, EmittedMessage } from "../../src/connector-runtime.ts";
 import { RetryExhaustedError, retryHttp } from "../../src/http-retry.ts";
 import { type EmittedRecord, makeRecordingEmit, type SkippedRecord } from "../../src/test-harness.ts";
 import {
@@ -57,11 +57,14 @@ import {
   type ChatGptDetailLaneTuning,
   ChatGptRateLimitDensityTracker,
   ChatGptRecoverableRetryExhaustedError,
+  ChatGptRunBudget,
   chatGptBackendFetchInBrowser,
   classifyChatGptSourcePressure,
   processConversationDetail,
   resolveChatGptBackendFetchTimeoutMs,
   resolveChatGptDetailLaneTuning,
+  resolveChatGptMaxDetailFetchesPerRun,
+  resolveChatGptMaxRunWallClockMs,
   resolveChatGptRateLimitDensityStop,
   runConversationsAndMessagesStreams,
   runCustomGptsStream,
@@ -1196,6 +1199,358 @@ test("runMessagesAndConversationsWithDetail: a zero pre-detail seed preserves th
   assert.deepEqual(fetchedIds, ["/conversation/convo-1", "/conversation/convo-2", "/conversation/convo-3"]);
   assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2", "convo-3"]);
   assert.deepEqual(coverage.gapKeys, []);
+});
+
+// ─── Bounded-run cap (max detail fetches / max wall-clock per run) ─────────
+
+test("resolveChatGptMaxDetailFetchesPerRun: unset/invalid → no cap; positive int caps", () => {
+  // Default OFF: an unconfigured or invalid value must NOT cap the run.
+  assert.equal(resolveChatGptMaxDetailFetchesPerRun({}), Number.POSITIVE_INFINITY);
+  assert.equal(
+    resolveChatGptMaxDetailFetchesPerRun({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "" }),
+    Number.POSITIVE_INFINITY
+  );
+  assert.equal(
+    resolveChatGptMaxDetailFetchesPerRun({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "0" }),
+    Number.POSITIVE_INFINITY,
+    "0 is the documented disable escape hatch"
+  );
+  assert.equal(
+    resolveChatGptMaxDetailFetchesPerRun({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "-5" }),
+    Number.POSITIVE_INFINITY
+  );
+  assert.equal(
+    resolveChatGptMaxDetailFetchesPerRun({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "1.5" }),
+    Number.POSITIVE_INFINITY,
+    "non-integer falls back to no cap"
+  );
+  assert.equal(resolveChatGptMaxDetailFetchesPerRun({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "250" }), 250);
+});
+
+test("resolveChatGptMaxRunWallClockMs: unset/invalid → no cap; positive ms caps", () => {
+  assert.equal(resolveChatGptMaxRunWallClockMs({}), Number.POSITIVE_INFINITY);
+  assert.equal(
+    resolveChatGptMaxRunWallClockMs({ PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS: "0" }),
+    Number.POSITIVE_INFINITY,
+    "0 disables the wall-clock cap"
+  );
+  assert.equal(resolveChatGptMaxRunWallClockMs({ PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS: "-1" }), Number.POSITIVE_INFINITY);
+  assert.equal(resolveChatGptMaxRunWallClockMs({ PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS: "1800000" }), 1_800_000);
+  assert.equal(
+    resolveChatGptMaxRunWallClockMs({ PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS: "1800000.9" }),
+    1_800_000,
+    "fractional ms floors"
+  );
+});
+
+test("ChatGptRunBudget: no caps never stops; fetch cap and wall-clock cap each trip with the right reason", () => {
+  // Disabled budget (the production default): never the reason a run stops.
+  const open = new ChatGptRunBudget();
+  for (let i = 0; i < 100; i += 1) {
+    open.recordDetailFetch();
+  }
+  assert.equal(open.shouldStop(), false, "a budget with no caps never trips");
+  assert.equal(open.reason(), null);
+
+  // Fetch cap: trips once the hydrated count reaches the cap.
+  const fetchCapped = new ChatGptRunBudget({ maxFetches: 2 });
+  assert.equal(fetchCapped.reason(), null, "0 < 2: open");
+  fetchCapped.recordDetailFetch();
+  assert.equal(fetchCapped.reason(), null, "1 < 2: open");
+  fetchCapped.recordDetailFetch();
+  assert.equal(fetchCapped.reason(), "max_detail_fetches", "2 >= 2: tripped");
+
+  // Wall-clock cap: clock anchors on the first reason() call, then trips once
+  // the injected clock advances past the budget.
+  let nowMs = 1000;
+  const clockCapped = new ChatGptRunBudget({ maxWallClockMs: 500, now: () => nowMs });
+  assert.equal(clockCapped.reason(), null, "elapsed 0 < 500: open and anchored");
+  nowMs = 1400;
+  assert.equal(clockCapped.reason(), null, "elapsed 400 < 500: open");
+  nowMs = 1500;
+  assert.equal(clockCapped.reason(), "max_wall_clock", "elapsed 500 >= 500: tripped");
+});
+
+test("runMessagesAndConversationsWithDetail: a max-detail-fetches cap defers the tail as resumable run-cap DETAIL_GAP", async () => {
+  // A genuinely COLD account (every fetch 200, no 429): the density stop never
+  // trips, so without a size cap a large backlog would run unbounded. With a
+  // fetch cap of 2, the run hydrates exactly two and defers the rest cleanly.
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      fetchedIds.push(path);
+      await Promise.resolve();
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [
+      makeConvo({ id: "convo-1" }),
+      makeConvo({ id: "convo-2" }),
+      makeConvo({ id: "convo-3" }),
+      makeConvo({ id: "convo-4" }),
+      makeConvo({ id: "convo-5" }),
+    ],
+    makeEmitConversation(deps),
+    { random: () => 0, sleep: () => undefined, runBudget: new ChatGptRunBudget({ maxFetches: 2 }) }
+  );
+
+  // Exactly two fetches launch; convo-3's launch sees the cap and defers it plus
+  // the rest with NO further fetch — proving a large backlog cannot become an
+  // unbounded run.
+  assert.deepEqual(
+    fetchedIds,
+    ["/conversation/convo-1", "/conversation/convo-2"],
+    "no detail fetch is launched once the fetch cap is reached"
+  );
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2"]);
+  assert.deepEqual(coverage.gapKeys, ["convo-3", "convo-4", "convo-5"]);
+
+  // The deferred conversations are resumable gaps, NOT a source-pressure defer:
+  // reason retry_exhausted (no cooldown armed), class run_cap_deferred.
+  const gaps = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP"
+  );
+  assert.deepEqual(
+    gaps.map((g) => g.record_key),
+    ["convo-3", "convo-4", "convo-5"],
+    "every conversation past the cap gets a resumable DETAIL_GAP"
+  );
+  assert.equal(
+    gaps.every((g) => g.reason === "retry_exhausted" && g.retryable === true && g.status === "pending"),
+    true,
+    "run-cap gaps are resumable retry_exhausted (NOT upstream_pressure / rate_limited — no source-pressure cooldown is armed)"
+  );
+  assert.equal(
+    gaps.every((g) => g.detail?.class === "run_cap_deferred"),
+    true,
+    "the run-cap error class distinguishes a self-imposed bound from a busy-service defer"
+  );
+  assert.equal(
+    gaps.some((g) => g.reason === "upstream_pressure" || g.reason === "rate_limited"),
+    false,
+    "a size cap must never be classified as source pressure / a source failure"
+  );
+
+  // Already-collected records remain valid: the two hydrated conversations
+  // produced records that passed the production zod shape-check (the recording
+  // harness routes failures to .skipped).
+  assert.equal(harness.skipped.length, 0, "no hydrated record was dropped by the shape-check");
+  const conversationRecords = harness.emitted.filter((r) => r.stream === "conversations");
+  assert.equal(
+    conversationRecords.length >= 2,
+    true,
+    "the conversations hydrated before the cap are emitted as valid records"
+  );
+
+  // The trip is reported once, in operator voice, without leaking ids or paths.
+  const capProgress = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> =>
+      m.type === "PROGRESS" && m.stream === "messages" && m.message.includes("reached its per-run")
+  );
+  assert.equal(capProgress.length, 1, "the cap trip is announced exactly once");
+  assert.equal(capProgress[0]?.message.includes("detail-count cap"), true, "the message names the fetch-count cap");
+  assert.equal(
+    capProgress.some((m) => m.message.includes("convo-") || m.message.includes("/conversation/")),
+    false,
+    "the cap-trip progress message must not leak conversation ids or API paths"
+  );
+});
+
+test("runMessagesAndConversationsWithDetail: a wall-clock cap defers the tail via an injected clock", async () => {
+  // Each conversation 'takes' 400ms of wall-clock (advanced by the fake clock
+  // inside the fetch). With a 500ms budget the run hydrates the conversations it
+  // can finish inside the budget, then defers the remainder as resumable gaps —
+  // bounding a slow-but-cold run by TIME, not size.
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  let nowMs = 10_000;
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      fetchedIds.push(path);
+      await Promise.resolve();
+      // Model time spent serving + processing this conversation.
+      nowMs += 400;
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [
+      makeConvo({ id: "convo-1" }),
+      makeConvo({ id: "convo-2" }),
+      makeConvo({ id: "convo-3" }),
+      makeConvo({ id: "convo-4" }),
+    ],
+    makeEmitConversation(deps),
+    {
+      random: () => 0,
+      sleep: () => undefined,
+      runBudget: new ChatGptRunBudget({ maxWallClockMs: 500, now: () => nowMs }),
+    }
+  );
+
+  // convo-1 launches at elapsed 0 (anchor), hydrates (+400 → elapsed 400).
+  // convo-2 launches at elapsed 400 < 500, hydrates (+400 → elapsed 800).
+  // convo-3's launch sees elapsed 800 >= 500 → defer convo-3..4, no fetch.
+  assert.deepEqual(
+    fetchedIds,
+    ["/conversation/convo-1", "/conversation/convo-2"],
+    "fetches stop once the wall-clock budget is spent"
+  );
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2"]);
+  assert.deepEqual(coverage.gapKeys, ["convo-3", "convo-4"]);
+
+  const gaps = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP"
+  );
+  assert.equal(
+    gaps.every((g) => g.reason === "retry_exhausted" && g.detail?.class === "run_cap_deferred"),
+    true,
+    "wall-clock-deferred gaps reuse the same resumable run-cap contract"
+  );
+  const capProgress = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> =>
+      m.type === "PROGRESS" && m.stream === "messages" && m.message.includes("wall-clock cap")
+  );
+  assert.equal(capProgress.length, 1, "the wall-clock trip names the wall-clock cap exactly once");
+});
+
+test("runMessagesAndConversationsWithDetail: no cap configured leaves a large backlog unbounded (default-off)", async () => {
+  // The cap MUST default OFF: a budget with neither knob set hydrates every
+  // conversation and emits zero gaps, proving current behavior is preserved.
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      fetchedIds.push(path);
+      await Promise.resolve();
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const convos = Array.from({ length: 8 }, (_, i) => makeConvo({ id: `convo-${i + 1}` }));
+  const coverage = await runMessagesAndConversationsWithDetail(deps, convos, makeEmitConversation(deps), {
+    random: () => 0,
+    sleep: () => undefined,
+    runBudget: new ChatGptRunBudget(),
+  });
+
+  assert.equal(fetchedIds.length, 8, "every conversation is fetched when no cap is configured");
+  assert.equal(coverage.hydratedKeys.length, 8);
+  assert.deepEqual(coverage.gapKeys, []);
+  assert.equal(
+    harness.protocolMessages.some((m) => m.type === "DETAIL_GAP"),
+    false,
+    "no gap is emitted when the bounded-run cap is disabled"
+  );
+});
+
+test("runConversationsAndMessagesStreams: one run budget bounds the recovery pass AND the forward pass together", async () => {
+  // The cap is per-RUN, not per-pass: a pending gap-recovery item plus new
+  // forward conversations share one budget. With a fetch cap of 2 and one
+  // recovery item, the recovery pass hydrates it (count 1), then the forward
+  // pass hydrates one more (count 2) and defers the rest — the budget is not
+  // reset between passes.
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      await Promise.resolve();
+      if (path.startsWith("/conversations?")) {
+        // List walk: two new forward conversations, newest first.
+        return {
+          status: 200,
+          json: {
+            items: [
+              { id: "fwd-1", title: "f1", create_time: 1_700_000_300, update_time: 1_700_000_300, current_node: "a1" },
+              { id: "fwd-2", title: "f2", create_time: 1_700_000_200, update_time: 1_700_000_200, current_node: "a1" },
+            ],
+          } as unknown as ChatGptJson,
+        };
+      }
+      fetchedIds.push(path);
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    detailGaps: [
+      {
+        gap_id: "gap-rec-1",
+        stream: "messages",
+        record_key: "rec-1",
+        reason: "retry_exhausted",
+        detail_locator: {
+          kind: "chatgpt.conversation",
+          conversation_id: "rec-1",
+          list_item: { id: "rec-1", title: "r1", create_time: 1_700_000_000, update_time: 1_700_000_000 },
+        },
+      },
+    ] as unknown as NonNullable<StreamDeps["detailGaps"]>,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+    // One shared budget for the whole run.
+    runBudget: new ChatGptRunBudget({ maxFetches: 2 }),
+  };
+
+  await runConversationsAndMessagesStreams(
+    deps,
+    { conversations: { last_update_time: null }, messages: { last_update_time: null } } as CollectContext["state"],
+    {
+      detailPacing: { random: () => 0, sleep: () => undefined },
+    }
+  );
+
+  // recovery hydrates rec-1 (count 1); forward hydrates one of fwd-1/fwd-2
+  // (count 2) then the cap defers the remainder. Exactly two detail fetches.
+  assert.equal(fetchedIds.length, 2, "the shared budget caps recovery + forward fetches together at 2");
+  assert.equal(
+    fetchedIds.includes("/conversation/rec-1"),
+    true,
+    "the recovery pass spends budget before the forward pass"
+  );
+
+  const gaps = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP"
+  );
+  assert.equal(gaps.length >= 1, true, "the conversation past the shared budget is deferred as a resumable gap");
+  assert.equal(
+    gaps.every((g) => g.reason === "retry_exhausted" && g.detail?.class === "run_cap_deferred"),
+    true,
+    "the forward-pass overflow defers under the same run-cap contract"
+  );
 });
 
 test("runConversationsAndMessagesStreams: detail failure rejects before conversations STATE", async () => {

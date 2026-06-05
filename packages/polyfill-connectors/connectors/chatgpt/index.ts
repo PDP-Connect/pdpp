@@ -247,6 +247,145 @@ export class ChatGptRateLimitDensityTracker {
   }
 }
 
+// ─── Bounded-run cap (max detail fetches / max wall-clock per run) ─────────
+//
+// The density stop bounds a *pressured* run: it defers the tail once the
+// account serves enough 429s. But a large-history account that is genuinely
+// COLD (0% 429) has no such brake — a serial detail lane at ~3s/conversation
+// can walk tens of thousands of conversations for many hours before it
+// finishes. That is safe when an owner is present and watching, but it is the
+// one thing that keeps unattended scheduling from being ideal (readiness report
+// F4 #1 / Next slice #1): a single nudge could turn into an unbounded run.
+//
+// This cap bounds every run by SIZE and/or TIME, independent of source
+// pressure. When the run has hydrated `maxDetailFetchesPerRun` conversation
+// details, or has spent `maxRunWallClockMs` of wall-clock in the detail phase,
+// it stops launching new detail fetches and defers the remaining tail as
+// resumable DETAIL_GAP records — the SAME deferral the density stop and the
+// per-conversation exhaustion path use, so a later run recovers the gaps first
+// and walks forward. Strictly safer than today: it can only ever make a run
+// stop EARLIER, never fetch more.
+//
+// Crucially this is NOT a source-pressure signal — the account did not throttle
+// us, the run chose to stop. So the deferred gaps carry reason
+// `retry_exhausted` (resumable, does NOT arm the cross-run source-pressure
+// cooldown governor) with a distinct `run_cap_deferred` error class, rather
+// than `upstream_pressure` (which would falsely tell the governor the source is
+// hot). The records already collected stay valid and the cursor still commits
+// the hydrated prefix.
+//
+// Both knobs default OFF (the disable sentinel). With neither env var set a
+// normal run is byte-for-byte unchanged — no cap is consulted, the only stops
+// are the existing pressure/exhaustion circuits. Set a positive value to opt a
+// scheduled/unattended run into a bounded slice that defers the remainder.
+const CHATGPT_MAX_DETAIL_FETCHES_PER_RUN_ENV = "PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN";
+const CHATGPT_MAX_RUN_WALL_CLOCK_MS_ENV = "PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS";
+
+/**
+ * Resolve the maximum conversation-detail hydrations a single run may perform
+ * before deferring the remaining tail as resumable DETAIL_GAP records. Unset or
+ * any value < 1 (the disable escape hatch) returns Infinity — no fetch-count
+ * cap, preserving current behavior. A positive integer caps the run.
+ */
+export function resolveChatGptMaxDetailFetchesPerRun(env: NodeJS.ProcessEnv = process.env): number {
+  const trimmed = env[CHATGPT_MAX_DETAIL_FETCHES_PER_RUN_ENV]?.trim();
+  if (trimmed == null || trimmed === "") {
+    return Number.POSITIVE_INFINITY;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return parsed;
+}
+
+/**
+ * Resolve the maximum wall-clock (ms) the conversation-detail phase may spend
+ * before deferring the remaining tail as resumable DETAIL_GAP records. Unset or
+ * any value <= 0 (the disable escape hatch) returns Infinity — no wall-clock
+ * cap, preserving current behavior. A positive value caps the run. The budget
+ * spans the gap-recovery pass and the forward-walk pass of a single run.
+ */
+export function resolveChatGptMaxRunWallClockMs(env: NodeJS.ProcessEnv = process.env): number {
+  const trimmed = env[CHATGPT_MAX_RUN_WALL_CLOCK_MS_ENV]?.trim();
+  if (trimmed == null || trimmed === "") {
+    return Number.POSITIVE_INFINITY;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return Math.floor(parsed);
+}
+
+/**
+ * Run-scoped budget for the bounded-run cap. Pure and lane-agnostic so the cap
+ * decision is unit-testable without standing up the detail lane. One budget is
+ * created per run (in `collect()`) and threaded through BOTH the gap-recovery
+ * pass and the forward-walk pass so a large recovery backlog plus new
+ * conversations are bounded TOGETHER, not per-invocation.
+ *
+ * `maxFetches` caps hydrated conversation details; `maxWallClockMs` caps elapsed
+ * wall-clock since the budget started (lazily anchored on the first
+ * `shouldStop()` so an idle run never burns its clock). Either at the disable
+ * sentinel (Infinity) is simply never the reason a run stops. `now` is injected
+ * for deterministic tests.
+ */
+export class ChatGptRunBudget {
+  readonly maxFetches: number;
+  readonly maxWallClockMs: number;
+  private readonly now: () => number;
+  private fetchCount = 0;
+  private startedAt: number | null = null;
+
+  constructor(options: { maxFetches?: number; maxWallClockMs?: number; now?: () => number } = {}) {
+    this.maxFetches = options.maxFetches ?? Number.POSITIVE_INFINITY;
+    this.maxWallClockMs = options.maxWallClockMs ?? Number.POSITIVE_INFINITY;
+    this.now = options.now ?? Date.now;
+  }
+
+  /** Record one hydrated conversation detail against the fetch budget. */
+  recordDetailFetch(): void {
+    this.fetchCount += 1;
+  }
+
+  get count(): number {
+    return this.fetchCount;
+  }
+
+  /** Wall-clock spent since the budget was first consulted, in ms. */
+  elapsedMs(): number {
+    if (this.startedAt == null) {
+      return 0;
+    }
+    return Math.max(0, this.now() - this.startedAt);
+  }
+
+  /**
+   * True once a cap has been reached. Anchors the wall-clock start on the first
+   * call so the clock measures the detail phase, not setup. Returns a reason tag
+   * (or null) so the trip can be reported precisely without re-deriving which
+   * cap fired.
+   */
+  reason(): "max_detail_fetches" | "max_wall_clock" | null {
+    if (this.startedAt == null) {
+      this.startedAt = this.now();
+    }
+    if (this.fetchCount >= this.maxFetches) {
+      return "max_detail_fetches";
+    }
+    if (this.maxWallClockMs !== Number.POSITIVE_INFINITY && this.elapsedMs() >= this.maxWallClockMs) {
+      return "max_wall_clock";
+    }
+    return null;
+  }
+
+  /** True once any cap has been reached. */
+  shouldStop(): boolean {
+    return this.reason() !== null;
+  }
+}
+
 export const CHATGPT_RETRYABLE_ERROR_PATTERN = /ECONN|ETIMEDOUT|fetch failed|429|retry budget exhausted/i;
 const CHATGPT_BACKEND_FETCH_TIMEOUT_ENV = "PDPP_CHATGPT_BACKEND_FETCH_TIMEOUT_MS";
 const CHATGPT_BACKEND_FETCH_TIMEOUT_MS = 45_000;
@@ -902,6 +1041,10 @@ export interface StreamDeps {
   preDetailPressure?: ChatGptPreDetailPressure;
   progress: CollectContext["progress"];
   requested: CollectContext["requested"];
+  // Run-scoped bounded-run cap shared across the gap-recovery pass and the
+  // forward-walk pass, so a large recovery backlog plus new conversations are
+  // bounded together. Absent (the production default) means no size/time cap.
+  runBudget?: ChatGptRunBudget;
 }
 
 /** Mutable holder for the run-scoped pre-detail served-429 count. */
@@ -1625,6 +1768,12 @@ interface ConversationDetailPacingOptions {
   // inject a fixed value to exercise the seed without a real list phase.
   preDetailRateLimited?: number;
   random?: () => number;
+  // Bounded-run cap for this detail pass. Tests inject a ChatGptRunBudget (with
+  // a fake clock and/or a small fetch cap) to exercise the cap deterministically
+  // without a real multi-hour run. Defaults to the run-scoped budget on `deps`,
+  // and falls back to an env-resolved budget so a production run honors
+  // PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN / PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS.
+  runBudget?: ChatGptRunBudget;
   sleep?: (ms: number) => Promise<void> | void;
   tuning?: ChatGptDetailLaneTuning;
 }
@@ -1778,6 +1927,42 @@ function makeRateLimitDensityPressureError(observedRateLimited: number): ChatGpt
   );
 }
 
+export type ChatGptRunCapReason = "max_detail_fetches" | "max_wall_clock";
+
+/**
+ * Build a resumable DETAIL_GAP for a conversation deferred because this run hit
+ * its bounded-run cap (size or time), NOT because the source pressured us. The
+ * wire `reason` is `retry_exhausted` — resumable and retryable next run, but it
+ * does NOT arm the cross-run source-pressure cooldown governor the way
+ * `upstream_pressure` / `rate_limited` would. A distinct `run_cap_deferred`
+ * error class keeps the cap visibly separate from a source-pressure defer so
+ * the console never reads a self-imposed bound as "the service is busy". No HTTP
+ * status: nothing failed — the run simply stopped at its budget.
+ */
+function makeRunCapDeferredConversationDetailGap(
+  c: ConversationListItem,
+  capReason: ChatGptRunCapReason
+): DetailGapMessage {
+  return buildDetailGap({
+    stream: "messages",
+    recordKey: c.id,
+    reason: "retry_exhausted",
+    locator: {
+      kind: "chatgpt.conversation",
+      conversation_id: c.id,
+      list_item: safeConversationListItemHint(c),
+    },
+    error: {
+      class: "run_cap_deferred",
+      networkPressure: {
+        endpoint_route: "/conversation/{id}",
+        error_class: capReason,
+        method: "GET",
+      },
+    },
+  });
+}
+
 function makeConversationDetailCoverage(
   convosToSync: ConversationListItem[],
   coverage: ConversationDetailCoverage
@@ -1831,6 +2016,18 @@ export async function runMessagesAndConversationsWithDetail(
     pacing.densityStopThreshold ?? resolveChatGptRateLimitDensityStop(),
     seededRateLimited
   );
+  // Bounded-run cap. `pacing` wins for tests; production reads the run-scoped
+  // budget on `deps` (shared across the recovery + forward passes); if neither
+  // is supplied, fall back to an env-resolved budget so a single-pass call still
+  // honors the cap env vars. With both knobs at their disable sentinel (the
+  // default) the budget never trips and behavior is byte-for-byte unchanged.
+  const runBudget =
+    pacing.runBudget ??
+    deps.runBudget ??
+    new ChatGptRunBudget({
+      maxFetches: resolveChatGptMaxDetailFetchesPerRun(),
+      maxWallClockMs: resolveChatGptMaxRunWallClockMs(),
+    });
   let emittedConversationDetailLaneStart = false;
   const lane = createAdaptiveLane<ChatGptFetchResult>({
     name: "chatgpt.conversationDetail",
@@ -1880,12 +2077,20 @@ export async function runMessagesAndConversationsWithDetail(
     },
   });
   let observedRecoverablePressure: ChatGptRecoverableRetryExhaustedError | null = null;
+  let runCapDeferReason: ChatGptRunCapReason | null = null;
   await lane.runAll(convosToSync, async (c) => {
     if (!c) {
       return { status: 404, json: null };
     }
     if (observedRecoverablePressure) {
       await deps.emit(makeDeferredConversationDetailGap(c, observedRecoverablePressure));
+      coverage.gapKeys.push(c.id);
+      return { deferredDueToPressure: true, status: 0, json: null };
+    }
+    // Bounded-run cap already tripped earlier in this pass: defer this and every
+    // later conversation as a resumable run-cap DETAIL_GAP without a fetch.
+    if (runCapDeferReason) {
+      await deps.emit(makeRunCapDeferredConversationDetailGap(c, runCapDeferReason));
       coverage.gapKeys.push(c.id);
       return { deferredDueToPressure: true, status: 0, json: null };
     }
@@ -1903,6 +2108,24 @@ export async function runMessagesAndConversationsWithDetail(
         message: `ChatGPT conversation-detail lane opened upstream-pressure circuit after ${densityTracker.count} served 429s; deferring remaining conversation details as DETAIL_GAP records`,
       });
       await deps.emit(makeDeferredConversationDetailGap(c, observedRecoverablePressure));
+      coverage.gapKeys.push(c.id);
+      return { deferredDueToPressure: true, status: 0, json: null };
+    }
+    // Bounded-run cap trip. Independent of source pressure: when the run has
+    // hydrated its max detail count, or spent its wall-clock budget, stop
+    // launching new fetches and defer this + every later conversation as a
+    // resumable run-cap DETAIL_GAP. NOT a source failure — `reason` stays
+    // `retry_exhausted` so no source-pressure cooldown is armed. Defaults are
+    // the disable sentinel, so a normal run never reaches this branch.
+    const capReason = runBudget.reason();
+    if (capReason) {
+      runCapDeferReason = capReason;
+      await deps.emit({
+        type: "PROGRESS",
+        stream: "messages",
+        message: `ChatGPT conversation-detail lane reached its per-run ${capReason === "max_wall_clock" ? "wall-clock" : "detail-count"} cap after ${runBudget.count} hydrated conversation(s); deferring the remaining conversation details as resumable DETAIL_GAP records for the next run`,
+      });
+      await deps.emit(makeRunCapDeferredConversationDetailGap(c, capReason));
       coverage.gapKeys.push(c.id);
       return { deferredDueToPressure: true, status: 0, json: null };
     }
@@ -1929,6 +2152,11 @@ export async function runMessagesAndConversationsWithDetail(
     }
     await processConversationDetail(deps, c, detail, emitConversation);
     coverage.hydratedKeys.push(c.id);
+    // Count this hydration against the bounded-run cap. Done after a successful
+    // fetch so deferred/failed conversations never consume the size budget; the
+    // next `reason()` check (this pass or the forward pass sharing the budget)
+    // sees the updated count.
+    runBudget.recordDetailFetch();
     const synced = convosToSync.indexOf(c) + 1;
     const progressMsg = {
       type: "PROGRESS",
@@ -2133,6 +2361,15 @@ if (isMainModule(import.meta.url)) {
       // stop so pre-detail source pressure defers the tail earlier.
       const preDetailPressure: ChatGptPreDetailPressure = { rateLimited: 0 };
 
+      // Run-scoped bounded-run cap, created once so the gap-recovery pass and the
+      // forward-walk pass share one budget — a large recovery backlog plus new
+      // conversations are bounded together. Both knobs default to the disable
+      // sentinel, so an unconfigured run is byte-for-byte unchanged.
+      const runBudget = new ChatGptRunBudget({
+        maxFetches: resolveChatGptMaxDetailFetchesPerRun(),
+        maxWallClockMs: resolveChatGptMaxRunWallClockMs(),
+      });
+
       // API client closes over page + capture — no module-level mutable state,
       // auth cached inside the closure for the run's lifetime.
       const api = createChatGptApi({
@@ -2157,6 +2394,7 @@ if (isMainModule(import.meta.url)) {
         preDetailPressure,
         progress,
         requested,
+        runBudget,
       };
 
       if (isChatGptSideEffectProbeEnabled()) {
