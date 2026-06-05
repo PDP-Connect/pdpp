@@ -247,6 +247,75 @@ test('owner-agent bearer renames a connection and the listing reflects the new l
   });
 });
 
+// Reproduces the live owner-agent observation from task 8.5: a PATCH whose
+// `display_name` is still a storage-layer fallback (the registry URL the
+// connector defaults to) returns 200 and persists the value, but `label_status`
+// stays `fallback` because the label is derived from the VALUE, not the act of
+// PATCHing. This is correct: a same-fallback PATCH has not established an
+// owner-meaningful label, so `owner_set` must NOT be claimed. The follow-up
+// PATCH to a visibly owner-meaningful label is what proves `owner_set`. This
+// locks the route contract that the live "200 but still fallback" surfaced.
+test('owner-agent rename to a still-fallback value stays label_status fallback; only a visible label flips to owner_set', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const manifest = await registerConnector(asUrl, loadManifest('amazon'));
+    const connectorKey = canonicalConnectorKey(manifest.connector_id);
+    // Seed with the registry-URL fallback display name, matching the live
+    // Amazon connection's pre-label state.
+    const registryUrlFallback = `https://registry.pdpp.org/connectors/${connectorKey}`;
+    await seedInstance({
+      connectorInstanceId: 'cin_amazon_personal',
+      connectorId: connectorKey,
+      displayName: registryUrlFallback,
+      sourceBindingKey: 'the owner@example.com',
+    });
+
+    const ownerToken = await issueOwnerToken(asUrl);
+
+    // Precondition: a registry-URL display name is reported as label-needed.
+    const before = await fetchJson(`${rsUrl}/v1/owner/connections`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    const beforeRow = before.body.data.find((r) => r.connection_id === 'cin_amazon_personal');
+    assert.equal(beforeRow.display_name, registryUrlFallback);
+    assert.equal(beforeRow.label_status, 'fallback');
+
+    // PATCH with the SAME still-fallback value (the live same-display-name PATCH).
+    // The route accepts it (200) and persists it, but cannot claim owner_set
+    // because the value remains a storage-layer fallback.
+    const sameValue = await renameConnection(rsUrl, ownerToken, 'cin_amazon_personal', {
+      display_name: registryUrlFallback,
+    });
+    assert.equal(sameValue.status, 200, 'a same-fallback PATCH is a valid 200 write');
+    assert.equal(sameValue.body.display_name, registryUrlFallback);
+    assert.equal(
+      sameValue.body.label_status,
+      'fallback',
+      'a still-fallback value must NOT be promoted to owner_set by the act of PATCHing',
+    );
+    // The audit reflects the honest, still-fallback outcome.
+    const sameAudit = findRenameAuditEvent(sameValue.resp);
+    assert.equal(sameAudit.status, 'succeeded');
+    assert.equal(sameAudit.data?.label_status, 'fallback');
+
+    // A follow-up listing still reports fallback — no hidden state changed it.
+    const stillFallback = await fetchJson(`${rsUrl}/v1/owner/connections`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    const stillRow = stillFallback.body.data.find((r) => r.connection_id === 'cin_amazon_personal');
+    assert.equal(stillRow.label_status, 'fallback');
+
+    // Now PATCH a visibly owner-meaningful label: THIS is what proves owner_set.
+    const labeled = await renameConnection(rsUrl, ownerToken, 'cin_amazon_personal', {
+      display_name: 'the owner personal',
+    });
+    assert.equal(labeled.status, 200);
+    assert.equal(labeled.body.display_name, 'the owner personal');
+    assert.equal(labeled.body.label_status, 'owner_set');
+    const labeledAudit = findRenameAuditEvent(labeled.resp);
+    assert.equal(labeledAudit.data?.label_status, 'owner_set');
+  });
+});
+
 test('owner-agent bearer can label two Amazon connections distinctly', async () => {
   await withServer(async ({ asUrl, rsUrl }) => {
     const manifest = await registerConnector(asUrl, loadManifest('amazon'));
