@@ -53,6 +53,7 @@ function makeHarness(
   // guard isn't tripped.
   const partial: Omit<StreamDeps, "db"> & { db: unknown } = {
     db: undefined,
+    emit: recording.emit,
     emitRecord: recording.emitRecord,
     emittedAt: "2026-05-26T12:00:00.000Z",
     fingerprintCursors: cursors,

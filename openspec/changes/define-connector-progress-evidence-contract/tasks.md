@@ -301,8 +301,51 @@
   change — the runtime already accepts `DETAIL_COVERAGE.considered`. Proven by a
   runtime integration test (list-level coverage carries the denominator without
   blocking commit) plus connector unit tests for each stream's honest count.
-- [ ] 4.2 Connector honesty lane: Slack declares considered for collected streams
+- [x] 4.2 Connector honesty lane: Slack declares considered for collected streams
   and a `terminal` disposition for its known unsupported streams.
+  Mechanism (no runtime contract change — same as 4.1): the connector emits a
+  self-coverage `DETAIL_COVERAGE` (`state_stream === stream`, EMPTY
+  `required_keys`/`hydrated_keys`) carrying an explicit `considered` measured at
+  the enumeration site, never aliased to the emitted count. Wired stream:
+  `canvases` ONLY. It is the one Slack stream where `considered` is objectively
+  honest — it full-syncs every run (NOT in `FINGERPRINTED_STREAMS`, so unchanged
+  records are never suppressed) and every enumerated `MODE='quip'` row is emitted
+  unconditionally, so `collected` equals the deduped quip inventory
+  (`canvasRows.length`) rather than a churn-reduced subset. `collected ===
+  considered` reads a real `complete`; a canvas weighed but dropped (e.g. by
+  record-shape validation) reads an honest `partial`. The connector gained a
+  narrow `emit` side-channel on `StreamDeps` (typed to the single
+  `DETAIL_COVERAGE` kind) and a `declareListConsidered` helper mirroring GitHub's.
+  Streams DELIBERATELY NOT wired, each because declaring `considered` would
+  FABRICATE a false coverage verdict (the precise blocker the GitHub precedent
+  warns against): `workspace` / `users` / `files` / `channels` /
+  `channel_memberships` suppress unchanged records via `emitWithFingerprint`, so
+  on any incremental run `collected` ≪ the enumerated row count — declaring the
+  row count would read a FALSE `partial` of a run that fully covered the source;
+  `messages` is incrementally windowed by `WHERE TS > last_ts` and has a
+  documented cursor-finality gap (thread replies on pre-cursor parents are never
+  enumerated), so `considered === collected` would assert a FALSE `complete` for a
+  boundary the run structurally cannot see in full (the GitHub
+  `pr_search_cap_truncated` "unknowable inventory → leave unknown" rule);
+  `reactions` / `message_attachments` are co-emitted per parent with no own
+  enumeration site; `channel_stats` is an append-keyed daily observation, not an
+  inventory. The `terminal` disposition for the four unsupported streams
+  (`stars` / `user_groups` / `reminders` / `dm_read_states`) needs NO new code:
+  they already emit `SKIP_RESULT { reason: "not_available" }`, which the shipped
+  Tranche-C projection maps `not_available` → `unavailable` coverage →
+  `terminal` forward disposition by construction. Proven by Slack connector unit
+  tests (`connectors/slack/canvases-considered.test.ts`: 4 cases — honest
+  enumerated denominator, quip-only filtering not the whole FILE table, empty
+  inventory declares `considered: 0`, coverage emitted after the last RECORD)
+  plus projection tests (`reference-implementation/test/slack-collection-report.test.js`:
+  6 cases — canvases `complete`/`partial`/empty, non-canvas streams stay
+  `unknown`/`resumable` when undeclared, unsupported `not_available` →
+  `terminal`, and a mixed-connection shape). The runtime half (a list-level
+  `DETAIL_COVERAGE.considered` carried to the terminal facts block without
+  blocking commit) is already proven connector-agnostically by 4.1's
+  `collection-profile.test.js` integration case. slack 68/68 + github 27/27 + SDK
+  runtime 46/46 + collection-report-projection 30/30; RI + polyfill-connectors
+  `tsc --noEmit` exit 0; biome clean on changed files.
 - [ ] 4.3 Dashboard consumes per-stream report + forward disposition directly;
   deprecate per-connector freshness/gap reconstruction heuristics.
 

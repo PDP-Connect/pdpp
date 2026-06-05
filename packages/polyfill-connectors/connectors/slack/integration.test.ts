@@ -127,6 +127,7 @@ function makeChannelDeps(requestedStreams: readonly string[]): {
     close: () => db.close(),
     deps: {
       db,
+      emit: harness.emit,
       emitRecord: harness.emitRecord,
       emittedAt: "2026-06-03T12:00:00.000Z",
       fingerprintCursors: new Map([["channels", openFingerprintCursor({}, { excludeFromFingerprint: [] })]]),

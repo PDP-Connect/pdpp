@@ -55,7 +55,14 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { readOptions } from "../../src/connector-options.ts";
-import { type CollectContext, nowIso, type RecordData, runConnector } from "../../src/connector-runtime.ts";
+import {
+  buildDetailCoverageMessage,
+  type CollectContext,
+  type EmittedMessage,
+  nowIso,
+  type RecordData,
+  runConnector,
+} from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { resourceSet } from "../../src/scope-filters.ts";
@@ -491,11 +498,57 @@ export async function emitMessagesPass(
  */
 export interface StreamDeps {
   db: DatabaseSync;
+  /**
+   * Protocol-message side-channel (non-RECORD). Used today only to declare a
+   * list stream's enumerated `considered` denominator via a self-coverage
+   * DETAIL_COVERAGE (see `declareListConsidered`). Narrowed to the single
+   * message kind this connector emits through it so a future RECORD emit can't
+   * accidentally route here instead of `emitRecord`.
+   */
+  emit: (msg: Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }>) => Promise<void>;
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   emittedAt: string;
   fingerprintCursors: Map<string, FingerprintCursor>;
   progress: CollectContext["progress"];
   requested: CollectContext["requested"];
+}
+
+/**
+ * Declare a list stream's enumerated `considered` denominator for the
+ * per-stream Collection Report (OpenSpec
+ * `define-connector-progress-evidence-contract`, task 4.2). Mirrors the GitHub
+ * list-stream mechanism (task 4.1): a stream with no detail-hydration phase
+ * emits a DETAIL_COVERAGE for itself (`state_stream === stream`) with EMPTY
+ * `required_keys`/`hydrated_keys` and an explicit `considered` count. Empty key
+ * arrays mean the runtime's pre-commit coverage gate has nothing to mark
+ * missing (the committed STATE still commits); the only signal carried is the
+ * denominator the terminal collection-fact block reads.
+ *
+ * Honesty contract (identical to GitHub's): `considered` is the number of items
+ * the run actually enumerated from the source within its boundary — measured at
+ * the enumeration site, NEVER the count it chose to emit. When the run emitted
+ * every enumerated item the stream reads `complete`; when a weighed item was not
+ * emitted (e.g. a record dropped by shape validation) `collected < considered`
+ * reads an honest `partial`. A stream that CANNOT know its full inventory for
+ * the run — anything fingerprint-suppressed (so `collected` is a churn-reduced
+ * subset, not a coverage count), incrementally windowed past an unknowable
+ * boundary, or derived per-parent — MUST NOT call this; it leaves `considered`
+ * unknown rather than fabricating a denominator that reads as a false
+ * partial/complete.
+ */
+async function declareListConsidered(deps: StreamDeps, stream: string, considered: number): Promise<void> {
+  if (!Number.isInteger(considered) || considered < 0) {
+    return;
+  }
+  await deps.emit(
+    buildDetailCoverageMessage({
+      stream,
+      stateStream: stream,
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered,
+    })
+  );
 }
 
 /**
@@ -709,7 +762,7 @@ async function runFilesStream(deps: StreamDeps): Promise<void> {
   }
 }
 
-async function runCanvasesStream(deps: StreamDeps): Promise<void> {
+export async function runCanvasesStream(deps: StreamDeps): Promise<void> {
   // Canvases are stored as FILE rows with MODE='quip' (mimetype
   // application/vnd.slack-docs). A single canvas can appear multiple times
   // across CHUNK_IDs (channel share + thread shares); dedupe on file ID by
@@ -745,6 +798,17 @@ async function runCanvasesStream(deps: StreamDeps): Promise<void> {
   for (const r of canvasRows) {
     await deps.emitRecord("canvases", buildCanvasRecord(r, channelCanvasIndex));
   }
+  // `canvases` is the one Slack stream where `considered` is objectively
+  // honest: it full-syncs every run (NOT fingerprint-suppressed, unlike
+  // workspace/users/files/channels/channel_memberships), and every enumerated
+  // `canvasRows` row is emitted unconditionally — so `collected` equals the
+  // enumerated quip-file inventory, never a churn-reduced subset. Declaring
+  // `canvasRows.length` (the deduped MODE='quip' count read at the query site)
+  // as `considered` lets the report read a real `complete` when every canvas
+  // emitted, and an honest `partial` if a canvas was weighed but dropped (e.g.
+  // by record-shape validation). The denominator is measured here, never
+  // aliased to the emitted count.
+  await declareListConsidered(deps, "canvases", canvasRows.length);
 }
 
 export const UNAVAILABLE_STREAMS: ReadonlyArray<{ name: string; reason: string }> = [
@@ -1034,6 +1098,11 @@ if (isMainModule(import.meta.url)) {
       }
       const deps: StreamDeps = {
         db,
+        // Narrow the ctx.emit union to the single message kind StreamDeps.emit
+        // accepts (DETAIL_COVERAGE). runConnector's emit accepts the full
+        // EmittedMessage union, so this is a contravariant widening at the call
+        // boundary, not a coercion of message shape.
+        emit: (msg) => emit(msg),
         emitRecord: ctx.emitRecord,
         emittedAt: ctx.emittedAt,
         fingerprintCursors,
