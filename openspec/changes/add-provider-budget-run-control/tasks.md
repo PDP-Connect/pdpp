@@ -27,7 +27,7 @@ separate lane or tranche with its own acceptance checks.
   - [x] Conservative starting delay before first response signal.
   - [x] Per-provider isolation: slow or rate-limited provider does not stall other providers.
 - [x] Unit-test the token bucket with an injectable clock (no live provider required).
-- [x] Verify that a run with no budget configured behaves byte-for-byte unchanged.
+- [x] Verify that the generic primitive can run unbounded when no budget is configured.
 
 ### 2.2 Retry budget (ratio-based token bucket)
 
@@ -54,12 +54,13 @@ separate lane or tranche with its own acceptance checks.
 ### 2.4 Run budget envelope (request cap + wall-clock deadline)
 
 - [x] Implement run-scoped request cap and wall-clock deadline.
-  - [x] Default off (unset → no cap; run behavior unchanged).
+  - [x] Generic primitive supports unbounded mode; ChatGPT uses conservative
+        defaults with explicit disable escape hatches.
   - [x] Wall-clock checked between fetch attempts, never mid-fetch.
   - [x] On exhaustion: emit resumable gap record; checkpoint reflects last durable write only.
   - [x] Gap reason is not in source-pressure reason set.
   - [x] Does not arm source-pressure cooldown governor.
-- [x] Unit-test with injectable clock (request cap trip, wall-clock trip, default-off).
+- [x] Unit-test with injectable clock (request cap trip, wall-clock trip, unbounded mode).
 
 ### 2.5 Commit-gated monotonic checkpoint
 

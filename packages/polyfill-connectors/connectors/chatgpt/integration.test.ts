@@ -1207,13 +1207,9 @@ test("runMessagesAndConversationsWithDetail: a zero pre-detail seed preserves th
 
 // ─── Bounded-run budget (provider requests / wall-clock per run) ───────────
 
-test("resolveChatGptMaxDetailFetchesPerRun: unset/invalid → no cap; positive int caps", () => {
-  // Default OFF: an unconfigured or invalid value must NOT cap the run.
-  assert.equal(resolveChatGptMaxDetailFetchesPerRun({}), Number.POSITIVE_INFINITY);
-  assert.equal(
-    resolveChatGptMaxDetailFetchesPerRun({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "" }),
-    Number.POSITIVE_INFINITY
-  );
+test("resolveChatGptMaxDetailFetchesPerRun: unset → safe default; non-positive disables; positive int overrides", () => {
+  assert.equal(resolveChatGptMaxDetailFetchesPerRun({}), 25);
+  assert.equal(resolveChatGptMaxDetailFetchesPerRun({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "" }), 25);
   assert.equal(
     resolveChatGptMaxDetailFetchesPerRun({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "0" }),
     Number.POSITIVE_INFINITY,
@@ -1231,8 +1227,8 @@ test("resolveChatGptMaxDetailFetchesPerRun: unset/invalid → no cap; positive i
   assert.equal(resolveChatGptMaxDetailFetchesPerRun({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "250" }), 250);
 });
 
-test("resolveChatGptMaxRunWallClockMs: unset/invalid → no cap; positive ms caps", () => {
-  assert.equal(resolveChatGptMaxRunWallClockMs({}), Number.POSITIVE_INFINITY);
+test("resolveChatGptMaxRunWallClockMs: unset → safe default; non-positive disables; positive ms overrides", () => {
+  assert.equal(resolveChatGptMaxRunWallClockMs({}), 900_000);
   assert.equal(
     resolveChatGptMaxRunWallClockMs({ PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS: "0" }),
     Number.POSITIVE_INFINITY,
@@ -1247,12 +1243,29 @@ test("resolveChatGptMaxRunWallClockMs: unset/invalid → no cap; positive ms cap
   );
 });
 
-test("resolveChatGptProviderBudget: default off, run cap enables retry budget, pacing opt-in", async () => {
-  assert.equal(resolveChatGptProviderBudget({}), null);
-  assert.equal(resolveChatGptProviderBudget({ PDPP_CHATGPT_PACING_INITIAL_INTERVAL_MS: "0" }), null);
+test("resolveChatGptProviderBudget: defaults enable retry budget and pacing; explicit disables stay available", async () => {
+  const defaultBudget = resolveChatGptProviderBudget({});
+  assert.ok(defaultBudget instanceof ProviderBudgetController);
+  assert.ok(defaultBudget.pacing, "ChatGPT default enables conservative inter-request pacing");
+  assert.ok(defaultBudget.retryBudget, "ChatGPT default derives a ratio-based retry budget");
+
+  const retryOnlyByPacingDisable = resolveChatGptProviderBudget({ PDPP_CHATGPT_PACING_INITIAL_INTERVAL_MS: "0" });
+  assert.ok(retryOnlyByPacingDisable instanceof ProviderBudgetController);
+  assert.equal(retryOnlyByPacingDisable.pacing, null, "pacing can be disabled independently");
+  assert.ok(retryOnlyByPacingDisable.retryBudget);
+
+  assert.equal(
+    resolveChatGptProviderBudget({
+      PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "0",
+      PDPP_CHATGPT_PACING_INITIAL_INTERVAL_MS: "0",
+    }),
+    null,
+    "request/retry budget and pacing can both be disabled for supervised probes"
+  );
+
   const retryOnly = resolveChatGptProviderBudget({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "10" });
   assert.ok(retryOnly instanceof ProviderBudgetController);
-  assert.equal(retryOnly.pacing, null, "run cap alone does not enable inter-request pacing");
+  assert.ok(retryOnly.pacing, "run cap override preserves default inter-request pacing");
   assert.ok(retryOnly.retryBudget, "run cap derives a ratio-based retry budget");
 
   const sleeps: number[] = [];
@@ -1290,7 +1303,7 @@ test("consumeChatGptProviderRetryBudget: exhausted retry budget becomes planned 
 });
 
 test("ChatGptRunBudget: no caps never stops; request budget and wall-clock budget each trip with the right reason", () => {
-  // Disabled budget (the production default): never the reason a run stops.
+  // Disabled budget primitive: never the reason a run stops.
   const open = new ChatGptRunBudget();
   for (let i = 0; i < 100; i += 1) {
     open.recordDetailFetch();
@@ -1492,9 +1505,9 @@ test("runMessagesAndConversationsWithDetail: a wall-clock budget defers the tail
   assert.equal(capProgress.length, 1, "the wall-clock trip names the wall-clock budget exactly once");
 });
 
-test("runMessagesAndConversationsWithDetail: no cap configured leaves a large backlog unbounded (default-off)", async () => {
-  // The cap MUST default OFF: a budget with neither knob set hydrates every
-  // conversation and emits zero gaps, proving current behavior is preserved.
+test("runMessagesAndConversationsWithDetail: empty budget leaves a large backlog unbounded", async () => {
+  // The generic primitive can still run unbounded: a budget with neither knob
+  // set hydrates every conversation and emits zero gaps.
   const harness = makeRecordingEmit(validateRecord);
   const fetchedIds: string[] = [];
   const api: ChatGptApi = {
@@ -2077,6 +2090,7 @@ test("runConversationsAndMessagesStreams: 30/278 pressure exhaustion records a d
     emitRecord: harness.emitRecord,
     progress: (): Promise<void> => Promise.resolve(),
     requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+    runBudget: new ChatGptRunBudget(),
   };
 
   await runConversationsAndMessagesStreams(deps, {}, { detailPacing: { random: () => 0, sleep: () => undefined } });

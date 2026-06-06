@@ -236,7 +236,9 @@ dlt incremental separation; Fivetran priority-first sync.)
 
 ## Acceptance Checks
 
-- A run with no budget configured behaves byte-for-byte as before (default-off).
+- The generic provider-budget primitive can run unbounded when no budget is
+  configured; provider connectors with unsafe unattended defaults may ship
+  conservative connector-specific defaults plus explicit disable escape hatches.
 - When a request cap is exhausted, the run emits a resumable gap record with a
   reason not in the source-pressure reason set, and does not arm the
   source-pressure cooldown governor.

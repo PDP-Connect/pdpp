@@ -73,10 +73,12 @@ maximum available rate.
 ### Requirement: Polyfill-runtime SHALL apply a run-level request cap that defers the remainder as a resumable gap
 
 SHALL the polyfill-runtime support a per-run request cap (maximum number of
-provider-attempt tokens consumed in one run). The cap SHALL be opt-in and
-default off: an unset, empty, non-numeric, or non-positive value SHALL resolve
-to no cap, and with no cap configured a run SHALL behave exactly as it would
-without this feature. When a configured request cap is reached, the runtime
+provider-attempt tokens consumed in one run). The generic runtime primitive
+SHALL support an unbounded mode so callers can preserve prior behavior when no
+budget is configured. A provider connector MAY ship conservative provider-
+specific defaults when the connector cannot safely infer the provider's rate
+limit policy; such defaults SHALL have an explicit disable escape hatch for
+owner-supervised probes. When a configured request cap is reached, the runtime
 SHALL stop launching new provider requests and SHALL emit a named, resumable
 gap record for the remaining work, advancing the checkpoint only to the last
 durably written position.
@@ -100,13 +102,14 @@ durably written position.
 ### Requirement: Polyfill-runtime SHALL enforce a wall-clock run deadline as an outer hang bound, not a rate-control mechanism
 
 SHALL the polyfill-runtime support a per-run wall-clock deadline that bounds the
-maximum real time a single run occupies. The wall-clock deadline SHALL be opt-in
-and default off. On expiry, the runtime SHALL emit a resumable gap record for
-the remaining work and advance the checkpoint to the last durably written
-position. The wall-clock deadline SHALL be checked between provider-fetch
-attempts, never mid-fetch, so an in-flight request is not interrupted. The
-deadline MAY be exceeded by at most the duration of one in-flight request, itself
-bounded by the per-request timeout.
+maximum real time a single run occupies. The generic runtime primitive SHALL
+support an unbounded mode. A provider connector MAY ship a conservative provider-
+specific default deadline when unattended runs would otherwise be unsafe. On
+expiry, the runtime SHALL emit a resumable gap record for the remaining work and
+advance the checkpoint to the last durably written position. The wall-clock
+deadline SHALL be checked between provider-fetch attempts, never mid-fetch, so
+an in-flight request is not interrupted. The deadline MAY be exceeded by at most
+the duration of one in-flight request, itself bounded by the per-request timeout.
 
 The wall-clock deadline is an outer safety bound — it is NOT a rate-control
 primitive, SHALL NOT influence the per-provider pacing token bucket, and SHALL
