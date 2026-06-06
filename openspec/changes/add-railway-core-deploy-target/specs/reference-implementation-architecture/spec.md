@@ -112,11 +112,11 @@ The managed-platform Core deploy target SHALL define a reproducible
 first-live-test gate that proves a Core node boots, stays healthy, gates owner
 data, persists across restart, and answers an authenticated query, and SHALL be
 runnable against a local composed-origin stack before any live platform run is
-requested. The gate SHALL use the platform healthcheck path, the composed-origin
+requested. The gate SHALL use the public health probe, the composed-origin
 smoke assertions, the owner-gated deployment diagnostics, an MCP reachability
 check, a storage-persistence check, and a documented rollback or cleanup path.
 
-The healthcheck path SHALL return HTTP 200 from the public origin when the
+The public health probe SHALL return HTTP 200 from the public origin when the
 service is ready. The hosted MCP endpoint on the public origin SHALL refuse
 anonymous access and SHALL succeed for a scoped grant. The first live test SHALL
 NOT depend on browser-backed connector collection.
@@ -124,7 +124,7 @@ NOT depend on browser-backed connector collection.
 #### Scenario: Health and diagnostics are reachable on the public origin
 
 - **WHEN** the deployed service is healthy
-- **THEN** the platform healthcheck path on the public origin SHALL return HTTP 200
+- **THEN** the public health probe on the public origin SHALL return HTTP 200
 - **AND** the owner-gated `GET /_ref/deployment` diagnostics SHALL report the deploy facts with semantic retrieval shown as an honest "not enabled" rather than a defect
 
 #### Scenario: MCP refuses anonymous access and serves a scoped grant
@@ -152,7 +152,7 @@ managed-platform Core deploy target from the existing Docker assembly. The
 artifacts SHALL include a documented environment block consistent with the
 committed Docker example environment, a deploy configuration and runbook
 describing the public origin, the private AS/RS listener placement, the storage
-choice, the healthcheck path, and the rollback steps, and an operator-voice
+choice, the public health probe, and the rollback steps, and an operator-voice
 deployment guide section.
 
 The deploy artifacts SHALL keep the public-versus-internal URL distinction
@@ -166,7 +166,7 @@ Profile, reference implementation, and operator console distinct.
 
 - **WHEN** an operator follows the deploy artifacts for the managed-platform Core deploy target
 - **THEN** the documented environment block SHALL be consistent with the committed Docker example environment
-- **AND** the runbook SHALL define the public origin, the private AS/RS listener placement, the storage choice, the healthcheck path, and the rollback steps
+- **AND** the runbook SHALL define the public origin, the private AS/RS listener placement, the storage choice, the public health probe, and the rollback steps
 
 #### Scenario: Deploy documentation uses operator voice
 

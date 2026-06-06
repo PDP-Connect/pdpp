@@ -96,7 +96,7 @@ Railway assigns the template code when the workspace publishes the template.
 That owner action is narrow and testable: create a project with `core` plus
 Postgres, generate the template from that project, publish it, deploy a fresh
 scratch project from the published template, run the live smoke and restart
-smoke, then replace `<template-code>` in the button markup.
+smoke, then replace the placeholder code in the button markup.
 
 The service source is a separate publication gate. A `railway up` local-upload
 deployment proves runtime behavior, but Railway cannot generate a reusable
@@ -197,8 +197,10 @@ first-discovery of application bugs.
 1. Deploy contract applied: one public `core` service, private loopback AS/RS
    listeners, durable storage, and `PDPP_REFERENCE_ORIGIN` set to the real
    public origin. `PDPP_AS_URL` / `PDPP_RS_URL` stay internal image defaults.
-2. Service reaches healthy unattended via the healthcheck path
-   (`/.well-known/oauth-authorization-server` on the public origin).
+2. Service reaches healthy unattended, and
+   `/.well-known/oauth-authorization-server` on the public origin returns HTTP
+   200. The published Railway template keeps Railway's default healthcheck
+   behavior; the well-known probe is the external acceptance check.
 3. Composed-origin smoke assertions hold against the public origin: AS `issuer`,
    RS `resource`, and RS `authorization_servers[0]` all equal the public origin,
    and no internal service name leaks.

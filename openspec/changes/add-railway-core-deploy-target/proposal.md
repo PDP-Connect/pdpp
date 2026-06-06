@@ -77,7 +77,7 @@ test.
   be served over HTTPS with forwarded-proto trusted so owner-session cookies are
   marked `Secure`.
 - Require an **executable first-live-test gate**: a reproducible health and
-  doctor check (the platform healthcheck path plus the existing
+  diagnostics check (the public well-known probe plus the existing
   `GET /_ref/deployment` diagnostics and the composed-origin smoke assertions), a
   storage-persistence check across a restart, an MCP reachability check that
   refuses anonymous access and succeeds for a scoped grant, and a
@@ -86,11 +86,10 @@ test.
 - Add the platform-neutral **deploy artifacts** required to reproduce the target:
   a documented env block (consistent with `.env.docker.example`), a
   `deploy/railway/` config/runbook describing the selected one-service Railway
-  button shape, the storage choice, the healthcheck path, and the rollback steps,
+  button shape, the storage choice, the public health probe, and the rollback steps,
   and an operator-voice "Deploy on Railway" section. Add a Railway Template
-  handoff and button placeholder that can be filled only after Railway assigns
-  the published template code. No protocol, API, manifest, or connector behavior
-  changes.
+  handoff and published button code. No protocol, API, manifest, or connector
+  behavior changes.
 
 ## Capabilities
 

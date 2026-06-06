@@ -13,11 +13,11 @@ implementation packaged for Railway.
 The user-facing path is a published Railway Template with this button shape:
 
 ```md
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/<template-code>?utm_medium=integration&utm_source=button&utm_campaign=pdpp-core)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/pdpp-core-template-source?utm_medium=integration&utm_source=button&utm_campaign=pdpp-core)
 ```
 
-Railway assigns `<template-code>` when the template is published. Do not present
-the placeholder URL as a live deploy button.
+Published template code: `pdpp-core-template-source`. Do not present a
+placeholder template URL as a live deploy button.
 
 The published template uses:
 
@@ -149,9 +149,9 @@ For a live source project or scratch template deploy:
 ## Template publication
 
 Use [`template.md`](./template.md) for the publication handoff. The button is
-not ready for user-facing placement until:
+ready for user-facing placement after the 2026-06-06 live gate:
 
-- `pnpm railway:ghcr-public --tag <version-tag>` passes.
+- `pnpm railway:ghcr-public --tag sha-6581820` passed.
 - A source project with exactly `core` plus Postgres passes the live gate above.
 - Railway generates and publishes the template.
 - A fresh scratch project deployed from the published template passes the live

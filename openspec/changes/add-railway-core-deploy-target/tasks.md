@@ -11,7 +11,7 @@ pushbutton path must not carry browser runtime bloat.
 
 - [x] 1.1 Add `deploy/railway/` with a runbook describing the selected
   one-service Railway button shape (`core` plus Postgres), the storage choice,
-  the healthcheck path, and the rollback/cleanup steps.
+  the external health probe, and the rollback/cleanup steps.
   (`deploy/railway/README.md`.)
 - [x] 1.2 Add a documented environment block (public origin, owner password,
   storage vars, semantic off) and confirm it is consistent with
@@ -111,18 +111,26 @@ pushbutton path must not carry browser runtime bloat.
 
 ## 5. Owner-only live verification
 
-- [ ] 5.1 (Owner-only) Execute the first live Railway run against the acceptance
+- [x] 5.1 (Owner-only) Execute the first live Railway run against the acceptance
   gate in `design.md` (real TLS, real public DNS, durability across a real
-  restart). Record the result; if this is the only remaining open task, convert
-  it to a Residual Risk and archive per `AGENTS.md`.
-- [ ] 5.2 (Owner-only) Publish the Railway Template from a validated project,
+  restart). 2026-06-06: source project `02d96ec4-6b4f-4bff-bad4-a34b06ad1f01`
+  deployed `core` plus Postgres; source origin
+  `https://core-production-b649.up.railway.app` passed well-known, dashboard
+  redirect, full MCP smoke, restart, and no-seed smoke.
+- [x] 5.2 (Owner-only) Publish the Railway Template from a validated project,
   deploy a new scratch project from the published template, run the live smoke
-  and restart smoke against the scratch deploy, then replace `<template-code>` in
-  the user-facing button surface.
-- [ ] 5.3 (Owner-only) Satisfy the public source gate before publishing the
+  and restart smoke against the scratch deploy, then replace the placeholder in
+  the user-facing button surface. 2026-06-06: template
+  `pdpp-core-template-source` published from source project
+  `02d96ec4-6b4f-4bff-bad4-a34b06ad1f01`; scratch project
+  `6c8a03dd-5ab5-49be-bd8b-5a83f09b05e6` created exactly `core` plus
+  `Postgres`, reached `SUCCESS`, passed the full MCP smoke, then passed the
+  no-seed smoke after restarting `core`.
+- [x] 5.3 (Owner-only) Satisfy the public source gate before publishing the
   button: either make the template repository source public/reusable by Railway
-  users or use public anonymously pullable app images. Do not publish a template
-  generated from local upload-only services.
+  users or use public anonymously pullable app images. 2026-06-06:
+  `pnpm railway:ghcr-public --tag sha-6581820` passed for
+  `ghcr.io/vana-com/pdpp/railway-core`.
 
 ## Acceptance checks
 
@@ -134,6 +142,13 @@ Run before handing back and before any live platform run is requested:
 - `pnpm railway:template:test` — passes: the handoff uses the `railway-core`
   image shape, the runbook does not require manual target-stage setup, and the
   handoff carries Railway deploy-button markup plus required variable bindings.
+- `pnpm railway:ghcr-public --tag sha-6581820` — passes: the published
+  `railway-core` image tag is anonymously pullable.
+- 2026-06-06 Railway scratch proof — passes: published template
+  `pdpp-core-template-source` deployed exactly `core` plus Postgres, served
+  well-known metadata over HTTPS, redirected anonymous `/dashboard` to
+  `/owner/login`, refused anonymous `/mcp` with 401, returned seeded records over
+  scoped MCP, restarted `core`, and returned the same records with no reseed.
 - `pnpm docker:smoke` (from the main checkout) — passes: composed-origin
   assertions (`issuer` / `resource` / `authorization_servers[0]` equal the public
   origin, no internal-URL leak) and the `/dashboard` -> `/owner/login` redirect on

@@ -10,7 +10,7 @@ The selected template uses one application service plus a Postgres plugin.
 
 | Service | Source | Public networking | Healthcheck path |
 |---|---|---:|---|
-| `core` | `ghcr.io/vana-com/pdpp/railway-core:<version-tag>` | enabled | `/.well-known/oauth-authorization-server` |
+| `core` | `ghcr.io/vana-com/pdpp/railway-core:<version-tag>` | enabled | Railway default; externally probe `/.well-known/oauth-authorization-server` |
 | `Postgres` | Railway plugin | disabled | n/a |
 
 The `railway-core` image is built from the root `Dockerfile` target
@@ -29,6 +29,18 @@ listeners without asking the deploying operator for topology constants.
 
 Pin a concrete version tag, never `latest` or a moving tag, so the template is
 reproducible.
+
+Current published tag: `sha-6581820`.
+
+Current published template:
+
+| Field | Value |
+|---|---|
+| Template code | `pdpp-core-template-source` |
+| Template ID | `308f2589-788c-4a89-9cee-c0be761c4d91` |
+| Source project | `02d96ec4-6b4f-4bff-bad4-a34b06ad1f01` |
+| Scratch proof project | `6c8a03dd-5ab5-49be-bd8b-5a83f09b05e6` |
+| Scratch proof origin | `https://core-production-85b0.up.railway.app` |
 
 ## Source accessibility gate
 
@@ -116,26 +128,42 @@ stay under the Railway volume mount path.
 10. Publish the template from the workspace template list.
 11. Deploy a fresh scratch project from the published template and rerun the
     live smoke plus restart smoke.
-12. Replace `<template-code>` in the chosen user-facing button surface with
-    Railway's assigned template code.
+12. Replace any placeholder template code in the chosen user-facing button
+    surface with Railway's assigned template code.
 
 ## Button markup
 
 ```md
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/<template-code>?utm_medium=integration&utm_source=button&utm_campaign=pdpp-core)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/pdpp-core-template-source?utm_medium=integration&utm_source=button&utm_campaign=pdpp-core)
 ```
 
-Do not publish the placeholder URL. A docs/site surface should carry the button
-only after `<template-code>` has been replaced with the published template code.
+Do not publish a placeholder URL. A docs/site surface should carry the button
+only after the real template code has been installed and scratch-verified.
 
-### `<template-code>` replacement checklist
+### Template-code replacement checklist
 
-- [ ] `pnpm railway:ghcr-public --tag <version-tag>` exits `0`.
-- [ ] The published template deploys a fresh scratch project.
-- [ ] The chosen surface's button URL has `<template-code>` replaced with the
-      real code and keeps
+- [x] `pnpm railway:ghcr-public --tag sha-6581820` exits `0`.
+- [x] The published template deploys a fresh scratch project.
+- [x] The chosen surface's button URL uses `pdpp-core-template-source` and keeps
       `?utm_medium=integration&utm_source=button&utm_campaign=pdpp-core`.
-- [ ] No user-facing surface shows `<template-code>` as a clickable button.
+- [x] No user-facing surface shows a placeholder template code as a clickable
+      button.
+
+## 2026-06-06 scratch proof
+
+- Published config contained exactly `core` and `Postgres`.
+- `core` image: `ghcr.io/vana-com/pdpp/railway-core:sha-6581820`.
+- Required app prompt: `core.PDPP_OWNER_PASSWORD`.
+- No app prompts for `PORT`, `AS_PORT`, `RS_PORT`, `PDPP_AS_URL`, or
+  `PDPP_RS_URL`.
+- Scratch deploy reached `SUCCESS` for `core` and `Postgres`.
+- `/.well-known/oauth-authorization-server` returned HTTP 200 with issuer
+  `https://core-production-85b0.up.railway.app`.
+- Anonymous `/dashboard` redirected to `/owner/login`.
+- Full MCP smoke seeded `railway-seed-artist-1` and `railway-seed-artist-2`,
+  refused anonymous `/mcp` with 401, minted a scoped grant, and returned both
+  records through `query_records`.
+- After restarting `core`, the no-seed MCP smoke returned the same two records.
 
 ## Template QA
 
@@ -149,10 +177,7 @@ pnpm railway:mcp-query-smoke:test
 pnpm railway:ghcr-public --tag <version-tag>
 ```
 
-Then deploy a new scratch project from the published template, not from the
-hand-built source project. Confirm the generated project has exactly one public
-app service (`core`) plus Postgres, run the live smoke, restart `core`, and rerun
-the smoke with `--no-seed`.
-
-The template is not ready for user-facing placement until the scratch deploy
-passes the live smoke and restart check.
+For future template revisions, deploy a new scratch project from the published
+template, not from the hand-built source project. Confirm the generated project
+has exactly one public app service (`core`) plus Postgres, run the live smoke,
+restart `core`, and rerun the smoke with `--no-seed`.

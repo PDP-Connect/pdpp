@@ -56,13 +56,13 @@ test('Railway runbook and template handoff use the one-service core button shape
   const readme = read('deploy/railway/README.md');
   const handoff = read('deploy/railway/template.md');
 
-  assert.match(readme, /https:\/\/railway\.com\/new\/template\/<template-code>/);
+  assert.match(readme, /https:\/\/railway\.com\/new\/template\/pdpp-core-template-source/);
   assert.match(readme, /ghcr\.io\/vana-com\/pdpp\/railway-core/);
   assert.match(readme, /one public Core app service/i);
   assert.doesNotMatch(readme, /Settings\s*->\s*Build\s*->\s*Docker\s*->\s*Target Stage/i);
 
   assert.match(handoff, /https:\/\/railway\.com\/button\.svg/);
-  assert.match(handoff, /https:\/\/railway\.com\/new\/template\/<template-code>/);
+  assert.match(handoff, /https:\/\/railway\.com\/new\/template\/pdpp-core-template-source/);
   assert.match(handoff, /PDPP_REFERENCE_ORIGIN=https:\/\/\$\{\{core\.RAILWAY_PUBLIC_DOMAIN\}\}/);
   assert.match(handoff, /PDPP_DATABASE_URL=\$\{\{Postgres\.DATABASE_URL\}\}/);
   assert.match(handoff, /PGDATA=\$\{\{RAILWAY_VOLUME_MOUNT_PATH\}\}\/pgdata/);
@@ -110,10 +110,11 @@ test('Railway handoff wires the runnable GHCR public-image probe into the publis
   );
 });
 
-test('Railway handoff carries a <template-code> replacement checklist', () => {
+test('Railway handoff carries a template-code replacement checklist', () => {
   const handoff = read('deploy/railway/template.md');
 
-  assert.match(handoff, /`?<template-code>`? replacement checklist/i);
+  assert.match(handoff, /Template-code replacement checklist/i);
+  assert.match(handoff, /pdpp-core-template-source/);
   assert.match(handoff, /utm_medium=integration&utm_source=button&utm_campaign=pdpp-core/);
 });
 
