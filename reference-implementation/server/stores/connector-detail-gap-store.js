@@ -357,6 +357,38 @@ export function createSqliteConnectorDetailGapStore() {
       // REVIEWED-DYNAMIC: single-row lookup for the store-owned detail-gap table.
       return rowToGap(firstSqliteRow('SELECT * FROM connector_detail_gaps WHERE gap_id = ? LIMIT 1', [gapId]));
     },
+
+    // Reset in_progress gaps from prior runs (different runId, same scope) back
+    // to pending so crash leftovers become retryable. Never touches recovered gaps.
+    async reclaimStrandedInProgressGaps({ connectorId, connectorInstanceId, grantId, currentRunId }) {
+      const cii = nonEmptyString(connectorInstanceId) || defaultConnectorInstanceId(connectorId);
+      const now = nowIso();
+      // REVIEWED-DYNAMIC: bulk status reset for stranded in_progress gaps from prior runs.
+      execDynamicSqlAcknowledged(`
+        UPDATE connector_detail_gaps
+        SET status = 'pending', updated_at = ?
+        WHERE connector_instance_id = ?
+          AND connector_id = ?
+          AND (? IS NULL OR grant_id = ?)
+          AND status = 'in_progress'
+          AND last_run_id != ?
+      `, [now, cii, connectorId, grantId, grantId, currentRunId]);
+    },
+
+    // Reset still-in_progress gaps served by this run (by gap id) back to pending.
+    // Called in run cleanup/finally. Does not decrement attempt_count.
+    async resetServedInProgressGaps(gapIds) {
+      if (!gapIds || !gapIds.length) return;
+      const now = nowIso();
+      const placeholders = gapIds.map(() => '?').join(', ');
+      // REVIEWED-DYNAMIC: bulk reset of specific in_progress gap ids served this run.
+      execDynamicSqlAcknowledged(`
+        UPDATE connector_detail_gaps
+        SET status = 'pending', updated_at = ?
+        WHERE gap_id IN (${placeholders})
+          AND status = 'in_progress'
+      `, [now, ...gapIds]);
+    },
   };
 }
 
@@ -473,6 +505,31 @@ export function createPostgresConnectorDetailGapStore() {
         gapId,
       ]);
       return rowToGap(result.rows[0]);
+    },
+
+    async reclaimStrandedInProgressGaps({ connectorId, connectorInstanceId, grantId, currentRunId }) {
+      const cii = nonEmptyString(connectorInstanceId) || defaultConnectorInstanceId(connectorId);
+      const now = nowIso();
+      await postgresQuery(`
+        UPDATE connector_detail_gaps
+        SET status = 'pending', updated_at = $1
+        WHERE connector_instance_id = $2
+          AND connector_id = $3
+          AND ($4::text IS NULL OR grant_id = $4)
+          AND status = 'in_progress'
+          AND last_run_id != $5
+      `, [now, cii, connectorId, grantId, currentRunId]);
+    },
+
+    async resetServedInProgressGaps(gapIds) {
+      if (!gapIds || !gapIds.length) return;
+      const now = nowIso();
+      await postgresQuery(`
+        UPDATE connector_detail_gaps
+        SET status = 'pending', updated_at = $1
+        WHERE gap_id = ANY($2::text[])
+          AND status = 'in_progress'
+      `, [now, gapIds]);
     },
   };
 }

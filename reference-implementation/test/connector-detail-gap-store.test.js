@@ -685,6 +685,8 @@ test('runtime includes pending detail gaps in START as reference-only safe rows'
     async upsertPendingGap() {
       throw new Error('unused');
     },
+    async reclaimStrandedInProgressGaps() {},
+    async resetServedInProgressGaps() {},
   };
   const { connectorPath, cleanup } = createStartCaptureConnector(startPath);
 
@@ -947,6 +949,140 @@ test('re-deferred pressure gap remains pending with attempt_count > 0 after runt
   assert.equal(reDeferred.status, 'pending', 're-deferred gap is pending');
   assert.equal(reDeferred.attempt_count, 1, 'attempt_count is preserved at 1 after re-deferral');
   assert.equal(reDeferred.gap_id, seeded.gap_id, 'same gap identity persists across re-deferral');
+}));
+
+// ─── Durable lease acceptance tests ──────────────────────────────────────────
+//
+// These tests prove the lease fix: gaps marked in_progress when served are
+// reset back to pending if the connector exits without recovering or re-deferring
+// them, so they remain retryable. Recovered gaps are never reset.
+
+test('gap served but not recovered is reset to pending after connector exits without recovery', withTempDb(async (dir) => {
+  const store = createSqliteConnectorDetailGapStore();
+  const startPath = join(dir, 'lease-exit-start.json');
+
+  const seeded = await store.upsertPendingGap({
+    connectorId: 'chatgpt',
+    grantId: 'grant_1',
+    stream: 'messages',
+    recordKey: 'conv_lease',
+    detailLocator: { kind: 'chatgpt.conversation', conversation_id: 'conv_lease' },
+    reason: 'upstream_pressure',
+  });
+  assert.equal(seeded.attempt_count, 0);
+
+  // Run a connector that receives the gap (increments attempt_count to 1) but
+  // exits without emitting DETAIL_GAP_RECOVERED or re-deferring via DETAIL_GAP.
+  const { connectorPath, cleanup } = createStartCaptureConnector(startPath);
+  try {
+    await runConnector({
+      connectorPath,
+      connectorId: 'chatgpt',
+      grantId: 'grant_1',
+      ownerToken: 'owner',
+      manifest: { streams: [{ name: 'messages' }] },
+      persistState: false,
+      detailGapStore: store,
+      onProgress: () => {},
+    });
+  } finally {
+    cleanup();
+  }
+
+  // Gap must be back to pending so it can be retried.
+  const pending = await store.listPendingGaps({ connectorId: 'chatgpt', grantId: 'grant_1', streams: ['messages'] });
+  assert.equal(pending.length, 1, 'gap is retryable (pending) after connector exits without recovery');
+  assert.equal(pending[0].gap_id, seeded.gap_id);
+  // attempt_count must still reflect the attempt that was made.
+  assert.equal(pending[0].attempt_count, 1, 'attempt_count is preserved at 1 after reset to pending');
+}));
+
+test('recovered gap is not reset to pending by run cleanup', withTempDb(async () => {
+  const store = createSqliteConnectorDetailGapStore();
+
+  const seeded = await store.upsertPendingGap({
+    connectorId: 'chatgpt',
+    grantId: 'grant_1',
+    stream: 'messages',
+    recordKey: 'conv_recovered_lease',
+    detailLocator: { kind: 'chatgpt.conversation', conversation_id: 'conv_recovered_lease' },
+    reason: 'rate_limited',
+  });
+
+  // Simulate a run: serve the gap (in_progress) then recover it.
+  const emittedGap = {
+    type: 'DETAIL_GAP_RECOVERED',
+    reference_only: true,
+    gap_id: seeded.gap_id,
+    stream: 'messages',
+    record_key: seeded.record_key,
+  };
+  const { connectorPath, cleanup } = createConnector([
+    emittedGap,
+    { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+  ]);
+
+  try {
+    const result = await runConnector({
+      connectorPath,
+      connectorId: 'chatgpt',
+      grantId: 'grant_1',
+      ownerToken: 'owner',
+      manifest: { streams: [{ name: 'messages' }] },
+      persistState: false,
+      detailGapStore: store,
+      onProgress: () => {},
+    });
+    assert.equal(result.status, 'succeeded');
+  } finally {
+    cleanup();
+  }
+
+  // Gap must remain recovered, not be reset to pending.
+  const pending = await store.listPendingGaps({ connectorId: 'chatgpt', grantId: 'grant_1', streams: ['messages'] });
+  assert.equal(pending.length, 0, 'recovered gap is not reset to pending by cleanup');
+}));
+
+test('prior-run in_progress gap is reclaimed to pending before a new run serves gaps', withTempDb(async (dir) => {
+  const store = createSqliteConnectorDetailGapStore();
+
+  const seeded = await store.upsertPendingGap({
+    connectorId: 'chatgpt',
+    grantId: 'grant_1',
+    stream: 'messages',
+    recordKey: 'conv_stranded',
+    detailLocator: { kind: 'chatgpt.conversation', conversation_id: 'conv_stranded' },
+    reason: 'upstream_pressure',
+  });
+
+  // Simulate a prior crashed run: mark gap in_progress with a prior run id.
+  await store.markGapStatus(seeded.gap_id, 'in_progress', { runId: 'run_prior_crashed' });
+
+  // Gap is now in_progress and invisible to listPendingGaps.
+  const beforeReclaim = await store.listPendingGaps({ connectorId: 'chatgpt', grantId: 'grant_1', streams: ['messages'] });
+  assert.equal(beforeReclaim.length, 0, 'stranded in_progress gap is not returned by listPendingGaps');
+
+  // A new run should reclaim it and see it in START.
+  const startPath = join(dir, 'reclaim-start.json');
+  const { connectorPath, cleanup } = createStartCaptureConnector(startPath);
+  try {
+    await runConnector({
+      connectorPath,
+      connectorId: 'chatgpt',
+      grantId: 'grant_1',
+      ownerToken: 'owner',
+      manifest: { streams: [{ name: 'messages' }] },
+      persistState: false,
+      detailGapStore: store,
+      onProgress: () => {},
+    });
+  } finally {
+    cleanup();
+  }
+
+  const start = JSON.parse(readFileSync(startPath, 'utf8'));
+  assert.equal(start.detail_gaps.length, 1, 'new run serves the previously stranded gap after reclaiming it');
+  assert.equal(start.detail_gaps[0].gap_id, seeded.gap_id, 'reclaimed gap has same identity');
 }));
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;

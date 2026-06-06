@@ -165,6 +165,7 @@ function createDetailGapPageReader({
   connectorInstanceId,
   detailGapStore,
   grantId,
+  allServedGapIds,
 }) {
   let observedAverageBytes = DETAIL_GAP_PAGE_ASSUMED_AVG_BYTES;
 
@@ -216,6 +217,9 @@ function createDetailGapPageReader({
       // keeping the incremented attempt_count. Recovered gaps advance to
       // 'recovered' via DETAIL_GAP_RECOVERED handling.
       await Promise.all(servedGapIds.map((gapId) => detailGapStore.markGapStatus(gapId, 'in_progress')));
+      if (allServedGapIds) {
+        for (const gapId of servedGapIds) allServedGapIds.add(gapId);
+      }
     }
 
     return {
@@ -1976,15 +1980,32 @@ export async function runConnector(opts) {
     try { appendFileSync(_traceAppendFile, line + '\n'); } catch {}
   };
 
+  // Tracks all gap IDs served to the connector this run (across START + paged requests).
+  // Used in cleanup to reset still-in_progress gaps back to pending if the connector
+  // exits without recovering or re-deferring them.
+  const allServedGapIds = new Set();
+
   const readDetailGapPage = createDetailGapPageReader({
     connectorId,
     connectorInstanceId: normalizedConnectorInstanceId,
     detailGapStore,
     grantId,
+    allServedGapIds,
   });
 
   let startDetailGaps = [];
   try {
+    // Reclaim in_progress gaps left by prior crashed/killed runs before loading
+    // new pending gaps. Uses last_run_id != currentRunId so only prior-run
+    // leftovers are touched; never resets recovered gaps.
+    if (typeof detailGapStore.reclaimStrandedInProgressGaps === 'function') {
+      await detailGapStore.reclaimStrandedInProgressGaps({
+        connectorId,
+        connectorInstanceId: normalizedConnectorInstanceId,
+        grantId,
+        currentRunId: spawnRunId,
+      });
+    }
     const page = await readDetailGapPage({
       streams: startScope.streams.map((stream) => stream.name),
     });
@@ -2588,6 +2609,12 @@ export async function runConnector(opts) {
       proc.stdin.destroy();
       proc.stdout.destroy();
       proc.stderr.destroy();
+      // Reset any gaps this run marked in_progress but the connector never
+      // recovered or re-deferred — so they remain retryable on the next run.
+      // Best-effort: fire-and-forget; cleanup must not throw.
+      if (allServedGapIds.size > 0 && typeof detailGapStore.resetServedInProgressGaps === 'function') {
+        Promise.resolve(detailGapStore.resetServedInProgressGaps([...allServedGapIds])).catch(() => {});
+      }
     }
 
     function notifyQueueDrained() {
@@ -3058,6 +3085,9 @@ export async function runConnector(opts) {
             discoveredRunId: runId,
             lastRunId: runId,
           });
+          // Gap was explicitly re-deferred by the connector — it's already pending
+          // again via upsert; remove from lease set so cleanup won't double-reset it.
+          allServedGapIds.delete(storedGap.gap_id);
           durableDetailGaps.push(storedGap);
           const gap = buildKnownGap({
             kind: 'detail_gap',
@@ -3148,6 +3178,8 @@ export async function runConnector(opts) {
           validateDetailGapRecoveredMessage(msg, scopeByStream);
           await flushAll();
           const recoveredGap = await detailGapStore.markGapStatus(msg.gap_id, 'recovered', { runId });
+          // Gap is now recovered — remove from the lease set so cleanup won't reset it.
+          allServedGapIds.delete(msg.gap_id);
           durableDetailGaps.push(recoveredGap);
           await emitSpineEventTracked({
             event_type: 'run.detail_gap_recovered',
