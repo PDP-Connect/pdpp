@@ -32,7 +32,13 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { TABLES, getMigratableColumns } from './schema.mjs';
+import {
+  DERIVED_TABLES,
+  TABLES,
+  classifyMissingTargetColumn,
+  getMigratableColumns,
+  isSynthesizedColumn,
+} from './schema.mjs';
 import {
   openSqliteSource,
   describeSourceColumns,
@@ -136,7 +142,40 @@ test('readiness: connector_instance_id is NOT NULL in every data table that carr
   }
 });
 
-// --- 3. SQLite -> (plan/transform) rehearsal against a real bootstrapped DB --
+// --- 3. Diff classifier matches execute semantics ---------------------------
+
+test('diff readiness: synthesized target columns are handled, not hard drift', () => {
+  assert.equal(isSynthesizedColumn('records', 'primary_key_text'), true);
+  assert.equal(isSynthesizedColumn('records', 'cursor_value'), true);
+  assert.equal(isSynthesizedColumn('blob_bindings', 'json_path'), true);
+
+  const records = tableByName('records');
+  const primaryKeyText = records.columns.find((c) => c.name === 'primary_key_text');
+  const cursorValue = records.columns.find((c) => c.name === 'cursor_value');
+  assert.equal(classifyMissingTargetColumn(primaryKeyText, 'records'), 'synthesized');
+  assert.equal(classifyMissingTargetColumn(cursorValue, 'records'), 'synthesized');
+
+  const blobBindings = tableByName('blob_bindings');
+  const jsonPath = blobBindings.columns.find((c) => c.name === 'json_path');
+  assert.equal(classifyMissingTargetColumn(jsonPath, 'blob_bindings'), 'synthesized');
+});
+
+test('diff readiness: nullable missing target columns are null-fill, while missing NOT NULL identity is hard drift', () => {
+  const records = tableByName('records');
+  const deletedAt = records.columns.find((c) => c.name === 'deleted_at');
+  const connectorInstanceId = records.columns.find((c) => c.name === 'connector_instance_id');
+
+  assert.equal(classifyMissingTargetColumn(deletedAt, 'records'), 'null-fill');
+  assert.equal(classifyMissingTargetColumn(connectorInstanceId, 'records'), 'hard-drift');
+});
+
+test('diff readiness: derived/runtime-rebuilt tables are classified for skip by table set', () => {
+  assert.equal(DERIVED_TABLES.has('lexical_search_index'), true);
+  assert.equal(DERIVED_TABLES.has('semantic_search_backfill_progress'), true);
+  assert.equal(DERIVED_TABLES.has('records'), false);
+});
+
+// --- 4. SQLite -> (plan/transform) rehearsal against a real bootstrapped DB --
 
 test('rehearsal: a bootstrapped SQLite store carries connector_instance_id and transforms cleanly', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'pdpp-migrate-rehearsal-'));
