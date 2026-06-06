@@ -3223,6 +3223,8 @@ test('scheduler default readiness checker does not treat browser bindings as rea
   const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
   const previousRemoteCdp = process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL;
   const previousUnmanagedOptIn = process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES;
+  const previousNekoCdpUrl = process.env.PDPP_NEKO_CDP_HTTP_URL;
+  const previousNekoManaged = process.env.PDPP_NEKO_MANAGED_CONNECTORS;
   const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -3231,6 +3233,8 @@ test('scheduler default readiness checker does not treat browser bindings as rea
   try {
     delete process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL;
     delete process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES;
+    delete process.env.PDPP_NEKO_CDP_HTTP_URL;
+    delete process.env.PDPP_NEKO_MANAGED_CONNECTORS;
     const registerResp = await fetchJson(`${asUrl}/connectors`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3275,6 +3279,197 @@ test('scheduler default readiness checker does not treat browser bindings as rea
       delete process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES;
     } else {
       process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES = previousUnmanagedOptIn;
+    }
+    if (previousNekoCdpUrl === undefined) {
+      delete process.env.PDPP_NEKO_CDP_HTTP_URL;
+    } else {
+      process.env.PDPP_NEKO_CDP_HTTP_URL = previousNekoCdpUrl;
+    }
+    if (previousNekoManaged === undefined) {
+      delete process.env.PDPP_NEKO_MANAGED_CONNECTORS;
+    } else {
+      process.env.PDPP_NEKO_MANAGED_CONNECTORS = previousNekoManaged;
+    }
+    await closeServer(server);
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('scheduler default readiness checker treats PDPP_NEKO_CDP_HTTP_URL as managed browser surface', async () => {
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
+  const manifest = {
+    ...spotifyManifest,
+    connector_id: 'scheduler-browser-neko-cdp-ready-test',
+    connector_key: 'scheduler-browser-neko-cdp-ready-test',
+    runtime_requirements: {
+      bindings: { browser: { required: true }, network: { required: true } },
+    },
+  };
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-scheduler-browser-neko-cdp-'));
+  const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
+  const previousRemoteCdp = process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL;
+  const previousUnmanagedOptIn = process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES;
+  const previousNekoCdpUrl = process.env.PDPP_NEKO_CDP_HTTP_URL;
+  const previousNekoManaged = process.env.PDPP_NEKO_MANAGED_CONNECTORS;
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const completedRuns = [];
+
+  try {
+    delete process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL;
+    delete process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES;
+    delete process.env.PDPP_NEKO_MANAGED_CONNECTORS;
+    // Simulate reference Docker stack static neko mode — no PDPP_BROWSER_SURFACE_REMOTE_CDP_URL needed.
+    process.env.PDPP_NEKO_CDP_HTTP_URL = 'http://neko:9223';
+
+    const registerResp = await fetchJson(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(manifest),
+    });
+    assert.equal(registerResp.status, 201);
+
+    const ownerToken = await issueOwnerToken(asUrl, 'scheduler_browser_neko_cdp_user');
+    const scheduler = createScheduler({
+      connectors: [
+        {
+          connectorId: manifest.connector_id,
+          connectorPath,
+          manifest,
+          ownerToken,
+          intervalMs: 25,
+          maxRetries: 0,
+        },
+      ],
+      rsUrl,
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
+      onRunComplete: (record) => completedRuns.push(record),
+      getState: async () => null,
+      setState: async () => {},
+    });
+
+    scheduler.start();
+    await waitFor(() => completedRuns.length >= 1, 5000);
+    scheduler.stop();
+
+    const [first] = completedRuns;
+    // Readiness gate must pass — connector should run (succeeded or failed), not be skipped as not_ready.
+    assert.ok(
+      first.status !== 'skipped' || !first.error?.startsWith('not_ready:'),
+      `expected run to pass readiness gate but got: ${first.error}`
+    );
+    assert.ok(readAttempts(attemptsPath).length >= 1, 'connector should have been launched');
+  } finally {
+    if (previousRemoteCdp === undefined) {
+      delete process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL;
+    } else {
+      process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL = previousRemoteCdp;
+    }
+    if (previousUnmanagedOptIn === undefined) {
+      delete process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES;
+    } else {
+      process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES = previousUnmanagedOptIn;
+    }
+    if (previousNekoCdpUrl === undefined) {
+      delete process.env.PDPP_NEKO_CDP_HTTP_URL;
+    } else {
+      process.env.PDPP_NEKO_CDP_HTTP_URL = previousNekoCdpUrl;
+    }
+    if (previousNekoManaged === undefined) {
+      delete process.env.PDPP_NEKO_MANAGED_CONNECTORS;
+    } else {
+      process.env.PDPP_NEKO_MANAGED_CONNECTORS = previousNekoManaged;
+    }
+    await closeServer(server);
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('scheduler default readiness checker treats PDPP_NEKO_MANAGED_CONNECTORS as managed browser surface', async () => {
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
+  const manifest = {
+    ...spotifyManifest,
+    connector_id: 'scheduler-browser-neko-managed-ready-test',
+    connector_key: 'scheduler-browser-neko-managed-ready-test',
+    runtime_requirements: {
+      bindings: { browser: { required: true }, network: { required: true } },
+    },
+  };
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-scheduler-browser-neko-managed-'));
+  const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
+  const previousRemoteCdp = process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL;
+  const previousUnmanagedOptIn = process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES;
+  const previousNekoCdpUrl = process.env.PDPP_NEKO_CDP_HTTP_URL;
+  const previousNekoManaged = process.env.PDPP_NEKO_MANAGED_CONNECTORS;
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const completedRuns = [];
+
+  try {
+    delete process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL;
+    delete process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES;
+    delete process.env.PDPP_NEKO_CDP_HTTP_URL;
+    // Simulate reference Docker stack dynamic neko mode.
+    process.env.PDPP_NEKO_MANAGED_CONNECTORS = 'https://registry.pdpp.org/connectors/chatgpt';
+
+    const registerResp = await fetchJson(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(manifest),
+    });
+    assert.equal(registerResp.status, 201);
+
+    const ownerToken = await issueOwnerToken(asUrl, 'scheduler_browser_neko_managed_user');
+    const scheduler = createScheduler({
+      connectors: [
+        {
+          connectorId: manifest.connector_id,
+          connectorPath,
+          manifest,
+          ownerToken,
+          intervalMs: 25,
+          maxRetries: 0,
+        },
+      ],
+      rsUrl,
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
+      onRunComplete: (record) => completedRuns.push(record),
+      getState: async () => null,
+      setState: async () => {},
+    });
+
+    scheduler.start();
+    await waitFor(() => completedRuns.length >= 1, 5000);
+    scheduler.stop();
+
+    const [first] = completedRuns;
+    assert.ok(
+      first.status !== 'skipped' || !first.error?.startsWith('not_ready:'),
+      `expected run to pass readiness gate but got: ${first.error}`
+    );
+    assert.ok(readAttempts(attemptsPath).length >= 1, 'connector should have been launched');
+  } finally {
+    if (previousRemoteCdp === undefined) {
+      delete process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL;
+    } else {
+      process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL = previousRemoteCdp;
+    }
+    if (previousUnmanagedOptIn === undefined) {
+      delete process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES;
+    } else {
+      process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES = previousUnmanagedOptIn;
+    }
+    if (previousNekoCdpUrl === undefined) {
+      delete process.env.PDPP_NEKO_CDP_HTTP_URL;
+    } else {
+      process.env.PDPP_NEKO_CDP_HTTP_URL = previousNekoCdpUrl;
+    }
+    if (previousNekoManaged === undefined) {
+      delete process.env.PDPP_NEKO_MANAGED_CONNECTORS;
+    } else {
+      process.env.PDPP_NEKO_MANAGED_CONNECTORS = previousNekoManaged;
     }
     await closeServer(server);
     rmSync(tmpDir, { recursive: true, force: true });

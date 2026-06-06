@@ -925,9 +925,23 @@ function requiredBindingEnabled(manifest: SchedulerManifest, binding: string): b
 }
 
 function browserSurfaceConfigured(): boolean {
+  // Direct CDP URL — connector receives the URL in env and talks to it directly.
   if (process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL?.trim()) {
     return true;
   }
+  // Managed neko surface (static mode): a single shared n.eko container whose
+  // CDP port is exposed at PDPP_NEKO_CDP_HTTP_URL.  The controller owns leasing;
+  // the connector does not discover the CDP endpoint itself.
+  if (process.env.PDPP_NEKO_CDP_HTTP_URL?.trim()) {
+    return true;
+  }
+  // Managed neko surface (dynamic mode): the allocator spawns per-connector
+  // n.eko containers; PDPP_NEKO_MANAGED_CONNECTORS lists the connector IDs
+  // eligible for those surfaces.
+  if (process.env.PDPP_NEKO_MANAGED_CONNECTORS?.trim()) {
+    return true;
+  }
+  // Explicit opt-in for unmanaged/bring-your-own browser setups.
   if (process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES === "1") {
     return true;
   }
