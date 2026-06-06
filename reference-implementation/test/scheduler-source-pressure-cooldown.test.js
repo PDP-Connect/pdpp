@@ -165,16 +165,26 @@ test('an explicit next_attempt_after earlier than the computed cooldown does not
   assert.equal(decision.nextRunAt, new Date(T0 + BASE_INTERVAL_MS * 4).toISOString());
 });
 
-// ─── Manual override ─────────────────────────────────────────────────────
+// ─── Force override ──────────────────────────────────────────────────────
 
-test('manual: true bypasses cooldown even with deep persistent pressure', () => {
+test('force: true bypasses cooldown even with deep persistent pressure', () => {
   const decision = computeSourcePressureCooldown([gap({ attemptCount: 6 })], BASE_INTERVAL_MS, T0, {
-    manual: true,
+    force: true,
   });
   assert.equal(decision.cooldownApplied, false);
   assert.equal(decision.pendingPressureGapCount, 0);
   assert.equal(decision.identity, null);
   assert.equal(decision.effectiveIntervalMs, 0);
+});
+
+test('ordinary manual run (no force flag) respects cooldown — same as scheduled', () => {
+  // An ordinary manual Sync now with pending pressure gaps is subject to the
+  // same cooldown decision a scheduled tick would get. The caller (controller)
+  // gates the run; this test confirms the cooldown module does not suppress it.
+  const decision = computeSourcePressureCooldown([gap({ attemptCount: 2 })], BASE_INTERVAL_MS, T0);
+  assert.equal(decision.cooldownApplied, true);
+  assert.equal(decision.recommendedHealthState, 'cooling_off');
+  assert.equal(decision.effectiveIntervalMs, BASE_INTERVAL_MS * 4); // 2^2
 });
 
 // ─── Robustness ──────────────────────────────────────────────────────────

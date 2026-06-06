@@ -31,8 +31,10 @@
  * The cooldown is deliberately orthogonal to failure back-off: a connection
  * can be failing (back-off) *and* carrying pressure gaps (cooldown) at the
  * same time. The scheduler takes whichever defers the next run further. The
- * cooldown only ever makes a schedule more conservative; manual `Sync now`
- * bypasses it entirely (the owner is explicitly asking to retry now).
+ * cooldown applies to both scheduled and ordinary manual runs. An explicit
+ * `force: true` flag is required to override the cooldown; ordinary `Sync now`
+ * is intentionally subject to it so the owner does not accidentally hammer a
+ * hot account.
  */
 
 // ─── Pressure reasons ───────────────────────────────────────────────────────
@@ -104,8 +106,13 @@ export interface PendingPressureGap {
 }
 
 export interface ComputeCooldownOptions {
-  /** Owner-triggered run: bypass cooldown entirely. */
-  readonly manual?: boolean;
+  /**
+   * Explicit force-override: bypass provider-pressure cooldown entirely.
+   * Ordinary manual `Sync now` should NOT set this flag — it is reserved for
+   * an explicit "force run despite pressure" action so the owner's default
+   * button cannot accidentally hammer a hot account.
+   */
+  readonly force?: boolean;
   /** Max exponent applied to the base interval. */
   readonly maxCooldownExp?: number;
   /** Absolute ceiling (ms) on the cooldown delay. */
@@ -169,21 +176,24 @@ export function computeSourcePressureCooldown(
   const maxMs = normalizeFiniteNonNegativeMs(options.maxCooldownMs ?? DEFAULT_MAX_COOLDOWN_MS, DEFAULT_MAX_COOLDOWN_MS);
   const normalizedBaseIntervalMs = normalizeFiniteNonNegativeMs(baseIntervalMs, 0);
   const normalizedLastRunAtMs = normalizeFiniteNonNegativeMs(lastRunAtMs, 0);
-  const manual = options.manual === true;
+  const force = options.force === true;
 
   const pressureGaps = (pendingGaps ?? []).filter(
     (gap) => gap && typeof gap.reason === "string" && SOURCE_PRESSURE_GAP_REASONS.has(gap.reason)
   );
 
-  // Manual run or no pressure → no cooldown. A recovered run (pending pressure
-  // set becomes empty) lands here, so the connection is never stuck cooling.
-  if (manual || pressureGaps.length === 0) {
+  // Force override or no pressure → no cooldown. A recovered run (pending
+  // pressure set becomes empty) lands here, so the connection is never stuck
+  // cooling. Ordinary manual runs are NOT given a bypass here — they respect
+  // the cooldown just like scheduled runs; only an explicit `force: true` skips
+  // it.
+  if (force || pressureGaps.length === 0) {
     return {
       cooldownApplied: false,
       pendingPressureGapCount: 0,
       maxAttemptCount: 0,
-      effectiveIntervalMs: manual ? 0 : normalizedBaseIntervalMs,
-      nextRunAt: toIsoTimestamp(manual ? 0 : normalizedLastRunAtMs + normalizedBaseIntervalMs),
+      effectiveIntervalMs: force ? 0 : normalizedBaseIntervalMs,
+      nextRunAt: toIsoTimestamp(force ? 0 : normalizedLastRunAtMs + normalizedBaseIntervalMs),
       identity: null,
       recommendedHealthState: null,
     };

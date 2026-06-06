@@ -217,6 +217,13 @@ export interface ActiveRun {
 
 export interface RunNowOptions {
   connectorInstanceId?: string;
+  /**
+   * Explicit force-override: bypass provider-pressure cooldown for this run.
+   * Ordinary `Sync now` must NOT set this flag. It is reserved for a separate,
+   * explicitly-named "force run despite pressure" action so the default owner
+   * button cannot accidentally re-hit a hot account that is cooling off.
+   */
+  force?: boolean;
   manifest?: ConnectorManifest;
   ownerToken?: string;
   priorityClass?: "owner_interactive" | "scheduled_refresh";
@@ -498,16 +505,34 @@ interface ActiveRunInteraction {
 export class ControllerError extends Error {
   readonly code: string;
   readonly details: readonly { param: string; message: string }[] | undefined;
+  /**
+   * ISO timestamp of the next eligible retry window. Set on
+   * `provider_pressure_cooldown` errors so the HTTP layer can surface
+   * `next_eligible_at` in the error envelope without parsing the message.
+   */
+  readonly nextEligibleAt: string | undefined;
+  /**
+   * Count of pending source-pressure gaps that drove the cooldown decision.
+   * Set alongside `nextEligibleAt` on `provider_pressure_cooldown` errors.
+   */
+  readonly pendingPressureGapCount: number | undefined;
   readonly runId: string | undefined;
 
   constructor(
     message: string,
     code: string,
-    extra: { details?: readonly { param: string; message: string }[]; runId?: string } = {}
+    extra: {
+      details?: readonly { param: string; message: string }[];
+      nextEligibleAt?: string;
+      pendingPressureGapCount?: number;
+      runId?: string;
+    } = {}
   ) {
     super(message);
     this.code = code;
     this.details = extra.details;
+    this.nextEligibleAt = extra.nextEligibleAt;
+    this.pendingPressureGapCount = extra.pendingPressureGapCount;
     this.runId = extra.runId;
     this.name = "ControllerError";
   }
@@ -3225,6 +3250,48 @@ export function createController(opts: ControllerOptions = {}): Controller {
         runId: existing.run_id,
       });
     }
+
+    // Provider-pressure cooldown gate. Ordinary manual runs respect the same
+    // cross-run cooldown the scheduler uses. An explicit `force: true` bypasses
+    // it (a separately-named action, never the default "Sync now" button).
+    if (!options.force) {
+      const connectorInstanceId = options.connectorInstanceId || connectorId;
+      const pendingGapRows = await Promise.resolve(
+        detailGapStore.listPendingGapsForConnector(connectorInstanceId)
+      );
+      const pendingPressureGaps: PendingPressureGap[] = pendingGapRows
+        .filter((row) => typeof row.reason === "string" && SOURCE_PRESSURE_GAP_REASONS.has(row.reason))
+        .map((row) => ({
+          reason: row.reason as string,
+          attemptCount: typeof row.attempt_count === "number" ? row.attempt_count : null,
+          nextAttemptAfter: typeof row.next_attempt_after === "string" ? row.next_attempt_after : null,
+        }));
+
+      if (pendingPressureGaps.length > 0) {
+        // Use base interval 0 when no schedule is known — the cooldown still
+        // applies (effectiveIntervalMs may be 0 but nextRunAt from
+        // nextAttemptAfter is honoured) and the caller's gate is the count.
+        const schedule = await Promise.resolve(schedulerStore.getSchedule(connectorInstanceId)).catch(() => null);
+        const baseIntervalMs = schedule ? Math.max(1, schedule.interval_seconds) * 1000 : 0;
+        // Use current time as the last-run anchor when no schedule exists. This
+        // gives an honest `nextRunAt` relative to now; the `cooldownApplied`
+        // flag (what we gate on) depends only on pending gap count, not timing.
+        const lastRunTimeMs = Date.now();
+        const cooldown = computeSourcePressureCooldown(pendingPressureGaps, baseIntervalMs, lastRunTimeMs);
+        if (cooldown.cooldownApplied) {
+          throw new ControllerError(
+            `Provider pressure cooldown active — next eligible retry at ${cooldown.nextRunAt}. ` +
+              `Use force: true to override. Pending pressure gaps: ${cooldown.pendingPressureGapCount}.`,
+            "provider_pressure_cooldown",
+            {
+              nextEligibleAt: cooldown.nextRunAt,
+              pendingPressureGapCount: cooldown.pendingPressureGapCount,
+            }
+          );
+        }
+      }
+    }
+
     const connectorPath = await Promise.resolve(resolveConnectorPath(connectorId, manifest, options));
     if (!connectorPath) {
       throw new ControllerError(`No runnable connector implementation is available for ${connectorId}`, "not_found");

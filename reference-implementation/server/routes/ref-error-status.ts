@@ -81,4 +81,8 @@ export const codeToStatus: Readonly<Record<string, number>> = {
   interaction_id_mismatch: 409,
   invalid_status: 400,
   cursor_expired: 410,
+  // Provider-pressure cooldown is active; the run was not started. The client
+  // may retry after `next_eligible_at`. 425 Too Early is the closest standard
+  // status for "this request is valid but the server is not ready to act yet."
+  provider_pressure_cooldown: 425,
 };

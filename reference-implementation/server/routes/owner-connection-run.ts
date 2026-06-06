@@ -49,6 +49,7 @@ import { codeToStatus } from "./ref-error-status.ts";
 // `server/routes/owner-connection-schedule.ts`.
 
 interface RouteRequest {
+  readonly body?: Readonly<Record<string, unknown>> | null;
   readonly params: Readonly<Record<string, string>>;
   readonly query: Readonly<Record<string, unknown>>;
   readonly tokenInfo?: {
@@ -150,7 +151,11 @@ export interface MountOwnerConnectionRunContext {
   // Controller run-now. Owner-scoped because the namespace was already resolved
   // owner-side; the controller starts a run for the resolved instance and
   // returns the run handle (`{ run_id, trace_id, ... }`) immediately.
-  runNow(connectorId: string, options: { connectorInstanceId?: string | null }): Promise<unknown>;
+  //
+  // `force: true` bypasses the provider-pressure cooldown gate. Callers MUST
+  // NOT pass force for the ordinary `Sync now` path; it is reserved for an
+  // explicitly-named "force run despite pressure" action.
+  runNow(connectorId: string, options: { connectorInstanceId?: string | null; force?: boolean }): Promise<unknown>;
   setReferenceTraceId(res: RouteResponse, traceId: string): void;
 }
 
@@ -362,8 +367,12 @@ function buildRunHandler(
       connectionId = namespace.connectorInstanceId;
       connectorKey = ctx.canonicalConnectorKey(namespace.connectorId) ?? namespace.connectorId;
 
+      // `force` must be explicitly `true` in the request body; any other value
+      // (absent, null, false, non-boolean) is treated as an ordinary safe run.
+      const force = (req.body as Record<string, unknown> | null | undefined)?.force === true;
       const started = await ctx.runNow(namespace.connectorId, {
         connectorInstanceId: namespace.connectorInstanceId,
+        force,
       });
       await emitRunAudit(ctx, req, res, {
         connectionId,
