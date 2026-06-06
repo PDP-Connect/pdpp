@@ -9,7 +9,10 @@ browser-facing origin. What it does not have is a documented, reproducible
 **deploy-target contract** for running that same assembly on a managed platform
 and a defined **first live deployment test** that proves a Core node boots,
 stays healthy, gates owner data, and answers an authenticated query over public
-HTTPS. The first target is Railway.
+HTTPS. The first target is Railway. Live template publication also showed that
+literal source-project env values become user prompts, so this change now
+includes the narrow image/runtime defaults needed to keep the Railway Template
+pushbutton.
 
 Three prior evidence reports
 (`tmp/workstreams/ri-railway-runtime-audit-v1-report.md`,
@@ -34,8 +37,10 @@ that two reports treated as gating does **not** gate the console front door. It
 only applies if a deploy naively points the platform at the `reference` image
 directly. The supported Railway shape is therefore the same single-public-origin
 composed topology the smoke test already validates: **one public console
-service, one private reference service, and a storage backend** — achievable
-with configuration only, no runtime code change.
+service, one private reference service, and a storage backend**. Railway template
+publication then adds one constraint: safe constants must live in image/runtime
+defaults or Railway reference variables, not literal source env values that turn
+into user prompts.
 
 This change records that topology decision as a durable deployment contract,
 adds the platform-neutral deploy artifacts and env block needed to reproduce it,
@@ -53,16 +58,17 @@ test.
   topology: exactly one public service (the console) fronting the full protocol
   surface, the AS/RS reference service kept private, and AS/RS internal URLs and
   the public origin supplied through the existing
-  `PDPP_REFERENCE_ORIGIN` / `PDPP_AS_URL` / `PDPP_RS_URL` env contract. The
+`PDPP_REFERENCE_ORIGIN` / `PDPP_AS_URL` / `PDPP_RS_URL` env contract. The
   public service SHALL be the only internet-reachable origin; the AS `7662` and
   RS `7663` listeners SHALL NOT be published as separate public origins for this
   target.
 - Require the deploy target to provide **durable storage explicitly**: either a
-  managed Postgres backend (`PDPP_STORAGE_BACKEND=postgres` +
-  `PDPP_DATABASE_URL`, schema bootstrapped idempotently at boot) or a SQLite
-  database file on a mounted persistent volume with `PDPP_DB_PATH` pointed onto
-  that volume. The default in-memory / unmounted SQLite path SHALL NOT be the
-  configured storage for a deploy that must survive restart.
+  managed Postgres backend (`PDPP_DATABASE_URL`, with
+  `PDPP_STORAGE_BACKEND=postgres` optional because the runtime selects Postgres
+  when the database URL is present, schema bootstrapped idempotently at boot) or
+  a SQLite database file on a mounted persistent volume with `PDPP_DB_PATH`
+  pointed onto that volume. The default in-memory / unmounted SQLite path SHALL
+  NOT be the configured storage for a deploy that must survive restart.
 - Require the deploy target to **gate owner data by default**: a non-empty
   `PDPP_OWNER_PASSWORD` SHALL be required, and the deploy SHALL NOT serve the
   owner console or device-approval surfaces anonymously. The public origin SHALL
@@ -96,13 +102,15 @@ Removed:
 
 ## Impact
 
-- Configuration, deployment artifacts, and documentation for the reference
-  implementation only. Does not change the PDPP protocol, the public
+- Configuration, deployment artifacts, narrow image/runtime defaults, and
+  documentation for the reference implementation only. Does not change the PDPP
+  protocol, the public
   record/query/search/schema/blob `/v1` API, MCP semantics, Collection Profile
   JSONL messages, connector manifests, owner-auth semantics, or the storage
   schema. The composed-origin proxy, the AS/RS rewrite behavior, and the smoke
   assertions are reused as-is; this change documents and constrains how they are
-  deployed, it does not re-implement them.
+  deployed, and adds defaults only where Railway would otherwise turn safe
+  constants into user prompts.
 - The deploy target is platform-neutral by construction (it is the existing
   composed-origin contract plus a public/private service split and explicit
   storage), so Fly / a VPS / Coolify follow the same shape with different

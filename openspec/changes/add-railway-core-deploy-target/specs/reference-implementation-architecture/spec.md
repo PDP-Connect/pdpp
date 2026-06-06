@@ -46,7 +46,8 @@ URL.
 The managed-platform Core deploy target SHALL be configured with durable storage
 so that records, grants, runs, and tokens survive a restart or redeploy. The
 operator SHALL choose either a managed Postgres backend, set through
-`PDPP_STORAGE_BACKEND=postgres` and `PDPP_DATABASE_URL`, whose schema is
+`PDPP_DATABASE_URL` with `PDPP_STORAGE_BACKEND=postgres` optional because the
+runtime selects Postgres when the database URL is present, whose schema is
 bootstrapped idempotently at boot with no separate migrate step, or a SQLite
 database file on a mounted persistent volume with `PDPP_DB_PATH` pointed onto
 that mounted path.
@@ -58,7 +59,7 @@ mounted persistent volume.
 
 #### Scenario: Managed Postgres backend bootstraps at boot
 
-- **WHEN** the deploy target is configured with `PDPP_STORAGE_BACKEND=postgres` and `PDPP_DATABASE_URL`
+- **WHEN** the deploy target is configured with `PDPP_DATABASE_URL`, with or without `PDPP_STORAGE_BACKEND=postgres`
 - **THEN** the schema SHALL be created or migrated idempotently during application start
 - **AND** no separate migrate step SHALL be required before first boot
 - **AND** a restart SHALL re-run the idempotent bootstrap without error and without data loss

@@ -13,7 +13,7 @@
 //   - owner data left ungated (empty PDPP_OWNER_PASSWORD on a public origin);
 //   - storage left on the non-durable default;
 //   - SQLite chosen but PDPP_DB_PATH left at a default that is not a mount;
-//   - Postgres chosen but PDPP_DATABASE_URL missing;
+//   - Postgres chosen, or inferred from PDPP_DATABASE_URL, but the database URL is missing;
 //   - console's private AS/RS targets unset.
 //
 // It does not contact Railway, Docker, or any network. It reads the dotenv-style
@@ -47,9 +47,9 @@ export function isPlaceholder(value) {
   return PLACEHOLDER_RE.test(trimmed);
 }
 
-// `${{Postgres.DATABASE_URL}}` is a Railway reference variable: it is a real,
-// intentional binding that Railway resolves at deploy time, so it counts as
-// "configured" for contract purposes even though it is not a literal URL here.
+// `${{Postgres.DATABASE_URL}}` and
+// `http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7662` are Railway reference
+// variables: real, intentional bindings Railway resolves at deploy time.
 export function isRailwayReference(value) {
   return typeof value === 'string' && /\$\{\{[^}]+\}\}/.test(value.trim());
 }
@@ -114,6 +114,11 @@ function isRailwayPrivateUrl(url, port) {
   if (isPlaceholder(url)) {
     return false;
   }
+  if (isRailwayReference(url)) {
+    return new RegExp(`^http://\\$\\{\\{[^}]*RAILWAY_PRIVATE_DOMAIN[^}]*\\}\\}:${port}$`).test(
+      String(url).trim(),
+    );
+  }
   try {
     const parsed = new URL(String(url).trim());
     return (
@@ -123,6 +128,20 @@ function isRailwayPrivateUrl(url, port) {
     );
   } catch {
     return false;
+  }
+}
+
+function hasDurableDatabaseUrl(env) {
+  const databaseUrl = env.PDPP_DATABASE_URL;
+  return !isPlaceholder(databaseUrl) || isRailwayReference(databaseUrl);
+}
+
+function requireExpectedIfSet(violations, env, key, expected, message) {
+  if (isPlaceholder(env[key])) {
+    return;
+  }
+  if (String(env[key]).trim() !== expected) {
+    violations.push(message);
   }
 }
 
@@ -156,23 +175,24 @@ export function evaluateRailwayDeployEnv(env) {
   if (isPlaceholder(env.PDPP_AS_URL)) {
     violations.push(
       'PDPP_AS_URL is not set. The console must reach the private reference Authorization Server ' +
-        '(e.g. http://reference.railway.internal:7662).',
+        '(e.g. http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7662).',
     );
   }
   if (isPlaceholder(env.PDPP_RS_URL)) {
     violations.push(
       'PDPP_RS_URL is not set. The console must reach the private reference Resource Server ' +
-        '(e.g. http://reference.railway.internal:7663).',
+        '(e.g. http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7663).',
     );
   }
 
   // 4. Storage chosen explicitly and durably.
-  const backend = (env.PDPP_STORAGE_BACKEND ?? '').trim().toLowerCase();
+  const configuredBackend = (env.PDPP_STORAGE_BACKEND ?? '').trim().toLowerCase();
+  const backend = configuredBackend || (hasDurableDatabaseUrl(env) ? 'postgres' : '');
   if (backend === 'postgres') {
     const url = env.PDPP_DATABASE_URL;
     if (isPlaceholder(url) && !isRailwayReference(url)) {
       violations.push(
-        'PDPP_STORAGE_BACKEND=postgres requires PDPP_DATABASE_URL (e.g. ${{Postgres.DATABASE_URL}}).',
+        'Postgres storage requires PDPP_DATABASE_URL (e.g. ${{Postgres.DATABASE_URL}}).',
       );
     }
   } else if (backend === 'sqlite') {
@@ -185,7 +205,7 @@ export function evaluateRailwayDeployEnv(env) {
     }
   } else {
     violations.push(
-      `PDPP_STORAGE_BACKEND must be "postgres" or "sqlite" for a durable deploy; got "${
+      `PDPP_STORAGE_BACKEND must be "postgres" or "sqlite", or PDPP_DATABASE_URL must be set so Postgres can be inferred; got "${
         env.PDPP_STORAGE_BACKEND ?? '(unset)'
       }". The in-memory default is not durable.`,
     );
@@ -205,13 +225,20 @@ export function evaluateRailwayServiceEnvs({ consoleEnv, referenceEnv }) {
     );
   }
 
-  requireSame(violations, consoleEnv, referenceEnv, 'PDPP_REFERENCE_MODE', 'composed mode');
-  if (
-    !isPlaceholder(consoleEnv.PDPP_REFERENCE_MODE) &&
-    String(consoleEnv.PDPP_REFERENCE_MODE).trim() !== 'composed'
-  ) {
-    violations.push('composed mode: console PDPP_REFERENCE_MODE must be "composed".');
-  }
+  requireExpectedIfSet(
+    violations,
+    consoleEnv,
+    'PDPP_REFERENCE_MODE',
+    'composed',
+    'composed mode: console PDPP_REFERENCE_MODE must be "composed" when set.',
+  );
+  requireExpectedIfSet(
+    violations,
+    referenceEnv,
+    'PDPP_REFERENCE_MODE',
+    'composed',
+    'composed mode: reference PDPP_REFERENCE_MODE must be "composed" when set.',
+  );
 
   requireSame(violations, consoleEnv, referenceEnv, 'PDPP_OWNER_PASSWORD', 'owner gate');
 
@@ -231,38 +258,48 @@ export function evaluateRailwayServiceEnvs({ consoleEnv, referenceEnv }) {
     );
   }
 
-  if (String(consoleEnv.PDPP_ENABLE_DASHBOARD ?? '').trim() !== '1') {
-    violations.push('console PDPP_ENABLE_DASHBOARD must be "1" for the owner-console front door.');
-  }
+  requireExpectedIfSet(
+    violations,
+    consoleEnv,
+    'PDPP_ENABLE_DASHBOARD',
+    '1',
+    'console PDPP_ENABLE_DASHBOARD must be "1" when set.',
+  );
   if (!isPlaceholder(consoleEnv.PORT)) {
     violations.push('console PORT must not be set; Railway injects the public service port.');
   }
 
-  if (String(referenceEnv.NODE_ENV ?? '').trim() !== 'production') {
-    violations.push('reference NODE_ENV must be "production".');
-  }
-  if (String(referenceEnv.AS_PORT ?? '').trim() !== '7662') {
-    violations.push('reference AS_PORT must be "7662".');
-  }
-  if (String(referenceEnv.RS_PORT ?? '').trim() !== '7663') {
-    violations.push('reference RS_PORT must be "7663".');
-  }
-  if (String(referenceEnv.PORT ?? '').trim() !== '7662') {
-    violations.push(
-      'reference PORT must be "7662" so Railway healthchecks target the AS healthcheck listener.',
-    );
-  }
-  if (String(referenceEnv.PDPP_REFERENCE_OPERATIONAL_DEFAULTS ?? '').trim() !== '1') {
-    violations.push('reference PDPP_REFERENCE_OPERATIONAL_DEFAULTS must be "1".');
-  }
-  if (String(referenceEnv.PDPP_RS_URL ?? '').trim() !== 'http://127.0.0.1:7663') {
-    violations.push(
-      'reference PDPP_RS_URL must be "http://127.0.0.1:7663" for hosted-MCP self-calls.',
-    );
-  }
-  if (String(referenceEnv.PDPP_EMBEDDING_DOWNLOAD_ALLOWED ?? '').trim() !== '0') {
-    violations.push('reference PDPP_EMBEDDING_DOWNLOAD_ALLOWED must be "0" for the Core test.');
-  }
+  requireExpectedIfSet(violations, referenceEnv, 'NODE_ENV', 'production', 'reference NODE_ENV must be "production".');
+  requireExpectedIfSet(violations, referenceEnv, 'AS_PORT', '7662', 'reference AS_PORT must be "7662".');
+  requireExpectedIfSet(violations, referenceEnv, 'RS_PORT', '7663', 'reference RS_PORT must be "7663".');
+  requireExpectedIfSet(
+    violations,
+    referenceEnv,
+    'PORT',
+    '7662',
+    'reference PORT must be "7662" so Railway healthchecks target the AS healthcheck listener.',
+  );
+  requireExpectedIfSet(
+    violations,
+    referenceEnv,
+    'PDPP_REFERENCE_OPERATIONAL_DEFAULTS',
+    '1',
+    'reference PDPP_REFERENCE_OPERATIONAL_DEFAULTS must be "1".',
+  );
+  requireExpectedIfSet(
+    violations,
+    referenceEnv,
+    'PDPP_RS_URL',
+    'http://127.0.0.1:7663',
+    'reference PDPP_RS_URL must be "http://127.0.0.1:7663" for hosted-MCP self-calls.',
+  );
+  requireExpectedIfSet(
+    violations,
+    referenceEnv,
+    'PDPP_EMBEDDING_DOWNLOAD_ALLOWED',
+    '0',
+    'reference PDPP_EMBEDDING_DOWNLOAD_ALLOWED must be "0" for the Core test.',
+  );
 
   violations.push(...evaluateRailwayDeployEnv(referenceEnv).filter((violation) => {
     return (

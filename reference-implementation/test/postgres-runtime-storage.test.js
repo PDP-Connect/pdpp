@@ -118,6 +118,24 @@ test('Postgres runtime storage config fails fast without PDPP_DATABASE_URL', () 
   );
 });
 
+test('Postgres runtime storage auto-selects Postgres when PDPP_DATABASE_URL is present', () => {
+  assert.deepEqual(
+    resolveStorageBackend({
+      env: { PDPP_DATABASE_URL: 'postgres://user:pass@localhost:5432/pdpp' },
+    }),
+    { backend: 'postgres', databaseUrl: 'postgres://user:pass@localhost:5432/pdpp' },
+  );
+  assert.deepEqual(
+    resolveStorageBackend({
+      env: {
+        PDPP_STORAGE_BACKEND: 'sqlite',
+        PDPP_DATABASE_URL: 'postgres://user:pass@localhost:5432/pdpp',
+      },
+    }),
+    { backend: 'sqlite' },
+  );
+});
+
 test('polyfill manifest reconciliation defaults on for Postgres deployments', () => {
   assert.equal(
     shouldAutoReconcilePolyfillManifests({

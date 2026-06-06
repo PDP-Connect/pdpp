@@ -20,9 +20,8 @@ function validPostgresEnv(overrides = {}) {
   return {
     PDPP_REFERENCE_ORIGIN: 'https://pdpp.example.com',
     PDPP_OWNER_PASSWORD: 's3cret-owner-pw',
-    PDPP_AS_URL: 'http://reference.railway.internal:7662',
-    PDPP_RS_URL: 'http://reference.railway.internal:7663',
-    PDPP_STORAGE_BACKEND: 'postgres',
+    PDPP_AS_URL: 'http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7662',
+    PDPP_RS_URL: 'http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7663',
     PDPP_DATABASE_URL: '${{Postgres.DATABASE_URL}}',
     ...overrides,
   };
@@ -42,29 +41,18 @@ function validSqliteEnv(overrides = {}) {
 
 function validConsoleServiceEnv(overrides = {}) {
   return {
-    PDPP_REFERENCE_ORIGIN: 'https://pdpp.example.com',
-    PDPP_REFERENCE_MODE: 'composed',
+    PDPP_REFERENCE_ORIGIN: 'https://${{console.RAILWAY_PUBLIC_DOMAIN}}',
     PDPP_OWNER_PASSWORD: 's3cret-owner-pw',
-    PDPP_AS_URL: 'http://reference.railway.internal:7662',
-    PDPP_RS_URL: 'http://reference.railway.internal:7663',
-    PDPP_ENABLE_DASHBOARD: '1',
+    PDPP_AS_URL: 'http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7662',
+    PDPP_RS_URL: 'http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7663',
     ...overrides,
   };
 }
 
 function validReferenceServiceEnv(overrides = {}) {
   return {
-    PDPP_REFERENCE_ORIGIN: 'https://pdpp.example.com',
-    PDPP_REFERENCE_MODE: 'composed',
+    PDPP_REFERENCE_ORIGIN: 'https://${{console.RAILWAY_PUBLIC_DOMAIN}}',
     PDPP_OWNER_PASSWORD: 's3cret-owner-pw',
-    NODE_ENV: 'production',
-    PORT: '7662',
-    AS_PORT: '7662',
-    RS_PORT: '7663',
-    PDPP_REFERENCE_OPERATIONAL_DEFAULTS: '1',
-    PDPP_RS_URL: 'http://127.0.0.1:7663',
-    PDPP_EMBEDDING_DOWNLOAD_ALLOWED: '0',
-    PDPP_STORAGE_BACKEND: 'postgres',
     PDPP_DATABASE_URL: '${{Postgres.DATABASE_URL}}',
     ...overrides,
   };
@@ -80,6 +68,7 @@ test('isPlaceholder treats empty, missing, and angle-bracket templates as unset'
 
 test('isRailwayReference recognizes ${{...}} bindings only', () => {
   assert.equal(isRailwayReference('${{Postgres.DATABASE_URL}}'), true);
+  assert.equal(isRailwayReference('http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7662'), true);
   assert.equal(isRailwayReference('postgres://u:p@host/db'), false);
   assert.equal(isRailwayReference(''), false);
 });
@@ -91,13 +80,13 @@ test('parseEnv ignores comments and blanks and strips quotes', () => {
       '',
       'PDPP_REFERENCE_ORIGIN=https://pdpp.example.com',
       'PDPP_OWNER_PASSWORD="quoted-secret"',
-      "PDPP_AS_URL='http://reference.railway.internal:7662'",
+      "PDPP_AS_URL='http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7662'",
       'NO_EQUALS_LINE',
     ].join('\n'),
   );
   assert.equal(env.PDPP_REFERENCE_ORIGIN, 'https://pdpp.example.com');
   assert.equal(env.PDPP_OWNER_PASSWORD, 'quoted-secret');
-  assert.equal(env.PDPP_AS_URL, 'http://reference.railway.internal:7662');
+  assert.equal(env.PDPP_AS_URL, 'http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7662');
   assert.equal('NO_EQUALS_LINE' in env, false);
 });
 
@@ -134,8 +123,10 @@ test('missing private AS/RS targets are violations', () => {
   assert.equal(violations.some((v) => v.includes('PDPP_RS_URL is not set')), true);
 });
 
-test('postgres backend without a database URL is a violation', () => {
-  const violations = evaluateRailwayDeployEnv(validPostgresEnv({ PDPP_DATABASE_URL: '' }));
+test('postgres storage without a database URL is a violation', () => {
+  const violations = evaluateRailwayDeployEnv(
+    validPostgresEnv({ PDPP_STORAGE_BACKEND: 'postgres', PDPP_DATABASE_URL: '' }),
+  );
   assert.equal(violations.some((v) => v.includes('requires PDPP_DATABASE_URL')), true);
 });
 
@@ -151,20 +142,26 @@ test('sqlite backend with no path is a violation', () => {
   assert.equal(violations.some((v) => v.includes('mounted persistent volume')), true);
 });
 
-test('an unset or unknown storage backend is a violation', () => {
-  const unset = evaluateRailwayDeployEnv(validPostgresEnv({ PDPP_STORAGE_BACKEND: '' }));
-  assert.equal(unset.some((v) => v.includes('must be "postgres" or "sqlite"')), true);
+test('database URL infers Postgres when storage backend is unset', () => {
+  assert.deepEqual(evaluateRailwayDeployEnv(validPostgresEnv({ PDPP_STORAGE_BACKEND: '' })), []);
+});
+
+test('missing database URL and storage backend is a violation', () => {
+  const unset = evaluateRailwayDeployEnv(validPostgresEnv({ PDPP_STORAGE_BACKEND: '', PDPP_DATABASE_URL: '' }));
+  assert.equal(unset.some((v) => v.includes('or PDPP_DATABASE_URL must be set')), true);
+});
+
+test('unknown storage backend is a violation', () => {
   const unknown = evaluateRailwayDeployEnv(validPostgresEnv({ PDPP_STORAGE_BACKEND: 'mysql' }));
   assert.equal(unknown.some((v) => v.includes('must be "postgres" or "sqlite"')), true);
 });
 
 test('the committed env.example is a template and fails the contract with placeholder/empty findings', () => {
-  // The example uses placeholders for the operator to fill in; running the
-  // check against it must report the placeholder origin and empty owner
-  // password (it is not a ready-to-deploy file by design).
+  // The example uses Railway reference variables for topology, but intentionally
+  // leaves the owner password empty because it is not a committed secret.
   const text = readFileSync(path.join(repoRoot, 'deploy/railway/env.example'), 'utf8');
   const violations = evaluateRailwayDeployEnv(parseEnv(text));
-  assert.equal(violations.some((v) => v.includes('PDPP_REFERENCE_ORIGIN is not set')), true);
+  assert.equal(violations.some((v) => v.includes('PDPP_REFERENCE_ORIGIN is not set')), false);
   assert.equal(violations.some((v) => v.includes('PDPP_OWNER_PASSWORD is empty')), true);
 });
 
@@ -205,10 +202,20 @@ test('service env preflight rejects setting PORT on the console service', () => 
   assert.equal(violations.some((v) => v.includes('console PORT must not be set')), true);
 });
 
-test('service env preflight requires reference PORT to target the AS listener', () => {
+test('service env preflight permits reference constants to come from image defaults', () => {
+  assert.deepEqual(
+    evaluateRailwayServiceEnvs({
+      consoleEnv: validConsoleServiceEnv(),
+      referenceEnv: validReferenceServiceEnv(),
+    }),
+    [],
+  );
+});
+
+test('service env preflight rejects a wrong reference PORT when set', () => {
   const violations = evaluateRailwayServiceEnvs({
     consoleEnv: validConsoleServiceEnv(),
-    referenceEnv: validReferenceServiceEnv({ PORT: '' }),
+    referenceEnv: validReferenceServiceEnv({ PORT: '3000' }),
   });
   assert.equal(violations.some((v) => v.includes('reference PORT must be "7662"')), true);
 });
@@ -224,14 +231,14 @@ test('service env preflight requires reference hosted-MCP self-calls to stay loo
   );
 });
 
-test('committed service env templates fail only because operator placeholders remain', () => {
+test('committed service env templates fail only because the owner secret is not committed', () => {
   const consoleText = readFileSync(path.join(repoRoot, 'deploy/railway/console.env.example'), 'utf8');
   const referenceText = readFileSync(path.join(repoRoot, 'deploy/railway/reference.env.example'), 'utf8');
   const violations = evaluateRailwayServiceEnvs({
     consoleEnv: parseEnv(consoleText),
     referenceEnv: parseEnv(referenceText),
   });
-  assert.equal(violations.some((v) => v.includes('PDPP_REFERENCE_ORIGIN is not set')), true);
+  assert.equal(violations.some((v) => v.includes('PDPP_REFERENCE_ORIGIN is not set')), false);
   assert.equal(violations.some((v) => v.includes('PDPP_OWNER_PASSWORD is not set')), true);
   assert.equal(violations.some((v) => v.includes('reference PORT must be')), false);
   assert.equal(violations.some((v) => v.includes('PDPP_DATABASE_URL')), false);

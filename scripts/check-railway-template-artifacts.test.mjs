@@ -47,9 +47,12 @@ test('Railway runbook and template handoff do not require manual Docker target-s
   assert.match(handoff, /https:\/\/railway\.com\/button\.svg/);
   assert.match(handoff, /https:\/\/railway\.com\/new\/template\/<template-code>/);
   assert.match(handoff, /PDPP_REFERENCE_ORIGIN=https:\/\/\$\{\{console\.RAILWAY_PUBLIC_DOMAIN\}\}/);
+  assert.match(handoff, /PDPP_OWNER_PASSWORD=\$\{\{reference\.PDPP_OWNER_PASSWORD\}\}/);
+  assert.match(handoff, /PDPP_AS_URL=http:\/\/\$\{\{reference\.RAILWAY_PRIVATE_DOMAIN\}\}:7662/);
+  assert.match(handoff, /PDPP_RS_URL=http:\/\/\$\{\{reference\.RAILWAY_PRIVATE_DOMAIN\}\}:7663/);
   assert.match(handoff, /PDPP_DATABASE_URL=\$\{\{Postgres\.DATABASE_URL\}\}/);
-  assert.match(handoff, /reference\.railway\.internal:7662/);
-  assert.match(handoff, /reference\.railway\.internal:7663/);
+  assert.match(handoff, /PGDATA=\$\{\{RAILWAY_VOLUME_MOUNT_PATH\}\}\/pgdata/);
+  assert.match(handoff, /DATABASE_URL=postgresql:\/\/postgres:\$\{\{POSTGRES_PASSWORD\}\}@\$\{\{RAILWAY_PRIVATE_DOMAIN\}\}:5432\/postgres/);
   assert.match(handoff, /Source accessibility gate/);
   assert.match(handoff, /railway up/);
   assert.match(handoff, /public container images/);

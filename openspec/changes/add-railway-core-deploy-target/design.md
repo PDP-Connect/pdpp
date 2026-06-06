@@ -4,15 +4,18 @@
 
 In scope: the durable deployment-target contract for running the existing
 reference Docker assembly as a Core node on a managed platform (Railway first),
-the platform-neutral deploy artifacts that reproduce it, and the executable
-first-live-test acceptance. Out of scope: any runtime code change to the AS, RS,
-console, storage layer, or connectors. This change is configuration, deploy
-artifacts, documentation, and the spec delta that makes them auditable.
+the platform-neutral deploy artifacts that reproduce it, the narrow image/runtime
+defaults needed to keep the Railway Template pushbutton, and the executable
+first-live-test acceptance. Out of scope: protocol behavior, endpoint semantics,
+connector behavior, and any broader runtime redesign. This change is deployment
+contract, deploy artifacts, documentation, and the spec delta that makes them
+auditable.
 
 ## The topology decision (the load-bearing call)
 
 **Decision: single public console front door + private reference service +
-explicit durable storage. Two application services. Configuration only.**
+explicit durable storage. Two application services. Configuration plus safe
+image/runtime defaults.**
 
 The reference server binds two HTTP listeners in one Node process — AS on
 `AS_PORT` (default `7662`) and RS on `RS_PORT` (default `7663`)
@@ -126,9 +129,11 @@ template SHALL NOT embed private registry credentials.
 Two supported durable options, operator's choice; the contract forbids the
 non-durable default either way.
 
-- **Managed Postgres** (`PDPP_STORAGE_BACKEND=postgres`,
-  `PDPP_DATABASE_URL=${{Postgres.DATABASE_URL}}`). Schema bootstraps idempotently
-  at boot (`postgres-storage.js` `bootstrapPostgresSchema`, `CREATE TABLE IF NOT
+- **Managed Postgres** (`PDPP_DATABASE_URL=${{Postgres.DATABASE_URL}}`, with
+  `PDPP_STORAGE_BACKEND=postgres` optional). The runtime selects Postgres when
+  `PDPP_DATABASE_URL` is present, so Railway does not need to prompt users for a
+  literal `PDPP_STORAGE_BACKEND=postgres` value. Schema bootstraps idempotently at
+  boot (`postgres-storage.js` `bootstrapPostgresSchema`, `CREATE TABLE IF NOT
   EXISTS` + guarded `DO $$` blocks called from `startServer()`), so no separate
   migrate step and no volume. This is the cleaner managed-platform fit: the DB
   persists independently of the app container, and a redeploy does not force the

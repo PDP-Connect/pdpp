@@ -116,33 +116,35 @@ The variable names and meanings match `.env.docker.example`. Use
 [`reference.env.example`](./reference.env.example) as the service-specific
 templates, and [`env.example`](./env.example) as a consolidated reference.
 Set the variables on the services indicated below. Provide `PDPP_OWNER_PASSWORD`
-and any database URL as Railway secrets, not committed files.
+as a Railway secret, not a committed file. For the published template, bind
+variables with Railway references so the deploy page does not ask the operator
+for topology constants.
 
 Set on **both** services:
 
-- `PDPP_REFERENCE_ORIGIN=https://<your-console-domain>` — the public origin.
-- `PDPP_REFERENCE_MODE=composed`
+- `PDPP_REFERENCE_ORIGIN=https://${{console.RAILWAY_PUBLIC_DOMAIN}}` — the
+  public origin. For a hand-built project, use the console service's assigned
+  HTTPS domain.
 - `PDPP_OWNER_PASSWORD=<non-empty secret>` — required (see Security below).
+  In the template, set it directly on `reference` and set the console value to
+  `${{reference.PDPP_OWNER_PASSWORD}}` so there is one prompt.
 
 Set on the **console** service:
 
-- `PDPP_AS_URL=http://reference.railway.internal:7662`
-- `PDPP_RS_URL=http://reference.railway.internal:7663`
-- `PDPP_ENABLE_DASHBOARD=1`
+- `PDPP_AS_URL=http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7662`
+- `PDPP_RS_URL=http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7663`
 - Do not set `PORT`; Railway injects it and the console binds it.
 
 Set on the **reference** service:
 
-- `NODE_ENV=production`, `AS_PORT=7662`, `RS_PORT=7663`
-- `PORT=7662` — Railway healthchecks use `PORT`; set it to the Authorization
-  Server listener so `/.well-known/oauth-authorization-server` resolves.
-- `PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1`
-- `PDPP_RS_URL=http://127.0.0.1:7663` (loopback, for internal hosted-MCP
-  self-calls — keep it distinct from the public origin so self-calls do not
-  hairpin through the proxy).
-- `PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0` (semantic retrieval stays off for a Core
-  test).
 - The storage variables from the option you pick below.
+
+The `reference` image already sets the Core constants needed by Railway:
+`NODE_ENV=production`, `PORT=7662`, `AS_PORT=7662`, `RS_PORT=7663`,
+`PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1`,
+`PDPP_RS_URL=http://127.0.0.1:7663`, and
+`PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0`. You may set them explicitly in a hand-built
+project, but the pushbutton template should not prompt for them.
 
 Preflight the service envs locally before deploying:
 
@@ -156,8 +158,8 @@ The check is offline and deterministic. It flags a missing or non-HTTPS public
 origin, an empty owner password, mismatched shared values, console URLs that do
 not target the private Railway reference service, reference healthcheck `PORT`
 misconfiguration, and storage left on the non-durable default. Run against the
-committed service templates it reports the placeholder origin and empty owner
-password on purpose — they are templates, not ready-to-deploy files.
+committed service templates it reports the empty owner password on purpose —
+they are templates, not ready-to-deploy files.
 
 ## Storage — pick one
 
@@ -169,10 +171,10 @@ backend for a deploy that must survive restart.
 Add Railway's Postgres plugin and set, on the reference service:
 
 ```
-PDPP_STORAGE_BACKEND=postgres
 PDPP_DATABASE_URL=${{Postgres.DATABASE_URL}}
 ```
 
+The runtime selects Postgres automatically when `PDPP_DATABASE_URL` is present.
 The schema bootstraps idempotently at boot — no separate migrate step, no
 volume. The database persists independently of the app container, so a redeploy
 does not force a volume remount. Railway's managed Postgres is plain `postgres`,

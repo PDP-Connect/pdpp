@@ -1,13 +1,13 @@
 # Tasks: add-railway-core-deploy-target
 
 Topology is decided (single public console front door + private reference
-service + explicit durable storage; configuration only — see `design.md`). The
-slices below make the first live test reproducible. They are documentation and
-deploy artifacts plus a verification harness; none requires a runtime code change
-to the AS, RS, console, storage layer, or connectors. Doctor CLI is an explicit
-follow-on, not a blocker. The browser-free Core reference image is part of this
-change because the live Railway pushbutton path must not carry browser runtime
-bloat.
+service + explicit durable storage; see `design.md`). The slices below make the
+first live test reproducible. They are documentation and deploy artifacts plus a
+verification harness, with narrow image/runtime defaults added only where the
+Railway Template would otherwise turn safe constants into user prompts. Doctor
+CLI is an explicit follow-on, not a blocker. The browser-free Core reference
+image is part of this change because the live Railway pushbutton path must not
+carry browser runtime bloat.
 
 ## 1. Deploy artifacts and env contract
 
@@ -50,10 +50,11 @@ bloat.
 
 ## 2. Storage persistence
 
-- [x] 2.1 Document the managed-Postgres path (`PDPP_STORAGE_BACKEND=postgres`,
-  `PDPP_DATABASE_URL=${{Postgres.DATABASE_URL}}`, idempotent boot bootstrap, no
-  migrate step, no volume) as the lower-risk default. (README "Storage" Option A;
-  `env.example`.)
+- [x] 2.1 Document the managed-Postgres path
+  (`PDPP_DATABASE_URL=${{Postgres.DATABASE_URL}}`, with
+  `PDPP_STORAGE_BACKEND=postgres` optional because the runtime infers Postgres
+  from the database URL, idempotent boot bootstrap, no migrate step, no volume)
+  as the lower-risk default. (README "Storage" Option A; `env.example`.)
 - [x] 2.2 Document the SQLite-on-volume path and the `PDPP_DB_PATH`-onto-mounted-
   volume requirement, calling out that the default `/var/lib/pdpp/pdpp.sqlite`
   is not on the documented `/root/.pdpp` volume. (README "Storage" Option B;

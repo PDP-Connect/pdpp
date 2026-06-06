@@ -138,47 +138,46 @@ handoff does not perform them.
 
 ## Variables
 
-Set these on both application services:
-
-```sh
-PDPP_REFERENCE_MODE=composed
-PDPP_REFERENCE_ORIGIN=https://${{console.RAILWAY_PUBLIC_DOMAIN}}
-PDPP_OWNER_PASSWORD=<required user-provided secret>
-PDPP_OWNER_SUBJECT_ID=owner_local
-```
-
-If the template composer cannot bind `PDPP_REFERENCE_ORIGIN` to the console
-service's public domain before publication, mark `PDPP_REFERENCE_ORIGIN` as a
-required user-provided variable with this description: "The public HTTPS domain
-assigned to the console service, including https://".
-
 Set these on the public `console` service:
 
 ```sh
-PDPP_AS_URL=http://reference.railway.internal:7662
-PDPP_RS_URL=http://reference.railway.internal:7663
-PDPP_ENABLE_DASHBOARD=1
+PDPP_REFERENCE_ORIGIN=https://${{console.RAILWAY_PUBLIC_DOMAIN}}
+PDPP_OWNER_PASSWORD=${{reference.PDPP_OWNER_PASSWORD}}
+PDPP_AS_URL=http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7662
+PDPP_RS_URL=http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7663
 ```
 
-Do not set `PORT` on the console service; Railway injects it.
+`PDPP_OWNER_PASSWORD=${{reference.PDPP_OWNER_PASSWORD}}` makes the console reuse
+the single owner password entered for the private reference service. Do not set
+`PORT` on the console service; Railway injects it.
 
 Set these on the private `reference` service:
 
 ```sh
-NODE_ENV=production
-PORT=7662
-AS_PORT=7662
-RS_PORT=7663
-PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1
-PDPP_RS_URL=http://127.0.0.1:7663
-PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0
-PDPP_STORAGE_BACKEND=postgres
+PDPP_REFERENCE_ORIGIN=https://${{console.RAILWAY_PUBLIC_DOMAIN}}
+PDPP_OWNER_PASSWORD=<required user-provided secret>
 PDPP_DATABASE_URL=${{Postgres.DATABASE_URL}}
 ```
 
-`PDPP_OWNER_PASSWORD` must be the same non-empty value on both application
-services. `PDPP_DATABASE_URL=${{Postgres.DATABASE_URL}}` binds the reference
-service to the Postgres plugin and gives Railway an explicit dependency.
+The `reference` image supplies the Core constants (`PORT=7662`, `AS_PORT=7662`,
+`RS_PORT=7663`, `PDPP_RS_URL=http://127.0.0.1:7663`,
+`PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1`, and
+`PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0`). The runtime selects Postgres when
+`PDPP_DATABASE_URL` is present, so the template does not need a
+`PDPP_STORAGE_BACKEND` prompt.
+
+Set these on the `Postgres` service:
+
+```sh
+PGDATA=${{RAILWAY_VOLUME_MOUNT_PATH}}/pgdata
+POSTGRES_PASSWORD=${{ secret(32, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") }}
+DATABASE_URL=postgresql://postgres:${{POSTGRES_PASSWORD}}@${{RAILWAY_PRIVATE_DOMAIN}}:5432/postgres
+```
+
+The Postgres image defaults the user and database to `postgres`; the generated
+password and `DATABASE_URL` are enough for the reference service binding.
+`PGDATA` must stay under the Railway volume mount path or the image rejects
+startup.
 
 ## Publish flow
 
@@ -191,7 +190,8 @@ service to the Postgres plugin and gives Railway an explicit dependency.
    the public repository and set its Dockerfile path to
    `deploy/railway/reference.Dockerfile`.)
 4. Add a Railway Postgres plugin.
-5. Configure variables exactly as listed above.
+5. Configure variables exactly as listed above. The deploy page should ask for
+   one user-provided value: `reference` service `PDPP_OWNER_PASSWORD`.
 6. Generate a public domain for `console`; do not generate a public domain for
    `reference`.
 7. Run the live smoke:
