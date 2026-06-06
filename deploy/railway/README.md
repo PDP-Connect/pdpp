@@ -82,8 +82,8 @@ the `/v1` query API, and owner/device surfaces — to the internal AS and RS usi
 `PDPP_AS_URL` / `PDPP_RS_URL`, and it forwards `x-forwarded-host` /
 `x-forwarded-proto` so composed mode advertises the single public origin. So the
 supported shape exposes only the console; the AS `7662` and RS `7663` listeners
-stay private. The `console` Docker stage is also browser-free, so the
-internet-facing service carries no browser binary.
+stay private. Both Core app images are browser-free for this target, so the
+internet-facing service and private AS/RS service carry no browser binary.
 
 This is the same composed-origin topology that `scripts/docker-smoke.sh` already
 validates against the real images. See
@@ -283,11 +283,10 @@ Live go/no-go on Railway:
 ## Cost note
 
 This runs two always-on application services plus a storage backend on your
-Railway account; you pay Railway for that usage. The reference image carries a
-browser binary on the private `reference` service (it is not used by the Core
-test but is baked into the `reference` stage). Slimming that into a browser-free
-`core` target is a follow-on, not a blocker — the public `console` service is
-already browser-free.
+Railway account; you pay Railway for that usage. The Core template keeps browser
+execution out of both app services. Browser-backed collection belongs to a
+separate local-collector or explicit browser profile, not the pushbutton Core
+deployment.
 
 ## Related
 

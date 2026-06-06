@@ -5,7 +5,7 @@
 # service image: its final stage is the reference runtime, so a Railway Template
 # can select it directly without a manual "Target Stage" setting.
 #
-# Keep the dependency/browser/reference stages in sync with the root Dockerfile.
+# Keep the dependency/reference stages in sync with the root Dockerfile.
 
 ARG NODE_VERSION=25-bookworm-slim
 ARG PNPM_VERSION=10.33.0
@@ -17,8 +17,7 @@ ARG PNPM_VERSION
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
     NEXT_TELEMETRY_DISABLED=1 \
     PNPM_HOME=/pnpm \
-    PATH=/pnpm:$PATH \
-    PLAYWRIGHT_BROWSERS_PATH=/opt/patchright-browsers
+    PATH=/pnpm:$PATH
 
 WORKDIR /app
 
@@ -51,25 +50,7 @@ FROM deps AS source
 
 COPY . .
 
-FROM base AS browsers
-
-ARG TARGETARCH
-ARG PATCHRIGHT_VERSION=1.59.4
-
-WORKDIR /tmp/patchright-install
-
-RUN echo '{"name":"patchright-installer","private":true,"version":"0.0.0"}' > package.json \
-  && npm install --no-save --ignore-scripts "patchright@${PATCHRIGHT_VERSION}" \
-  && if [ "$TARGETARCH" = "arm64" ]; then \
-       npx patchright install --with-deps chromium; \
-     else \
-       npx patchright install --with-deps chrome chromium; \
-     fi \
-  && rm -rf /tmp/patchright-install
-
-WORKDIR /app
-
-FROM browsers AS reference
+FROM base AS reference
 
 ARG PDPP_REFERENCE_REVISION=unknown
 

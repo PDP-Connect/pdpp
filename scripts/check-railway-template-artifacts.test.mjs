@@ -28,8 +28,10 @@ test('private reference Dockerfile is a final-stage service image, not a target-
   const dockerfile = read('deploy/railway/reference.Dockerfile');
 
   assert.match(dockerfile, /Railway templates\/config-as-code expose a Dockerfile path/);
-  assert.match(dockerfile, /FROM browsers AS reference/);
+  assert.match(dockerfile, /FROM base AS reference/);
   assert.match(dockerfile, /CMD \["node", "reference-implementation\/server\/index\.js"\]/);
+  assert.doesNotMatch(dockerfile, /FROM browsers AS reference/);
+  assert.doesNotMatch(dockerfile, /patchright install/);
   assert.doesNotMatch(dockerfile, /FROM .* AS console/);
   assert.doesNotMatch(dockerfile, /pnpm --filter pdpp-console build/);
 });

@@ -114,11 +114,11 @@ Removed:
   operator-console-as-separate-public-service variant, semantic retrieval and the
   embedding-cache volume, the scheduler and recurring collection, n.eko, backup /
   restore tooling, and Cloudflare Access / Tunnel / R2 adjuncts. A `pdpp doctor`
-  CLI and a browser-free `core` image target are **optional follow-on
-  enhancements**, not blockers: the existing `docker-smoke.sh`,
-  `GET /_ref/deployment`, and the `.well-known` healthcheck already make the
-  first live test executable, and the public service (the console image) is
-  already browser-free.
+  CLI remains an optional follow-on enhancement. The browser-free Core reference
+  image is now part of the deploy target: live Railway evidence showed the
+  browser-enabled reference image was too heavy for the pushbutton path, and Core
+  does not need browser binaries to prove auth, storage, hosted MCP, or record
+  query behavior.
 - The `surface-database-physical-footprint` change (active, extends
   `GET /_ref/deployment`) and `reduce-main-docker-image-ci-cost` (CI-publish
   policy) also touch this capability. Neither defines a deploy target, a

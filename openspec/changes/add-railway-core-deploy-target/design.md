@@ -55,12 +55,12 @@ path-prefix support and no new combined listener are required, because each of
 the AS and RS still believes it owns a whole origin — the console multiplexes by
 path on the public side and by `PDPP_AS_URL` / `PDPP_RS_URL` on the private side.
 
-Dockerfile note that reinforces the split: the `reference` stage descends
-`FROM browsers` and bakes Chromium; the `console` stage descends `FROM base` and
-is already browser-free. Putting the console on the public origin means the
-internet-facing service carries no browser binary; the browser bloat lives only
-on the private reference service (and can be slimmed later by a `core` target —
-a follow-on, not a blocker).
+Dockerfile note that reinforces the split: the `reference` stage is the
+browser-free Core AS/RS runtime. Browser binaries stay out of the Railway Core
+image because browser-backed collection is out of scope for this target and runs
+off-box through local collectors. The root Dockerfile keeps a separate
+`reference-browser` target for future or local profiles that explicitly need
+Patchright/Chromium.
 
 ## Template publication decision
 

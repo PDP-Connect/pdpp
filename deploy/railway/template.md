@@ -38,8 +38,8 @@ than making the whole monorepo public, and it deploys without a per-service buil
 Image mapping (from `.github/workflows/docker-images.yml`): both images are built
 from the root `Dockerfile` by stage target. The `web` image is the `console`
 stage (the public, browser-free console); the `reference` image is the `reference`
-stage (the private AS/RS runtime). So the `console` service points at `…/web` and
-the `reference` service points at `…/reference`.
+stage (the private, browser-free AS/RS runtime). So the `console` service points
+at `…/web` and the `reference` service points at `…/reference`.
 
 A Docker Image source **supersedes** `build.dockerfilePath`: when the service
 source is an image, Railway pulls the image and does not run a Dockerfile build,

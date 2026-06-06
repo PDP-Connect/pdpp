@@ -9,7 +9,7 @@ ARG PNPM_VERSION
 
 # PLAYWRIGHT_BROWSERS_PATH is pinned to a stable, image-wide location so the
 # bundled-Patchright browser tree can be installed once in a dedicated cache
-# stage and copied into final images. Without this, Patchright defaults to
+# stage and copied into browser-enabled final images. Without this, Patchright defaults to
 # $HOME/.cache/ms-playwright which is invisible to inter-stage COPY and forces
 # every reference build to reinstall ~300MB of browsers + their apt deps.
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
@@ -64,6 +64,29 @@ FROM source AS console-builder
 
 RUN pnpm --filter pdpp-console build
 
+# Core AS/RS reference runtime. Keep this browser-free: managed-platform Core
+# deploys do not run browser-backed collection inside the server container.
+FROM base AS reference
+
+# `.git` is excluded from the Docker build context (.dockerignore), so the
+# runtime cannot derive a real git revision at startup and falls back to
+# `+unknown`. Pass the real revision in at build time so production images
+# advertise the running commit:
+#   docker build --build-arg PDPP_REFERENCE_REVISION=$(git rev-parse --short=12 HEAD) ...
+ARG PDPP_REFERENCE_REVISION=unknown
+
+ENV NODE_ENV=production \
+    AS_PORT=7662 \
+    RS_PORT=7663 \
+    PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1 \
+    PDPP_REFERENCE_REVISION=${PDPP_REFERENCE_REVISION}
+
+COPY --from=source /app /app
+
+EXPOSE 7662 7663
+
+CMD ["node", "reference-implementation/server/index.js"]
+
 # Dedicated browsers stage. Patchright + bundled Chromium + (on amd64) Google
 # Chrome stable + their apt deps are baked into a stage whose cache key is
 # only the patchright version and target arch. This is independent of the
@@ -94,13 +117,8 @@ RUN echo '{"name":"patchright-installer","private":true,"version":"0.0.0"}' > pa
 
 WORKDIR /app
 
-FROM browsers AS reference
+FROM browsers AS reference-browser
 
-# `.git` is excluded from the Docker build context (.dockerignore), so the
-# runtime cannot derive a real git revision at startup and falls back to
-# `+unknown`. Pass the real revision in at build time so production images
-# advertise the running commit:
-#   docker build --build-arg PDPP_REFERENCE_REVISION=$(git rev-parse --short=12 HEAD) ...
 ARG PDPP_REFERENCE_REVISION=unknown
 
 ENV NODE_ENV=production \

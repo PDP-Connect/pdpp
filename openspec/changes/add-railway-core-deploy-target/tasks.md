@@ -4,8 +4,10 @@ Topology is decided (single public console front door + private reference
 service + explicit durable storage; configuration only — see `design.md`). The
 slices below make the first live test reproducible. They are documentation and
 deploy artifacts plus a verification harness; none requires a runtime code change
-to the AS, RS, console, storage layer, or connectors. Doctor CLI and a
-browser-free `core` image are explicit follow-ons, not blockers.
+to the AS, RS, console, storage layer, or connectors. Doctor CLI is an explicit
+follow-on, not a blocker. The browser-free Core reference image is part of this
+change because the live Railway pushbutton path must not carry browser runtime
+bloat.
 
 ## 1. Deploy artifacts and env contract
 
@@ -103,14 +105,16 @@ browser-free `core` image are explicit follow-ons, not blockers.
   use Railway private networking, missing reference healthcheck `PORT`, and
   non-durable or unmounted-default storage) before a live run.
 
-## 4. Owner-only follow-on enhancements (deferred, not gating)
+## 4. Follow-on and image-slimming work
 
 - [x] 4.1 (Deferred) `pdpp doctor` CLI (human + `--json`) consuming
   `GET /_ref/deployment` for the Core subset. Deferred by design, not required:
   smoke + diagnostics already cover the gate.
-- [x] 4.2 (Deferred) Browser-free `core` image target to slim the private
-  reference service. Deferred by design, not required: the public console image
-  is already browser-free.
+- [x] 4.2 Promote the private `reference` image to a browser-free Core AS/RS
+  runtime for Railway and keep browser execution out of the pushbutton profile.
+  The root Dockerfile retains an explicit `reference-browser` target for profiles
+  that need Patchright/Chromium; `deploy/railway/reference.Dockerfile` uses the
+  slim Core shape directly so Railway templates do not pull browser binaries.
 
 ## 5. Owner-only live verification
 
