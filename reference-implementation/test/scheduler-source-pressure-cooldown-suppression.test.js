@@ -164,6 +164,44 @@ test('a connection with pending upstream_pressure gaps cools off — one skip pe
   }
 });
 
+test('pending pressure gaps do not defer once the computed nextRunAt has arrived', async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-cooldown-due-'));
+  const { attemptsPath, connectorPath } = writeUnusedConnector(tmpDir, 'due.mjs');
+  const completedRuns = [];
+  const connectorId = 'chatgpt-cooldown-due-connector';
+
+  const scheduler = createScheduler({
+    connectors: [{
+      connectorId,
+      connectorPath,
+      manifest: POLICY_BLOCKED_MANIFEST,
+      intervalMs: 50,
+      maxRetries: 0,
+      ownerToken: 'owner-token',
+    }],
+    rsUrl: 'http://localhost.invalid',
+    // attemptCount 1 -> 2x interval (100ms). The last-run anchor is already
+    // older than that, so this tick is eligible despite pending pressure gaps.
+    schedulerStore: anchorStore([{ connectorId, lastRunTimeMs: Date.now() - 500 }]),
+    onInteraction: cancelledInteractionResponse,
+    onRunComplete: (record) => completedRuns.push(record),
+    getSourcePressureGaps: () => [pressureGap({ attemptCount: 1 })],
+  });
+
+  try {
+    scheduler.start();
+    await waitFor(() => policySkips(completedRuns).length >= 1, 5000);
+    scheduler.stop();
+
+    assert.equal(cooldownSkips(completedRuns).length, 0, 'due pressure cooldown must not emit a skip');
+    assert.ok(policySkips(completedRuns).length >= 1, 'due pressure cooldown falls through to eligibility/policy gate');
+    assert.equal(readAttempts(attemptsPath).length, 0, 'policy-blocked manifest never spawns the connector');
+  } finally {
+    scheduler.stop();
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('the cooling-off audit line re-arms when the pressure picture changes', async () => {
   const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-cooldown-grow-'));
   const { connectorPath } = writeUnusedConnector(tmpDir);

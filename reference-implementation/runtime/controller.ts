@@ -65,6 +65,7 @@ import type { RunRecord } from "./scheduler.ts";
 import { type BackoffDecision, computeNextRunWithBackoff } from "./scheduler-backoff.ts";
 import {
   computeSourcePressureCooldown,
+  isSourcePressureCooldownDeferring,
   type PendingPressureGap,
   SOURCE_PRESSURE_GAP_REASONS,
   type SourcePressureCooldownDecision,
@@ -1572,9 +1573,10 @@ function mergeBackoffAndCooldown(
 ): SchedulerBackoffApi {
   const backoffNextMs = Date.parse(decision.nextRunAt);
   const cooldownNextMs = Date.parse(cooldown.nextRunAt);
+  const cooldownDefersNow = isSourcePressureCooldownDeferring(cooldown);
   // Whichever governor pushes the next attempt out further wins the timestamp.
   const cooldownDefersFurther =
-    cooldown.cooldownApplied &&
+    cooldownDefersNow &&
     Number.isFinite(cooldownNextMs) &&
     (!Number.isFinite(backoffNextMs) || cooldownNextMs >= backoffNextMs);
   const nextRunAt = cooldownDefersFurther ? cooldown.nextRunAt : decision.nextRunAt;
@@ -1584,7 +1586,7 @@ function mergeBackoffAndCooldown(
   let recommendedHealthState: SchedulerBackoffApi["recommended_health_state"];
   if (decision.recommendedHealthState === "blocked") {
     recommendedHealthState = "blocked";
-  } else if (decision.recommendedHealthState === "cooling_off" || cooldown.cooldownApplied) {
+  } else if (decision.recommendedHealthState === "cooling_off" || cooldownDefersNow) {
     recommendedHealthState = "cooling_off";
   } else {
     recommendedHealthState = null;
@@ -1594,12 +1596,12 @@ function mergeBackoffAndCooldown(
   // the cooldown is the sole driver, label it so the dashboard/audit can
   // distinguish a source-pressure pause from a failure streak.
   let reasonClass = decision.reasonClass;
-  if (!decision.backoffApplied && cooldown.cooldownApplied) {
+  if (!decision.backoffApplied && cooldownDefersNow) {
     reasonClass = "source_pressure";
   }
 
   return {
-    backoff_applied: decision.backoffApplied || cooldown.cooldownApplied,
+    backoff_applied: decision.backoffApplied || cooldownDefersNow,
     consecutive_failures: decision.consecutiveFailures,
     next_run_at: nextRunAt,
     reason_class: reasonClass,
@@ -2452,6 +2454,26 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
   }
 
+  async function getLastRunTimeMs(connectorId: string, connectorInstanceId: string): Promise<number> {
+    try {
+      const rows = await Promise.resolve(schedulerStore.listLastRunTimes());
+      let latest = 0;
+      for (const row of rows ?? []) {
+        const rowInstanceId = row.connector_instance_id || row.connector_id;
+        const legacyConnectorRow = !row.connector_instance_id && connectorInstanceId === connectorId && row.connector_id === connectorId;
+        if (rowInstanceId !== connectorInstanceId && !legacyConnectorRow) {
+          continue;
+        }
+        if (Number.isFinite(row.last_run_time_ms) && row.last_run_time_ms > latest) {
+          latest = row.last_run_time_ms;
+        }
+      }
+      return latest;
+    } catch {
+      return 0;
+    }
+  }
+
   // Bounded once-per-call slice of recent run history. 500 is the same
   // upper bound the scheduler runtime uses when hydrating its in-memory
   // history projection (`scheduler.ts::hydratePersistence`), so the
@@ -3270,16 +3292,13 @@ export function createController(opts: ControllerOptions = {}): Controller {
 
       if (pendingPressureGaps.length > 0) {
         // Use base interval 0 when no schedule is known — the cooldown still
-        // applies (effectiveIntervalMs may be 0 but nextRunAt from
-        // nextAttemptAfter is honoured) and the caller's gate is the count.
+        // computes a valid decision and any connector-authored
+        // nextAttemptAfter floor is honoured.
         const schedule = await Promise.resolve(schedulerStore.getSchedule(connectorInstanceId)).catch(() => null);
         const baseIntervalMs = schedule ? Math.max(1, schedule.interval_seconds) * 1000 : 0;
-        // Use current time as the last-run anchor when no schedule exists. This
-        // gives an honest `nextRunAt` relative to now; the `cooldownApplied`
-        // flag (what we gate on) depends only on pending gap count, not timing.
-        const lastRunTimeMs = Date.now();
+        const lastRunTimeMs = await getLastRunTimeMs(connectorId, connectorInstanceId);
         const cooldown = computeSourcePressureCooldown(pendingPressureGaps, baseIntervalMs, lastRunTimeMs);
-        if (cooldown.cooldownApplied) {
+        if (isSourcePressureCooldownDeferring(cooldown)) {
           throw new ControllerError(
             `Provider pressure cooldown active — next eligible retry at ${cooldown.nextRunAt}. ` +
               `Use force: true to override. Pending pressure gaps: ${cooldown.pendingPressureGapCount}.`,

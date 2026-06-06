@@ -35,6 +35,7 @@ import {
 import { type BackoffDecision, computeNextRunWithBackoff } from "./scheduler-backoff.ts";
 import {
   computeSourcePressureCooldown,
+  isSourcePressureCooldownDeferring,
   type PendingPressureGap,
   type SourcePressureCooldownDecision,
 } from "./scheduler-source-pressure-cooldown.ts";
@@ -215,9 +216,11 @@ export type HasUnresolvedAttentionHandler = (
  * prior run's deferred work is still waiting to recover.
  *
  * Unlike `hasUnresolvedAttention`, this is not a hard pause: it only delays the
- * next *automatic* dispatch on a capped backoff curve and surfaces
- * `cooling_off`. Manual `runNow` bypasses it. A run that recovers the gaps
- * empties the pending set, which relaxes the cooldown on the next tick.
+ * next *automatic* dispatch until the computed retry time arrives and surfaces
+ * `cooling_off` while that retry is still too early. Ordinary manual runs use
+ * the same future-only safety gate unless explicitly forced. A run that
+ * recovers the gaps empties the pending set, which relaxes the cooldown on the
+ * next tick.
  *
  * The handler MAY return an empty array, null/undefined, or throw to signal
  * "no pressure or unable to determine". A throw is treated as "no evidence" —
@@ -1746,9 +1749,10 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     // capped curve. We take whichever governor defers the run further.
     const pendingPressureGaps = await probeSourcePressureGaps(connectorId, key);
     const cooldown = computeSourcePressureCooldown(pendingPressureGaps, scheduleIntervalMs, lastRun);
+    const cooldownDefers = isSourcePressureCooldownDeferring(cooldown, now);
 
     const elapsed = now - lastRun;
-    let eligible = elapsed >= decision.effectiveIntervalMs && elapsed >= cooldown.effectiveIntervalMs;
+    let eligible = elapsed >= decision.effectiveIntervalMs && !cooldownDefers;
 
     let skipToEmit: RunRecord | null = null;
     const eventsToEmit: RunRecord[] = [];
@@ -1798,13 +1802,13 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       runtime.announcedBackoffClass.delete(key);
     }
 
-    // Source-pressure cooldown is layered on top of failure back-off. When it
-    // engages, the run is deferred (eligibility already accounts for its
-    // interval above). `resolveCooldownSkip` emits at most one cooling-off skip
-    // per pressure identity, but only when back-off has not already emitted its
-    // own skip this tick (back-off is the stronger signal and already explains
-    // the quiet; double-emitting would be noise).
-    skipToEmit = resolveCooldownSkip(schedule, key, cooldown, skipToEmit);
+    // Source-pressure cooldown is layered on top of failure back-off. Pending
+    // pressure gaps alone do not defer forever; only a future `nextRunAt` does.
+    // `resolveCooldownSkip` emits at most one cooling-off skip per pressure
+    // identity while the retry is too early, but only when back-off has not
+    // already emitted its own skip this tick (back-off is the stronger signal
+    // and already explains the quiet; double-emitting would be noise).
+    skipToEmit = resolveCooldownSkip(schedule, key, cooldown, cooldownDefers, skipToEmit);
 
     return { decision, eligible, skipToEmit, eventsToEmit };
   }
@@ -1817,11 +1821,14 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     schedule: ConnectorSchedule,
     key: string,
     cooldown: SourcePressureCooldownDecision,
+    cooldownDefers: boolean,
     existingSkip: RunRecord | null
   ): RunRecord | null {
-    if (!(cooldown.cooldownApplied && cooldown.identity)) {
+    if (!(cooldownDefers && cooldown.identity)) {
       // Pressure recovered (no pending pressure gaps): clear the announcement
-      // so a future pressure window emits a fresh cooling-off skip.
+      // so a future pressure window emits a fresh cooling-off skip. Also
+      // re-arm once the current cooldown is due, because a run may create a new
+      // cooldown window with the same pressure identity.
       runtime.notifiedCooldownIdentity.delete(key);
       return existingSkip;
     }

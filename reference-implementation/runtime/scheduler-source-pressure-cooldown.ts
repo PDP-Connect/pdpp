@@ -232,6 +232,26 @@ export function computeSourcePressureCooldown(
   };
 }
 
+/**
+ * True only while the cooldown's computed next-run timestamp is still in the
+ * future. `cooldownApplied` means "pending pressure gaps exist"; this helper
+ * is the separate dispatch/manual safety predicate that answers "is it too
+ * early to try again right now?"
+ */
+export function isSourcePressureCooldownDeferring(
+  decision: SourcePressureCooldownDecision,
+  nowMs: number = Date.now()
+): boolean {
+  if (!decision.cooldownApplied) {
+    return false;
+  }
+  const nextRunMs = Date.parse(decision.nextRunAt);
+  if (!Number.isFinite(nextRunMs)) {
+    return false;
+  }
+  return nextRunMs > nowMs;
+}
+
 function summarizeReasons(gaps: readonly PendingPressureGap[]): string {
   const reasons = new Set<string>();
   for (const gap of gaps) {

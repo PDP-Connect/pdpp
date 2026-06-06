@@ -60,16 +60,16 @@ function fakeDetailGapStore(pendingGaps = [], calls = []) {
   };
 }
 
-// Fake scheduler store — no schedule, no DB needed.
-function fakeSchedulerStore() {
+// Fake scheduler store — configurable schedule/last-run anchors, no DB needed.
+function fakeSchedulerStore({ schedule = null, lastRunTimes = [] } = {}) {
   return {
     appendRunHistory: () => {},
     createSchedule: () => {},
     deleteActiveRun: () => {},
     deleteSchedule: () => {},
-    getSchedule: () => null,
+    getSchedule: () => schedule,
     listActiveRuns: () => [],
-    listLastRunTimes: () => [],
+    listLastRunTimes: () => lastRunTimes,
     listRunHistory: () => [],
     listSchedules: () => [],
     setScheduleEnabled: () => {},
@@ -101,13 +101,13 @@ function buildManifest() {
 // The cooldown gate fires before getSyncState is reached, so we can use
 // createController directly with fake stores — no startServer / DB needed.
 
-async function withPreGateController(detailGapStoreFn, fn) {
+async function withPreGateController(detailGapStoreFn, fn, schedulerStoreOptions = {}) {
   const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-manual-safety-'));
   const connectorPath = buildImmediateConnectorFixture(tmpDir);
   const controller = createController({
     connectorPathResolver: () => connectorPath,
     detailGapStore: detailGapStoreFn(),
-    schedulerStore: fakeSchedulerStore(),
+    schedulerStore: fakeSchedulerStore(schedulerStoreOptions),
   });
   try {
     await fn(controller);
@@ -120,6 +120,7 @@ async function withPreGateController(detailGapStoreFn, fn) {
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 test('ordinary manual run during provider-pressure cooldown is blocked with provider_pressure_cooldown', async () => {
+  const lastRun = Date.now();
   await withPreGateController(
     () => fakeDetailGapStore([pressureGap({ attempt_count: 2 })]),
     async (controller) => {
@@ -134,6 +135,15 @@ test('ordinary manual run during provider-pressure cooldown is blocked with prov
       assert.ok(typeof err.nextEligibleAt === 'string', 'error must carry nextEligibleAt ISO timestamp');
       assert.ok(typeof err.pendingPressureGapCount === 'number', 'error must carry pendingPressureGapCount');
       assert.ok(err.pendingPressureGapCount > 0, 'pendingPressureGapCount must be > 0');
+    },
+    {
+      schedule: { interval_seconds: 60 },
+      lastRunTimes: [{
+        connector_id: TEST_CONNECTOR_ID,
+        connector_instance_id: TEST_CONNECTOR_ID,
+        last_run_time_ms: lastRun,
+        updated_at: new Date(lastRun).toISOString(),
+      }],
     },
   );
 });
@@ -158,14 +168,37 @@ test('provider_pressure_cooldown error carries a future nextEligibleAt when next
   );
 });
 
+test('past next_attempt_after does not block an ordinary manual run', async () => {
+  const pastFloor = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  await withPreGateController(
+    () => fakeDetailGapStore([pressureGap({ attempt_count: 0, next_attempt_after: pastFloor })]),
+    async (controller) => {
+      let err;
+      try {
+        await controller.runNow(TEST_CONNECTOR_ID, { manifest: buildManifest() });
+      } catch (e) {
+        err = e;
+      }
+      if (err) {
+        assert.notEqual(
+          err.code,
+          'provider_pressure_cooldown',
+          `past next_attempt_after must not block manual run; got ${err.code}: ${err.message}`,
+        );
+      }
+    },
+  );
+});
+
 test('manual cooldown gate reads connector type and filters to the requested connection instance', async () => {
   const calls = [];
+  const futureFloor = new Date(Date.now() + 10 * 60 * 1000).toISOString();
   await withPreGateController(
     () =>
       fakeDetailGapStore(
         [
           pressureGap({ connector_instance_id: 'cin_other', attempt_count: 7 }),
-          pressureGap({ connector_instance_id: 'cin_target', attempt_count: 2 }),
+          pressureGap({ connector_instance_id: 'cin_target', attempt_count: 2, next_attempt_after: futureFloor }),
         ],
         calls,
       ),
@@ -185,6 +218,37 @@ test('manual cooldown gate reads connector type and filters to the requested con
       assert.equal(calls.length, 1);
       assert.equal(calls[0].connectorId, TEST_CONNECTOR_ID, 'store read is connector-type scoped, not cin-scoped');
       assert.deepEqual(calls[0].options, { limit: 200 });
+    },
+  );
+});
+
+test('ordinary manual run is allowed after provider-pressure cooldown has elapsed', async () => {
+  const lastRun = Date.now() - 10 * 60 * 1000;
+  await withPreGateController(
+    () => fakeDetailGapStore([pressureGap({ attempt_count: 1 })]),
+    async (controller) => {
+      let err;
+      try {
+        await controller.runNow(TEST_CONNECTOR_ID, { manifest: buildManifest() });
+      } catch (e) {
+        err = e;
+      }
+      if (err) {
+        assert.notEqual(
+          err.code,
+          'provider_pressure_cooldown',
+          `elapsed pressure cooldown must not block manual run; got ${err.code}: ${err.message}`,
+        );
+      }
+    },
+    {
+      schedule: { interval_seconds: 60 },
+      lastRunTimes: [{
+        connector_id: TEST_CONNECTOR_ID,
+        connector_instance_id: TEST_CONNECTOR_ID,
+        last_run_time_ms: lastRun,
+        updated_at: new Date(lastRun).toISOString(),
+      }],
     },
   );
 });

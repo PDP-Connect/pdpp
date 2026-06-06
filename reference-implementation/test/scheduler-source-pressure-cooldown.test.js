@@ -7,6 +7,7 @@ import {
   DEFAULT_MAX_COOLDOWN_MS,
   SOURCE_PRESSURE_GAP_REASONS,
   computeSourcePressureCooldown,
+  isSourcePressureCooldownDeferring,
 } from '../runtime/scheduler-source-pressure-cooldown.ts';
 
 // ─── Test helpers ──────────────────────────────────────────────────────────
@@ -180,11 +181,23 @@ test('force: true bypasses cooldown even with deep persistent pressure', () => {
 test('ordinary manual run (no force flag) respects cooldown — same as scheduled', () => {
   // An ordinary manual Sync now with pending pressure gaps is subject to the
   // same cooldown decision a scheduled tick would get. The caller (controller)
-  // gates the run; this test confirms the cooldown module does not suppress it.
+  // gates the run only while the computed nextRunAt remains in the future.
   const decision = computeSourcePressureCooldown([gap({ attemptCount: 2 })], BASE_INTERVAL_MS, T0);
   assert.equal(decision.cooldownApplied, true);
   assert.equal(decision.recommendedHealthState, 'cooling_off');
   assert.equal(decision.effectiveIntervalMs, BASE_INTERVAL_MS * 4); // 2^2
+});
+
+test('deferring predicate is true only before the computed nextRunAt', () => {
+  const decision = computeSourcePressureCooldown([gap({ attemptCount: 1 })], BASE_INTERVAL_MS, T0);
+  assert.equal(isSourcePressureCooldownDeferring(decision, T0 + BASE_INTERVAL_MS), true);
+  assert.equal(isSourcePressureCooldownDeferring(decision, T0 + BASE_INTERVAL_MS * 2), false);
+  assert.equal(isSourcePressureCooldownDeferring(decision, T0 + BASE_INTERVAL_MS * 3), false);
+});
+
+test('deferring predicate is false when pressure gaps are absent', () => {
+  const decision = computeSourcePressureCooldown([], BASE_INTERVAL_MS, T0);
+  assert.equal(isSourcePressureCooldownDeferring(decision, T0), false);
 });
 
 // ─── Robustness ──────────────────────────────────────────────────────────

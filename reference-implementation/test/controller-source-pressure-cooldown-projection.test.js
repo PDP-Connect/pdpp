@@ -139,6 +139,20 @@ test("no pending pressure gaps -> no cooling_off (the connection is not throttle
   assert.equal(backoff?.backoff_applied ?? false, false);
 });
 
+test("pending pressure gaps after elapsed cooldown project as eligible, not cooling_off", async (t) => {
+  const controller = await buildScheduledController(t, {
+    gaps: [pressureGapRow({ attempt_count: 1 })],
+    lastRunOffsetMs: 3 * 60 * 60 * 1000,
+  });
+  const schedule = await controller.getSchedule(CONNECTOR_ID, { connectorInstanceId: INSTANCE_ID });
+
+  assert.ok(schedule);
+  const backoff = schedule.scheduler_backoff;
+  assert.equal(backoff?.recommended_health_state ?? null, null, "due pressure backlog must not render cooling_off");
+  assert.equal(backoff?.backoff_applied ?? false, false, "due pressure backlog must not mark backoff active");
+  assert.equal(backoff?.reason_class ?? null, null, "due pressure backlog must not be labeled source_pressure");
+});
+
 test("non-pressure detail gaps do not project cooling_off", async (t) => {
   const controller = await buildScheduledController(t, {
     gaps: [pressureGapRow({ reason: "retry_exhausted" }), pressureGapRow({ reason: "temporary_unavailable" })],
