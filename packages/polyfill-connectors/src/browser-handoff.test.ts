@@ -111,6 +111,14 @@ function makeMockPage(opts: MockPageOptions = {}): Page {
   return page as Page;
 }
 
+function makeControllableTitle(): { promise: Promise<string>; resolve: (value: string) => void } {
+  let resolve: (value: string) => void = () => undefined;
+  const promise = new Promise<string>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
+}
+
 // ─── Fake fetch / registration capture ─────────────────────────────────────
 //
 // We piggyback on the same fake-fetch pattern the streaming-target-registration
@@ -727,14 +735,16 @@ test("withDeadline resolves with the work value when work wins the race", async 
 
 test("withDeadline resolves with DEADLINE_TIMEOUT and runs onTimeout when the deadline wins", async () => {
   let onTimeoutRan = false;
-  const never = new Promise<string>(() => {
-    /* never resolves */
-  });
-  const result = await withDeadline(never, 5, () => {
-    onTimeoutRan = true;
-  });
-  assert.equal(result, DEADLINE_TIMEOUT);
-  assert.equal(onTimeoutRan, true);
+  const title = makeControllableTitle();
+  try {
+    const result = await withDeadline(title.promise, 5, () => {
+      onTimeoutRan = true;
+    });
+    assert.equal(result, DEADLINE_TIMEOUT);
+    assert.equal(onTimeoutRan, true);
+  } finally {
+    title.resolve("late title");
+  }
 });
 
 test("withDeadline with non-positive ms returns the work unbounded", async () => {
@@ -746,10 +756,11 @@ test("manualAction still emits the interaction (with URL) when page.title() hang
   // The named suspect: readManualActionPageMetadata awaiting page.title()
   // against a wedged renderer. The interaction MUST still emit, carrying the
   // synchronously-readable URL, even though the title read never resolves.
+  const title = makeControllableTitle();
   const page = makeMockPage({
     url: "https://www.amazon.com/ap/signin",
     // never resolves — simulates a wedged renderer / hung CDP title read
-    title: () => new Promise<string>(() => undefined),
+    title: () => title.promise,
   });
 
   const seen: InteractionRequest[] = [];
@@ -765,56 +776,62 @@ test("manualAction still emits the interaction (with URL) when page.title() hang
   // No streaming env, so prepareManualAction short-circuits before metadata —
   // to exercise the metadata read we go through the managed-neko path which
   // reads metadata before registering. Use the neko env + a register stub.
+  try {
+    const env = envWithManagedNekoSurface();
+    const response = await manualAction(
+      {
+        page,
+        message: "Solve the Amazon challenge.",
+        reason: "captcha",
+        env,
+        resolveStreamingRegistration: () =>
+          Promise.resolve({
+            runId: "run_test_123",
+            register: () => Promise.resolve(true),
+            unregister: () => Promise.resolve(true),
+          }),
+      },
+      sendInteraction
+    );
+
+    assert.equal(seen.length, 1, "interaction must still be emitted despite hung title");
+    assert.equal(seen[0]?.kind, "manual_action");
+    assert.equal(response.status, "success");
+  } finally {
+    title.resolve("late title");
+  }
+});
+
+test("prepareManualAction registers the neko target without a page title when page.title() hangs", async () => {
   const env = envWithManagedNekoSurface();
-  const response = await manualAction(
-    {
+  const title = makeControllableTitle();
+  const page = makeMockPage({
+    url: "https://www.amazon.com/ap/signin",
+    title: () => title.promise,
+  });
+
+  let registeredArgs: { pageTitle?: string; pageUrl?: string } | undefined;
+  try {
+    const result = await prepareManualAction({
       page,
-      message: "Solve the Amazon challenge.",
       reason: "captcha",
       env,
       resolveStreamingRegistration: () =>
         Promise.resolve({
           runId: "run_test_123",
-          register: () => Promise.resolve(true),
+          register: (args) => {
+            registeredArgs = args as { pageTitle?: string; pageUrl?: string };
+            return Promise.resolve(true);
+          },
           unregister: () => Promise.resolve(true),
         }),
-    },
-    sendInteraction
-  );
+    });
 
-  assert.equal(seen.length, 1, "interaction must still be emitted despite hung title");
-  assert.equal(seen[0]?.kind, "manual_action");
-  assert.equal(response.status, "success");
-});
-
-test("prepareManualAction registers the neko target without a page title when page.title() hangs", async () => {
-  const env = envWithManagedNekoSurface();
-  const page = makeMockPage({
-    url: "https://www.amazon.com/ap/signin",
-    title: () =>
-      new Promise<string>(() => {
-        /* hangs forever */
-      }),
-  });
-
-  let registeredArgs: { pageTitle?: string; pageUrl?: string } | undefined;
-  const result = await prepareManualAction({
-    page,
-    reason: "captcha",
-    env,
-    resolveStreamingRegistration: () =>
-      Promise.resolve({
-        runId: "run_test_123",
-        register: (args) => {
-          registeredArgs = args as { pageTitle?: string; pageUrl?: string };
-          return Promise.resolve(true);
-        },
-        unregister: () => Promise.resolve(true),
-      }),
-  });
-
-  assert.equal(result.registered, true);
-  // URL survives (synchronous); title is absent because the read timed out.
-  assert.equal(registeredArgs?.pageUrl, "https://www.amazon.com/ap/signin");
-  assert.equal(registeredArgs?.pageTitle, undefined);
+    assert.equal(result.registered, true);
+    // URL survives (synchronous); title is absent because the read timed out.
+    assert.equal(registeredArgs?.pageUrl, "https://www.amazon.com/ap/signin");
+    assert.equal(registeredArgs?.pageTitle, undefined);
+  } finally {
+    title.resolve("late title");
+  }
 });

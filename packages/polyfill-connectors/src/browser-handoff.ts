@@ -235,8 +235,7 @@ interface ManualActionPageMetadata {
 /**
  * Bound `work` by a local deadline. Resolves with `work`'s value when it wins,
  * or with `DEADLINE_TIMEOUT` (and runs `onTimeout`) when the deadline wins.
- * Never rejects on timeout. The timer is `unref`-ed so it cannot keep the
- * process alive, and cleared the moment `work` settles.
+ * Never rejects on timeout. The timer is cleared the moment `work` settles.
  *
  * This exists for the session-establishment hang case: against a wedged
  * renderer, CDP-backed reads such as `page.title()` can hang indefinitely
@@ -261,7 +260,6 @@ export async function withDeadline<T>(
       onTimeout?.();
       resolve(DEADLINE_TIMEOUT);
     }, ms);
-    timer.unref?.();
   });
   try {
     return await Promise.race([work, deadline]);
