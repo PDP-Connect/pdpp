@@ -159,7 +159,8 @@ PDPP_OWNER_PASSWORD=<required user-provided secret>
 PDPP_DATABASE_URL=${{Postgres.DATABASE_URL}}
 ```
 
-The `reference` image supplies the Core constants (`RS_PORT=7663`,
+The `reference` image exposes one primary AS port for Railway to infer and
+supplies the Core constants (`RS_PORT=7663`,
 `PDPP_RS_URL=http://127.0.0.1:7663`, `PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1`,
 and `PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0`). Railway injects `PORT`, and the image
 maps it to `AS_PORT` at startup. The runtime selects Postgres when

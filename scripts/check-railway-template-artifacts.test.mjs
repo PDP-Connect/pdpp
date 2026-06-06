@@ -29,6 +29,8 @@ test('private reference Dockerfile is a final-stage service image, not a target-
 
   assert.match(dockerfile, /Railway templates\/config-as-code expose a Dockerfile path/);
   assert.match(dockerfile, /FROM base AS reference/);
+  assert.match(dockerfile, /\nEXPOSE 7662\n/);
+  assert.doesNotMatch(dockerfile, /EXPOSE 7662 7663/);
   assert.match(dockerfile, /export AS_PORT=\\"?\$\{PORT:-\$\{AS_PORT:-7662\}\}\\"?/);
   assert.match(dockerfile, /exec node reference-implementation\/server\/index\.js/);
   assert.doesNotMatch(dockerfile, /FROM browsers AS reference/);

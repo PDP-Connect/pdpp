@@ -81,11 +81,11 @@ binds two HTTP listeners in one process — the Authorization Server on `AS_PORT
 OAuth endpoints, the hosted MCP endpoint, the `/v1` query API, and owner/device
 surfaces — to the internal AS and RS using `PDPP_AS_URL` / `PDPP_RS_URL`, and it
 forwards `x-forwarded-host` / `x-forwarded-proto` so composed mode advertises the
-single public origin. So the supported shape exposes only the console; Railway
-injects `PORT` for the private AS listener, the RS stays on `7663`, and neither
-listener is internet-reachable. Both Core app images are browser-free for this
-target, so the internet-facing service and private AS/RS service carry no browser
-binary.
+single public origin. So the supported shape exposes only the console. The
+reference image exposes one primary AS port for Railway to infer; the runtime maps
+Railway's `PORT` to `AS_PORT`, keeps the RS on `7663`, and neither listener is
+internet-reachable. Both Core app images are browser-free for this target, so the
+internet-facing service and private AS/RS service carry no browser binary.
 
 This is the same composed-origin topology that `scripts/docker-smoke.sh` already
 validates against the real images. See
