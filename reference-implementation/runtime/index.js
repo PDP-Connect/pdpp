@@ -185,6 +185,7 @@ function createDetailGapPageReader({
       limit: candidateLimit,
     })) ?? [];
     const detailGaps = [];
+    const servedGapIds = [];
     let serializedBytes = 2; // JSON array brackets; exact enough for page sizing.
     let entryBytesTotal = 0;
 
@@ -195,6 +196,7 @@ function createDetailGapPageReader({
         break;
       }
       detailGaps.push(entry);
+      servedGapIds.push(gap.gap_id);
       serializedBytes += entryBytes;
       entryBytesTotal += entryBytes;
       if (serializedBytes >= byteBudget) {
@@ -208,11 +210,18 @@ function createDetailGapPageReader({
         1,
         Math.round((observedAverageBytes * 0.65) + (pageAverage * 0.35)),
       );
+      // Mark served gaps in_progress so attempt_count increments before the
+      // connector makes any provider requests. Re-deferred gaps (connector
+      // emits DETAIL_GAP again) revert to pending via upsertPendingGap while
+      // keeping the incremented attempt_count. Recovered gaps advance to
+      // 'recovered' via DETAIL_GAP_RECOVERED handling.
+      await Promise.all(servedGapIds.map((gapId) => detailGapStore.markGapStatus(gapId, 'in_progress')));
     }
 
     return {
       candidateLimit,
       detailGaps,
+      servedGapIds,
       maxBytes: byteBudget,
       serializedBytes,
     };

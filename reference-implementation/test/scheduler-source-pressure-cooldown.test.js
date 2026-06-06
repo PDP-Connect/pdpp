@@ -214,3 +214,31 @@ test('default tunables are pinned so drift is intentional', () => {
   assert.equal(DEFAULT_MAX_COOLDOWN_EXP, 6);
   assert.equal(DEFAULT_MAX_COOLDOWN_MS, 6 * 60 * 60 * 1000);
 });
+
+// ─── Attempt-persistence contract ────────────────────────────────────────────
+//
+// Pins the specific invariant the gap-serving path depends on: once the runtime
+// marks a gap in_progress (incrementing attempt_count), subsequent cooldown
+// decisions are strictly more conservative than the fresh-observation floor.
+// This ensures repeated pressure is eventually back-pressured, not ignored.
+
+test('attempt_count > 0 produces a longer effective interval than attempt_count = 0', () => {
+  const fresh = computeSourcePressureCooldown([gap({ attemptCount: 0 })], BASE_INTERVAL_MS, T0);
+  const persisted = computeSourcePressureCooldown([gap({ attemptCount: 1 })], BASE_INTERVAL_MS, T0);
+  assert.ok(
+    persisted.effectiveIntervalMs > fresh.effectiveIntervalMs,
+    `attempt_count=1 (${persisted.effectiveIntervalMs}ms) must exceed attempt_count=0 (${fresh.effectiveIntervalMs}ms)`,
+  );
+});
+
+test('each additional unrecovered recovery attempt strictly increases the cooldown', () => {
+  const intervals = [0, 1, 2, 3].map(
+    (attemptCount) => computeSourcePressureCooldown([gap({ attemptCount })], BASE_INTERVAL_MS, T0).effectiveIntervalMs,
+  );
+  for (let i = 1; i < intervals.length; i++) {
+    assert.ok(
+      intervals[i] > intervals[i - 1],
+      `attempt_count=${i} (${intervals[i]}ms) must exceed attempt_count=${i - 1} (${intervals[i - 1]}ms)`,
+    );
+  }
+});

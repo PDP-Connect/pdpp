@@ -670,12 +670,17 @@ test('runtime includes pending detail gaps in START as reference-only safe rows'
       list_item: { id: 'conv_1', title: 'Safe title' },
     },
   };
+  const markedInProgress = [];
   const detailGapStore = {
     async listPendingGaps(input) {
       assert.equal(input.connectorId, 'chatgpt');
       assert.equal(input.grantId, 'grant_1');
       assert.deepEqual(input.streams, ['messages']);
       return [pendingGap];
+    },
+    async markGapStatus(gapId, status) {
+      markedInProgress.push({ gapId, status });
+      return { ...pendingGap, status };
     },
     async upsertPendingGap() {
       throw new Error('unused');
@@ -697,6 +702,9 @@ test('runtime includes pending detail gaps in START as reference-only safe rows'
     assert.equal(result.status, 'succeeded');
     const start = JSON.parse(readFileSync(startPath, 'utf8'));
     assert.deepEqual(start.detail_gaps, [{ ...pendingGap, reference_only: true }]);
+    assert.equal(markedInProgress.length, 1, 'served gap is marked in_progress before connector gets it');
+    assert.equal(markedInProgress[0].gapId, pendingGap.gap_id);
+    assert.equal(markedInProgress[0].status, 'in_progress');
   } finally {
     cleanup();
   }
@@ -840,6 +848,105 @@ test('runtime pages large detail-gap payloads by byte budget while still drainin
       .length,
     0,
   );
+}));
+
+// ─── Attempt-persistence acceptance tests ────────────────────────────────────
+//
+// These tests prove the cross-run adaptive recovery contract: a pending gap
+// served to a connector for recovery increments attempt_count before any
+// provider requests are made, so the scheduler-source-pressure cooldown governor
+// sees persistence > 0 on subsequent runs and applies a more conservative wait.
+
+test('serving a pending gap in START increments attempt_count to 1 via in_progress mark', withTempDb(async (dir) => {
+  const store = createSqliteConnectorDetailGapStore();
+  const startPath = join(dir, 'attempt-start.json');
+
+  const seeded = await store.upsertPendingGap({
+    connectorId: 'chatgpt',
+    grantId: 'grant_1',
+    stream: 'messages',
+    recordKey: 'conv_attempt',
+    detailLocator: { kind: 'chatgpt.conversation', conversation_id: 'conv_attempt' },
+    reason: 'upstream_pressure',
+  });
+  assert.equal(seeded.attempt_count, 0, 'freshly seeded gap starts at attempt_count=0');
+
+  const { connectorPath, cleanup } = createStartCaptureConnector(startPath);
+  try {
+    await runConnector({
+      connectorPath,
+      connectorId: 'chatgpt',
+      grantId: 'grant_1',
+      ownerToken: 'owner',
+      manifest: { streams: [{ name: 'messages' }] },
+      persistState: false,
+      detailGapStore: store,
+      onProgress: () => {},
+    });
+  } finally {
+    cleanup();
+  }
+
+  // Gap was served in START → must now be in_progress with attempt_count=1.
+  // listPendingGaps excludes in_progress, so we query via markGapStatus round-trip.
+  const afterRun = await store.markGapStatus(seeded.gap_id, 'pending');
+  assert.equal(afterRun.attempt_count, 1, 'serving gap in START marks it in_progress and increments attempt_count');
+}));
+
+test('recovered gap preserves incremented attempt_count after DETAIL_GAP_RECOVERED', withTempDb(async () => {
+  const store = createSqliteConnectorDetailGapStore();
+
+  const seeded = await store.upsertPendingGap({
+    connectorId: 'chatgpt',
+    grantId: 'grant_1',
+    stream: 'messages',
+    recordKey: 'conv_recover',
+    detailLocator: { kind: 'chatgpt.conversation', conversation_id: 'conv_recover' },
+    reason: 'rate_limited',
+  });
+
+  // Mark in_progress (simulates serving gap) — increments to 1.
+  await store.markGapStatus(seeded.gap_id, 'in_progress', { runId: 'run_x' });
+
+  // Now recover it.
+  const recovered = await store.markGapStatus(seeded.gap_id, 'recovered', { runId: 'run_x' });
+  assert.equal(recovered.status, 'recovered');
+  assert.equal(recovered.attempt_count, 1, 'recovered gap retains incremented attempt_count');
+  assert.equal(recovered.recovered_run_id, 'run_x');
+}));
+
+test('re-deferred pressure gap remains pending with attempt_count > 0 after runtime re-defers it', withTempDb(async () => {
+  const store = createSqliteConnectorDetailGapStore();
+
+  // Seed a gap, serve it (mark in_progress → attempt_count=1), then re-defer
+  // it (connector emits DETAIL_GAP again → upsertPendingGap → status=pending,
+  // attempt_count stays at 1 because upsert does not reset attempt_count).
+  const seeded = await store.upsertPendingGap({
+    connectorId: 'chatgpt',
+    grantId: 'grant_1',
+    stream: 'messages',
+    recordKey: 'conv_redefer',
+    detailLocator: { kind: 'chatgpt.conversation', conversation_id: 'conv_redefer' },
+    reason: 'upstream_pressure',
+  });
+
+  // Simulate runtime serving the gap (in_progress).
+  await store.markGapStatus(seeded.gap_id, 'in_progress', { runId: 'run_a' });
+
+  // Simulate connector re-deferring it (DETAIL_GAP emitted again).
+  const reDeferred = await store.upsertPendingGap({
+    connectorId: 'chatgpt',
+    grantId: 'grant_1',
+    stream: 'messages',
+    recordKey: 'conv_redefer',
+    detailLocator: { kind: 'chatgpt.conversation', conversation_id: 'conv_redefer' },
+    reason: 'upstream_pressure',
+    lastRunId: 'run_a',
+  });
+
+  assert.equal(reDeferred.status, 'pending', 're-deferred gap is pending');
+  assert.equal(reDeferred.attempt_count, 1, 'attempt_count is preserved at 1 after re-deferral');
+  assert.equal(reDeferred.gap_id, seeded.gap_id, 'same gap identity persists across re-deferral');
 }));
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
