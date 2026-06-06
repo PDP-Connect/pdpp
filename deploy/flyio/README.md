@@ -19,7 +19,32 @@ Scope of this first slice:
 
 Fly.io does not provide a Railway-style published Template button for arbitrary
 repos that can encode this deployment as a hosted one-click link. The selected
-Fly-native path is a single `fly launch` command from the public repository:
+Fly-native path is a single `fly launch` command.
+
+Fast image-backed path, using the current public Core image:
+
+```sh
+APP="pdpp-core-$(openssl rand -hex 3)"
+OWNER_PASSWORD="$(openssl rand -base64 24)"
+
+fly launch \
+  --image ghcr.io/vana-com/pdpp/railway-core:sha-39232ac \
+  --name "$APP" \
+  --region iad \
+  --internal-port 3000 \
+  --db \
+  --secret "PDPP_OWNER_PASSWORD=$OWNER_PASSWORD" \
+  --env "PDPP_REFERENCE_ORIGIN=https://$APP.fly.dev" \
+  --no-github-workflow \
+  --no-object-storage \
+  --no-redis \
+  --now \
+  --yes
+
+printf 'Origin: https://%s.fly.dev\nOwner password: %s\n' "$APP" "$OWNER_PASSWORD"
+```
+
+Source-build fallback from the public repository:
 
 ```sh
 APP="pdpp-core-$(openssl rand -hex 3)"
@@ -45,8 +70,8 @@ printf 'Origin: https://%s.fly.dev\nOwner password: %s\n' "$APP" "$OWNER_PASSWOR
 ```
 
 This is the honest Fly equivalent to the Railway button today: one command that
-creates the app, provisions Postgres, deploys the Core image from source, and
-prints the owner password the operator needs for login and smoke checks.
+creates the app, provisions Postgres, deploys the Core runtime, and prints the
+owner password the operator needs for login and smoke checks.
 
 If `fly launch --from` cannot read the config path in your local flyctl version,
 clone the repository and run the same command from the checkout without the

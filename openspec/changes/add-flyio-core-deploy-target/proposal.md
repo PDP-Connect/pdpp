@@ -14,7 +14,8 @@ Railway-style published Template button.
 ## What Changes
 
 - Add `deploy/flyio/` with a `fly.toml`, a Core env example, and an operator
-  runbook for one public Fly app plus Fly Postgres.
+  runbook for one public Fly app plus Fly Postgres, including a fast public-image
+  launch path and a source-build fallback.
 - Add a generic `platform-core` Docker target alias for managed-platform Core
   deploys.
 - Allow the runtime to use standard `DATABASE_URL` when `PDPP_DATABASE_URL` is

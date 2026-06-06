@@ -9,8 +9,9 @@
   `PDPP_REFERENCE_ORIGIN`, `PDPP_OWNER_PASSWORD`, and durable database URL.
 - [x] 1.3 Add a `platform-core` Docker target alias for the proven one-service
   Core runtime.
-- [x] 1.4 Add operator documentation for `fly launch --from`, verification,
-  restart survival, rollback, teardown, and the honest no-template-button state.
+- [x] 1.4 Add operator documentation for the public-image `fly launch` path,
+  source-build `fly launch --from` fallback, verification, restart survival,
+  rollback, teardown, and the honest no-template-button state.
 
 ## 2. Runtime And Preflight
 

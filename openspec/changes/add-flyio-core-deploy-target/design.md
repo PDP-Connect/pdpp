@@ -29,16 +29,17 @@ deploy because it is simpler, cheaper, and closer to the Railway button.
 
 ## Shareable Fly Path
 
-Fly currently supports `fly launch --from <github-url>`, `--config`,
-`--build-target`, `--db`, `--secret`, and `--env`. It does not expose a
-Railway-style published template URL for arbitrary repos that can encode this
-deployment as a hosted one-click button.
+Fly currently supports `fly launch --image`, `fly launch --from <github-url>`,
+`--config`, `--build-target`, `--db`, `--secret`, and `--env`. It does not
+expose a Railway-style published template URL for arbitrary repos that can
+encode this deployment as a hosted one-click button.
 
-Decision: document a single `fly launch --from https://github.com/vana-com/pdpp`
-command as the honest Fly-native shareable path. The command chooses a concrete
-app name, sets `PDPP_REFERENCE_ORIGIN`, generates `PDPP_OWNER_PASSWORD`, enables
-Fly Postgres via `--db`, builds the `platform-core` Docker target, deploys, and
-prints the origin/password for verification.
+Decision: document a single `fly launch` command as the honest Fly-native
+shareable path. The fastest path uses the public Core image; the source fallback
+uses `fly launch --from https://github.com/vana-com/pdpp`. Both choose a
+concrete app name, set `PDPP_REFERENCE_ORIGIN`, generate `PDPP_OWNER_PASSWORD`,
+enable Fly Postgres via `--db`, deploy, and print the origin/password for
+verification.
 
 This is not called a one-click button. It is the narrowest honest path until Fly
 offers a generally available template surface with the same semantics as
