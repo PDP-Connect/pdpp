@@ -254,7 +254,7 @@ export class ChatGptRateLimitDensityTracker {
   }
 }
 
-// ─── Bounded-run cap (max detail fetches / max wall-clock per run) ─────────
+// ─── Bounded-run budget (provider requests / wall-clock per run) ───────────
 //
 // The density stop bounds a *pressured* run: it defers the tail once the
 // account serves enough 429s. But a large-history account that is genuinely
@@ -264,10 +264,12 @@ export class ChatGptRateLimitDensityTracker {
 // one thing that keeps unattended scheduling from being ideal (readiness report
 // F4 #1 / Next slice #1): a single nudge could turn into an unbounded run.
 //
-// This cap bounds every run by SIZE and/or TIME, independent of source
-// pressure. When the run has hydrated `maxDetailFetchesPerRun` conversation
-// details, or has spent `maxRunWallClockMs` of wall-clock in the detail phase,
-// it stops launching new detail fetches and defers the remaining tail as
+// This budget bounds every run by SIZE and/or TIME, independent of source
+// pressure. In this lane one admitted conversation-detail hydration maps to
+// one provider request budget unit. When the run has admitted
+// `maxDetailFetchesPerRun` conversation-detail requests, or has spent
+// `maxRunWallClockMs` of wall-clock in the detail phase, it stops launching new
+// detail fetches and defers the remaining tail as
 // resumable DETAIL_GAP records — the SAME deferral the density stop and the
 // per-conversation exhaustion path use, so a later run recovers the gaps first
 // and walks forward. Strictly safer than today: it can only ever make a run
@@ -282,17 +284,19 @@ export class ChatGptRateLimitDensityTracker {
 // the hydrated prefix.
 //
 // Both knobs default OFF (the disable sentinel). With neither env var set a
-// normal run is byte-for-byte unchanged — no cap is consulted, the only stops
-// are the existing pressure/exhaustion circuits. Set a positive value to opt a
-// scheduled/unattended run into a bounded slice that defers the remainder.
+// normal run is byte-for-byte unchanged — no budget is consulted, the only
+// stops are the existing pressure/exhaustion circuits. Set a positive value to
+// opt a scheduled/unattended run into a bounded slice that defers the remainder.
 const CHATGPT_MAX_DETAIL_FETCHES_PER_RUN_ENV = "PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN";
 const CHATGPT_MAX_RUN_WALL_CLOCK_MS_ENV = "PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS";
 
 /**
- * Resolve the maximum conversation-detail hydrations a single run may perform
- * before deferring the remaining tail as resumable DETAIL_GAP records. Unset or
- * any value < 1 (the disable escape hatch) returns Infinity — no fetch-count
- * cap, preserving current behavior. A positive integer caps the run.
+ * Resolve the maximum conversation-detail provider requests a single run may
+ * admit before deferring the remaining tail as resumable DETAIL_GAP records.
+ * Unset or any value < 1 (the disable escape hatch) returns Infinity — no
+ * request-count cap, preserving current behavior. A positive integer caps the
+ * run. The env var keeps its legacy detail-fetch name because this lane has a
+ * one-detail-fetch-to-one-provider-request mapping.
  */
 export function resolveChatGptMaxDetailFetchesPerRun(env: NodeJS.ProcessEnv = process.env): number {
   const trimmed = env[CHATGPT_MAX_DETAIL_FETCHES_PER_RUN_ENV]?.trim();
@@ -326,7 +330,7 @@ export function resolveChatGptMaxRunWallClockMs(env: NodeJS.ProcessEnv = process
 }
 
 /**
- * Run-scoped budget for the ChatGPT connector's bounded-run cap. Thin adapter
+ * Run-scoped budget for the ChatGPT connector's bounded-run budget. Thin adapter
  * over the shared `RunBudget` that preserves the connector-specific API
  * (`maxFetches`, `recordDetailFetch`, `reason`) for backward compat with
  * existing tests and call sites. New code should use `RunBudget` directly.
@@ -346,7 +350,7 @@ export class ChatGptRunBudget {
     });
   }
 
-  /** Record one hydrated conversation detail against the fetch budget. */
+  /** Record one admitted conversation-detail request against the run budget. */
   recordDetailFetch(): void {
     this.inner.recordRequest();
   }
@@ -1760,10 +1764,10 @@ interface ConversationDetailPacingOptions {
   // inject a fixed value to exercise the seed without a real list phase.
   preDetailRateLimited?: number;
   random?: () => number;
-  // Bounded-run cap for this detail pass. Tests inject a ChatGptRunBudget (with
-  // a fake clock and/or a small fetch cap) to exercise the cap deterministically
-  // without a real multi-hour run. Defaults to the run-scoped budget on `deps`,
-  // and falls back to an env-resolved budget so a production run honors
+  // Bounded-run budget for this detail pass. Tests inject a ChatGptRunBudget
+  // (with a fake clock and/or a small request budget) to exercise the budget
+  // deterministically without a real multi-hour run. Defaults to the run-scoped
+  // budget on `deps`, and falls back to an env-resolved budget so production honors
   // PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN / PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS.
   runBudget?: ChatGptRunBudget;
   sleep?: (ms: number) => Promise<void> | void;
@@ -2008,10 +2012,10 @@ export async function runMessagesAndConversationsWithDetail(
     pacing.densityStopThreshold ?? resolveChatGptRateLimitDensityStop(),
     seededRateLimited
   );
-  // Bounded-run cap. `pacing` wins for tests; production reads the run-scoped
+  // Bounded-run budget. `pacing` wins for tests; production reads the run-scoped
   // budget on `deps` (shared across the recovery + forward passes); if neither
   // is supplied, fall back to an env-resolved budget so a single-pass call still
-  // honors the cap env vars. With both knobs at their disable sentinel (the
+  // honors the budget env vars. With both knobs at their disable sentinel (the
   // default) the budget never trips and behavior is byte-for-byte unchanged.
   const runBudget =
     pacing.runBudget ??
@@ -2111,7 +2115,7 @@ export async function runMessagesAndConversationsWithDetail(
         makeDeferredConversationDetailGap(item, observedRecoverablePressure as ChatGptRecoverableRetryExhaustedError)
       );
     }
-    // Bounded-run cap already tripped earlier in this pass. Any later task that
+    // Bounded-run budget already tripped earlier in this pass. Any later task that
     // managed to start before the abort is local-only: materialize its tail as
     // resumable run-cap gaps and stop queued lane work.
     if (runCapDeferReason) {
@@ -2136,8 +2140,8 @@ export async function runMessagesAndConversationsWithDetail(
         makeDeferredConversationDetailGap(item, observedRecoverablePressure as ChatGptRecoverableRetryExhaustedError)
       );
     }
-    // Bounded-run cap trip. Independent of source pressure: when the run has
-    // hydrated its max detail count, or spent its wall-clock budget, stop
+    // Bounded-run budget trip. Independent of source pressure: when the run has
+    // spent its provider-request budget, or spent its wall-clock budget, stop
     // launching new fetches and defer this + every later conversation as a
     // resumable run-cap DETAIL_GAP. NOT a source failure — `reason` stays
     // `retry_exhausted` so no source-pressure cooldown is armed. Defaults are
@@ -2145,10 +2149,14 @@ export async function runMessagesAndConversationsWithDetail(
     const capReason = runBudget.reason();
     if (capReason) {
       runCapDeferReason = capReason;
+      const budgetDescription =
+        capReason === "max_wall_clock"
+          ? `wall-clock budget after ${runBudget.elapsedMs()}ms elapsed`
+          : `provider-request budget after ${runBudget.count} conversation-detail request(s)`;
       await deps.emit({
         type: "PROGRESS",
         stream: "messages",
-        message: `ChatGPT conversation-detail lane reached its per-run ${capReason === "max_wall_clock" ? "wall-clock" : "detail-count"} cap after ${runBudget.count} hydrated conversation(s); deferring the remaining conversation details as resumable DETAIL_GAP records for the next run`,
+        message: `ChatGPT conversation-detail lane reached its per-run ${budgetDescription}; deferring the remaining conversation details as resumable DETAIL_GAP records for the next run`,
       });
       return emitTailConversationDetailGaps(c, (item) => makeRunCapDeferredConversationDetailGap(item, capReason));
     }

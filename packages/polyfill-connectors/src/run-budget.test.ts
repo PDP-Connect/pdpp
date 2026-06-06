@@ -47,7 +47,7 @@ test("RunBudget: clock anchors lazily on first tripReason() call, not on constru
 
 test("RunBudget: request cap takes priority when both caps trip simultaneously", () => {
   let nowMs = 0;
-  // Anchor clock, then advance it past the wall-clock cap, then add a request.
+  // Anchor clock, then advance it past the wall-clock budget, then add a request.
   // At the moment of the second tripReason() call both caps are tripped.
   const budget = new RunBudget({ maxRequests: 1, maxWallClockMs: 100, now: () => nowMs });
   // Anchor clock

@@ -1201,7 +1201,7 @@ test("runMessagesAndConversationsWithDetail: a zero pre-detail seed preserves th
   assert.deepEqual(coverage.gapKeys, []);
 });
 
-// ─── Bounded-run cap (max detail fetches / max wall-clock per run) ─────────
+// ─── Bounded-run budget (provider requests / wall-clock per run) ───────────
 
 test("resolveChatGptMaxDetailFetchesPerRun: unset/invalid → no cap; positive int caps", () => {
   // Default OFF: an unconfigured or invalid value must NOT cap the run.
@@ -1232,7 +1232,7 @@ test("resolveChatGptMaxRunWallClockMs: unset/invalid → no cap; positive ms cap
   assert.equal(
     resolveChatGptMaxRunWallClockMs({ PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS: "0" }),
     Number.POSITIVE_INFINITY,
-    "0 disables the wall-clock cap"
+    "0 disables the wall-clock budget"
   );
   assert.equal(resolveChatGptMaxRunWallClockMs({ PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS: "-1" }), Number.POSITIVE_INFINITY);
   assert.equal(resolveChatGptMaxRunWallClockMs({ PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS: "1800000" }), 1_800_000);
@@ -1243,7 +1243,7 @@ test("resolveChatGptMaxRunWallClockMs: unset/invalid → no cap; positive ms cap
   );
 });
 
-test("ChatGptRunBudget: no caps never stops; fetch cap and wall-clock cap each trip with the right reason", () => {
+test("ChatGptRunBudget: no caps never stops; request budget and wall-clock budget each trip with the right reason", () => {
   // Disabled budget (the production default): never the reason a run stops.
   const open = new ChatGptRunBudget();
   for (let i = 0; i < 100; i += 1) {
@@ -1252,7 +1252,8 @@ test("ChatGptRunBudget: no caps never stops; fetch cap and wall-clock cap each t
   assert.equal(open.shouldStop(), false, "a budget with no caps never trips");
   assert.equal(open.reason(), null);
 
-  // Fetch cap: trips once the hydrated count reaches the cap.
+  // Request budget: trips once the admitted conversation-detail count reaches
+  // the provider-request budget.
   const fetchCapped = new ChatGptRunBudget({ maxFetches: 2 });
   assert.equal(fetchCapped.reason(), null, "0 < 2: open");
   fetchCapped.recordDetailFetch();
@@ -1260,7 +1261,7 @@ test("ChatGptRunBudget: no caps never stops; fetch cap and wall-clock cap each t
   fetchCapped.recordDetailFetch();
   assert.equal(fetchCapped.reason(), "max_detail_fetches", "2 >= 2: tripped");
 
-  // Wall-clock cap: clock anchors on the first reason() call, then trips once
+  // Wall-clock budget: clock anchors on the first reason() call, then trips once
   // the injected clock advances past the budget.
   let nowMs = 1000;
   const clockCapped = new ChatGptRunBudget({ maxWallClockMs: 500, now: () => nowMs });
@@ -1271,10 +1272,10 @@ test("ChatGptRunBudget: no caps never stops; fetch cap and wall-clock cap each t
   assert.equal(clockCapped.reason(), "max_wall_clock", "elapsed 500 >= 500: tripped");
 });
 
-test("runMessagesAndConversationsWithDetail: a max-detail-fetches cap defers the tail as resumable run-cap DETAIL_GAP", async () => {
+test("runMessagesAndConversationsWithDetail: a provider-request budget defers the tail as resumable run-cap DETAIL_GAP", async () => {
   // A genuinely COLD account (every fetch 200, no 429): the density stop never
-  // trips, so without a size cap a large backlog would run unbounded. With a
-  // fetch cap of 2, the run hydrates exactly two and defers the rest cleanly.
+  // trips, so without a size budget a large backlog would run unbounded. With a
+  // request budget of 2, the run hydrates exactly two and defers the rest cleanly.
   const harness = makeRecordingEmit(validateRecord);
   const fetchedIds: string[] = [];
   const api: ChatGptApi = {
@@ -1306,13 +1307,13 @@ test("runMessagesAndConversationsWithDetail: a max-detail-fetches cap defers the
     { random: () => 0, sleep: () => undefined, runBudget: new ChatGptRunBudget({ maxFetches: 2 }) }
   );
 
-  // Exactly two fetches launch; convo-3's launch sees the cap and defers it plus
+  // Exactly two fetches launch; convo-3's launch sees the budget and defers it plus
   // the rest with NO further fetch — proving a large backlog cannot become an
   // unbounded run.
   assert.deepEqual(
     fetchedIds,
     ["/conversation/convo-1", "/conversation/convo-2"],
-    "no detail fetch is launched once the fetch cap is reached"
+    "no detail fetch is launched once the request budget is reached"
   );
   assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2"]);
   assert.deepEqual(coverage.gapKeys, ["convo-3", "convo-4", "convo-5"]);
@@ -1360,7 +1361,16 @@ test("runMessagesAndConversationsWithDetail: a max-detail-fetches cap defers the
       m.type === "PROGRESS" && m.stream === "messages" && m.message.includes("reached its per-run")
   );
   assert.equal(capProgress.length, 1, "the cap trip is announced exactly once");
-  assert.equal(capProgress[0]?.message.includes("detail-count cap"), true, "the message names the fetch-count cap");
+  assert.equal(
+    capProgress[0]?.message.includes("provider-request budget"),
+    true,
+    "the message names the provider-request budget"
+  );
+  assert.equal(
+    capProgress[0]?.message.includes("detail-count cap"),
+    false,
+    "the message must not frame the run budget as a connector-specific detail-count cap"
+  );
   assert.equal(
     capProgress.some((m) => m.message.includes("convo-") || m.message.includes("/conversation/")),
     false,
@@ -1368,7 +1378,7 @@ test("runMessagesAndConversationsWithDetail: a max-detail-fetches cap defers the
   );
 });
 
-test("runMessagesAndConversationsWithDetail: a wall-clock cap defers the tail via an injected clock", async () => {
+test("runMessagesAndConversationsWithDetail: a wall-clock budget defers the tail via an injected clock", async () => {
   // Each conversation 'takes' 400ms of wall-clock (advanced by the fake clock
   // inside the fetch). With a 500ms budget the run hydrates the conversations it
   // can finish inside the budget, then defers the remainder as resumable gaps —
@@ -1431,9 +1441,9 @@ test("runMessagesAndConversationsWithDetail: a wall-clock cap defers the tail vi
   );
   const capProgress = harness.protocolMessages.filter(
     (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> =>
-      m.type === "PROGRESS" && m.stream === "messages" && m.message.includes("wall-clock cap")
+      m.type === "PROGRESS" && m.stream === "messages" && m.message.includes("wall-clock budget")
   );
-  assert.equal(capProgress.length, 1, "the wall-clock trip names the wall-clock cap exactly once");
+  assert.equal(capProgress.length, 1, "the wall-clock trip names the wall-clock budget exactly once");
 });
 
 test("runMessagesAndConversationsWithDetail: no cap configured leaves a large backlog unbounded (default-off)", async () => {
@@ -1476,7 +1486,7 @@ test("runMessagesAndConversationsWithDetail: no cap configured leaves a large ba
 
 test("runConversationsAndMessagesStreams: one run budget bounds the recovery pass AND the forward pass together", async () => {
   // The cap is per-RUN, not per-pass: a pending gap-recovery item plus new
-  // forward conversations share one budget. With a fetch cap of 2 and one
+  // forward conversations share one budget. With a request budget of 2 and one
   // recovery item, the recovery pass hydrates it (count 1), then the forward
   // pass hydrates one more (count 2) and defers the rest — the budget is not
   // reset between passes.
@@ -2872,7 +2882,7 @@ test("runMessagesAndConversationsWithDetail: post-cap emits full tail gaps and s
 });
 
 test("runMessagesAndConversationsWithDetail: no-cap run is byte-for-byte unchanged", async () => {
-  // With NO fetch/wall-clock cap, all conversations are hydrated normally.
+  // With NO request/wall-clock budget, all conversations are hydrated normally.
   const harness = makeRecordingEmit(validateRecord);
   const fetchedIds: string[] = [];
   const api: ChatGptApi = {
