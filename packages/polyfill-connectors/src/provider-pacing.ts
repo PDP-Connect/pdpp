@@ -11,7 +11,7 @@ export interface PacingOptions {
    * Inter-request interval (ms) at the initial conservative rate.
    * The AIMD fill rate starts here and adjusts from this baseline.
    */
-  initialIntervalMs: number;
+  initialIntervalMs?: number;
   /**
    * Minimum inter-request interval (ms). The floor the AIMD fill rate can
    * reach via additive increase. Defaults to 0 (no floor below initial).
@@ -29,6 +29,8 @@ export interface ThrottleSignal {
   /** If present, honor this delay exactly for the next admit() call. */
   retryAfterMs?: number;
 }
+
+const DEFAULT_INITIAL_INTERVAL_MS = 1000;
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -58,14 +60,14 @@ export class ProviderPacing {
   private nextRetryAfterMs: number | null = null;
 
   constructor(options: PacingOptions) {
-    this.initialIntervalMs = options.initialIntervalMs;
+    this.initialIntervalMs = options.initialIntervalMs ?? DEFAULT_INITIAL_INTERVAL_MS;
     this.minIntervalMs = options.minIntervalMs ?? 0;
-    this.burstToleranceMs = options.burstToleranceMs ?? 2 * options.initialIntervalMs;
+    this.burstToleranceMs = options.burstToleranceMs ?? 2 * this.initialIntervalMs;
     this.additiveIncreaseMs = options.additiveIncreaseMs ?? 100;
     this.multiplicativeDecreaseFactor = options.multiplicativeDecreaseFactor ?? 0.5;
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? defaultSleep;
-    this._currentIntervalMs = options.initialIntervalMs;
+    this._currentIntervalMs = this.initialIntervalMs;
   }
 
   /**

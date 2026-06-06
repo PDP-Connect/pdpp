@@ -19,25 +19,25 @@ separate lane or tranche with its own acceptance checks.
 
 ### 2.1 Per-provider token-bucket pacing
 
-- [ ] Implement a per-provider token bucket in the polyfill-runtime base.
-  - [ ] Fill rate and burst depth configurable per connector; unset → conservative default.
-  - [ ] AIMD adaptive fill-rate adjustment: additive increase on success,
+- [x] Implement a per-provider token bucket in the polyfill-runtime base.
+  - [x] Fill rate and burst depth configurable per connector; unset → conservative default.
+  - [x] AIMD adaptive fill-rate adjustment: additive increase on success,
         multiplicative decrease on 429/503/elevated-latency.
-  - [ ] One-way ratchet: error responses may only increase delay, never decrease.
-  - [ ] Conservative starting delay before first response signal.
-  - [ ] Per-provider isolation: slow or rate-limited provider does not stall other providers.
-- [ ] Unit-test the token bucket with an injectable clock (no live provider required).
-- [ ] Verify that a run with no budget configured behaves byte-for-byte unchanged.
+  - [x] One-way ratchet: error responses may only increase delay, never decrease.
+  - [x] Conservative starting delay before first response signal.
+  - [x] Per-provider isolation: slow or rate-limited provider does not stall other providers.
+- [x] Unit-test the token bucket with an injectable clock (no live provider required).
+- [x] Verify that a run with no budget configured behaves byte-for-byte unchanged.
 
 ### 2.2 Retry budget (ratio-based token bucket)
 
 - [ ] Implement a run-scoped retry budget token bucket.
-  - [ ] Capacity ≈ 20% of per-run request cap (or a configurable minimum).
-  - [ ] Tokens consumed on retry; refilled proportionally to successes.
+  - [x] Capacity ≈ 20% of per-run request cap (or a configurable minimum).
+  - [x] Tokens consumed on retry; refilled proportionally to successes.
   - [ ] Full jitter backoff: `sleep = random(0, min(cap, base × 2^attempt))`.
   - [ ] Retry only on 429, 408, 5xx. Non-retryable 4xx logs and skips (no budget consumed).
   - [ ] When bucket empty: defer run as resumable gap with reason not in source-pressure set.
-- [ ] Unit-test retry budget exhaustion path.
+- [x] Unit-test retry budget exhaustion path.
 
 ### 2.3 Circuit breaker integration
 
@@ -49,17 +49,17 @@ separate lane or tranche with its own acceptance checks.
   - [ ] Minimum-throughput guard: breaker cannot open before a minimum request count.
   - [ ] When Open: propagate error immediately, do not consult retry budget.
 - [ ] Expose circuit breaker state transitions to operator health view.
-- [ ] Unit-test all three state transitions.
+- [x] Unit-test all three state transitions.
 
 ### 2.4 Run budget envelope (request cap + wall-clock deadline)
 
-- [ ] Implement run-scoped request cap and wall-clock deadline.
-  - [ ] Default off (unset → no cap; run behavior unchanged).
-  - [ ] Wall-clock checked between fetch attempts, never mid-fetch.
-  - [ ] On exhaustion: emit resumable gap record; checkpoint reflects last durable write only.
-  - [ ] Gap reason is not in source-pressure reason set.
-  - [ ] Does not arm source-pressure cooldown governor.
-- [ ] Unit-test with injectable clock (request cap trip, wall-clock trip, default-off).
+- [x] Implement run-scoped request cap and wall-clock deadline.
+  - [x] Default off (unset → no cap; run behavior unchanged).
+  - [x] Wall-clock checked between fetch attempts, never mid-fetch.
+  - [x] On exhaustion: emit resumable gap record; checkpoint reflects last durable write only.
+  - [x] Gap reason is not in source-pressure reason set.
+  - [x] Does not arm source-pressure cooldown governor.
+- [x] Unit-test with injectable clock (request cap trip, wall-clock trip, default-off).
 
 ### 2.5 Commit-gated monotonic checkpoint
 

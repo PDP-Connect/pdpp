@@ -26,6 +26,18 @@ test("ProviderPacing: first admit() sleeps initialIntervalMs", async () => {
   assert.equal(spy.calls[0], 200, "first admit sleeps initialIntervalMs");
 });
 
+test("ProviderPacing: unset initialIntervalMs uses a conservative default", async () => {
+  const spy = makeSpy();
+  const pacing = new ProviderPacing({
+    now: () => 0,
+    sleep: spy.sleep,
+  });
+
+  await pacing.admit();
+
+  assert.equal(spy.calls[0], 1000, "configured pacing starts conservatively when no rate is provided");
+});
+
 test("ProviderPacing: additive increase reduces currentIntervalMs toward minIntervalMs", () => {
   const pacing = new ProviderPacing({
     initialIntervalMs: 1000,

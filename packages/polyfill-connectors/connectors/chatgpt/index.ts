@@ -44,6 +44,7 @@ import {
   TerminalHttpStatusError,
 } from "../../src/http-retry.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
+import { ProviderBudgetController, type ProviderBudgetGate } from "../../src/provider-budget.ts";
 import { RunBudget } from "../../src/run-budget.ts";
 import {
   buildConversationRecord,
@@ -289,6 +290,9 @@ export class ChatGptRateLimitDensityTracker {
 // opt a scheduled/unattended run into a bounded slice that defers the remainder.
 const CHATGPT_MAX_DETAIL_FETCHES_PER_RUN_ENV = "PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN";
 const CHATGPT_MAX_RUN_WALL_CLOCK_MS_ENV = "PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS";
+const CHATGPT_PACING_INITIAL_INTERVAL_MS_ENV = "PDPP_CHATGPT_PACING_INITIAL_INTERVAL_MS";
+const CHATGPT_PACING_MIN_INTERVAL_MS_ENV = "PDPP_CHATGPT_PACING_MIN_INTERVAL_MS";
+const CHATGPT_PACING_BURST_TOLERANCE_MS_ENV = "PDPP_CHATGPT_PACING_BURST_TOLERANCE_MS";
 
 /**
  * Resolve the maximum conversation-detail provider requests a single run may
@@ -327,6 +331,34 @@ export function resolveChatGptMaxRunWallClockMs(env: NodeJS.ProcessEnv = process
     return Number.POSITIVE_INFINITY;
   }
   return Math.floor(parsed);
+}
+
+function resolvePositiveFiniteMs(env: NodeJS.ProcessEnv, key: string): number | null {
+  const trimmed = env[key]?.trim();
+  if (trimmed == null || trimmed === "") {
+    return null;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Math.floor(parsed);
+}
+
+export function resolveChatGptProviderBudget(env: NodeJS.ProcessEnv = process.env): ProviderBudgetController | null {
+  const initialIntervalMs = resolvePositiveFiniteMs(env, CHATGPT_PACING_INITIAL_INTERVAL_MS_ENV);
+  if (initialIntervalMs == null) {
+    return null;
+  }
+  const minIntervalMs = resolvePositiveFiniteMs(env, CHATGPT_PACING_MIN_INTERVAL_MS_ENV) ?? 0;
+  const burstToleranceMs = resolvePositiveFiniteMs(env, CHATGPT_PACING_BURST_TOLERANCE_MS_ENV) ?? 2 * initialIntervalMs;
+  return new ProviderBudgetController({
+    pacing: {
+      burstToleranceMs,
+      initialIntervalMs,
+      minIntervalMs,
+    },
+  });
 }
 
 /**
@@ -612,14 +644,22 @@ function makeChatGptNetworkPressureDiagnostic({
 async function reportChatGptRetryPressure({
   delayMs,
   onUnlanedRateLimited,
+  providerBudget,
   response,
   retryAfterMs,
 }: {
   delayMs: number;
   onUnlanedRateLimited?: (() => void) | undefined;
+  providerBudget?: ProviderBudgetController | null | undefined;
   response?: { status?: number } | undefined;
   retryAfterMs?: number | undefined;
 }): Promise<void> {
+  if (response?.status === 429 || response?.status === 502 || response?.status === 503 || response?.status === 504) {
+    providerBudget?.recordThrottle({
+      retryAfterAlreadySlept: true,
+      ...(retryAfterMs == null ? {} : { retryAfterMs }),
+    });
+  }
   const laneContext = currentAdaptiveLaneRunContext();
   await laneContext?.reportPressure({
     absorbedByRequestWait: true,
@@ -637,6 +677,7 @@ function createChatGptApi({
   emit,
   onUnlanedRateLimited,
   page,
+  providerBudget,
 }: {
   capture: CaptureSession | null;
   emit?: CollectContext["emit"];
@@ -647,6 +688,7 @@ function createChatGptApi({
   // carry pre-detail source pressure into the detail-phase density stop.
   onUnlanedRateLimited?: () => void;
   page: Page;
+  providerBudget?: ProviderBudgetController | null;
 }): ChatGptApi {
   let authCache: ChatGptAuth | null = null;
   async function auth(): Promise<ChatGptAuth> {
@@ -698,7 +740,7 @@ function createChatGptApi({
         // inside the same (serialized) detail attempt. Route the pressure to
         // either the active detail lane or the run-scoped accumulator (extracted
         // so this callback stays simple); see reportChatGptRetryPressure.
-        await reportChatGptRetryPressure({ delayMs, onUnlanedRateLimited, response, retryAfterMs });
+        await reportChatGptRetryPressure({ delayMs, onUnlanedRateLimited, providerBudget, response, retryAfterMs });
         if (delayMs < CHATGPT_LONG_SLEEP_PROGRESS_THRESHOLD_MS) {
           return;
         }
@@ -1036,6 +1078,7 @@ export interface StreamDeps {
   // number) so the count `createChatGptApi` increments is visible by reference.
   preDetailPressure?: ChatGptPreDetailPressure;
   progress: CollectContext["progress"];
+  providerBudget?: ProviderBudgetController | null;
   requested: CollectContext["requested"];
   // Run-scoped bounded-run cap shared across the gap-recovery pass and the
   // forward-walk pass, so a large recovery backlog plus new conversations are
@@ -1763,6 +1806,10 @@ interface ConversationDetailPacingOptions {
   // carries forward. Defaults to the run-scoped accumulator on `deps`; tests
   // inject a fixed value to exercise the seed without a real list phase.
   preDetailRateLimited?: number;
+  // Connector-agnostic provider budget controller. When present it owns
+  // inter-request pacing for the detail lane, so the lane's ordinary launch
+  // delay is neutralized to avoid stacking two pacing controllers.
+  providerBudget?: ProviderBudgetController | null;
   random?: () => number;
   // Bounded-run budget for this detail pass. Tests inject a ChatGptRunBudget
   // (with a fake clock and/or a small request budget) to exercise the budget
@@ -1986,10 +2033,19 @@ export async function runMessagesAndConversationsWithDetail(
 ): Promise<ConversationDetailCoverage> {
   const random = pacing.random ?? Math.random;
   const sleep = pacing.sleep ?? sleepMs;
+  const providerBudget = pacing.providerBudget ?? deps.providerBudget ?? null;
   // Defaults are the frozen production values (1 / 1 / 1500ms / 3000ms). A
   // cold-state A/B probe may override them via PDPP_CHATGPT_DETAIL_*_PROBE env
   // vars; see resolveChatGptDetailLaneTuning. Tests may also inject `tuning`.
-  const requestedTuning = pacing.tuning ?? resolveChatGptDetailLaneTuning();
+  const rawRequestedTuning = pacing.tuning ?? resolveChatGptDetailLaneTuning();
+  const requestedTuning =
+    providerBudget == null
+      ? rawRequestedTuning
+      : {
+          ...rawRequestedTuning,
+          pauseMaxMs: 0,
+          pauseMinMs: 0,
+        };
   // Cold-state preflight: only when the owner has opted into the faster A/B
   // posture (maxConcurrency > 1). Production (maxConcurrency === 1) skips this
   // entirely — no extra requests, frozen serial behavior preserved byte-for-byte.
@@ -2106,6 +2162,69 @@ export async function runMessagesAndConversationsWithDetail(
     tailStopController.abort();
     return { deferredDueToPressure: true, status: 0, json: null };
   }
+
+  async function deferForProviderBudgetGate(
+    from: ConversationListItem,
+    providerGate: Extract<ProviderBudgetGate, { ok: false }>
+  ): Promise<ChatGptFetchResult> {
+    const providerBudgetDeferReason: ChatGptRunCapReason =
+      providerGate.reason === "max_wall_clock" ? "max_wall_clock" : "max_detail_fetches";
+    runCapDeferReason = providerBudgetDeferReason;
+    await deps.emit({
+      type: "PROGRESS",
+      stream: "messages",
+      message: `ChatGPT conversation-detail lane reached its per-run provider budget (${providerGate.reason}) after ${providerGate.requestCount} provider request(s); deferring the remaining conversation details as resumable DETAIL_GAP records for the next run`,
+    });
+    return emitTailConversationDetailGaps(from, (item) =>
+      makeRunCapDeferredConversationDetailGap(item, providerBudgetDeferReason)
+    );
+  }
+
+  async function admitProviderBudget(from: ConversationListItem): Promise<ChatGptFetchResult | null> {
+    const providerGate = await providerBudget?.beforeRequest();
+    if (!providerGate) {
+      return null;
+    }
+    if (providerGate.ok) {
+      providerBudget?.recordRequest();
+      return null;
+    }
+    return deferForProviderBudgetGate(from, providerGate);
+  }
+
+  async function maybeDeferForRateLimitDensity(from: ConversationListItem): Promise<ChatGptFetchResult | null> {
+    if (!densityTracker.shouldStop()) {
+      return null;
+    }
+    observedRecoverablePressure = makeRateLimitDensityPressureError(densityTracker.count);
+    await deps.emit({
+      type: "PROGRESS",
+      stream: "messages",
+      message: `ChatGPT conversation-detail lane opened upstream-pressure circuit after ${densityTracker.count} served 429s; deferring remaining conversation details as DETAIL_GAP records`,
+    });
+    return emitTailConversationDetailGaps(from, (item) =>
+      makeDeferredConversationDetailGap(item, observedRecoverablePressure as ChatGptRecoverableRetryExhaustedError)
+    );
+  }
+
+  async function maybeDeferForRunBudget(from: ConversationListItem): Promise<ChatGptFetchResult | null> {
+    const capReason = runBudget.reason();
+    if (!capReason) {
+      return null;
+    }
+    runCapDeferReason = capReason;
+    const budgetDescription =
+      capReason === "max_wall_clock"
+        ? `wall-clock budget after ${runBudget.elapsedMs()}ms elapsed`
+        : `provider-request budget after ${runBudget.count} conversation-detail request(s)`;
+    await deps.emit({
+      type: "PROGRESS",
+      stream: "messages",
+      message: `ChatGPT conversation-detail lane reached its per-run ${budgetDescription}; deferring the remaining conversation details as resumable DETAIL_GAP records for the next run`,
+    });
+    return emitTailConversationDetailGaps(from, (item) => makeRunCapDeferredConversationDetailGap(item, capReason));
+  }
+
   await runLaneUntilTailStopped(lane, convosToSync, tailStopController.signal, async (c) => {
     if (!c) {
       return { status: 404, json: null };
@@ -2129,16 +2248,9 @@ export async function runMessagesAndConversationsWithDetail(
     // as resumable DETAIL_GAP records. Catches the slow-bleed "succeeds after
     // backoff, over and over, for hours" regime the exhaustion-only circuit
     // never trips on.
-    if (densityTracker.shouldStop()) {
-      observedRecoverablePressure = makeRateLimitDensityPressureError(densityTracker.count);
-      await deps.emit({
-        type: "PROGRESS",
-        stream: "messages",
-        message: `ChatGPT conversation-detail lane opened upstream-pressure circuit after ${densityTracker.count} served 429s; deferring remaining conversation details as DETAIL_GAP records`,
-      });
-      return emitTailConversationDetailGaps(c, (item) =>
-        makeDeferredConversationDetailGap(item, observedRecoverablePressure as ChatGptRecoverableRetryExhaustedError)
-      );
+    const densityDefer = await maybeDeferForRateLimitDensity(c);
+    if (densityDefer) {
+      return densityDefer;
     }
     // Bounded-run budget trip. Independent of source pressure: when the run has
     // spent its provider-request budget, or spent its wall-clock budget, stop
@@ -2146,25 +2258,21 @@ export async function runMessagesAndConversationsWithDetail(
     // resumable run-cap DETAIL_GAP. NOT a source failure — `reason` stays
     // `retry_exhausted` so no source-pressure cooldown is armed. Defaults are
     // the disable sentinel, so a normal run never reaches this branch.
-    const capReason = runBudget.reason();
-    if (capReason) {
-      runCapDeferReason = capReason;
-      const budgetDescription =
-        capReason === "max_wall_clock"
-          ? `wall-clock budget after ${runBudget.elapsedMs()}ms elapsed`
-          : `provider-request budget after ${runBudget.count} conversation-detail request(s)`;
-      await deps.emit({
-        type: "PROGRESS",
-        stream: "messages",
-        message: `ChatGPT conversation-detail lane reached its per-run ${budgetDescription}; deferring the remaining conversation details as resumable DETAIL_GAP records for the next run`,
-      });
-      return emitTailConversationDetailGaps(c, (item) => makeRunCapDeferredConversationDetailGap(item, capReason));
+    const runBudgetDefer = await maybeDeferForRunBudget(c);
+    if (runBudgetDefer) {
+      return runBudgetDefer;
     }
+    const providerBudgetDefer = await admitProviderBudget(c);
+    if (providerBudgetDefer) {
+      return providerBudgetDefer;
+    }
+
     let detail: ChatGptFetchResult;
     try {
       detail = await deps.api.fetch(`/conversation/${encodeURIComponent(c.id)}`);
     } catch (err) {
       if (err instanceof ChatGptRecoverableRetryExhaustedError) {
+        providerBudget?.recordThrottle({ retryAfterAlreadySlept: true });
         observedRecoverablePressure = err;
         await deps.emit({
           type: "PROGRESS",
@@ -2179,9 +2287,11 @@ export async function runMessagesAndConversationsWithDetail(
       throw err;
     }
     if (detail.status !== 200) {
+      providerBudget?.recordFailure();
       throw new Error(`required conversation detail ${c.id} failed with http ${detail.status}`);
     }
     await processConversationDetail(deps, c, detail, emitConversation);
+    providerBudget?.recordSuccess();
     hydratedKeys.add(c.id);
     coverage.hydratedKeys.push(c.id);
     // Count this hydration against the bounded-run cap. Done after a successful
@@ -2431,6 +2541,7 @@ if (isMainModule(import.meta.url)) {
         maxFetches: resolveChatGptMaxDetailFetchesPerRun(),
         maxWallClockMs: resolveChatGptMaxRunWallClockMs(),
       });
+      const providerBudget = resolveChatGptProviderBudget();
 
       // API client closes over page + capture — no module-level mutable state,
       // auth cached inside the closure for the run's lifetime.
@@ -2441,6 +2552,7 @@ if (isMainModule(import.meta.url)) {
         onUnlanedRateLimited: () => {
           preDetailPressure.rateLimited += 1;
         },
+        providerBudget,
       });
       const emitRecord = makeEmitRecord(baseEmitRecord);
 
@@ -2455,6 +2567,7 @@ if (isMainModule(import.meta.url)) {
         emitRecord,
         preDetailPressure,
         progress,
+        providerBudget,
         requested,
         runBudget,
       };

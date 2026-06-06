@@ -50,6 +50,7 @@ import { test } from "node:test";
 import { currentAdaptiveLaneRunContext } from "../../src/adaptive-lane.ts";
 import type { CollectContext, EmittedMessage } from "../../src/connector-runtime.ts";
 import { RetryExhaustedError, retryHttp } from "../../src/http-retry.ts";
+import { ProviderBudgetController } from "../../src/provider-budget.ts";
 import { type EmittedRecord, makeRecordingEmit, type SkippedRecord } from "../../src/test-harness.ts";
 import {
   applyChatGptColdStatePreflight,
@@ -65,6 +66,7 @@ import {
   resolveChatGptDetailLaneTuning,
   resolveChatGptMaxDetailFetchesPerRun,
   resolveChatGptMaxRunWallClockMs,
+  resolveChatGptProviderBudget,
   resolveChatGptRateLimitDensityStop,
   runConversationsAndMessagesStreams,
   runCustomGptsStream,
@@ -1243,6 +1245,33 @@ test("resolveChatGptMaxRunWallClockMs: unset/invalid → no cap; positive ms cap
   );
 });
 
+test("resolveChatGptProviderBudget: pacing disabled when unset; positive initial interval enables controller", async () => {
+  assert.equal(resolveChatGptProviderBudget({}), null);
+  assert.equal(resolveChatGptProviderBudget({ PDPP_CHATGPT_PACING_INITIAL_INTERVAL_MS: "0" }), null);
+
+  const sleeps: number[] = [];
+  const budget = resolveChatGptProviderBudget({
+    PDPP_CHATGPT_PACING_BURST_TOLERANCE_MS: "250",
+    PDPP_CHATGPT_PACING_INITIAL_INTERVAL_MS: "500",
+    PDPP_CHATGPT_PACING_MIN_INTERVAL_MS: "100",
+  });
+  assert.ok(budget instanceof ProviderBudgetController);
+
+  // Replace the production sleep-free resolver proof with a direct controller
+  // check using the same shape: enabled budget has a pacing controller.
+  const injected = new ProviderBudgetController({
+    pacing: {
+      initialIntervalMs: 500,
+      sleep: (ms) => {
+        sleeps.push(ms);
+        return Promise.resolve();
+      },
+    },
+  });
+  await injected.beforeRequest();
+  assert.deepEqual(sleeps, [500]);
+});
+
 test("ChatGptRunBudget: no caps never stops; request budget and wall-clock budget each trip with the right reason", () => {
   // Disabled budget (the production default): never the reason a run stops.
   const open = new ChatGptRunBudget();
@@ -1482,6 +1511,107 @@ test("runMessagesAndConversationsWithDetail: no cap configured leaves a large ba
     false,
     "no gap is emitted when the bounded-run cap is disabled"
   );
+});
+
+test("runMessagesAndConversationsWithDetail: provider budget pacing neutralizes ordinary lane launch delay", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  const providerSleeps: number[] = [];
+  const laneSleeps: number[] = [];
+  const providerBudget = new ProviderBudgetController({
+    pacing: {
+      initialIntervalMs: 250,
+      sleep: (ms) => {
+        providerSleeps.push(ms);
+        return Promise.resolve();
+      },
+    },
+  });
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      fetchedIds.push(path);
+      await Promise.resolve();
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    providerBudget,
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "convo-1" }), makeConvo({ id: "convo-2" })],
+    makeEmitConversation(deps),
+    {
+      random: () => 0,
+      sleep: (ms) => {
+        laneSleeps.push(ms);
+      },
+      tuning: {
+        initialConcurrency: 1,
+        maxConcurrency: 1,
+        pauseMaxMs: 3000,
+        pauseMinMs: 1500,
+      },
+    }
+  );
+
+  assert.deepEqual(fetchedIds, ["/conversation/convo-1", "/conversation/convo-2"]);
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1", "convo-2"]);
+  assert.equal(providerSleeps.length >= 2, true, "provider budget admits each conversation through pacing");
+  assert.equal(
+    laneSleeps.some((ms) => ms >= 1500),
+    false,
+    "ordinary lane launch delay is neutralized when provider-budget pacing is active"
+  );
+});
+
+test("runMessagesAndConversationsWithDetail: provider request budget defers cleanly before next fetch", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  const providerBudget = new ProviderBudgetController({ runBudget: { maxRequests: 1 } });
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      fetchedIds.push(path);
+      await Promise.resolve();
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    providerBudget,
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "convo-1" }), makeConvo({ id: "convo-2" }), makeConvo({ id: "convo-3" })],
+    makeEmitConversation(deps),
+    { random: () => 0, sleep: () => undefined }
+  );
+
+  assert.deepEqual(
+    fetchedIds,
+    ["/conversation/convo-1"],
+    "second fetch is not launched after request budget exhaustion"
+  );
+  assert.deepEqual(coverage.hydratedKeys, ["convo-1"]);
+  assert.deepEqual(coverage.gapKeys, ["convo-2", "convo-3"]);
+  const progress = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> =>
+      m.type === "PROGRESS" && m.message.includes("provider budget (max_requests)")
+  );
+  assert.equal(progress.length, 1, "provider-budget exhaustion is announced once");
 });
 
 test("runConversationsAndMessagesStreams: one run budget bounds the recovery pass AND the forward pass together", async () => {
