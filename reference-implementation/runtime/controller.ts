@@ -2455,23 +2455,49 @@ export function createController(opts: ControllerOptions = {}): Controller {
   }
 
   async function getLastRunTimeMs(connectorId: string, connectorInstanceId: string): Promise<number> {
-    try {
-      const rows = await Promise.resolve(schedulerStore.listLastRunTimes());
-      let latest = 0;
-      for (const row of rows ?? []) {
-        const rowInstanceId = row.connector_instance_id || row.connector_id;
-        const legacyConnectorRow = !row.connector_instance_id && connectorInstanceId === connectorId && row.connector_id === connectorId;
-        if (rowInstanceId !== connectorInstanceId && !legacyConnectorRow) {
-          continue;
-        }
-        if (Number.isFinite(row.last_run_time_ms) && row.last_run_time_ms > latest) {
-          latest = row.last_run_time_ms;
-        }
+    const [lastRunRows, historyRows] = await Promise.all([
+      Promise.resolve(schedulerStore.listLastRunTimes()).catch(() => []),
+      Promise.resolve(schedulerStore.listRunHistory(500)).catch(() => []),
+    ]);
+    let latest = 0;
+    for (const row of lastRunRows ?? []) {
+      if (!matchesConnectorInstance(row.connector_id, row.connector_instance_id, connectorId, connectorInstanceId)) {
+        continue;
       }
-      return latest;
-    } catch {
+      latest = Math.max(latest, parseEpochMs(row.last_run_time_ms));
+    }
+    for (const record of historyRows ?? []) {
+      if (!matchesConnectorInstance(record.connectorId, record.connectorInstanceId, connectorId, connectorInstanceId)) {
+        continue;
+      }
+      latest = Math.max(latest, parseIsoEpochMs(record.completedAt || record.startedAt));
+    }
+    return latest;
+  }
+
+  function matchesConnectorInstance(
+    rowConnectorId: string | null | undefined,
+    rowConnectorInstanceId: string | null | undefined,
+    connectorId: string,
+    connectorInstanceId: string
+  ): boolean {
+    if (rowConnectorInstanceId) {
+      return rowConnectorInstanceId === connectorInstanceId;
+    }
+    return connectorInstanceId === connectorId && rowConnectorId === connectorId;
+  }
+
+  function parseEpochMs(value: unknown): number {
+    const numeric = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+    return Number.isFinite(numeric) && numeric > 0 ? numeric : 0;
+  }
+
+  function parseIsoEpochMs(value: unknown): number {
+    if (typeof value !== "string" || value.length === 0) {
       return 0;
     }
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
   }
 
   // Bounded once-per-call slice of recent run history. 500 is the same

@@ -61,7 +61,7 @@ function fakeDetailGapStore(pendingGaps = [], calls = []) {
 }
 
 // Fake scheduler store — configurable schedule/last-run anchors, no DB needed.
-function fakeSchedulerStore({ schedule = null, lastRunTimes = [] } = {}) {
+function fakeSchedulerStore({ schedule = null, lastRunTimes = [], runHistory = [] } = {}) {
   return {
     appendRunHistory: () => {},
     createSchedule: () => {},
@@ -70,7 +70,7 @@ function fakeSchedulerStore({ schedule = null, lastRunTimes = [] } = {}) {
     getSchedule: () => schedule,
     listActiveRuns: () => [],
     listLastRunTimes: () => lastRunTimes,
-    listRunHistory: () => [],
+    listRunHistory: () => runHistory,
     listSchedules: () => [],
     setScheduleEnabled: () => {},
     updateSchedule: () => {},
@@ -218,6 +218,50 @@ test('manual cooldown gate reads connector type and filters to the requested con
       assert.equal(calls.length, 1);
       assert.equal(calls[0].connectorId, TEST_CONNECTOR_ID, 'store read is connector-type scoped, not cin-scoped');
       assert.deepEqual(calls[0].options, { limit: 200 });
+    },
+  );
+});
+
+test('manual cooldown gate uses recent run history when persisted last-run row is stale', async () => {
+  const recent = Date.now();
+  const stale = recent - 30 * 24 * 60 * 60 * 1000;
+  await withPreGateController(
+    () => fakeDetailGapStore([pressureGap({ connector_instance_id: 'cin_target', attempt_count: 0 })]),
+    async (controller) => {
+      let err;
+      try {
+        await controller.runNow(TEST_CONNECTOR_ID, {
+          connectorInstanceId: 'cin_target',
+          manifest: buildManifest(),
+        });
+      } catch (e) {
+        err = e;
+      }
+      assert.ok(err, 'recent skip history should keep the pressure cooldown active');
+      assert.equal(err.code, 'provider_pressure_cooldown');
+    },
+    {
+      schedule: { interval_seconds: 60 },
+      lastRunTimes: [{
+        connector_id: TEST_CONNECTOR_ID,
+        connector_instance_id: 'cin_target',
+        last_run_time_ms: String(stale),
+        updated_at: new Date(stale).toISOString(),
+      }],
+      runHistory: [{
+        attempt: 0,
+        checkpointSummary: null,
+        completedAt: new Date(recent).toISOString(),
+        connectorId: TEST_CONNECTOR_ID,
+        connectorInstanceId: 'cin_target',
+        error: 'source_pressure_cooldown_applied: fixture',
+        knownGaps: [],
+        recordsEmitted: 0,
+        runId: null,
+        source: { kind: 'connector', id: TEST_CONNECTOR_ID },
+        startedAt: new Date(recent).toISOString(),
+        status: 'skipped',
+      }],
     },
   );
 });
