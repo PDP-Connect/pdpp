@@ -29,11 +29,13 @@ test('private reference Dockerfile is a final-stage service image, not a target-
 
   assert.match(dockerfile, /Railway templates\/config-as-code expose a Dockerfile path/);
   assert.match(dockerfile, /FROM base AS reference/);
-  assert.match(dockerfile, /CMD \["node", "reference-implementation\/server\/index\.js"\]/);
+  assert.match(dockerfile, /export AS_PORT=\\"?\$\{PORT:-\$\{AS_PORT:-7662\}\}\\"?/);
+  assert.match(dockerfile, /exec node reference-implementation\/server\/index\.js/);
   assert.doesNotMatch(dockerfile, /FROM browsers AS reference/);
   assert.doesNotMatch(dockerfile, /patchright install/);
   assert.doesNotMatch(dockerfile, /FROM .* AS console/);
   assert.doesNotMatch(dockerfile, /pnpm --filter pdpp-console build/);
+  assert.doesNotMatch(dockerfile, /ENV[\s\S]*?\n\s+PORT=/);
 });
 
 test('Railway runbook and template handoff do not require manual Docker target-stage setup', () => {
@@ -48,7 +50,7 @@ test('Railway runbook and template handoff do not require manual Docker target-s
   assert.match(handoff, /https:\/\/railway\.com\/new\/template\/<template-code>/);
   assert.match(handoff, /PDPP_REFERENCE_ORIGIN=https:\/\/\$\{\{console\.RAILWAY_PUBLIC_DOMAIN\}\}/);
   assert.match(handoff, /PDPP_OWNER_PASSWORD=\$\{\{reference\.PDPP_OWNER_PASSWORD\}\}/);
-  assert.match(handoff, /PDPP_AS_URL=http:\/\/\$\{\{reference\.RAILWAY_PRIVATE_DOMAIN\}\}:7662/);
+  assert.match(handoff, /PDPP_AS_URL=http:\/\/\$\{\{reference\.RAILWAY_PRIVATE_DOMAIN\}\}:\$\{\{reference\.PORT\}\}/);
   assert.match(handoff, /PDPP_RS_URL=http:\/\/\$\{\{reference\.RAILWAY_PRIVATE_DOMAIN\}\}:7663/);
   assert.match(handoff, /PDPP_DATABASE_URL=\$\{\{Postgres\.DATABASE_URL\}\}/);
   assert.match(handoff, /PGDATA=\$\{\{RAILWAY_VOLUME_MOUNT_PATH\}\}\/pgdata/);
@@ -56,6 +58,7 @@ test('Railway runbook and template handoff do not require manual Docker target-s
   assert.match(handoff, /Source accessibility gate/);
   assert.match(handoff, /railway up/);
   assert.match(handoff, /public container images/);
+  assert.doesNotMatch(handoff, /PDPP_AS_URL=http:\/\/\$\{\{reference\.RAILWAY_PRIVATE_DOMAIN\}\}:7662/);
   assert.doesNotMatch(handoff, /Settings\s*->\s*Build\s*->\s*Docker\s*->\s*Target Stage/i);
 });
 

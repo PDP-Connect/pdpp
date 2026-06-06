@@ -20,7 +20,7 @@ function validPostgresEnv(overrides = {}) {
   return {
     PDPP_REFERENCE_ORIGIN: 'https://pdpp.example.com',
     PDPP_OWNER_PASSWORD: 's3cret-owner-pw',
-    PDPP_AS_URL: 'http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7662',
+    PDPP_AS_URL: 'http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:${{reference.PORT}}',
     PDPP_RS_URL: 'http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7663',
     PDPP_DATABASE_URL: '${{Postgres.DATABASE_URL}}',
     ...overrides,
@@ -31,7 +31,7 @@ function validSqliteEnv(overrides = {}) {
   return {
     PDPP_REFERENCE_ORIGIN: 'https://pdpp.example.com',
     PDPP_OWNER_PASSWORD: 's3cret-owner-pw',
-    PDPP_AS_URL: 'http://reference.railway.internal:7662',
+    PDPP_AS_URL: 'http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:${{reference.PORT}}',
     PDPP_RS_URL: 'http://reference.railway.internal:7663',
     PDPP_STORAGE_BACKEND: 'sqlite',
     PDPP_DB_PATH: '/data/pdpp.sqlite',
@@ -43,7 +43,7 @@ function validConsoleServiceEnv(overrides = {}) {
   return {
     PDPP_REFERENCE_ORIGIN: 'https://${{console.RAILWAY_PUBLIC_DOMAIN}}',
     PDPP_OWNER_PASSWORD: 's3cret-owner-pw',
-    PDPP_AS_URL: 'http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7662',
+    PDPP_AS_URL: 'http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:${{reference.PORT}}',
     PDPP_RS_URL: 'http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7663',
     ...overrides,
   };
@@ -68,7 +68,7 @@ test('isPlaceholder treats empty, missing, and angle-bracket templates as unset'
 
 test('isRailwayReference recognizes ${{...}} bindings only', () => {
   assert.equal(isRailwayReference('${{Postgres.DATABASE_URL}}'), true);
-  assert.equal(isRailwayReference('http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7662'), true);
+  assert.equal(isRailwayReference('http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:${{reference.PORT}}'), true);
   assert.equal(isRailwayReference('postgres://u:p@host/db'), false);
   assert.equal(isRailwayReference(''), false);
 });
@@ -80,13 +80,13 @@ test('parseEnv ignores comments and blanks and strips quotes', () => {
       '',
       'PDPP_REFERENCE_ORIGIN=https://pdpp.example.com',
       'PDPP_OWNER_PASSWORD="quoted-secret"',
-      "PDPP_AS_URL='http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7662'",
+      "PDPP_AS_URL='http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:${{reference.PORT}}'",
       'NO_EQUALS_LINE',
     ].join('\n'),
   );
   assert.equal(env.PDPP_REFERENCE_ORIGIN, 'https://pdpp.example.com');
   assert.equal(env.PDPP_OWNER_PASSWORD, 'quoted-secret');
-  assert.equal(env.PDPP_AS_URL, 'http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7662');
+  assert.equal(env.PDPP_AS_URL, 'http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:${{reference.PORT}}');
   assert.equal('NO_EQUALS_LINE' in env, false);
 });
 
@@ -212,12 +212,12 @@ test('service env preflight permits reference constants to come from image defau
   );
 });
 
-test('service env preflight rejects a wrong reference PORT when set', () => {
+test('service env preflight rejects explicit reference PORT because Railway injects it', () => {
   const violations = evaluateRailwayServiceEnvs({
     consoleEnv: validConsoleServiceEnv(),
-    referenceEnv: validReferenceServiceEnv({ PORT: '3000' }),
+    referenceEnv: validReferenceServiceEnv({ PORT: '7662' }),
   });
-  assert.equal(violations.some((v) => v.includes('reference PORT must be "7662"')), true);
+  assert.equal(violations.some((v) => v.includes('reference PORT must not be set')), true);
 });
 
 test('service env preflight requires reference hosted-MCP self-calls to stay loopback', () => {
@@ -240,6 +240,6 @@ test('committed service env templates fail only because the owner secret is not 
   });
   assert.equal(violations.some((v) => v.includes('PDPP_REFERENCE_ORIGIN is not set')), false);
   assert.equal(violations.some((v) => v.includes('PDPP_OWNER_PASSWORD is not set')), true);
-  assert.equal(violations.some((v) => v.includes('reference PORT must be')), false);
+  assert.equal(violations.some((v) => v.includes('reference PORT must not be set')), false);
   assert.equal(violations.some((v) => v.includes('PDPP_DATABASE_URL')), false);
 });

@@ -32,9 +32,9 @@ was resolved against the actual routing code rather than the reports:
   origin`, that no internal Docker service name leaks, and that `/dashboard`
   redirects to `/owner/login` when `PDPP_OWNER_PASSWORD` is set.
 
-So the "two HTTP listeners (AS `7662` + RS `7663`) but one public port" problem
-that two reports treated as gating does **not** gate the console front door. It
-only applies if a deploy naively points the platform at the `reference` image
+So the "two HTTP listeners (AS + RS) but one public port" problem that two
+reports treated as gating does **not** gate the console front door. It only
+applies if a deploy naively points the platform at the `reference` image
 directly. The supported Railway shape is therefore the same single-public-origin
 composed topology the smoke test already validates: **one public console
 service, one private reference service, and a storage backend**. Railway template
@@ -59,9 +59,8 @@ test.
   surface, the AS/RS reference service kept private, and AS/RS internal URLs and
   the public origin supplied through the existing
 `PDPP_REFERENCE_ORIGIN` / `PDPP_AS_URL` / `PDPP_RS_URL` env contract. The
-  public service SHALL be the only internet-reachable origin; the AS `7662` and
-  RS `7663` listeners SHALL NOT be published as separate public origins for this
-  target.
+  public service SHALL be the only internet-reachable origin; the AS and RS
+  listeners SHALL NOT be published as separate public origins for this target.
 - Require the deploy target to provide **durable storage explicitly**: either a
   managed Postgres backend (`PDPP_DATABASE_URL`, with
   `PDPP_STORAGE_BACKEND=postgres` optional because the runtime selects Postgres

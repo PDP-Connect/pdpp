@@ -12,11 +12,11 @@ and device surfaces — by proxying to the internal AS and RS using the existing
 advertised through composed mode via `PDPP_REFERENCE_ORIGIN` (or
 `AS_PUBLIC_URL` / `RS_PUBLIC_URL`).
 
-The AS `7662` and RS `7663` listeners SHALL NOT be published as separate public
-origins for this deploy target. The reference service SHALL be reachable only
-over the platform's private network, and the public origin SHALL terminate TLS
-with the forwarded protocol trusted so that browser-facing metadata, owner
-sessions, and CSRF protection bind to the public HTTPS origin.
+The AS and RS listeners SHALL NOT be published as separate public origins for
+this deploy target. The reference service SHALL be reachable only over the
+platform's private network, and the public origin SHALL terminate TLS with the
+forwarded protocol trusted so that browser-facing metadata, owner sessions, and
+CSRF protection bind to the public HTTPS origin.
 
 Browser-facing metadata served through the public origin SHALL advertise the
 public origin and SHALL NOT leak an internal service name as a browser-facing
@@ -26,7 +26,7 @@ URL.
 
 - **WHEN** the managed-platform Core deploy target is configured with one public console service and a private reference service
 - **THEN** the public origin SHALL serve OAuth authorization-server metadata, OAuth protected-resource metadata, the OAuth endpoints, the hosted MCP endpoint, and the `/v1` query API by proxying to the internal AS and RS
-- **AND** the AS `7662` and RS `7663` listeners SHALL NOT be published as separate public origins
+- **AND** the AS and RS listeners SHALL NOT be published as separate public origins
 - **AND** the reference service SHALL be reachable only over the platform private network
 
 #### Scenario: Composed-origin metadata is consistent on the public origin

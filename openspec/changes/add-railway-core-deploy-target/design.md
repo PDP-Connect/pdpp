@@ -18,9 +18,10 @@ explicit durable storage. Two application services. Configuration plus safe
 image/runtime defaults.**
 
 The reference server binds two HTTP listeners in one Node process — AS on
-`AS_PORT` (default `7662`) and RS on `RS_PORT` (default `7663`)
+`AS_PORT` (default `7662` outside Railway; Railway maps its injected `PORT` to
+`AS_PORT`) and RS on `RS_PORT` (default `7663`)
 (`reference-implementation/server/index.js`, `asApp.listen` / `rsApp.listen`).
-A managed platform routes one public port per service. Two of the three prior
+A managed platform routes one primary service port. Two of the three prior
 reports treated this as the gating constraint and concluded the live test must
 either expose the Resource Server only, or run two public services (`as` + `rs`)
 with cross-origin metadata config.

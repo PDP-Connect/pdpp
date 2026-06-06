@@ -103,7 +103,7 @@ carry browser runtime bloat.
   `.test.mjs`, 21 tests) — a deterministic, offline env-contract preflight that
   catches the avoidable misconfigurations (no/non-HTTPS origin, empty owner
   password, mismatched shared service values, console AS/RS targets that do not
-  use Railway private networking, missing reference healthcheck `PORT`, and
+  use Railway private networking, an explicit reference `PORT` prompt, and
   non-durable or unmounted-default storage) before a live run.
 
 ## 4. Follow-on and image-slimming work

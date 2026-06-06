@@ -48,8 +48,8 @@ export function isPlaceholder(value) {
 }
 
 // `${{Postgres.DATABASE_URL}}` and
-// `http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7662` are Railway reference
-// variables: real, intentional bindings Railway resolves at deploy time.
+// `http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:${{reference.PORT}}` are Railway
+// reference variables: real, intentional bindings Railway resolves at deploy time.
 export function isRailwayReference(value) {
   return typeof value === 'string' && /\$\{\{[^}]+\}\}/.test(value.trim());
 }
@@ -131,6 +131,16 @@ function isRailwayPrivateUrl(url, port) {
   }
 }
 
+function isRailwayPrivateUrlWithPortReference(url, portReference) {
+  if (isPlaceholder(url) || !isRailwayReference(url)) {
+    return false;
+  }
+  const escaped = String(portReference).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^http://\\$\\{\\{[^}]*RAILWAY_PRIVATE_DOMAIN[^}]*\\}\\}:\\$\\{\\{${escaped}\\}\\}$`).test(
+    String(url).trim(),
+  );
+}
+
 function hasDurableDatabaseUrl(env) {
   const databaseUrl = env.PDPP_DATABASE_URL;
   return !isPlaceholder(databaseUrl) || isRailwayReference(databaseUrl);
@@ -175,7 +185,7 @@ export function evaluateRailwayDeployEnv(env) {
   if (isPlaceholder(env.PDPP_AS_URL)) {
     violations.push(
       'PDPP_AS_URL is not set. The console must reach the private reference Authorization Server ' +
-        '(e.g. http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7662).',
+        '(e.g. http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:${{reference.PORT}}).',
     );
   }
   if (isPlaceholder(env.PDPP_RS_URL)) {
@@ -243,10 +253,10 @@ export function evaluateRailwayServiceEnvs({ consoleEnv, referenceEnv }) {
   requireSame(violations, consoleEnv, referenceEnv, 'PDPP_OWNER_PASSWORD', 'owner gate');
 
   const consoleAsUrl = consoleEnv.PDPP_AS_URL;
-  if (!isRailwayPrivateUrl(consoleAsUrl, 7662)) {
+  if (!isRailwayPrivateUrlWithPortReference(consoleAsUrl, 'reference.PORT')) {
     violations.push(
       'console PDPP_AS_URL must point at the private Railway reference AS ' +
-        '(expected http://<reference-service>.railway.internal:7662).',
+        '(expected http://<reference-service>.railway.internal:${{reference.PORT}}).',
     );
   }
 
@@ -270,15 +280,11 @@ export function evaluateRailwayServiceEnvs({ consoleEnv, referenceEnv }) {
   }
 
   requireExpectedIfSet(violations, referenceEnv, 'NODE_ENV', 'production', 'reference NODE_ENV must be "production".');
-  requireExpectedIfSet(violations, referenceEnv, 'AS_PORT', '7662', 'reference AS_PORT must be "7662".');
+  requireExpectedIfSet(violations, referenceEnv, 'AS_PORT', '7662', 'reference AS_PORT must be "7662" when set outside Railway.');
   requireExpectedIfSet(violations, referenceEnv, 'RS_PORT', '7663', 'reference RS_PORT must be "7663".');
-  requireExpectedIfSet(
-    violations,
-    referenceEnv,
-    'PORT',
-    '7662',
-    'reference PORT must be "7662" so Railway healthchecks target the AS healthcheck listener.',
-  );
+  if (!isPlaceholder(referenceEnv.PORT)) {
+    violations.push('reference PORT must not be set; Railway injects it and the image maps it to AS_PORT.');
+  }
   requireExpectedIfSet(
     violations,
     referenceEnv,

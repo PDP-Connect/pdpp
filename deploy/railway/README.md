@@ -67,7 +67,7 @@ One public service, one private service, one storage backend.
 internet ──HTTPS──▶  console  (public, the only internet-reachable origin)
                         │ proxies the full protocol surface over the private network
                         ▼
-                     reference (private: Authorization Server :7662 + Resource Server :7663)
+                     reference (private: Authorization Server on Railway $PORT + Resource Server :7663)
                         │
                         ▼
                      Postgres  (managed plugin)   OR   SQLite file on a mounted volume
@@ -75,15 +75,17 @@ internet ──HTTPS──▶  console  (public, the only internet-reachable ori
 
 Why the console is the front door, not the reference image: the reference server
 binds two HTTP listeners in one process — the Authorization Server on `AS_PORT`
-(`7662`) and the Resource Server on `RS_PORT` (`7663`). A managed platform routes
-one public port per service. The console (`apps/console`) already proxies the
-full protocol surface — OAuth metadata, OAuth endpoints, the hosted MCP endpoint,
-the `/v1` query API, and owner/device surfaces — to the internal AS and RS using
-`PDPP_AS_URL` / `PDPP_RS_URL`, and it forwards `x-forwarded-host` /
-`x-forwarded-proto` so composed mode advertises the single public origin. So the
-supported shape exposes only the console; the AS `7662` and RS `7663` listeners
-stay private. Both Core app images are browser-free for this target, so the
-internet-facing service and private AS/RS service carry no browser binary.
+(default `7662` outside Railway) and the Resource Server on `RS_PORT` (default
+`7663`). A managed platform routes one primary service port. The console
+(`apps/console`) already proxies the full protocol surface — OAuth metadata,
+OAuth endpoints, the hosted MCP endpoint, the `/v1` query API, and owner/device
+surfaces — to the internal AS and RS using `PDPP_AS_URL` / `PDPP_RS_URL`, and it
+forwards `x-forwarded-host` / `x-forwarded-proto` so composed mode advertises the
+single public origin. So the supported shape exposes only the console; Railway
+injects `PORT` for the private AS listener, the RS stays on `7663`, and neither
+listener is internet-reachable. Both Core app images are browser-free for this
+target, so the internet-facing service and private AS/RS service carry no browser
+binary.
 
 This is the same composed-origin topology that `scripts/docker-smoke.sh` already
 validates against the real images. See
@@ -99,7 +101,7 @@ build-from-source project, both use the service-specific Dockerfile paths.
 | Service     | Public? | Image source | Listens on        | Notes |
 |-------------|---------|--------------|-------------------|-------|
 | `console`   | yes     | `ghcr.io/vana-com/pdpp/web:<version-tag>` (or final stage in `Dockerfile`) | `$PORT` (Railway) | The single public origin. Generate a public domain for it. |
-| `reference` | no      | `ghcr.io/vana-com/pdpp/reference:<version-tag>` (or final stage in `deploy/railway/reference.Dockerfile`) | `7662`, `7663` | Private networking only. Do **not** generate a public domain. |
+| `reference` | no      | `ghcr.io/vana-com/pdpp/reference:<version-tag>` (or final stage in `deploy/railway/reference.Dockerfile`) | `$PORT` for AS, `7663` for RS | Private networking only. Do **not** generate a public domain. |
 | `Postgres`  | n/a     | managed plugin | private | Option A storage (recommended). |
 
 The committed [`railway.console.json`](./railway.console.json) and
@@ -131,7 +133,7 @@ Set on **both** services:
 
 Set on the **console** service:
 
-- `PDPP_AS_URL=http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7662`
+- `PDPP_AS_URL=http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:${{reference.PORT}}`
 - `PDPP_RS_URL=http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7663`
 - Do not set `PORT`; Railway injects it and the console binds it.
 
@@ -140,11 +142,12 @@ Set on the **reference** service:
 - The storage variables from the option you pick below.
 
 The `reference` image already sets the Core constants needed by Railway:
-`NODE_ENV=production`, `PORT=7662`, `AS_PORT=7662`, `RS_PORT=7663`,
+`NODE_ENV=production`, `RS_PORT=7663`,
 `PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1`,
 `PDPP_RS_URL=http://127.0.0.1:7663`, and
-`PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0`. You may set them explicitly in a hand-built
-project, but the pushbutton template should not prompt for them.
+`PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0`. Railway injects `PORT`, and the image maps
+that value to `AS_PORT` at startup so the private AS listener matches Railway's
+service port. Do not set these constants explicitly in the pushbutton template.
 
 Preflight the service envs locally before deploying:
 
@@ -156,7 +159,7 @@ node scripts/check-railway-deploy-env.mjs \
 
 The check is offline and deterministic. It flags a missing or non-HTTPS public
 origin, an empty owner password, mismatched shared values, console URLs that do
-not target the private Railway reference service, reference healthcheck `PORT`
+not target the private Railway reference service, reference `PORT` prompt
 misconfiguration, and storage left on the non-durable default. Run against the
 committed service templates it reports the empty owner password on purpose —
 they are templates, not ready-to-deploy files.

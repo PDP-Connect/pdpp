@@ -55,7 +55,6 @@ FROM base AS reference
 ARG PDPP_REFERENCE_REVISION=unknown
 
 ENV NODE_ENV=production \
-    PORT=7662 \
     AS_PORT=7662 \
     RS_PORT=7663 \
     PDPP_RS_URL=http://127.0.0.1:7663 \
@@ -67,4 +66,4 @@ COPY --from=source /app /app
 
 EXPOSE 7662 7663
 
-CMD ["node", "reference-implementation/server/index.js"]
+CMD ["sh", "-c", "export AS_PORT=\"${PORT:-${AS_PORT:-7662}}\"; export PDPP_RS_URL=\"${PDPP_RS_URL:-http://127.0.0.1:${RS_PORT:-7663}}\"; exec node reference-implementation/server/index.js"]

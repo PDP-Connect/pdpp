@@ -143,7 +143,7 @@ Set these on the public `console` service:
 ```sh
 PDPP_REFERENCE_ORIGIN=https://${{console.RAILWAY_PUBLIC_DOMAIN}}
 PDPP_OWNER_PASSWORD=${{reference.PDPP_OWNER_PASSWORD}}
-PDPP_AS_URL=http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7662
+PDPP_AS_URL=http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:${{reference.PORT}}
 PDPP_RS_URL=http://${{reference.RAILWAY_PRIVATE_DOMAIN}}:7663
 ```
 
@@ -159,12 +159,12 @@ PDPP_OWNER_PASSWORD=<required user-provided secret>
 PDPP_DATABASE_URL=${{Postgres.DATABASE_URL}}
 ```
 
-The `reference` image supplies the Core constants (`PORT=7662`, `AS_PORT=7662`,
-`RS_PORT=7663`, `PDPP_RS_URL=http://127.0.0.1:7663`,
-`PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1`, and
-`PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0`). The runtime selects Postgres when
+The `reference` image supplies the Core constants (`RS_PORT=7663`,
+`PDPP_RS_URL=http://127.0.0.1:7663`, `PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1`,
+and `PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0`). Railway injects `PORT`, and the image
+maps it to `AS_PORT` at startup. The runtime selects Postgres when
 `PDPP_DATABASE_URL` is present, so the template does not need a
-`PDPP_STORAGE_BACKEND` prompt.
+`PDPP_STORAGE_BACKEND` prompt or any AS-port prompt.
 
 Set these on the `Postgres` service:
 
