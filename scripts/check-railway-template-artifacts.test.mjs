@@ -80,6 +80,29 @@ test('Railway runbook documents the public GHCR image-source mapping', () => {
   assert.match(readme, /`reference` image is the[\s\S]*?`reference` stage/);
 });
 
+test('Railway handoff wires the runnable GHCR public-image probe into the publish gate', () => {
+  const handoff = read('deploy/railway/template.md');
+
+  // The Source accessibility gate points at the committed probe, not only the
+  // copy-paste heredoc, and the probe gates the live publish step.
+  assert.match(handoff, /pnpm railway:ghcr-public/);
+  assert.match(handoff, /scripts\/check-railway-ghcr-public\.test\.mjs/);
+  // The probe is a real package script, not just prose.
+  const pkg = readJson('package.json');
+  assert.equal(pkg.scripts['railway:ghcr-public'], 'node scripts/check-railway-ghcr-public.mjs');
+  assert.equal(
+    pkg.scripts['railway:ghcr-public:test'],
+    'node --test scripts/check-railway-ghcr-public.test.mjs',
+  );
+});
+
+test('Railway handoff carries a <template-code> replacement checklist', () => {
+  const handoff = read('deploy/railway/template.md');
+
+  assert.match(handoff, /`?<template-code>`? replacement checklist/i);
+  assert.match(handoff, /utm_medium=integration&utm_source=button&utm_campaign=pdpp-core/);
+});
+
 test('Railway upload context excludes machine-local agent symlinks', () => {
   const ignore = read('.railwayignore');
 

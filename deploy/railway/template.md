@@ -97,10 +97,20 @@ button.
 As of 2026-06-05 both GHCR packages are **private**, so Option 1 requires an
 owner-only visibility flip first (the `web` and `reference` packages each:
 GitHub -> org `vana-com` -> Packages -> the package -> remove inherited repository
-permissions if present -> Change visibility -> Public). Verify the flip with an
-anonymous pull-token probe before switching the Railway sources: a public package
-returns `200` and exposes `tags/list`; a private one returns `401`; a nonexistent
-path returns `403`:
+permissions if present -> Change visibility -> Public). Verify the flip with the
+committed probe before switching the Railway sources — it exits `0` only when both
+images are anonymously pullable, and prints the exact owner action while blocked:
+
+```sh
+pnpm railway:ghcr-public                 # both images; exit 0 = gate clear
+pnpm railway:ghcr-public -- --tag <version-tag>   # also assert the pinned tag exists
+```
+
+The probe's pass/fail logic is unit-tested offline by
+`node --test scripts/check-railway-ghcr-public.test.mjs`. The classifier it uses:
+a public package returns `200` and exposes `tags/list`; a private one returns
+`401`; a nonexistent path returns `403`. The equivalent inline check (no repo
+checkout) is:
 
 ```sh
 python3 - <<'PY'
@@ -217,6 +227,21 @@ service to the Postgres plugin and gives Railway an explicit dependency.
 Do not publish the placeholder URL. A docs/site surface should carry the button
 only after `<template-code>` has been replaced with the published template code.
 
+### `<template-code>` replacement checklist
+
+The placeholder `<template-code>` appears intentionally in `deploy/railway/README.md`
+and this file as documentation, not as a live button. When Railway assigns the
+code (publish flow step 11), replace it only on the surface that should carry the
+real button — do not edit the docs' placeholder away. Before flipping any surface
+live:
+
+- [ ] `pnpm railway:ghcr-public` exits `0` (both images public; the publish gate).
+- [ ] The published template deploys a fresh scratch project (Template QA below).
+- [ ] The chosen surface's button URL has `<template-code>` -> the real code AND
+      keeps `?utm_medium=integration&utm_source=button&utm_campaign=pdpp-core`.
+- [ ] No surface still shows `<template-code>` as a clickable button (the docs
+      placeholders stay as documentation, not links).
+
 ## Template QA
 
 Before presenting the button to users:
@@ -225,9 +250,11 @@ Before presenting the button to users:
 
    ```sh
    pnpm railway:template:test
+   pnpm railway:ghcr-public:test
    pnpm railway:env-check:test
    pnpm railway:mcp-query-smoke:test
    pnpm railway:sqlite-restart-smoke
+   pnpm railway:ghcr-public          # live gate: must exit 0 before publishing
    ```
 
 2. Deploy a new scratch project from the published template, not from the
