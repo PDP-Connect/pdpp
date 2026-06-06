@@ -54,6 +54,32 @@ test('Railway runbook and template handoff do not require manual Docker target-s
   assert.doesNotMatch(handoff, /Settings\s*->\s*Build\s*->\s*Docker\s*->\s*Target Stage/i);
 });
 
+test('Railway handoff documents the public GHCR image-source template shape', () => {
+  const handoff = read('deploy/railway/template.md');
+
+  // Exact image URIs, mapped to the correct service.
+  assert.match(handoff, /ghcr\.io\/vana-com\/pdpp\/web/);
+  assert.match(handoff, /ghcr\.io\/vana-com\/pdpp\/reference/);
+
+  // The image source supersedes the Dockerfile-path build, and the committed
+  // Dockerfile-path artifacts are explicitly off the image deploy path.
+  assert.match(handoff, /supersedes\*{0,2}\s*`?build\.dockerfilePath`?/i);
+
+  // A concrete version tag must be pinned; latest/moving tags are disallowed.
+  assert.match(handoff, /never\s+`?latest`?/i);
+  assert.match(handoff, /<version-tag>/);
+});
+
+test('Railway runbook documents the public GHCR image-source mapping', () => {
+  const readme = read('deploy/railway/README.md');
+
+  assert.match(readme, /ghcr\.io\/vana-com\/pdpp\/web/);
+  assert.match(readme, /ghcr\.io\/vana-com\/pdpp\/reference/);
+  // The README must record which published image is which stage.
+  assert.match(readme, /`web` image is the[\s\S]*?`console` stage/);
+  assert.match(readme, /`reference` image is the[\s\S]*?`reference` stage/);
+});
+
 test('Railway upload context excludes machine-local agent symlinks', () => {
   const ignore = read('.railwayignore');
 

@@ -36,16 +36,28 @@ the placeholder URL as a live deploy button. The template owner publishes from a
 validated Railway project using [`template.md`](./template.md), then replaces
 `<template-code>` in the docs or site surface that should carry the button.
 
-The template-safe build shape is:
+The published template uses public, anonymously pullable GHCR images as the
+service source (the selected first-button shape). Each app service maps to one
+published image:
 
-| Service     | Dockerfile path                         | Why |
-|-------------|------------------------------------------|-----|
-| `console`   | `Dockerfile`                             | The root Dockerfile's final image is the public console. |
-| `reference` | `deploy/railway/reference.Dockerfile`    | The final image is the private reference runtime; no manual Docker target selection is required. |
+| Service     | Public image source                          | Why |
+|-------------|----------------------------------------------|-----|
+| `console`   | `ghcr.io/vana-com/pdpp/web:<version-tag>`    | The `web` image is the root Dockerfile's `console` stage: the public, browser-free console. |
+| `reference` | `ghcr.io/vana-com/pdpp/reference:<version-tag>` | The `reference` image is the root Dockerfile's `reference` stage: the private AS/RS runtime. |
 
-Railway's config-as-code schema exposes `build.dockerfilePath` but does not
-expose a Docker build target field. The template must therefore select a
-Dockerfile whose final stage is already the desired service image.
+Pin a concrete version tag (not `latest`) so the template is reproducible. The
+images must be public; as of 2026-06-05 the two GHCR packages are private, so
+publishing the button requires an owner-only visibility flip first. See the
+source-accessibility gate in [`template.md`](./template.md).
+
+The alternative source shape is the public source repository plus a Dockerfile
+path whose final stage is the service image (`console` -> `Dockerfile`,
+`reference` -> `deploy/railway/reference.Dockerfile`). Railway's config-as-code
+schema exposes `build.dockerfilePath` but not a Docker build target field, so the
+template selects a Dockerfile whose final stage is already the desired service
+image. The committed [`railway.console.json`](./railway.console.json) and
+[`railway.reference.json`](./railway.reference.json) carry that Dockerfile-path
+shape; an image source supersedes them.
 
 ## Topology
 
@@ -80,19 +92,22 @@ for the full rationale and the alternatives that were rejected.
 
 ## Services to create
 
-Create one Railway project with two services built from this repository using
-the service-specific Dockerfile paths below, plus a storage backend.
+Create one Railway project with two application services plus a storage backend.
+For the published-button shape, both app services use public GHCR images; for a
+build-from-source project, both use the service-specific Dockerfile paths.
 
 | Service     | Public? | Image source | Listens on        | Notes |
 |-------------|---------|--------------|-------------------|-------|
-| `console`   | yes     | final stage in `Dockerfile` | `$PORT` (Railway) | The single public origin. Generate a public domain for it. |
-| `reference` | no      | final stage in `deploy/railway/reference.Dockerfile` | `7662`, `7663` | Private networking only. Do **not** generate a public domain. |
+| `console`   | yes     | `ghcr.io/vana-com/pdpp/web:<version-tag>` (or final stage in `Dockerfile`) | `$PORT` (Railway) | The single public origin. Generate a public domain for it. |
+| `reference` | no      | `ghcr.io/vana-com/pdpp/reference:<version-tag>` (or final stage in `deploy/railway/reference.Dockerfile`) | `7662`, `7663` | Private networking only. Do **not** generate a public domain. |
 | `Postgres`  | n/a     | managed plugin | private | Option A storage (recommended). |
 
 The committed [`railway.console.json`](./railway.console.json) and
 [`railway.reference.json`](./railway.reference.json) carry the builder, the
-Dockerfile path, the healthcheck path, and the restart policy. They are
-service-specific source-of-truth blocks for the Railway template composer.
+Dockerfile path, the healthcheck path, and the restart policy for the
+build-from-source shape. They are service-specific source-of-truth blocks for the
+Railway template composer; a Docker Image source supersedes the Dockerfile-path
+build. The healthcheck path and the env contract apply to both source shapes.
 
 ## Environment
 
