@@ -28,10 +28,11 @@ wired through the projection). Only §5 (owner closeout) remains open.
 - [x] Add a nullable `detail_gap_backlog` rollup field to
   `ConnectionHealthSnapshot`
   (`reference-implementation/runtime/connection-health.ts`):
-  `{ pending: number; pending_is_floor: boolean; recovered: number | null;
-  max_attempt_count: number; next_attempt_at: string | null } | null`.
-  (Added `pending_is_floor` to carry the bounded-read honesty marker per
-  `design.md` "Bounded probe vs. true count".)
+  `{ pending: number; pending_is_floor: boolean; pending_other: number;
+  pending_other_is_floor: boolean; recovered: number | null; max_attempt_count:
+  number; next_attempt_at: string | null } | null`.
+  (Added `pending_is_floor` and `pending_other_is_floor` to carry bounded-read
+  honesty markers per `design.md` "Bounded probe vs. true count".)
 - [x] Project it from the existing durable pending-gap evidence (the same
   `connector_detail_gaps` rows the cooldown probe reads), reusing the
   `SOURCE_PRESSURE_GAP_REASONS` vocabulary and the cooldown governor's
@@ -58,6 +59,10 @@ wired through the projection). Only §5 (owner closeout) remains open.
   Resolved as a `pending_is_floor` boolean keyed on the shared
   `DETAIL_GAP_PROJECTION_LIMIT` (100): `pending` is a floor when the bounded
   read returned a full page.
+- [x] Carry pending non-source-pressure detail gaps as `pending_other` /
+  `pending_other_is_floor` so a source-pressure-drained bounded projection does
+  not render as caught up while `run_cap_deferred`, retry-budget, or other
+  non-pressure pending gaps remain.
 
 ## 3. Contract tests (implementation lane)
 
@@ -94,7 +99,10 @@ Landed in `619276b9` via `formatSourcePressureBacklogScale` +
   the `cooling_off`-under-`source_pressure` and `degraded`+`retryable_gap` paths.)
 - [x] No cue on `null` (unmeasured), `0` (drained), healthy, idle, or
   non-source-pressure connections. (`backlogScale` returns `null` for those;
-  a drained `0` with a recovered count reads "caught up — N recovered".)
+  a drained `0` with a recovered count reads "caught up — N recovered" only when
+  `pending_other` is also `0`.)
+- [x] Suppress "caught up" copy when `pending` is `0` but `pending_other` is
+      positive; render that other detail items remain pending instead.
 - [x] No raw `source_pressure` token in owner-facing copy; no connector name.
 - [x] Console snapshot/voice tests for the cue and for the quiet cases.
   (`connection-evidence.test.ts` +193 lines, `connector-row.test.ts` +43 lines.)

@@ -39,6 +39,8 @@ function backlog(overrides: Partial<RefDetailGapBacklog> = {}): RefDetailGapBack
   return {
     pending: 0,
     pending_is_floor: false,
+    pending_other: 0,
+    pending_other_is_floor: false,
     max_attempt_count: 0,
     next_attempt_at: null,
     recovered: null,
@@ -1292,6 +1294,23 @@ test("a drained backlog with no recovery aggregate still reads as caught up (rea
   });
   assert.ok(out);
   assert.equal(out?.backlogScale, "caught up");
+});
+
+test("a source-pressure-drained backlog does not say caught up when other detail gaps remain", () => {
+  const out = deriveConnectionNextStep({
+    hasDominantCondition: false,
+    hasStructuredNextAction: false,
+    health: snapshot({
+      state: "cooling_off",
+      reason_code: "source_pressure",
+      next_attempt_at: null,
+      detail_gap_backlog: backlog({ pending: 0, pending_other: 1_899, pending_other_is_floor: true }),
+    }),
+    supportsOwnerSync: true,
+  });
+  assert.ok(out);
+  assert.equal(out?.backlogScale, "at least 1,899 other detail items still pending");
+  assert.notEqual(out?.backlogScale, "caught up");
 });
 
 test("degraded+retryable_gap manual path carries the backlog count", () => {

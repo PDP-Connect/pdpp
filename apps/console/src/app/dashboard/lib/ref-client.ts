@@ -519,6 +519,9 @@ export type RefOutboxAxis = "active" | "idle" | "stalled" | "unknown";
  *   - `pending` counts only pending source-pressure gaps.
  *   - `pending_is_floor` is `true` when the durable read was bounded and hit the
  *     bound, so `pending` is a floor ("at least N"), never an exact total.
+ *   - `pending_other` counts pending non-source-pressure detail gaps from the
+ *     same bounded read. It prevents source-pressure catch-up copy from saying
+ *     "caught up" while budget/cap-deferred gaps remain.
  *   - `recovered` is `null` when no count-by-status aggregate was available (the
  *     first projection tranche always leaves it `null`); never fabricated.
  *   - `next_attempt_at` is the backlog's retry floor (Retry-After / cooldown). It
@@ -531,6 +534,8 @@ export interface RefDetailGapBacklog {
   next_attempt_at: string | null;
   pending: number;
   pending_is_floor: boolean;
+  pending_other?: number;
+  pending_other_is_floor?: boolean;
   recovered: number | null;
 }
 

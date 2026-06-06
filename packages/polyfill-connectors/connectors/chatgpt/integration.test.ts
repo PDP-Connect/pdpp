@@ -438,6 +438,34 @@ function makeConvo(overrides: Partial<ConversationListItem> = {}): ConversationL
   };
 }
 
+function makeDetailGapFromConvo(
+  gapId: string,
+  conversation: ConversationListItem
+): CollectContext["detailGaps"][number] {
+  return {
+    gap_id: gapId,
+    stream: "messages",
+    record_key: conversation.id,
+    status: "pending",
+    reference_only: true,
+    detail_locator: {
+      kind: "chatgpt.conversation",
+      conversation_id: conversation.id,
+      list_item: {
+        id: conversation.id,
+        title: conversation.title,
+        create_time: conversation.create_time,
+        update_time: conversation.update_time,
+        current_node: conversation.current_node,
+        gizmo_id: conversation.gizmo_id,
+        is_archived: conversation.is_archived,
+        is_starred: conversation.is_starred,
+        workspace_id: conversation.workspace_id,
+      },
+    },
+  };
+}
+
 // Shared mapping: root → u1 → {a1 (current branch), a2 (alt branch)}.
 // a1 is the current-branch tip; a2 is an off-branch assistant reply.
 const BASE_MAPPING: Record<string, ChatGptNode> = {
@@ -782,7 +810,7 @@ test("runConversationsAndMessagesStreams: unsafe message content is sanitized to
     requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
   };
 
-  await runConversationsAndMessagesStreams(deps, {});
+  await runConversationsAndMessagesStreams(deps, {}, { detailPacing: { random: () => 0, sleep: () => undefined } });
 
   assert.deepEqual(fetches, [
     "/conversations?offset=0&limit=100&order=updated",
@@ -2355,7 +2383,7 @@ test("runConversationsAndMessagesStreams: recovers pending conversation detail g
     requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
   };
 
-  await runConversationsAndMessagesStreams(deps, {});
+  await runConversationsAndMessagesStreams(deps, {}, { detailPacing: { random: () => 0, sleep: () => undefined } });
 
   assert.deepEqual(fetches, [
     "/conversation/convo-recover",
@@ -2378,6 +2406,116 @@ test("runConversationsAndMessagesStreams: recovers pending conversation detail g
       stream: "messages",
       record_key: "convo-recover",
     }
+  );
+});
+
+test("runConversationsAndMessagesStreams: drains paged pending message gaps beyond the first 100 in one run", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const conversations = Array.from({ length: 125 }, (_, index) =>
+    makeConvo({
+      id: `convo-page-${String(index).padStart(3, "0")}`,
+      title: `Paged recovery ${index}`,
+      update_time: 1_700_000_000 + index,
+    })
+  );
+  const pages = [
+    conversations
+      .slice(60, 120)
+      .map((conversation, index) => makeDetailGapFromConvo(`gap_page_2_${index}`, conversation)),
+    conversations.slice(120).map((conversation, index) => makeDetailGapFromConvo(`gap_page_3_${index}`, conversation)),
+    [],
+  ];
+  const fetches: string[] = [];
+  const requestedPages: Array<readonly string[] | undefined> = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      fetches.push(path);
+      if (path.startsWith("/conversation/")) {
+        return Promise.resolve(makeDetailOk());
+      }
+      if (path.startsWith("/conversations")) {
+        return Promise.resolve({ status: 200, json: { items: [], has_missing_conversations: false, total: 0 } });
+      }
+      return Promise.resolve(makeDetailOk());
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    detailGaps: conversations
+      .slice(0, 60)
+      .map((conversation, index) => makeDetailGapFromConvo(`gap_page_1_${index}`, conversation)),
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+    requestDetailGapPage: (req) => {
+      requestedPages.push(req?.streams);
+      return Promise.resolve(pages.shift() ?? []);
+    },
+  };
+
+  await runConversationsAndMessagesStreams(deps, {}, { detailPacing: { random: () => 0, sleep: () => undefined } });
+
+  const detailFetches = fetches.filter((path) => path.startsWith("/conversation/"));
+  assert.equal(detailFetches.length, 125, "all paged pending gaps are fetched in one connector run");
+  assert.equal(
+    harness.protocolMessages.filter((message) => message.type === "DETAIL_GAP_RECOVERED").length,
+    125,
+    "every recovered pending gap is marked recovered"
+  );
+  assert.deepEqual(requestedPages, [["messages"], ["messages"], ["messages"]]);
+  assert.ok(
+    fetches.indexOf("/conversation/convo-page-124") < fetches.findIndex((path) => path.startsWith("/conversations")),
+    "forward list collection starts only after paged recovery drains"
+  );
+});
+
+test("runConversationsAndMessagesStreams: stops paging and skips forward detail when recovery page remains pending", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const first = makeConvo({ id: "convo-budget-first", update_time: 1_700_000_100 });
+  const second = makeConvo({ id: "convo-budget-second", update_time: 1_700_000_200 });
+  const fetches: string[] = [];
+  let requestedNextPage = false;
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      fetches.push(path);
+      return Promise.resolve(makeDetailOk());
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    detailGaps: [
+      makeDetailGapFromConvo("gap_budget_first", first),
+      makeDetailGapFromConvo("gap_budget_second", second),
+    ],
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+    requestDetailGapPage: () => {
+      requestedNextPage = true;
+      return Promise.resolve([]);
+    },
+    runBudget: new ChatGptRunBudget({ maxFetches: 1 }),
+  };
+
+  await runConversationsAndMessagesStreams(deps, {}, { detailPacing: { random: () => 0, sleep: () => undefined } });
+
+  assert.deepEqual(fetches, ["/conversation/convo-budget-first"]);
+  assert.equal(requestedNextPage, false, "a partially recovered page is the adaptive stop condition");
+  assert.equal(harness.protocolMessages.filter((message) => message.type === "DETAIL_GAP_RECOVERED").length, 1);
+  assert.equal(
+    harness.protocolMessages.some(
+      (message) => message.type === "PROGRESS" && /Stopped pending message-detail recovery/.test(message.message)
+    ),
+    true
+  );
+  assert.equal(
+    fetches.some((path) => path.startsWith("/conversations")),
+    false,
+    "forward message-detail collection is skipped after adaptive recovery stop"
   );
 });
 

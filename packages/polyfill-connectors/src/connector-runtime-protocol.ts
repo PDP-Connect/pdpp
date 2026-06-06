@@ -55,6 +55,21 @@ export interface DetailGapStartEntry {
   stream: string;
 }
 
+export interface DetailGapsPageRequestMessage {
+  max_bytes?: number;
+  reference_only: true;
+  request_id: string;
+  streams?: readonly string[];
+  type: "DETAIL_GAPS_PAGE_REQUEST";
+}
+
+export interface DetailGapsPageResponse {
+  detail_gaps: readonly DetailGapStartEntry[];
+  reference_only: true;
+  request_id: string;
+  type: "DETAIL_GAPS_PAGE_RESPONSE";
+}
+
 export interface InteractionResponse {
   data?: Record<string, string>;
   error?: { message: string };
@@ -212,6 +227,7 @@ export type EmittedMessage =
   | DetailGapMessage
   | DetailCoverageMessage
   | DetailGapRecoveredMessage
+  | DetailGapsPageRequestMessage
   | {
       type: "DONE";
       status: "succeeded" | "failed";

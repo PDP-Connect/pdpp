@@ -70,6 +70,65 @@ rl.on('line', (line) => {
   return { connectorPath, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
+function createPagedRecoveryConnector(outputPath, { maxBytes = null } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'pdpp-detail-gap-paged-'));
+  const connectorPath = join(dir, 'connector.mjs');
+  writeFileSync(connectorPath, `
+import { createInterface } from 'node:readline';
+import { writeFileSync } from 'node:fs';
+const rl = createInterface({ input: process.stdin });
+const pages = [];
+let requestCounter = 0;
+const maxBytes = ${JSON.stringify(maxBytes)};
+function emit(message) {
+  process.stdout.write(JSON.stringify(message) + '\\n');
+}
+function recover(gaps, source) {
+  pages.push({ source, count: gaps.length });
+  for (const gap of gaps) {
+    emit({
+      type: 'DETAIL_GAP_RECOVERED',
+      reference_only: true,
+      gap_id: gap.gap_id,
+      stream: gap.stream,
+      record_key: gap.record_key,
+    });
+  }
+}
+function requestNext() {
+  const request_id = 'page_' + (++requestCounter);
+  emit({
+    type: 'DETAIL_GAPS_PAGE_REQUEST',
+    reference_only: true,
+    request_id,
+    streams: ['messages'],
+    ...(maxBytes ? { max_bytes: maxBytes } : {}),
+  });
+}
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type === 'START') {
+    recover(msg.detail_gaps || [], 'start');
+    requestNext();
+    return;
+  }
+  if (msg.type === 'DETAIL_GAPS_PAGE_RESPONSE') {
+    const gaps = msg.detail_gaps || [];
+    recover(gaps, msg.request_id);
+    if (gaps.length === 0) {
+      writeFileSync(${JSON.stringify(outputPath)}, JSON.stringify({ pages }), 'utf8');
+      rl.close();
+      emit({ type: 'DONE', status: 'succeeded', records_emitted: 0 });
+      process.stdout.write('', () => process.exit(0));
+      return;
+    }
+    requestNext();
+  }
+});
+`, 'utf8');
+  return { connectorPath, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
 async function withStateServer(fn) {
   const stateWrites = [];
   const server = createServer(async (req, res) => {
@@ -101,6 +160,31 @@ async function withStateServer(fn) {
   } finally {
     await new Promise((resolve, reject) => {
       server.close((err) => (err ? reject(err) : resolve()));
+    });
+  }
+}
+
+async function seedPendingDetailGaps(store, count, { connectorId = 'chatgpt', payloadFields = 0, stream = 'messages' } = {}) {
+  for (let index = 0; index < count; index += 1) {
+    const recordKey = `${stream.replace(/[^a-z0-9]+/gi, '_')}_${String(index).padStart(4, '0')}`;
+    const listItem = {
+      id: recordKey,
+      title: `Conversation ${index}`,
+    };
+    for (let field = 0; field < payloadFields; field += 1) {
+      listItem[`padding_${field}`] = `${field}:`.padEnd(300, 'x');
+    }
+    await store.upsertPendingGap({
+      connectorId,
+      grantId: 'grant_1',
+      stream,
+      recordKey,
+      detailLocator: {
+        kind: 'chatgpt.conversation',
+        conversation_id: recordKey,
+        list_item: listItem,
+      },
+      reason: 'retry_exhausted',
     });
   }
 }
@@ -665,6 +749,97 @@ test('connector-emitted DETAIL_GAP survives real-store persistence and reappears
   // Both runs omit connectorInstanceId so they resolve to the same
   // default-account instance — the production single-owner SQLite path.
   await assertConnectorEmittedDetailGapRoundTrip({ dir, store });
+}));
+
+test('runtime drains more than 100 pending detail gaps in one run through paged recovery requests', withTempDb(async (dir) => {
+  const store = createSqliteConnectorDetailGapStore();
+  await seedPendingDetailGaps(store, 150);
+  const pageStatsPath = join(dir, 'paged-recovery.json');
+  const connector = createPagedRecoveryConnector(pageStatsPath);
+  const pageResponses = [];
+
+  try {
+    const result = await runConnector({
+      connectorPath: connector.connectorPath,
+      connectorId: 'chatgpt',
+      grantId: 'grant_1',
+      ownerToken: 'owner',
+      manifest: { streams: [{ name: 'messages' }] },
+      persistState: false,
+      detailGapStore: store,
+      onProgress: (msg) => {
+        if (msg?.type === 'DETAIL_GAPS_PAGE_RESPONSE') pageResponses.push(msg);
+      },
+    });
+    assert.equal(result.status, 'succeeded');
+    assert.equal(
+      result.detail_gaps.filter((gap) => gap.status === 'recovered').length,
+      150,
+      'one logical runtime run recovers every seeded gap, not just the first page',
+    );
+  } finally {
+    connector.cleanup();
+  }
+
+  const stats = JSON.parse(readFileSync(pageStatsPath, 'utf8'));
+  const positivePages = stats.pages.filter((page) => page.count > 0);
+  assert.equal(
+    positivePages.reduce((sum, page) => sum + page.count, 0),
+    150,
+    'connector saw and recovered all gaps across START plus requested pages',
+  );
+  assert.equal(
+    (await store.listPendingGaps({ connectorId: 'chatgpt', grantId: 'grant_1', streams: ['messages'], limit: 500 }))
+      .length,
+    0,
+    'durable pending backlog is drained',
+  );
+  assert.ok(pageResponses.some((page) => page.count === 0), 'runtime eventually returns an empty page');
+}));
+
+test('runtime pages large detail-gap payloads by byte budget while still draining semantics', withTempDb(async (dir) => {
+  const store = createSqliteConnectorDetailGapStore();
+  await seedPendingDetailGaps(store, 12, { payloadFields: 20 });
+  const pageStatsPath = join(dir, 'byte-paged-recovery.json');
+  const connector = createPagedRecoveryConnector(pageStatsPath, { maxBytes: 16 * 1024 });
+  const priorTarget = process.env.PDPP_DETAIL_GAP_PAGE_TARGET_BYTES;
+  process.env.PDPP_DETAIL_GAP_PAGE_TARGET_BYTES = String(16 * 1024);
+
+  try {
+    const result = await runConnector({
+      connectorPath: connector.connectorPath,
+      connectorId: 'chatgpt',
+      grantId: 'grant_1',
+      ownerToken: 'owner',
+      manifest: { streams: [{ name: 'messages' }] },
+      persistState: false,
+      detailGapStore: store,
+      onProgress: () => {},
+    });
+    assert.equal(result.status, 'succeeded');
+    assert.equal(result.detail_gaps.filter((gap) => gap.status === 'recovered').length, 12);
+  } finally {
+    if (priorTarget === undefined) {
+      delete process.env.PDPP_DETAIL_GAP_PAGE_TARGET_BYTES;
+    } else {
+      process.env.PDPP_DETAIL_GAP_PAGE_TARGET_BYTES = priorTarget;
+    }
+    connector.cleanup();
+  }
+
+  const stats = JSON.parse(readFileSync(pageStatsPath, 'utf8'));
+  const positivePages = stats.pages.filter((page) => page.count > 0);
+  assert.ok(positivePages.length > 1, 'large payloads are split across multiple pages');
+  assert.ok(
+    positivePages.every((page) => page.count < 12),
+    'no positive page carries the whole large backlog under the byte budget',
+  );
+  assert.equal(positivePages.reduce((sum, page) => sum + page.count, 0), 12);
+  assert.equal(
+    (await store.listPendingGaps({ connectorId: 'chatgpt', grantId: 'grant_1', streams: ['messages'], limit: 500 }))
+      .length,
+    0,
+  );
 }));
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;

@@ -83,6 +83,22 @@ separate lane or tranche with its own acceptance checks.
 - [ ] Ensure run-progress reporting distinguishes: pages fetched this run, pages deferred,
       retry events, circuit breaker state changes.
 
+### 2.8 Detail-gap recovery drain loop
+
+- [x] Replace the single-page `START.detail_gaps` recovery behavior with a
+      reference-only page request/response loop that drains all eligible pending
+      detail gaps in one logical run until storage is drained or adaptive
+      provider/run safety stops.
+- [x] Bound internal detail-gap pages by serialized payload byte budget, adapting
+      candidate row size from observed payload size. The remaining SQL row
+      candidate cap is a storage safety fallback only and cannot cap recovery
+      progress because the connector keeps requesting pages until drained or
+      stopped.
+- [x] Preserve connector-local provider budget, retry, and circuit-breaker state
+      across pages by keeping one connector process alive for the whole drain.
+- [x] Unit-test recovery beyond 100 pending gaps in one run, adaptive-stop
+      behavior, and byte-budget paging for large gap payloads.
+
 ## 3. Owner closeout
 
 - [ ] Per-provider live calibration: run at least one connector under the new control model

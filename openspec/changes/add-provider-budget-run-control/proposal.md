@@ -73,6 +73,10 @@ third-party providers:
   (request cap, wall-clock, retry budget) produces a resumable gap record with
   a reason distinct from source-pressure reasons; it does not arm the
   source-pressure cooldown governor.
+- **Paged detail-gap recovery** — pending detail-gap recovery drains every
+  eligible gap in a run until storage is drained or adaptive provider/run safety
+  stops. Internal pages are byte-bounded transport batches, not semantic run
+  limits.
 - **Commit-gated monotonic checkpoint** — the checkpoint advances only after a
   durable write is confirmed; the checkpoint at stop time reflects the last
   durably written page, not the last attempted page.

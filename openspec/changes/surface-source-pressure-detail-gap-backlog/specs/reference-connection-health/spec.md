@@ -6,10 +6,12 @@ The connection-health projection SHALL expose an additive, nullable
 source-pressure detail-gap backlog rollup on the connection-health snapshot,
 projected from the durable `connector_detail_gaps` evidence the reference already
 holds. The rollup SHALL carry a pending count, an optional recovered count, a
-maximum recovery-attempt count, and an optional next-attempt floor. It SHALL be
+maximum recovery-attempt count, an optional next-attempt floor, and a separate
+pending-other count for non-source-pressure pending detail gaps. It SHALL be
 reason-scoped to account/source pressure (for example detail gaps whose reason is
 `upstream_pressure` or `rate_limited`); detail gaps with other reasons SHALL NOT
-contribute to it.
+contribute to the source-pressure pending count, maximum attempt count, next
+attempt floor, recovered count, or cooldown semantics.
 
 The rollup SHALL be honest about absence. It SHALL be `null` when the durable gap
 evidence cannot be read, so an unreadable store surfaces as unmeasured rather than
@@ -23,6 +25,10 @@ available rather than fabricated.
 The pending count SHALL be honest about any bound applied when reading the durable
 gaps. The projection SHALL report either an exact total or a bound-aware floor; it
 SHALL NOT present a silently truncated bounded read as an exact total.
+The pending-other count SHALL follow the same honesty rule. It is diagnostic
+only: it SHALL be used to prevent owner surfaces from implying that detail-gap
+recovery is caught up while non-source-pressure pending gaps remain, but it SHALL
+NOT change source-pressure cooldown or backlog semantics.
 
 This rollup SHALL be distinct from the local-device `outbox_counts` rollup: it is
 the scheduler-managed source-pressure analogue and SHALL be available for any
@@ -57,7 +63,15 @@ connectors that never reach the scheduler `cooling_off` state.
 
 - **WHEN** a connection's only pending detail gaps have non-source-pressure reasons
 - **THEN** the backlog rollup pending count SHALL NOT include those gaps
-- **AND** the rollup SHALL report `0` pending (or `null` if the evidence is unreadable) rather than counting unrelated gaps
+- **AND** the rollup SHALL report `0` source-pressure pending (or `null` if the evidence is unreadable) rather than counting unrelated gaps
+- **AND** the rollup SHALL carry those unrelated pending gaps in the pending-other count when the evidence is readable
+
+#### Scenario: Bounded non-source-pressure evidence remains visible
+
+- **WHEN** a bounded durable read shows no pending source-pressure detail gaps but does show one or more pending non-source-pressure detail gaps
+- **THEN** the backlog rollup SHALL report `0` source-pressure pending
+- **AND** it SHALL report the non-source-pressure pending count, labeled as a floor when the read bound was hit
+- **AND** owner surfaces SHALL NOT describe the detail-gap backlog as caught up
 
 #### Scenario: Manual-refresh connector still exposes the backlog
 
@@ -116,6 +130,9 @@ count is `0` (drained), or whose projection is healthy, idle, or otherwise not i
 a source-pressure / retryable-gap state. The cue SHALL carry only the counts
 already exposed on the owner-only backlog rollup and SHALL NOT introduce new
 telemetry or leak the raw `source_pressure` reason token into owner-facing copy.
+When a projection path is already rendering detail-gap backlog scale and the
+source-pressure pending count is `0`, the console SHALL NOT render "caught up" if
+the same backlog rollup reports positive non-source-pressure pending detail gaps.
 
 #### Scenario: Source-pressure connection with a positive backlog shows a catch-up cue
 
@@ -127,6 +144,13 @@ telemetry or leak the raw `source_pressure` reason token into owner-facing copy.
 
 - **WHEN** the console renders a connection whose backlog rollup is `null`, whose pending count is `0`, or whose projection is healthy, idle, or otherwise not in a source-pressure / retryable-gap state
 - **THEN** the console SHALL NOT render a source-pressure catch-up cue or a numeric backlog badge for that connection
+
+#### Scenario: Other pending gaps suppress caught-up copy
+
+- **WHEN** the console renders detail-gap backlog scale for a connection whose source-pressure pending count is `0`
+- **AND** the same backlog rollup reports a positive non-source-pressure pending count
+- **THEN** the console SHALL NOT say the backlog is caught up
+- **AND** it SHALL render that other detail items remain pending without treating them as source-pressure gaps
 
 #### Scenario: Catch-up cue introduces no new telemetry
 

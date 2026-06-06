@@ -273,6 +273,7 @@ export function createSqliteConnectorDetailGapStore() {
     async listPendingGaps({ connectorId, grantId = null, streams = null, limit = 100 } = {}) {
       const connectorInstanceId = nonEmptyString(arguments[0]?.connectorInstanceId) || defaultConnectorInstanceId(connectorId);
       const streamList = Array.isArray(streams) ? streams.filter((stream) => typeof stream === 'string' && stream) : null;
+      const streamPlaceholders = streamList?.length ? streamList.map(() => '?').join(', ') : null;
       // REVIEWED-DYNAMIC: bounded pending-gap recovery selection over the store-owned table.
       const rows = [...iterateDynamicSqlAcknowledged(`
         SELECT * FROM connector_detail_gaps
@@ -280,10 +281,11 @@ export function createSqliteConnectorDetailGapStore() {
           AND connector_id = ?
           AND (? IS NULL OR grant_id = ?)
           AND status = 'pending'
+          ${streamPlaceholders ? `AND stream IN (${streamPlaceholders})` : ''}
         ORDER BY created_at
         LIMIT ?
-      `, [connectorInstanceId, connectorId, grantId, grantId, Math.max(1, Math.min(limit, 500))])];
-      return rows.map(rowToGap).filter((gap) => !streamList || streamList.includes(gap.stream));
+      `, [connectorInstanceId, connectorId, grantId, grantId, ...(streamList ?? []), Math.max(1, Math.min(limit, 500))])];
+      return rows.map(rowToGap);
     },
 
     // Diagnostic listing across all connector instances for a connector type.

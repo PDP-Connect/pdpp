@@ -305,3 +305,51 @@ subject to this requirement.
 - **THEN** it SHALL collect from its current steady-state cursor forward
 - **AND** it SHALL NOT re-process records already covered by completed catch-up
   windows unless those records fall within the steady-state cursor's range
+
+### Requirement: Polyfill-runtime detail-gap recovery SHALL drain eligible pending gaps without a semantic page cap
+
+SHALL the polyfill-runtime treat pending detail-gap recovery as a drain loop:
+within one logical run it SHALL continue recovering eligible pending detail gaps
+until no eligible pending gaps remain, or until adaptive provider/run safety
+stops the lane. Valid stop conditions include provider/run budget exhaustion,
+retry budget exhaustion, an open circuit breaker, Retry-After or source-pressure
+deferral, owner cancellation, or a terminal runtime failure. A storage read page
+size, projection limit, or transport batch size SHALL NOT be treated as a
+semantic per-run recovery cap.
+
+Internal detail-gap pages SHALL be bounded for memory/backpressure safety. The
+preferred bound is a serialized payload byte budget with page sizing adapted from
+observed payload size. If the underlying storage substrate can only expose
+row-limited candidate reads, that row limit SHALL be used only as an internal
+candidate-read fallback; the runtime SHALL loop subsequent pages so the fallback
+cannot cap recovery progress.
+
+#### Scenario: More pending gaps than one internal page recover in one run
+
+- **WHEN** a run starts with more eligible pending detail gaps than fit in the
+  first internal page
+- **AND** provider/run safety remains healthy
+- **THEN** the runtime SHALL provide subsequent pending-gap pages to the connector
+- **AND** the connector SHALL be able to recover more than one page in the same
+  logical run
+- **AND** the run SHALL NOT report the backlog caught up solely because the first
+  page was exhausted
+
+#### Scenario: Adaptive safety stops the recovery loop
+
+- **WHEN** a pending-gap page cannot be fully recovered because provider/run
+  safety defers one or more gaps
+- **THEN** the connector SHALL stop requesting further pending-gap pages in that
+  run
+- **AND** it SHALL leave the unrecovered gaps durable and pending for a later run
+- **AND** it SHALL NOT proceed to forward detail collection as if recovery had
+  drained
+
+#### Scenario: Byte-bounded pages split large payloads without capping progress
+
+- **WHEN** pending detail-gap locators are large enough that only a few fit within
+  the configured serialized payload byte budget
+- **THEN** the runtime SHALL split the recovery handoff across multiple internal
+  pages
+- **AND** it SHALL continue paging until storage is drained or adaptive safety
+  stops

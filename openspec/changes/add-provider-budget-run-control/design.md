@@ -190,6 +190,24 @@ corrupts the incremental baseline and makes it impossible to distinguish "fully
 synced" from "partially backfilled". (Singer `end_value`-style bounded catch-up;
 dlt incremental separation; Fivetran priority-first sync.)
 
+### D11. Detail-gap recovery pages are transport batches, not run caps
+
+Pending detail-gap recovery has one semantic target: drain all eligible pending
+gaps in the run until no eligible gaps remain, or until adaptive provider safety
+stops the lane (provider/run budget exhaustion, circuit breaker, Retry-After, or
+source-pressure deferral). A storage/read page size is not a valid stopping
+condition.
+
+The reference runtime therefore keeps the connector process alive and lets it
+request additional pending-gap pages over the reference-only runtime pipe. The
+page payload is bounded by serialized byte budget and candidate row sizing adapts
+from observed page payload size. A capped SQL candidate row read remains only a
+storage safety fallback because the current stores do not expose byte-range SQL
+cursors; it cannot cap recovery semantics because the connector loops pages
+until storage returns an empty page or a page remains unrecovered under adaptive
+safety. This keeps resumability and memory safety without resetting the
+connector's in-memory provider budget/circuit state between pages.
+
 ## Non-Goals
 
 - Not a change to the PDPP Core protocol, grant semantics, or Authorization
@@ -257,3 +275,5 @@ dlt incremental separation; Fivetran priority-first sync.)
 - When catch-up and steady-state modes are separate, a catch-up run does not
   advance the steady-state incremental cursor.
 - Circuit breaker state changes are observable for operator health views.
+- More than one internal detail-gap page can be recovered in one logical run;
+  page byte/candidate bounds never imply that recovery is caught up.

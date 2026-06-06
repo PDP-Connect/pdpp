@@ -87,6 +87,9 @@ forbids.
 ```
 detail_gap_backlog: {
   pending: number,              // pending source-pressure gaps (load-bearing)
+  pending_is_floor: boolean,    // true when pending hit the bounded read
+  pending_other: number,        // pending non-source-pressure gaps, diagnostic
+  pending_other_is_floor: boolean,
   recovered: number | null,     // optional; null when not cheaply available
   max_attempt_count: number,    // recovery-attempt persistence
   next_attempt_at: string | null // cooldown / Retry-After floor, ISO-8601
@@ -100,6 +103,13 @@ detail_gap_backlog: {
 - `pending` is the load-bearing field and is exactly the cooldown's
   `pendingPressureGapCount`. It SHALL NOT be inferred from collected record
   counts or list/detail deltas — only the durable rows count.
+- `pending_other` is not part of the source-pressure backlog and does not affect
+  cooldown. It counts pending detail gaps outside the source-pressure reason set
+  so a bounded source-pressure-drained projection cannot imply "caught up" while
+  run-cap, retry-budget, or other non-pressure pending gaps remain.
+- `pending_is_floor` and `pending_other_is_floor` mark bounded-read floors. A
+  floor may be rendered as "at least N"; it SHALL NOT be presented as an exact
+  count.
 - `recovered` is **optional** because no count-by-status query exists today; it
   is `null` when not cheaply available, and a value when a bounded reason-scoped
   aggregate is run. Making it a `MAY` keeps the first implementation tranche to
@@ -116,7 +126,7 @@ is device-heartbeat-sourced and is explicitly scoped to local-device connections
 backlog is the scheduler-managed analogue and needs its own field so the two
 populations never bleed.
 
-### D3. Reason scope: source pressure only
+### D3. Reason scope: source pressure remains load-bearing
 
 The rollup counts only gaps whose reason is account/source pressure
 (`upstream_pressure`, `rate_limited`) — the same reason set the cooldown gates
@@ -124,6 +134,11 @@ on. A connector with only non-pressure gaps, or no gaps, reports a `null` or
 drained-`0` rollup. This keeps the field from becoming a generic "any gap"
 counter that would conflate, e.g., a one-off `temporary_unavailable` detail miss
 with sustained source throttling.
+
+The one exception is the diagnostic `pending_other` count. It is present only to
+keep owner copy honest about remaining non-source-pressure pending detail gaps;
+it SHALL NOT contribute to `pending`, `max_attempt_count`, cooldown, headline
+state, or source-pressure catch-up semantics.
 
 ### D4. Decomplected from headline, coverage, freshness, and disposition
 
@@ -142,9 +157,12 @@ remediation" requirement, the console renders the backlog as a compact catch-up
 cue (e.g. "Catching up: N pending" and, when present, "K recovered") only on a
 connection whose projection already shows a source-pressure / retryable-gap
 state, keyed on the `source_pressure` reason class — never on a connector name.
-Drained (`0`), healthy, idle, and unmeasured (`null`) connections render no cue.
-This fulfills the existing "see how much is left to catch up" promise without
-adding a numeric badge to quiet connections. Tests already assert the raw
+Drained (`0`), healthy, idle, and unmeasured (`null`) connections render no
+source-pressure catch-up cue. If `pending` is `0` but `pending_other` is positive
+on a projection path that is already discussing detail-gap backlog scale, the
+console SHALL NOT say "caught up"; it SHALL render that other detail items remain
+pending. This fulfills the existing "see how much is left to catch up" promise
+without hiding resumable non-pressure gaps. Tests already assert the raw
 `source_pressure` token never leaks into a tooltip; the cue preserves that.
 
 ### D6. Owner-only, grant-isolated, non-secret
@@ -210,3 +228,5 @@ Captured for a future design note, explicitly not required here:
   connector name, and renders no cue on drained/healthy/idle/`null` connections.
 - The pending count is honest about the probe bound (an exact total or a labeled
   floor, never a silently truncated exact claim).
+- A drained source-pressure backlog does not render as "caught up" when the same
+  bounded evidence shows pending non-source-pressure detail gaps.

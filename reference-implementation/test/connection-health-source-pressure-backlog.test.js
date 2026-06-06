@@ -60,6 +60,8 @@ test('backlog: readable-but-drained is a real 0, distinct from null', () => {
   assert.notEqual(rollup, null);
   assert.equal(rollup.pending, 0);
   assert.equal(rollup.pending_is_floor, false);
+  assert.equal(rollup.pending_other, 0);
+  assert.equal(rollup.pending_other_is_floor, false);
   assert.equal(rollup.max_attempt_count, 0);
   assert.equal(rollup.next_attempt_at, null);
   assert.equal(rollup.recovered, null);
@@ -85,6 +87,8 @@ test('backlog: only non-source-pressure gaps reports 0 pending', () => {
     unreadable: false,
   });
   assert.equal(rollup.pending, 0);
+  assert.equal(rollup.pending_other, 2);
+  assert.equal(rollup.pending_other_is_floor, false);
 });
 
 test('backlog: max_attempt_count is the max across source-pressure gaps', () => {
@@ -134,6 +138,8 @@ test('backlog: pending can be a zero floor when a full mixed-reason page has no 
   const rollup = deriveSourcePressureBacklog({ pendingGaps, readLimit: 100, unreadable: false });
   assert.equal(rollup.pending, 0);
   assert.equal(rollup.pending_is_floor, true);
+  assert.equal(rollup.pending_other, 100);
+  assert.equal(rollup.pending_other_is_floor, true);
 });
 
 test('backlog: pending is exact when the read did not hit the bound', () => {
@@ -257,11 +263,15 @@ test('snapshot: backlog carries only counts + an optional ISO timestamp (no secr
     'next_attempt_at',
     'pending',
     'pending_is_floor',
+    'pending_other',
+    'pending_other_is_floor',
     'recovered',
   ]);
   assert.equal(typeof rollup.pending, 'number');
   assert.equal(typeof rollup.max_attempt_count, 'number');
   assert.equal(typeof rollup.pending_is_floor, 'boolean');
+  assert.equal(typeof rollup.pending_other, 'number');
+  assert.equal(typeof rollup.pending_other_is_floor, 'boolean');
   assert.ok(rollup.next_attempt_at === null || typeof rollup.next_attempt_at === 'string');
   assert.ok(rollup.recovered === null || typeof rollup.recovered === 'number');
 });

@@ -425,7 +425,8 @@ export function rollupOutboxDiagnosticCounts(
  *     returned rows hit that bound, so `pending` is a floor rather than an
  *     exact total. A surface must not present a bounded read as exact.
  *   - `recovered` is optional and `null` when no cheap count-by-status
- *     aggregate is available; the first projection tranche leaves it `null`.
+ *     aggregate is available; otherwise it carries the exact reason-scoped
+ *     recovered count supplied by the store projection.
  *   - `max_attempt_count` / `next_attempt_at` mirror the cooldown's
  *     `maxAttemptCount` / earliest gap-authored retry floor. `next_attempt_at`
  *     here is the *backlog's* retry floor (Retry-After / cooldown), which can be
@@ -441,6 +442,8 @@ export interface DetailGapBacklog {
   readonly next_attempt_at: string | null;
   readonly pending: number;
   readonly pending_is_floor: boolean;
+  readonly pending_other: number;
+  readonly pending_other_is_floor: boolean;
   readonly recovered: number | null;
 }
 
@@ -462,15 +465,14 @@ export interface ConnectionDetailGapBacklogEvidence {
   readonly pendingGaps: readonly PendingPressureGap[];
   /**
    * The `limit` the caller applied when reading the pending gaps. When the
-   * number of source-pressure gaps reaches this bound the pending count is a
-   * floor (`pending_is_floor === true`). `null`/absent means the read was not
-   * bounded (treat the count as exact).
+   * bounded read returns this many rows, pending counts are floors
+   * (`pending_is_floor` / `pending_other_is_floor`) rather than exact totals.
+   * `null`/absent means the read was not bounded (treat the counts as exact).
    */
   readonly readLimit?: number | null;
   /**
    * Optional recovered-gap count from a bounded reason-scoped count-by-status
-   * aggregate. `null`/absent when no such aggregate was run (the default in
-   * the first projection tranche); never fabricated.
+   * aggregate. `null`/absent when no such aggregate was run; never fabricated.
    */
   readonly recovered?: number | null;
   /**
@@ -495,6 +497,9 @@ export interface ConnectionDetailGapBacklogEvidence {
  *     observed, because the read returns gaps of every reason and only the
  *     source-pressure subset is counted; reaching the bound means there may be
  *     more pending source-pressure gaps beyond the page.
+ *   - `pending_other` counts pending non-source-pressure gaps in the same
+ *     bounded read. It is diagnostic honesty only: surfaces use it to avoid
+ *     rendering "caught up" while cap/budget-deferred detail gaps remain.
  *   - `max_attempt_count` is the max `attemptCount` across the source-pressure
  *     gaps (mirrors the cooldown governor).
  *   - `next_attempt_at` is the latest gap-authored `nextAttemptAfter` floor
@@ -511,6 +516,8 @@ export function deriveSourcePressureBacklog(
     (gap) => gap && typeof gap.reason === "string" && SOURCE_PRESSURE_GAP_REASONS.has(gap.reason)
   );
   const pending = pressureGaps.length;
+  const totalReturned = (evidence.pendingGaps ?? []).length;
+  const pendingOther = Math.max(0, totalReturned - pending);
   const maxAttemptCount = pressureGaps.reduce((max, gap) => {
     const attempt = gap.attemptCount;
     if (typeof attempt !== "number" || !Number.isFinite(attempt) || attempt < 0) {
@@ -527,8 +534,8 @@ export function deriveSourcePressureBacklog(
     typeof evidence.readLimit === "number" && Number.isFinite(evidence.readLimit) && evidence.readLimit > 0
       ? Math.floor(evidence.readLimit)
       : null;
-  const totalReturned = (evidence.pendingGaps ?? []).length;
   const pendingIsFloor = readLimit !== null && totalReturned >= readLimit;
+  const pendingOtherIsFloor = pendingOther > 0 && pendingIsFloor;
   const recovered =
     typeof evidence.recovered === "number" && Number.isFinite(evidence.recovered) && evidence.recovered >= 0
       ? Math.floor(evidence.recovered)
@@ -536,6 +543,8 @@ export function deriveSourcePressureBacklog(
   return {
     pending,
     pending_is_floor: pendingIsFloor,
+    pending_other: pendingOther,
+    pending_other_is_floor: pendingOtherIsFloor,
     max_attempt_count: maxAttemptCount,
     next_attempt_at: nextAttemptAt,
     recovered,

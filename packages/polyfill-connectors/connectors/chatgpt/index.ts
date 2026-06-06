@@ -1196,6 +1196,7 @@ export interface StreamDeps {
   preDetailPressure?: ChatGptPreDetailPressure;
   progress: CollectContext["progress"];
   providerBudget?: ProviderBudgetController | null;
+  requestDetailGapPage?: CollectContext["requestDetailGapPage"];
   requested: CollectContext["requested"];
   // Run-scoped bounded-run cap shared across the gap-recovery pass and the
   // forward-walk pass, so a large recovery backlog plus new conversations are
@@ -2460,8 +2461,29 @@ async function recoverPendingConversationDetailGaps(
   deps: StreamDeps,
   emitConversation: (c: ConversationListItem, detail: ConversationDetail | null) => Promise<void>,
   pacing: ConversationDetailPacingOptions = {}
-): Promise<void> {
-  const recoveryItems = (deps.detailGaps ?? [])
+): Promise<{ recovered: number; stoppedWithPending: boolean }> {
+  let recovered = 0;
+  let page = deps.detailGaps ?? [];
+
+  while (page.length > 0) {
+    const result = await recoverPendingConversationDetailGapPage(deps, page, emitConversation, pacing);
+    recovered += result.recovered;
+    if (result.stoppedWithPending || !deps.requestDetailGapPage) {
+      return { recovered, stoppedWithPending: result.stoppedWithPending };
+    }
+    page = await deps.requestDetailGapPage({ streams: ["messages"] });
+  }
+
+  return { recovered, stoppedWithPending: false };
+}
+
+async function recoverPendingConversationDetailGapPage(
+  deps: StreamDeps,
+  detailGaps: readonly CollectContext["detailGaps"][number][],
+  emitConversation: (c: ConversationListItem, detail: ConversationDetail | null) => Promise<void>,
+  pacing: ConversationDetailPacingOptions = {}
+): Promise<{ recovered: number; stoppedWithPending: boolean }> {
+  const recoveryItems = detailGaps
     .filter((gap) => gap.stream === "messages")
     .map((gap) => ({ gap, conversation: conversationListItemFromGap(gap) }))
     .filter(
@@ -2469,7 +2491,7 @@ async function recoverPendingConversationDetailGaps(
         item.conversation !== null
     );
   if (!recoveryItems.length) {
-    return;
+    return { recovered: 0, stoppedWithPending: false };
   }
 
   const coverage = await runMessagesAndConversationsWithDetail(
@@ -2491,6 +2513,31 @@ async function recoverPendingConversationDetailGaps(
       record_key: conversation.id,
     });
   }
+  return {
+    recovered: hydrated.size,
+    stoppedWithPending: hydrated.size < recoveryItems.length,
+  };
+}
+
+async function recoverPendingMessageDetailGapsBeforeForwardRun(
+  deps: StreamDeps,
+  wantsMessages: boolean,
+  emitConversation: (c: ConversationListItem, detail: ConversationDetail | null) => Promise<void>,
+  pacing: ConversationDetailPacingOptions = {}
+): Promise<boolean> {
+  if (!wantsMessages) {
+    return false;
+  }
+  const recovery = await recoverPendingConversationDetailGaps(deps, emitConversation, pacing);
+  if (!recovery.stoppedWithPending) {
+    return false;
+  }
+  await deps.emit({
+    type: "PROGRESS",
+    stream: "messages",
+    message: "Stopped pending message-detail recovery because the current page still has retryable gaps",
+  });
+  return true;
 }
 
 export async function runConversationsAndMessagesStreams(
@@ -2522,8 +2569,10 @@ export async function runConversationsAndMessagesStreams(
     await deps.emitRecord("conversations", buildConversationRecord(c, detail));
   };
 
-  if (wantsMessages) {
-    await recoverPendingConversationDetailGaps(deps, emitConversation, options.detailPacing);
+  if (
+    await recoverPendingMessageDetailGapsBeforeForwardRun(deps, wantsMessages, emitConversation, options.detailPacing)
+  ) {
+    return;
   }
 
   const { conversationsToSync, messageDetailConversations } = await selectConversationListsForRequestedStreams({
@@ -2681,6 +2730,7 @@ if (isMainModule(import.meta.url)) {
         progress,
         providerBudget,
         requested,
+        requestDetailGapPage: ctx.requestDetailGapPage,
         runBudget,
       };
 

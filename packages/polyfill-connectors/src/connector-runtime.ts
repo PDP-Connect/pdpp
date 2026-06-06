@@ -52,6 +52,7 @@ import type {
   DetailGapMessage,
   DetailGapNetworkPressure,
   DetailGapStartEntry,
+  DetailGapsPageResponse,
   EmittedMessage,
   InteractionRequest,
   InteractionResponse,
@@ -114,6 +115,10 @@ interface BaseCollectContext {
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   emittedAt: string;
   progress: (message: string, extra?: { stream?: string }) => Promise<void>;
+  requestDetailGapPage: (req?: {
+    maxBytes?: number;
+    streams?: readonly string[];
+  }) => Promise<readonly DetailGapStartEntry[]>;
   requested: Map<string, StreamScope>;
   scope: StartMessage["scope"];
   sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
@@ -553,6 +558,8 @@ export function runConnector(config: RunConnectorConfig): void {
 
   let interactionCounter = 0;
   const nextInteractionId = (): string => `int_${Date.now()}_${++interactionCounter}`;
+  let detailGapPageCounter = 0;
+  const nextDetailGapPageRequestId = (): string => `dgp_${Date.now()}_${++detailGapPageCounter}`;
   let assistanceCounter = 0;
   const nextAssistanceId = (): string => `asst_${Date.now()}_${++assistanceCounter}`;
 
@@ -594,6 +601,44 @@ export function runConnector(config: RunConnectorConfig): void {
         }
       });
     });
+
+  const requestDetailGapPage: BaseCollectContext["requestDetailGapPage"] = (req = {}) => {
+    const request_id = nextDetailGapPageRequestId();
+    const streams = Array.isArray(req.streams)
+      ? req.streams.filter((stream) => typeof stream === "string" && stream.length > 0)
+      : undefined;
+    const maxBytes =
+      typeof req.maxBytes === "number" && Number.isFinite(req.maxBytes) && req.maxBytes > 0
+        ? Math.floor(req.maxBytes)
+        : undefined;
+    emit({
+      type: "DETAIL_GAPS_PAGE_REQUEST",
+      reference_only: true,
+      request_id,
+      ...(streams && streams.length > 0 ? { streams } : {}),
+      ...(maxBytes ? { max_bytes: maxBytes } : {}),
+    }).catch((): undefined => undefined);
+    return new Promise((resolve, reject) => {
+      const onLine = (line: string): void => {
+        try {
+          const parsed = JSON.parse(line) as DetailGapsPageResponse;
+          if (parsed.type !== "DETAIL_GAPS_PAGE_RESPONSE" || parsed.request_id !== request_id) {
+            return;
+          }
+          rl.off("line", onLine);
+          if (parsed.reference_only !== true || !Array.isArray(parsed.detail_gaps)) {
+            reject(new Error("Invalid DETAIL_GAPS_PAGE_RESPONSE envelope"));
+            return;
+          }
+          resolve(parsed.detail_gaps);
+        } catch (err) {
+          rl.off("line", onLine);
+          reject(err instanceof Error ? err : new Error(String(err)));
+        }
+      };
+      rl.on("line", onLine);
+    });
+  };
 
   const progress = (message: string, extra: { stream?: string } = {}): Promise<void> =>
     emit({ type: "PROGRESS", message, ...extra });
@@ -650,6 +695,7 @@ export function runConnector(config: RunConnectorConfig): void {
       sendInteraction,
       emittedAt,
       detailGaps: startMsg.detail_gaps ?? [],
+      requestDetailGapPage,
     };
 
     if (browser) {

@@ -711,6 +711,9 @@ function formatOutboxCountScale(counts: RefLocalDeviceProgress["outbox_counts"] 
  *     `pending_is_floor` is set, because the durable read was bounded. The
  *     `next_attempt_at` retry floor is appended as a resume time, framed as
  *     "resumes after …" so it never overpromises automatic completion.
+ *   - `pending === 0` with `pending_other > 0` → do not say "caught up";
+ *     source-pressure gaps may be clear, but budget/cap-deferred detail work
+ *     remains pending.
  *   - `pending === 0` with a positive `recovered` → reads as drained/caught up
  *     ("caught up — N recovered"), not broken.
  *   - `pending === 0` with no recovered aggregate → "caught up" (the readable-
@@ -737,6 +740,15 @@ function formatSourcePressureBacklogScale(backlog: RefDetailGapBacklog | null | 
     // cooldown), set even for manual connectors whose scheduler dispatch is null.
     // Frame it as a resume floor, never a completion promise.
     return backlog.next_attempt_at ? `${line} · resumes after ${backlog.next_attempt_at}` : line;
+  }
+  const pendingOther =
+    typeof backlog.pending_other === "number" && backlog.pending_other > 0 ? Math.floor(backlog.pending_other) : 0;
+  if (pendingOther > 0) {
+    const noun = pendingOther === 1 ? "other detail item" : "other detail items";
+    const count = backlog.pending_other_is_floor
+      ? `at least ${pendingOther.toLocaleString()} ${noun}`
+      : `${pendingOther.toLocaleString()} ${noun}`;
+    return `${count} still pending`;
   }
   // A readable, drained backlog (real `0`). When the reference also produced a
   // recovered count, surface it so the drained state reads as caught-up progress

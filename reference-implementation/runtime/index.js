@@ -94,6 +94,131 @@ function buildStartDetailGap(gap) {
   };
 }
 
+const DETAIL_GAP_PAGE_MIN_BYTES = 16 * 1024;
+const DETAIL_GAP_PAGE_DEFAULT_BYTES = 256 * 1024;
+const DETAIL_GAP_PAGE_MAX_BYTES = 1024 * 1024;
+const DETAIL_GAP_PAGE_MAX_CANDIDATE_ROWS = 500;
+const DETAIL_GAP_PAGE_ASSUMED_AVG_BYTES = 1536;
+
+function boundedPositiveInteger(value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const parsed = typeof value === 'number' ? value : Number.parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(parsed) || parsed < min) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(parsed)));
+}
+
+function detailGapPageByteBudget(requestedMaxBytes = null) {
+  return boundedPositiveInteger(
+    requestedMaxBytes ?? process.env.PDPP_DETAIL_GAP_PAGE_TARGET_BYTES,
+    DETAIL_GAP_PAGE_DEFAULT_BYTES,
+    { min: DETAIL_GAP_PAGE_MIN_BYTES, max: DETAIL_GAP_PAGE_MAX_BYTES },
+  );
+}
+
+function serializedDetailGapBytes(entry) {
+  try {
+    return Buffer.byteLength(JSON.stringify(entry), 'utf8') + 1;
+  } catch {
+    return DETAIL_GAP_PAGE_ASSUMED_AVG_BYTES;
+  }
+}
+
+function normalizeDetailGapPageStreams(streams, scopeByStream) {
+  if (streams == null) return null;
+  if (!Array.isArray(streams)) {
+    throw new Error('Connector emitted invalid DETAIL_GAPS_PAGE_REQUEST.streams: expected string array');
+  }
+  const normalized = [];
+  const seen = new Set();
+  for (const stream of streams) {
+    if (typeof stream !== 'string' || !stream.trim()) {
+      throw new Error('Connector emitted invalid DETAIL_GAPS_PAGE_REQUEST.streams: expected non-empty string array');
+    }
+    if (!scopeByStream.has(stream)) {
+      throw new Error(`Connector emitted DETAIL_GAPS_PAGE_REQUEST for undeclared stream: ${stream}`);
+    }
+    if (seen.has(stream)) continue;
+    seen.add(stream);
+    normalized.push(stream);
+  }
+  return normalized.length ? normalized : null;
+}
+
+function validateDetailGapsPageRequest(msg, scopeByStream) {
+  if (msg.reference_only !== true) {
+    throw new Error('Connector emitted invalid DETAIL_GAPS_PAGE_REQUEST.reference_only: expected true');
+  }
+  if (typeof msg.request_id !== 'string' || !msg.request_id.trim()) {
+    throw new Error('Connector emitted invalid DETAIL_GAPS_PAGE_REQUEST.request_id: expected non-empty string');
+  }
+  if (msg.max_bytes != null && (!Number.isFinite(msg.max_bytes) || msg.max_bytes <= 0)) {
+    throw new Error('Connector emitted invalid DETAIL_GAPS_PAGE_REQUEST.max_bytes: expected positive number');
+  }
+  return {
+    maxBytes: msg.max_bytes == null ? null : Math.floor(msg.max_bytes),
+    requestId: msg.request_id,
+    streams: normalizeDetailGapPageStreams(msg.streams, scopeByStream),
+  };
+}
+
+function createDetailGapPageReader({
+  connectorId,
+  connectorInstanceId,
+  detailGapStore,
+  grantId,
+}) {
+  let observedAverageBytes = DETAIL_GAP_PAGE_ASSUMED_AVG_BYTES;
+
+  return async function readDetailGapPage({ maxBytes = null, streams = null } = {}) {
+    const byteBudget = detailGapPageByteBudget(maxBytes);
+    const candidateLimit = Math.max(
+      1,
+      Math.min(
+        DETAIL_GAP_PAGE_MAX_CANDIDATE_ROWS,
+        Math.ceil((byteBudget / Math.max(1, observedAverageBytes)) * 1.5),
+      ),
+    );
+    const pendingGaps = (await detailGapStore.listPendingGaps({
+      connectorId,
+      connectorInstanceId,
+      grantId,
+      streams,
+      limit: candidateLimit,
+    })) ?? [];
+    const detailGaps = [];
+    let serializedBytes = 2; // JSON array brackets; exact enough for page sizing.
+    let entryBytesTotal = 0;
+
+    for (const gap of pendingGaps) {
+      const entry = buildStartDetailGap(gap);
+      const entryBytes = serializedDetailGapBytes(entry);
+      if (detailGaps.length > 0 && serializedBytes + entryBytes > byteBudget) {
+        break;
+      }
+      detailGaps.push(entry);
+      serializedBytes += entryBytes;
+      entryBytesTotal += entryBytes;
+      if (serializedBytes >= byteBudget) {
+        break;
+      }
+    }
+
+    if (detailGaps.length > 0) {
+      const pageAverage = entryBytesTotal / detailGaps.length;
+      observedAverageBytes = Math.max(
+        1,
+        Math.round((observedAverageBytes * 0.65) + (pageAverage * 0.35)),
+      );
+    }
+
+    return {
+      candidateLimit,
+      detailGaps,
+      maxBytes: byteBudget,
+      serializedBytes,
+    };
+  };
+}
+
 function appendUniqueFields(fields, extraFields) {
   const normalized = [...fields];
   const seen = new Set(fields);
@@ -1842,15 +1967,19 @@ export async function runConnector(opts) {
     try { appendFileSync(_traceAppendFile, line + '\n'); } catch {}
   };
 
+  const readDetailGapPage = createDetailGapPageReader({
+    connectorId,
+    connectorInstanceId: normalizedConnectorInstanceId,
+    detailGapStore,
+    grantId,
+  });
+
   let startDetailGaps = [];
   try {
-    const pendingGaps = await detailGapStore.listPendingGaps({
-      connectorId,
-      connectorInstanceId: normalizedConnectorInstanceId,
-      grantId,
+    const page = await readDetailGapPage({
       streams: startScope.streams.map((stream) => stream.name),
     });
-    startDetailGaps = pendingGaps.map(buildStartDetailGap);
+    startDetailGaps = page.detailGaps;
   } catch (err) {
     // Pre-START failure (before the run promise / cleanupChildHandles exists):
     // reap the just-spawned connector group rather than leaking it, and drop
@@ -2871,6 +3000,33 @@ export async function runConnector(opts) {
             },
           });
           onProgress(msg);
+          break;
+        }
+
+        case 'DETAIL_GAPS_PAGE_REQUEST': {
+          const request = validateDetailGapsPageRequest(msg, scopeByStream);
+          const page = await readDetailGapPage({
+            maxBytes: request.maxBytes,
+            streams: request.streams ?? startScope.streams.map((stream) => stream.name),
+          });
+          const accepted = writeChildStdin(
+            JSON.stringify({
+              type: 'DETAIL_GAPS_PAGE_RESPONSE',
+              reference_only: true,
+              request_id: request.requestId,
+              detail_gaps: page.detailGaps,
+            }) + '\n',
+            'detail_gaps_page_response',
+          );
+          onProgress({
+            type: 'DETAIL_GAPS_PAGE_RESPONSE',
+            reference_only: true,
+            count: page.detailGaps.length,
+            max_bytes: page.maxBytes,
+            serialized_bytes: page.serializedBytes,
+            candidate_limit: page.candidateLimit,
+            accepted,
+          });
           break;
         }
 
