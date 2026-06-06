@@ -63,6 +63,26 @@ test("retryHttp: uses bounded jittered exponential delay when Retry-After is abs
   assert.deepEqual(sleeps, [1000, 2000]);
 });
 
+test("retryHttp: default retryable set includes 408 and all 5xx", async () => {
+  const sleeps: number[] = [];
+  const statuses = [408, 500, 599, 200];
+
+  const result = await retryHttp({
+    baseDelayMs: 1000,
+    maxAttempts: 5,
+    maxDelayMs: 10_000,
+    maxRetryAfterMs: 60_000,
+    random: () => 0.5,
+    request: () => ({ status: statuses.shift() ?? 200 }),
+    sleep: (ms) => {
+      sleeps.push(ms);
+    },
+  });
+
+  assert.equal(result.status, 200);
+  assert.deepEqual(sleeps, [1000, 2000, 4000]);
+});
+
 test("retryHttp: caps jittered exponential delay after applying jitter", () => {
   assert.equal(jitteredExponentialDelayMs({ attempt: 10, baseDelayMs: 1000, maxDelayMs: 5000, random: () => 1 }), 5000);
 });

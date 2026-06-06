@@ -44,7 +44,11 @@ import {
   TerminalHttpStatusError,
 } from "../../src/http-retry.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
-import { ProviderBudgetController, type ProviderBudgetGate } from "../../src/provider-budget.ts";
+import {
+  ProviderBudgetController,
+  type ProviderBudgetGate,
+  retryBudgetCapacityFromRequestCap,
+} from "../../src/provider-budget.ts";
 import { RunBudget } from "../../src/run-budget.ts";
 import {
   buildConversationRecord,
@@ -140,7 +144,7 @@ async function getAuthFromPage(page: Page): Promise<ChatGptAuth> {
  * successful response is auto-captured when PDPP_CAPTURE_FIXTURES=1.
  *
  * Retry policy:
- *   - Retryable: 429, 502/503/504, browser-level network errors
+ *   - Retryable: 429, 408, 5xx, browser-level network errors
  *   - Terminal: 401/403 (auth dead)
  *   - Non-retryable 4xx return to stream code for SKIP_RESULT handling
  *   - Caller decides what to do with a successful response body
@@ -165,8 +169,8 @@ const CHATGPT_LONG_SLEEP_PROGRESS_THRESHOLD_MS = 5000;
 // observed-pressure circuit fast: the rest of the tranche is deferred to
 // resumable DETAIL_GAP records instead of grinding the hot bucket.
 //
-// A 429 that DOES carry `Retry-After`, and 502/503/504, keep the full budget:
-// those are honest, server-bounded waits we should respect, not blind hammering.
+// A 429 that DOES carry `Retry-After`, plus 408/5xx, keep the full budget:
+// those are bounded transient waits we should respect, not blind hammering.
 const CHATGPT_BARE_429_FAST_OPEN_ATTEMPTS = 3;
 
 // ─── Cumulative 429-density early-stop ───────────────────────────────────
@@ -347,17 +351,28 @@ function resolvePositiveFiniteMs(env: NodeJS.ProcessEnv, key: string): number | 
 
 export function resolveChatGptProviderBudget(env: NodeJS.ProcessEnv = process.env): ProviderBudgetController | null {
   const initialIntervalMs = resolvePositiveFiniteMs(env, CHATGPT_PACING_INITIAL_INTERVAL_MS_ENV);
-  if (initialIntervalMs == null) {
+  const maxRequests = resolveChatGptMaxDetailFetchesPerRun(env);
+  const retryBudgetCapacity = retryBudgetCapacityFromRequestCap({ maxRequests });
+  const hasRetryBudget = Number.isFinite(retryBudgetCapacity);
+  if (initialIntervalMs == null && !hasRetryBudget) {
     return null;
   }
   const minIntervalMs = resolvePositiveFiniteMs(env, CHATGPT_PACING_MIN_INTERVAL_MS_ENV) ?? 0;
-  const burstToleranceMs = resolvePositiveFiniteMs(env, CHATGPT_PACING_BURST_TOLERANCE_MS_ENV) ?? 2 * initialIntervalMs;
+  const burstToleranceMs =
+    initialIntervalMs == null
+      ? null
+      : (resolvePositiveFiniteMs(env, CHATGPT_PACING_BURST_TOLERANCE_MS_ENV) ?? 2 * initialIntervalMs);
   return new ProviderBudgetController({
-    pacing: {
-      burstToleranceMs,
-      initialIntervalMs,
-      minIntervalMs,
-    },
+    ...(initialIntervalMs == null
+      ? {}
+      : {
+          pacing: {
+            ...(burstToleranceMs == null ? {} : { burstToleranceMs }),
+            initialIntervalMs,
+            minIntervalMs,
+          },
+        }),
+    ...(hasRetryBudget ? { retryBudget: { capacity: retryBudgetCapacity, refillPerSuccess: 0.2 } } : {}),
   });
 }
 
@@ -422,6 +437,8 @@ const CHATGPT_SIDE_EFFECT_PROBE_ENV = "PDPP_CHATGPT_SIDE_EFFECT_PROBE";
 const CHATGPT_CONVERSATION_DETAIL_PATH_PATTERN = /^\/conversation\/[^/?#]+(?:[?#].*)?$/;
 const URL_QUERY_OR_FRAGMENT_PATTERN = /[?#].*$/;
 
+export type ChatGptRunCapReason = "circuit_open" | "max_detail_fetches" | "max_wall_clock" | "provider_retry_budget";
+
 export type ChatGptRetryExhaustedClass = "rate_limited" | "temporary_unavailable" | "upstream_pressure";
 
 export interface ChatGptNetworkPressureDiagnostic {
@@ -453,6 +470,18 @@ export class ChatGptRecoverableRetryExhaustedError extends Error {
     this.class = details.class;
     this.httpStatus = details.httpStatus ?? null;
     this.networkPressure = details.networkPressure;
+  }
+}
+
+export class ChatGptPlannedProviderBudgetDeferredError extends Error {
+  readonly gate: (ProviderBudgetGate & { ok: false }) | null;
+  readonly reason: ChatGptRunCapReason;
+
+  constructor(message: string, reason: ChatGptRunCapReason, gate: (ProviderBudgetGate & { ok: false }) | null = null) {
+    super(message);
+    this.name = "ChatGptPlannedProviderBudgetDeferredError";
+    this.reason = reason;
+    this.gate = gate;
   }
 }
 
@@ -570,7 +599,7 @@ function formatSleepDuration(ms: number): string {
  * fast-open. Returns `false` (stop retrying, exhaust now) once a bare 429 —
  * status 429 with no `Retry-After` — has been seen on
  * `CHATGPT_BARE_429_FAST_OPEN_ATTEMPTS` attempts. Every other retryable
- * response (429 + `Retry-After`, 502/503/504) keeps the full budget.
+ * response (429 + `Retry-After`, 408, 5xx) keeps the full budget.
  *
  * Exported for direct unit testing of the boundary; `retryHttp` owns the
  * exhaustion accounting and error shape.
@@ -591,14 +620,33 @@ export function shouldKeepRetryingChatGptDetail({
   return true;
 }
 
+export function consumeChatGptProviderRetryBudget(
+  providerBudget?: ProviderBudgetController | null
+): ChatGptPlannedProviderBudgetDeferredError | null {
+  const retryGate = providerBudget?.consumeRetry();
+  if (!retryGate || retryGate.ok) {
+    return null;
+  }
+  const reason = chatGptRunCapReasonFromProviderGate(retryGate);
+  return new ChatGptPlannedProviderBudgetDeferredError(
+    `ChatGPT provider retry budget exhausted (${retryGate.reason}); deferring remaining conversation details`,
+    reason,
+    retryGate
+  );
+}
+
 function classifyRetryExhaustedStatus(status: number | null): ChatGptRetryExhaustedClass {
   if (status === 429) {
     return "rate_limited";
   }
-  if (status === 502 || status === 503 || status === 504) {
+  if (status === 408 || (status != null && status >= 500 && status < 600)) {
     return "temporary_unavailable";
   }
   return "upstream_pressure";
+}
+
+function isChatGptRetryableStatus(status: number | undefined): boolean {
+  return status === 429 || status === 408 || (status != null && status >= 500 && status < 600);
 }
 
 function chatGptEndpointRoute(path: string): string {
@@ -654,7 +702,7 @@ async function reportChatGptRetryPressure({
   response?: { status?: number } | undefined;
   retryAfterMs?: number | undefined;
 }): Promise<void> {
-  if (response?.status === 429 || response?.status === 502 || response?.status === 503 || response?.status === 504) {
+  if (isChatGptRetryableStatus(response?.status)) {
     providerBudget?.recordThrottle({
       retryAfterAlreadySlept: true,
       ...(retryAfterMs == null ? {} : { retryAfterMs }),
@@ -725,6 +773,7 @@ function createChatGptApi({
       parseJson,
     }: { body?: unknown; captureResult: boolean; method: string; parseJson: boolean }
   ): Promise<ChatGptFetchResult> {
+    let plannedProviderBudgetDefer: ChatGptPlannedProviderBudgetDeferredError | null = null;
     return retryHttp({
       baseDelayMs: CHATGPT_RATE_LIMIT_BASE_DELAY_MS,
       maxAttempts: CHATGPT_RATE_LIMIT_MAX_ATTEMPTS,
@@ -734,7 +783,13 @@ function createChatGptApi({
       // a few short attempts, then exhaust so the lane defers the rest as
       // resumable DETAIL_GAP instead of burning the full 12-attempt budget
       // (~23–70 min of backoff) against an already-throttled account.
-      shouldKeepRetrying: shouldKeepRetryingChatGptDetail,
+      shouldKeepRetrying: (input) => {
+        if (!shouldKeepRetryingChatGptDetail(input)) {
+          return false;
+        }
+        plannedProviderBudgetDefer = consumeChatGptProviderRetryBudget(providerBudget);
+        return plannedProviderBudgetDefer == null;
+      },
       onRetry: async ({ attempt, delayMs, maxAttempts, response, retryAfterMs }) => {
         // retryHttp sleeps `delayMs` itself immediately after this callback,
         // inside the same (serialized) detail attempt. Route the pressure to
@@ -757,11 +812,7 @@ function createChatGptApi({
       request: async () => {
         try {
           const result = await fetchOnce(path, { method, body, parseJson });
-          if (
-            captureResult &&
-            capture &&
-            !(result.status === 429 || result.status === 502 || result.status === 503 || result.status === 504)
-          ) {
+          if (captureResult && capture && !isChatGptRetryableStatus(result.status)) {
             capture.captureHttp(`${method}-${path}`, result.json, {
               status: result.status,
               path,
@@ -780,6 +831,9 @@ function createChatGptApi({
         throw new Error(`apiFetch got ${err.status} on ${method} ${path} (auth - not retryable)`);
       }
       if (err instanceof RetryExhaustedError) {
+        if (plannedProviderBudgetDefer) {
+          throw plannedProviderBudgetDefer;
+        }
         const cause = err.originalCause;
         const status =
           cause && typeof cause === "object" && "status" in cause && typeof cause.status === "number"
@@ -1636,7 +1690,7 @@ export interface ChatGptSourcePressureClassification {
 }
 
 function isChatGptPressureStatus(status: number | undefined): boolean {
-  return status === 429 || status === 502 || status === 503 || status === 504;
+  return isChatGptRetryableStatus(status);
 }
 
 function rateLimitedCountForPreflightError(error: unknown): number {
@@ -1970,8 +2024,6 @@ function makeRateLimitDensityPressureError(observedRateLimited: number): ChatGpt
   );
 }
 
-export type ChatGptRunCapReason = "max_detail_fetches" | "max_wall_clock";
-
 /**
  * Build a resumable DETAIL_GAP for a conversation deferred because this run hit
  * its bounded-run cap (size or time), NOT because the source pressured us. The
@@ -1982,6 +2034,19 @@ export type ChatGptRunCapReason = "max_detail_fetches" | "max_wall_clock";
  * the console never reads a self-imposed bound as "the service is busy". No HTTP
  * status: nothing failed — the run simply stopped at its budget.
  */
+function chatGptRunCapReasonFromProviderGate(gate: ProviderBudgetGate & { ok: false }): ChatGptRunCapReason {
+  if (gate.reason === "max_wall_clock") {
+    return "max_wall_clock";
+  }
+  if (gate.reason === "retry_budget") {
+    return "provider_retry_budget";
+  }
+  if (gate.reason === "circuit_open") {
+    return "circuit_open";
+  }
+  return "max_detail_fetches";
+}
+
 function makeRunCapDeferredConversationDetailGap(
   c: ConversationListItem,
   capReason: ChatGptRunCapReason
@@ -2098,7 +2163,7 @@ export async function runMessagesAndConversationsWithDetail(
       if (result.deferredDueToPressure) {
         return { kind: "terminal", reason: "upstream_pressure_deferred" };
       }
-      if (result.status === 429 || result.status === 502 || result.status === 503 || result.status === 504) {
+      if (isChatGptRetryableStatus(result.status)) {
         return { kind: "rate_limited" };
       }
       return { kind: "ok" };
@@ -2167,8 +2232,7 @@ export async function runMessagesAndConversationsWithDetail(
     from: ConversationListItem,
     providerGate: Extract<ProviderBudgetGate, { ok: false }>
   ): Promise<ChatGptFetchResult> {
-    const providerBudgetDeferReason: ChatGptRunCapReason =
-      providerGate.reason === "max_wall_clock" ? "max_wall_clock" : "max_detail_fetches";
+    const providerBudgetDeferReason = chatGptRunCapReasonFromProviderGate(providerGate);
     runCapDeferReason = providerBudgetDeferReason;
     await deps.emit({
       type: "PROGRESS",
@@ -2225,6 +2289,32 @@ export async function runMessagesAndConversationsWithDetail(
     return emitTailConversationDetailGaps(from, (item) => makeRunCapDeferredConversationDetailGap(item, capReason));
   }
 
+  async function maybeDeferForFetchError(from: ConversationListItem, err: unknown): Promise<ChatGptFetchResult | null> {
+    if (err instanceof ChatGptPlannedProviderBudgetDeferredError) {
+      runCapDeferReason = err.reason;
+      await deps.emit({
+        type: "PROGRESS",
+        stream: "messages",
+        message: `ChatGPT conversation-detail lane reached its per-run provider budget (${err.reason}); deferring remaining conversation details as resumable DETAIL_GAP records`,
+      });
+      return emitTailConversationDetailGaps(from, (item) => makeRunCapDeferredConversationDetailGap(item, err.reason));
+    }
+    if (err instanceof ChatGptRecoverableRetryExhaustedError) {
+      providerBudget?.recordThrottle({ retryAfterAlreadySlept: true });
+      observedRecoverablePressure = err;
+      await deps.emit({
+        type: "PROGRESS",
+        stream: "messages",
+        message:
+          "ChatGPT conversation-detail lane opened upstream-pressure circuit; deferring remaining conversation details as DETAIL_GAP records",
+      });
+      return emitTailConversationDetailGaps(from, (item, index) =>
+        index === 0 ? makeConversationDetailGap(item, err) : makeDeferredConversationDetailGap(item, err)
+      );
+    }
+    return null;
+  }
+
   await runLaneUntilTailStopped(lane, convosToSync, tailStopController.signal, async (c) => {
     if (!c) {
       return { status: 404, json: null };
@@ -2271,18 +2361,9 @@ export async function runMessagesAndConversationsWithDetail(
     try {
       detail = await deps.api.fetch(`/conversation/${encodeURIComponent(c.id)}`);
     } catch (err) {
-      if (err instanceof ChatGptRecoverableRetryExhaustedError) {
-        providerBudget?.recordThrottle({ retryAfterAlreadySlept: true });
-        observedRecoverablePressure = err;
-        await deps.emit({
-          type: "PROGRESS",
-          stream: "messages",
-          message:
-            "ChatGPT conversation-detail lane opened upstream-pressure circuit; deferring remaining conversation details as DETAIL_GAP records",
-        });
-        return emitTailConversationDetailGaps(c, (item, index) =>
-          index === 0 ? makeConversationDetailGap(item, err) : makeDeferredConversationDetailGap(item, err)
-        );
+      const fetchErrorDefer = await maybeDeferForFetchError(c, err);
+      if (fetchErrorDefer) {
+        return fetchErrorDefer;
       }
       throw err;
     }

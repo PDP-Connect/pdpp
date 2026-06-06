@@ -56,11 +56,13 @@ import {
   applyChatGptColdStatePreflight,
   CHATGPT_RETRYABLE_ERROR_PATTERN,
   type ChatGptDetailLaneTuning,
+  ChatGptPlannedProviderBudgetDeferredError,
   ChatGptRateLimitDensityTracker,
   ChatGptRecoverableRetryExhaustedError,
   ChatGptRunBudget,
   chatGptBackendFetchInBrowser,
   classifyChatGptSourcePressure,
+  consumeChatGptProviderRetryBudget,
   processConversationDetail,
   resolveChatGptBackendFetchTimeoutMs,
   resolveChatGptDetailLaneTuning,
@@ -1245,9 +1247,13 @@ test("resolveChatGptMaxRunWallClockMs: unset/invalid → no cap; positive ms cap
   );
 });
 
-test("resolveChatGptProviderBudget: pacing disabled when unset; positive initial interval enables controller", async () => {
+test("resolveChatGptProviderBudget: default off, run cap enables retry budget, pacing opt-in", async () => {
   assert.equal(resolveChatGptProviderBudget({}), null);
   assert.equal(resolveChatGptProviderBudget({ PDPP_CHATGPT_PACING_INITIAL_INTERVAL_MS: "0" }), null);
+  const retryOnly = resolveChatGptProviderBudget({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "10" });
+  assert.ok(retryOnly instanceof ProviderBudgetController);
+  assert.equal(retryOnly.pacing, null, "run cap alone does not enable inter-request pacing");
+  assert.ok(retryOnly.retryBudget, "run cap derives a ratio-based retry budget");
 
   const sleeps: number[] = [];
   const budget = resolveChatGptProviderBudget({
@@ -1270,6 +1276,17 @@ test("resolveChatGptProviderBudget: pacing disabled when unset; positive initial
   });
   await injected.beforeRequest();
   assert.deepEqual(sleeps, [500]);
+});
+
+test("consumeChatGptProviderRetryBudget: exhausted retry budget becomes planned provider-budget defer", () => {
+  const providerBudget = new ProviderBudgetController({ retryBudget: { capacity: 1 } });
+
+  assert.equal(consumeChatGptProviderRetryBudget(providerBudget), null);
+  const plannedDefer = consumeChatGptProviderRetryBudget(providerBudget);
+
+  assert.ok(plannedDefer instanceof ChatGptPlannedProviderBudgetDeferredError);
+  assert.equal(plannedDefer.reason, "provider_retry_budget");
+  assert.equal(plannedDefer.gate?.reason, "retry_budget");
 });
 
 test("ChatGptRunBudget: no caps never stops; request budget and wall-clock budget each trip with the right reason", () => {
@@ -1612,6 +1629,49 @@ test("runMessagesAndConversationsWithDetail: provider request budget defers clea
       m.type === "PROGRESS" && m.message.includes("provider budget (max_requests)")
   );
   assert.equal(progress.length, 1, "provider-budget exhaustion is announced once");
+});
+
+test("runMessagesAndConversationsWithDetail: provider retry budget defers tail without source pressure", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const fetchedIds: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      fetchedIds.push(path);
+      throw new ChatGptPlannedProviderBudgetDeferredError("retry budget exhausted", "provider_retry_budget");
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "convo-1" }), makeConvo({ id: "convo-2" })],
+    makeEmitConversation(deps),
+    { random: () => 0, sleep: () => undefined }
+  );
+
+  assert.deepEqual(fetchedIds, ["/conversation/convo-1"]);
+  assert.deepEqual(coverage.hydratedKeys, []);
+  assert.deepEqual(coverage.gapKeys, ["convo-1", "convo-2"]);
+  const gaps = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP"
+  );
+  assert.equal(gaps.length, 2);
+  assert.ok(
+    gaps.every(
+      (gap) =>
+        gap.reason === "retry_exhausted" &&
+        gap.detail?.class === "run_cap_deferred" &&
+        gap.detail.network_pressure?.error_class === "provider_retry_budget"
+    ),
+    "provider retry-budget exhaustion is a planned retry_exhausted gap, not upstream_pressure"
+  );
 });
 
 test("runConversationsAndMessagesStreams: one run budget bounds the recovery pass AND the forward pass together", async () => {

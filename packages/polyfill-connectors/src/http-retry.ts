@@ -132,7 +132,7 @@ export async function retryHttp<T extends HttpRetryResponse>(options: HttpRetryO
     shouldAbort = () => false,
     shouldKeepRetrying,
     shouldRetry = (response) =>
-      response.status === 429 || response.status === 502 || response.status === 503 || response.status === 504,
+      response.status === 429 || response.status === 408 || (response.status >= 500 && response.status < 600),
     sleep = DEFAULT_SLEEP,
   } = options;
 

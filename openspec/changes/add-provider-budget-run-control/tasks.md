@@ -31,12 +31,12 @@ separate lane or tranche with its own acceptance checks.
 
 ### 2.2 Retry budget (ratio-based token bucket)
 
-- [ ] Implement a run-scoped retry budget token bucket.
+- [x] Implement a run-scoped retry budget token bucket.
   - [x] Capacity ≈ 20% of per-run request cap (or a configurable minimum).
   - [x] Tokens consumed on retry; refilled proportionally to successes.
-  - [ ] Full jitter backoff: `sleep = random(0, min(cap, base × 2^attempt))`.
-  - [ ] Retry only on 429, 408, 5xx. Non-retryable 4xx logs and skips (no budget consumed).
-  - [ ] When bucket empty: defer run as resumable gap with reason not in source-pressure set.
+  - [x] Full jitter backoff: `sleep = random(0, min(cap, base × 2^attempt))`.
+  - [x] Retry only on 429, 408, 5xx. Non-retryable 4xx logs and skips (no budget consumed).
+  - [x] When bucket empty: defer run as resumable gap with reason not in source-pressure set.
 - [x] Unit-test retry budget exhaustion path.
 
 ### 2.3 Circuit breaker integration
