@@ -16,8 +16,11 @@
 // state machine-checkable instead of a copy-paste heredoc.
 //
 // What it does: for each image, request an anonymous GHCR pull token and, if the
-// token is granted, list tags. The GHCR registry's anonymous responses are the
-// discriminator (verified live 2026-06-05 against a public control image):
+// token is granted, list tags. When a pinned tag is required, the script also
+// checks the tag's manifest directly because GHCR's tags/list response can lag
+// a successful push even when the tag is already anonymously pullable. The GHCR
+// registry's anonymous responses are the discriminator (verified live
+// 2026-06-05 against a public control image):
 //
 //   token 200 + tags/list 200  -> PUBLIC   (anonymously pullable; gate clear)
 //   token 401                   -> PRIVATE  (auth required; gate BLOCKED)
@@ -64,15 +67,27 @@ export function classifyTokenStatus(status) {
   return { visibility: 'unknown', tokenGranted: false };
 }
 
-// Collapse a token verdict (+ optional tags/list outcome and a required tag pin)
-// into the final per-image result. An image is publishable only when a token was
-// granted AND tags/list returned 200; when a --tag pin is requested it must also
-// appear in the listed tags.
-export function classifyProbeResult({ image, service, stage, tokenStatus, tagsStatus, tags, requiredTag }) {
+// Collapse a token verdict (+ optional tags/list outcome, a required tag pin,
+// and direct manifest outcome) into the final per-image result. An image is
+// publishable only when a token was granted. Without a required pin, tags/list
+// must be readable. With a required pin, either tags/list contains the tag or the
+// tag manifest is anonymously readable; the manifest check is the stronger
+// Railway-relevant signal because Railway pulls by tag.
+export function classifyProbeResult({
+  image,
+  service,
+  stage,
+  tokenStatus,
+  tagsStatus,
+  tags,
+  requiredTag,
+  manifestStatus,
+}) {
   const { visibility, tokenGranted } = classifyTokenStatus(tokenStatus);
   const tagList = Array.isArray(tags) ? tags : [];
   const tagsReadable = tokenGranted && tagsStatus === 200;
   const tagPresent = requiredTag ? tagList.includes(requiredTag) : true;
+  const manifestReadable = requiredTag ? manifestStatus === 200 : true;
 
   let ok = false;
   let reason;
@@ -82,20 +97,28 @@ export function classifyProbeResult({ image, service, stage, tokenStatus, tagsSt
       visibility === 'private'
         ? 'private — anonymous pull token refused (401); owner must flip package visibility to Public'
         : visibility === 'absent'
-          ? 'absent — no such GHCR package path (403); check the image name'
-          : `unexpected GHCR token status ${tokenStatus}`;
+        ? 'absent — no such GHCR package path (403); check the image name'
+        : `unexpected GHCR token status ${tokenStatus}`;
+  } else if (requiredTag && (tagPresent || manifestReadable)) {
+    ok = true;
+    reason = manifestReadable
+      ? `public and tag "${requiredTag}" manifest is anonymously readable`
+      : `public and tag "${requiredTag}" present`;
   } else if (!tagsReadable) {
     ok = false;
     reason = `token granted but tags/list returned ${tagsStatus}`;
-  } else if (!tagPresent) {
+  } else if (requiredTag && !tagPresent) {
     ok = false;
-    reason = `public, but required tag "${requiredTag}" is not published (have: ${tagList.join(', ') || 'none'})`;
+    reason =
+      manifestStatus === undefined
+        ? `public, but required tag "${requiredTag}" is not published (have: ${tagList.join(', ') || 'none'})`
+        : `public, but required tag "${requiredTag}" is not anonymously readable (manifest status ${manifestStatus}; tags/list has: ${tagList.join(', ') || 'none'})`;
   } else {
     ok = true;
-    reason = requiredTag ? `public and tag "${requiredTag}" present` : 'public (anonymously pullable)';
+    reason = 'public (anonymously pullable)';
   }
 
-  return { image, service, stage, visibility, ok, reason, tags: tagList };
+  return { image, service, stage, visibility, ok, reason, tags: tagList, manifestStatus };
 }
 
 // The gate is clear only when every image is ok. Returns a verdict plus the
@@ -149,19 +172,35 @@ async function probeImage({ image, service, stage }, requiredTag) {
   let tokenStatus = 0;
   let tagsStatus;
   let tags;
+  let manifestStatus;
   try {
     const tokenResult = await ghcrGet(`https://ghcr.io/token?scope=repository:${image}:pull`);
     tokenStatus = tokenResult.status;
     if (tokenStatus === 200) {
       const body = await tokenResult.response.json();
-      const tagsResult = await ghcrGet(`https://ghcr.io/v2/${image}/tags/list`, {
+      const headers = {
         Authorization: `Bearer ${body.token}`,
         Accept: 'application/json',
+      };
+      const tagsResult = await ghcrGet(`https://ghcr.io/v2/${image}/tags/list`, {
+        ...headers,
       });
       tagsStatus = tagsResult.status;
       if (tagsStatus === 200) {
         const tagsBody = await tagsResult.response.json();
         tags = Array.isArray(tagsBody.tags) ? tagsBody.tags : [];
+      }
+      if (requiredTag) {
+        const manifestResult = await ghcrGet(`https://ghcr.io/v2/${image}/manifests/${requiredTag}`, {
+          ...headers,
+          Accept: [
+            'application/vnd.oci.image.index.v1+json',
+            'application/vnd.docker.distribution.manifest.list.v2+json',
+            'application/vnd.oci.image.manifest.v1+json',
+            'application/vnd.docker.distribution.manifest.v2+json',
+          ].join(','),
+        });
+        manifestStatus = manifestResult.status;
       }
     }
   } catch (error) {
@@ -175,7 +214,16 @@ async function probeImage({ image, service, stage }, requiredTag) {
       tags: [],
     };
   }
-  return classifyProbeResult({ image, service, stage, tokenStatus, tagsStatus, tags, requiredTag });
+  return classifyProbeResult({
+    image,
+    service,
+    stage,
+    tokenStatus,
+    tagsStatus,
+    tags,
+    requiredTag,
+    manifestStatus,
+  });
 }
 
 async function main() {

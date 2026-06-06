@@ -103,7 +103,7 @@ images are anonymously pullable, and prints the exact owner action while blocked
 
 ```sh
 pnpm railway:ghcr-public                 # both images; exit 0 = gate clear
-pnpm railway:ghcr-public -- --tag <version-tag>   # also assert the pinned tag exists
+pnpm railway:ghcr-public --tag <version-tag>   # also assert the pinned tag exists
 ```
 
 The probe's pass/fail logic is unit-tested offline by

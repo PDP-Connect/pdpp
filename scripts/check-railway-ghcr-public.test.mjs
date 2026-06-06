@@ -108,6 +108,36 @@ test('classifyProbeResult: --tag pin must be present even when public', () => {
   assert.equal(present.ok, true);
 });
 
+test('classifyProbeResult: --tag pin can pass by direct manifest when tags/list lags', () => {
+  const result = classifyProbeResult({
+    image: 'vana-com/pdpp/web',
+    service: 'console',
+    stage: 'console',
+    tokenStatus: 200,
+    tagsStatus: 200,
+    tags: ['latest'],
+    requiredTag: 'sha-1088045',
+    manifestStatus: 200,
+  });
+  assert.equal(result.ok, true);
+  assert.match(result.reason, /manifest/);
+});
+
+test('classifyProbeResult: --tag pin fails when neither tags/list nor manifest exposes it', () => {
+  const result = classifyProbeResult({
+    image: 'vana-com/pdpp/web',
+    service: 'console',
+    stage: 'console',
+    tokenStatus: 200,
+    tagsStatus: 200,
+    tags: ['latest'],
+    requiredTag: 'sha-missing',
+    manifestStatus: 404,
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /manifest status 404/);
+});
+
 test('summarizePublishReadiness: ready only when every image is ok', () => {
   const allOk = summarizePublishReadiness([{ ok: true }, { ok: true }]);
   assert.equal(allOk.ready, true);
