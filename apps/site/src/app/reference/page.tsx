@@ -9,6 +9,8 @@ const GITHUB_REPO = "https://github.com/vana-com/pdpp";
 const GITHUB_REFERENCE_README = `${GITHUB_REPO}/blob/main/reference-implementation/README.md`;
 const GITHUB_ROOT_README = `${GITHUB_REPO}/blob/main/README.md`;
 const GITHUB_SELF_HOSTED = `${GITHUB_REFERENCE_README}#docker-compose-reference-stack`;
+const RAILWAY_DEPLOY_URL =
+  "https://railway.com/new/template/pdpp-core-template-source?utm_medium=integration&utm_source=button&utm_campaign=pdpp-core";
 
 export const metadata: Metadata = {
   title: "Reference Implementation - PDPP",
@@ -91,6 +93,12 @@ const referenceLinks = [
     body: "Local stack, direct AS/RS mode, Docker Compose, owner auth, and generated artifacts.",
   },
   {
+    label: "One-click deploy",
+    title: "Deploy on Railway",
+    href: RAILWAY_DEPLOY_URL,
+    body: "Launch the core reference stack on Railway from the proven template. Sets up the server and console services with environment variables pre-wired.",
+  },
+  {
     label: "Architecture",
     title: "Architecture docs",
     href: "/docs/spec-architecture",
@@ -138,6 +146,9 @@ export default async function ReferencePage() {
             <div className="mt-7 flex flex-wrap gap-2.5">
               <a className={buttonVariants({ variant: "default", size: "lg" })} href={GITHUB_REFERENCE_README}>
                 Clone and run
+              </a>
+              <a className={buttonVariants({ variant: "outline", size: "lg" })} href={RAILWAY_DEPLOY_URL}>
+                Deploy on Railway
               </a>
               <a className={buttonVariants({ variant: "outline", size: "lg" })} href={GITHUB_SELF_HOSTED}>
                 Self-host with Docker
