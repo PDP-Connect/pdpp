@@ -51,8 +51,13 @@ rl.on('line', (line) => {
 }
 
 // Fake detail-gap store returning a configurable set of pending gaps.
-function fakeDetailGapStore(pendingGaps = []) {
-  return { listPendingGapsForConnector: () => pendingGaps };
+function fakeDetailGapStore(pendingGaps = [], calls = []) {
+  return {
+    listPendingGapsForConnector: (connectorId, options) => {
+      calls.push({ connectorId, options });
+      return pendingGaps;
+    },
+  };
 }
 
 // Fake scheduler store — no schedule, no DB needed.
@@ -149,6 +154,37 @@ test('provider_pressure_cooldown error carries a future nextEligibleAt when next
       const eligibleMs = Date.parse(err.nextEligibleAt);
       const floorMs = Date.parse(futureFloor);
       assert.ok(eligibleMs >= floorMs, `nextEligibleAt ${err.nextEligibleAt} should be >= floor ${futureFloor}`);
+    },
+  );
+});
+
+test('manual cooldown gate reads connector type and filters to the requested connection instance', async () => {
+  const calls = [];
+  await withPreGateController(
+    () =>
+      fakeDetailGapStore(
+        [
+          pressureGap({ connector_instance_id: 'cin_other', attempt_count: 7 }),
+          pressureGap({ connector_instance_id: 'cin_target', attempt_count: 2 }),
+        ],
+        calls,
+      ),
+    async (controller) => {
+      let err;
+      try {
+        await controller.runNow(TEST_CONNECTOR_ID, {
+          connectorInstanceId: 'cin_target',
+          manifest: buildManifest(),
+        });
+      } catch (e) {
+        err = e;
+      }
+      assert.ok(err, 'target instance has a pressure gap and should be blocked');
+      assert.equal(err.code, 'provider_pressure_cooldown');
+      assert.equal(err.pendingPressureGapCount, 1, 'only the requested connection instance should count');
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].connectorId, TEST_CONNECTOR_ID, 'store read is connector-type scoped, not cin-scoped');
+      assert.deepEqual(calls[0].options, { limit: 200 });
     },
   );
 });

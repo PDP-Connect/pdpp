@@ -3257,9 +3257,10 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (!options.force) {
       const connectorInstanceId = options.connectorInstanceId || connectorId;
       const pendingGapRows = await Promise.resolve(
-        detailGapStore.listPendingGapsForConnector(connectorInstanceId)
+        detailGapStore.listPendingGapsForConnector(connectorId, { limit: 200 })
       );
       const pendingPressureGaps: PendingPressureGap[] = pendingGapRows
+        .filter((row) => (row.connector_instance_id || connectorId) === connectorInstanceId)
         .filter((row) => typeof row.reason === "string" && SOURCE_PRESSURE_GAP_REASONS.has(row.reason))
         .map((row) => ({
           reason: row.reason as string,
