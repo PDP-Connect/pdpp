@@ -42,6 +42,8 @@ interface EnsureAmazonSessionArgs {
    */
   checkpoint?: SessionCheckpointFn;
   context: BrowserContext;
+  // Test hook for synthetic pages that intentionally never render a field.
+  fieldTimeoutMs?: number | undefined;
   page: Page;
   sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
 }
@@ -151,6 +153,7 @@ async function requestManualLoginForChallenge({
  */
 async function fillOrHandleChallenge({
   capture,
+  fieldTimeoutMs = 15_000,
   locator,
   page,
   reason,
@@ -158,11 +161,12 @@ async function fillOrHandleChallenge({
   value,
 }: Pick<EnsureAmazonSessionArgs, "capture" | "page" | "sendInteraction"> & {
   readonly locator: Locator;
+  readonly fieldTimeoutMs?: number | undefined;
   readonly reason: string;
   readonly value: string;
 }): Promise<"filled" | "recovered"> {
   try {
-    await fillWhenVisible(page, locator, value);
+    await fillWhenVisible(page, locator, value, { timeout: fieldTimeoutMs });
     return "filled";
   } catch (error) {
     if (!isMissingVisibleFieldError(error)) {
@@ -183,6 +187,7 @@ export async function ensureAmazonSession({
   capture,
   checkpoint = noopCheckpoint,
   context: _context,
+  fieldTimeoutMs,
   page,
   sendInteraction,
 }: EnsureAmazonSessionArgs): Promise<boolean> {
@@ -226,6 +231,7 @@ export async function ensureAmazonSession({
   if (currentEmail !== email) {
     const emailStep = await fillOrHandleChallenge({
       ...(capture ? { capture } : {}),
+      fieldTimeoutMs,
       locator: emailLoc,
       page,
       reason: "sign-in form did not render",
@@ -253,6 +259,7 @@ export async function ensureAmazonSession({
   // also matches a hidden autofill hint, so we prefer the id + require vis.
   const passwordStep = await fillOrHandleChallenge({
     ...(capture ? { capture } : {}),
+    fieldTimeoutMs,
     locator: page.locator("input#ap_password"),
     page,
     reason: "password form did not render",

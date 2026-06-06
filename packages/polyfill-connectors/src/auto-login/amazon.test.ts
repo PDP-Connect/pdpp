@@ -197,6 +197,7 @@ test("ensureAmazonSession emits manual_action when the sign-in form is replaced 
 
     const ok = await ensureAmazonSession({
       context: makeContext(),
+      fieldTimeoutMs: 1,
       page,
       sendInteraction: interactions.sendInteraction,
     });
@@ -222,6 +223,7 @@ test("ensureAmazonSession throws amazon_login_unexpected_ui when the manual acti
     await assert.rejects(
       ensureAmazonSession({
         context: makeContext(),
+        fieldTimeoutMs: 1,
         page,
         sendInteraction: interactions.sendInteraction,
       }),
