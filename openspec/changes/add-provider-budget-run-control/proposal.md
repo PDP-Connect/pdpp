@@ -57,9 +57,11 @@ This change adds a `polyfill-runtime` requirement set covering the minimal
 correct run-control model for Collection Profile runtimes calling opaque
 third-party providers:
 
-- **Run budget envelope** — every polyfill-runtime run MAY be given a finite
-  request (or weighted provider-attempt) cap and a wall-clock deadline, both of
-  which trigger a planned defer-and-resume rather than an error on exhaustion.
+- **Run budget envelope** — every polyfill-runtime run MAY be given explicit
+  finite request (or weighted provider-attempt) and wall-clock envelopes, both
+  of which trigger a planned defer-and-resume rather than an error on
+  exhaustion. These envelopes are owner/system safety bounds, not substitutes
+  for adaptive provider pacing.
 - **Per-provider pacing** — inter-request rate is controlled by a per-provider
   token bucket distinct from the run-level volume cap.
 - **Retry budget** — retry amplification is bounded by a ratio-based token

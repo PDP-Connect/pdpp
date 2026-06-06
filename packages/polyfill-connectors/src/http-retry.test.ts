@@ -151,6 +151,41 @@ test("retryHttp: non-retryable 4xx responses return without sleeping", async () 
   assert.deepEqual(sleeps, []);
 });
 
+test("retryHttp: beforeAttempt gates every provider attempt and propagates without retry sleep", async () => {
+  const sleeps: number[] = [];
+  let attempts = 0;
+  let calls = 0;
+  const gateError = new Error("provider gate closed");
+
+  await assert.rejects(
+    retryHttp({
+      baseDelayMs: 1000,
+      beforeAttempt: () => {
+        attempts += 1;
+        if (attempts === 2) {
+          throw gateError;
+        }
+      },
+      maxAttempts: 4,
+      maxDelayMs: 10_000,
+      maxRetryAfterMs: 60_000,
+      random: () => 0.5,
+      request: () => {
+        calls += 1;
+        return { status: 429 };
+      },
+      sleep: (ms) => {
+        sleeps.push(ms);
+      },
+    }),
+    (err: unknown) => err === gateError
+  );
+
+  assert.equal(calls, 1, "closed gate prevents the second provider call");
+  assert.equal(attempts, 2, "gate is checked for the initial attempt and retry attempt");
+  assert.deepEqual(sleeps, [1000], "only the retry backoff already earned by the first 429 is slept");
+});
+
 test("retryHttp: throws when retry budget is exhausted", async () => {
   const sleeps: number[] = [];
 

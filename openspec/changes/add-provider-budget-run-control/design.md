@@ -39,8 +39,9 @@ directly to rate-limit risk, and is the unit all surveyed pacing algorithms
 second-order refinements applicable when the provider's cost model is known; they
 are out of scope for the minimal design.
 
-The per-run request cap bounds total volume. The per-provider token bucket bounds
-rate. Both are required; neither subsumes the other.
+The per-run request cap, when configured, bounds total volume as an outer
+owner/system envelope. The per-provider token bucket bounds rate. Both are
+orthogonal; a fixed request cap is not a safe substitute for adaptive pacing.
 
 ### D2. GCRA/token-bucket for inter-request pacing
 
@@ -124,9 +125,11 @@ Circuit breaker state transitions (Closed → Open, Open → Half-Open, Half-Ope
 
 ### D7. Wall-clock as outer deadline, not rate control or source-pressure signal
 
-Wall-clock caps the maximum real time a single run occupies. It prevents hangs
-on slow or unresponsive providers and makes run scheduling predictable. It does
-NOT control inter-request rate (the token bucket does) and its expiry is NOT a
+Wall-clock caps the maximum real time a single run occupies when an owner or
+system configures that envelope. It prevents hangs on slow or unresponsive
+providers and makes supervised run scheduling predictable. It does NOT control
+inter-request rate (the token bucket does), SHOULD NOT be used as the default
+mechanism for hands-off collection throughput, and its expiry is NOT a
 source-pressure signal.
 
 When the wall-clock deadline expires, the run defers the remainder as a resumable

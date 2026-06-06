@@ -484,6 +484,23 @@ function makeDetailOk(): ChatGptFetchResult {
   return { status: 200, json };
 }
 
+async function admitFakeProviderBudget(providerBudget: ProviderBudgetController): Promise<void> {
+  const gate = await providerBudget.beforeRequest();
+  if (gate.ok) {
+    providerBudget.recordRequest();
+    return;
+  }
+  let reason: ChatGptPlannedProviderBudgetDeferredError["reason"] = "max_detail_fetches";
+  if (gate.reason === "max_wall_clock") {
+    reason = "max_wall_clock";
+  } else if (gate.reason === "retry_budget") {
+    reason = "provider_retry_budget";
+  } else if (gate.reason === "circuit_open") {
+    reason = "circuit_open";
+  }
+  throw new ChatGptPlannedProviderBudgetDeferredError("fake provider budget gate closed", reason, gate);
+}
+
 /** Convenience: collect the emitConversation callback the way
  *  runConversationsAndMessagesStreams does (gated on requested.has()).
  *  Emits through the real buildConversationRecord so the record passes
@@ -1253,19 +1270,22 @@ test("resolveChatGptProviderBudget: defaults enable retry budget and pacing; exp
   assert.equal(defaultBudget.pacing.currentIntervalMs, 2500, "ChatGPT starts at a conservative cold interval");
   assert.ok(defaultBudget.retryBudget, "ChatGPT default keeps a retry budget even without a request cap");
   assert.equal(defaultBudget.retryBudget.capacity, 5);
+  assert.ok(defaultBudget.circuitBreaker, "ChatGPT default enables a circuit breaker");
 
   const retryOnlyByPacingDisable = resolveChatGptProviderBudget({ PDPP_CHATGPT_PACING_INITIAL_INTERVAL_MS: "0" });
   assert.ok(retryOnlyByPacingDisable instanceof ProviderBudgetController);
   assert.equal(retryOnlyByPacingDisable.pacing, null, "pacing can be disabled independently");
   assert.ok(retryOnlyByPacingDisable.retryBudget);
+  assert.ok(retryOnlyByPacingDisable.circuitBreaker);
 
   assert.equal(
     resolveChatGptProviderBudget({
+      PDPP_CHATGPT_CIRCUIT_BREAKER: "0",
       PDPP_CHATGPT_PACING_INITIAL_INTERVAL_MS: "0",
       PDPP_CHATGPT_RETRY_BUDGET_CAPACITY: "0",
     }),
     null,
-    "retry budget and pacing can both be disabled for supervised probes"
+    "circuit breaker, retry budget, and pacing can all be disabled for supervised probes"
   );
 
   const retryOnly = resolveChatGptProviderBudget({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "10" });
@@ -1566,6 +1586,7 @@ test("runMessagesAndConversationsWithDetail: provider budget pacing neutralizes 
   const api: ChatGptApi = {
     auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
     fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      await admitFakeProviderBudget(providerBudget);
       fetchedIds.push(path);
       await Promise.resolve();
       return makeDetailOk();
@@ -1615,6 +1636,7 @@ test("runMessagesAndConversationsWithDetail: provider request budget defers clea
   const api: ChatGptApi = {
     auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
     fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      await admitFakeProviderBudget(providerBudget);
       fetchedIds.push(path);
       await Promise.resolve();
       return makeDetailOk();

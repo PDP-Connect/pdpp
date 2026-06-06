@@ -298,9 +298,11 @@ const CHATGPT_PACING_INITIAL_INTERVAL_MS_ENV = "PDPP_CHATGPT_PACING_INITIAL_INTE
 const CHATGPT_PACING_MIN_INTERVAL_MS_ENV = "PDPP_CHATGPT_PACING_MIN_INTERVAL_MS";
 const CHATGPT_PACING_BURST_TOLERANCE_MS_ENV = "PDPP_CHATGPT_PACING_BURST_TOLERANCE_MS";
 const CHATGPT_RETRY_BUDGET_CAPACITY_ENV = "PDPP_CHATGPT_RETRY_BUDGET_CAPACITY";
+const CHATGPT_CIRCUIT_BREAKER_ENV = "PDPP_CHATGPT_CIRCUIT_BREAKER";
 const CHATGPT_DEFAULT_PACING_INITIAL_INTERVAL_MS = 2500;
 const CHATGPT_DEFAULT_PACING_MIN_INTERVAL_MS = 250;
 const CHATGPT_DEFAULT_RETRY_BUDGET_CAPACITY = 5;
+const CHATGPT_DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS = 5 * 60_000;
 
 /**
  * Resolve the maximum conversation-detail provider requests a single run may
@@ -355,6 +357,11 @@ function resolveChatGptRetryBudgetCapacity(env: NodeJS.ProcessEnv, maxRequests: 
   return Math.floor(parsed);
 }
 
+function resolveChatGptCircuitBreakerEnabled(env: NodeJS.ProcessEnv): boolean {
+  const trimmed = env[CHATGPT_CIRCUIT_BREAKER_ENV]?.trim().toLowerCase();
+  return trimmed !== "0" && trimmed !== "false" && trimmed !== "off";
+}
+
 function resolvePositiveFiniteMs(env: NodeJS.ProcessEnv, key: string): number | null {
   const trimmed = env[key]?.trim();
   if (trimmed == null || trimmed === "") {
@@ -376,7 +383,8 @@ export function resolveChatGptProviderBudget(env: NodeJS.ProcessEnv = process.en
   const maxRequests = resolveChatGptMaxDetailFetchesPerRun(env);
   const retryBudgetCapacity = resolveChatGptRetryBudgetCapacity(env, maxRequests);
   const hasRetryBudget = retryBudgetCapacity != null;
-  if (initialIntervalMs == null && !hasRetryBudget) {
+  const hasCircuitBreaker = resolveChatGptCircuitBreakerEnabled(env);
+  if (initialIntervalMs == null && !hasRetryBudget && !hasCircuitBreaker) {
     return null;
   }
   const minIntervalMs =
@@ -386,6 +394,13 @@ export function resolveChatGptProviderBudget(env: NodeJS.ProcessEnv = process.en
       ? null
       : (resolvePositiveFiniteMs(env, CHATGPT_PACING_BURST_TOLERANCE_MS_ENV) ?? 2 * initialIntervalMs);
   return new ProviderBudgetController({
+    ...(hasCircuitBreaker
+      ? {
+          circuitBreaker: {
+            resetTimeoutMs: CHATGPT_DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS,
+          },
+        }
+      : {}),
     ...(initialIntervalMs == null
       ? {}
       : {
@@ -658,6 +673,25 @@ export function consumeChatGptProviderRetryBudget(
   );
 }
 
+async function admitChatGptProviderBudgetAttempt(
+  providerBudget?: ProviderBudgetController | null
+): Promise<ChatGptPlannedProviderBudgetDeferredError | null> {
+  const providerGate = await providerBudget?.beforeRequest();
+  if (!providerGate) {
+    return null;
+  }
+  if (providerGate.ok) {
+    providerBudget?.recordRequest();
+    return null;
+  }
+  const reason = chatGptRunCapReasonFromProviderGate(providerGate);
+  return new ChatGptPlannedProviderBudgetDeferredError(
+    `ChatGPT provider budget gate closed (${providerGate.reason}); deferring remaining conversation details`,
+    reason,
+    providerGate
+  );
+}
+
 function classifyRetryExhaustedStatus(status: number | null): ChatGptRetryExhaustedClass {
   if (status === 429) {
     return "rate_limited";
@@ -799,6 +833,12 @@ function createChatGptApi({
     let plannedProviderBudgetDefer: ChatGptPlannedProviderBudgetDeferredError | null = null;
     return retryHttp({
       baseDelayMs: CHATGPT_RATE_LIMIT_BASE_DELAY_MS,
+      beforeAttempt: async () => {
+        plannedProviderBudgetDefer = await admitChatGptProviderBudgetAttempt(providerBudget);
+        if (plannedProviderBudgetDefer) {
+          throw plannedProviderBudgetDefer;
+        }
+      },
       maxAttempts: CHATGPT_RATE_LIMIT_MAX_ATTEMPTS,
       maxDelayMs: CHATGPT_RATE_LIMIT_MAX_DELAY_MS,
       maxRetryAfterMs: CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS,
@@ -2252,34 +2292,6 @@ export async function runMessagesAndConversationsWithDetail(
     return { deferredDueToPressure: true, status: 0, json: null };
   }
 
-  async function deferForProviderBudgetGate(
-    from: ConversationListItem,
-    providerGate: Extract<ProviderBudgetGate, { ok: false }>
-  ): Promise<ChatGptFetchResult> {
-    const providerBudgetDeferReason = chatGptRunCapReasonFromProviderGate(providerGate);
-    runCapDeferReason = providerBudgetDeferReason;
-    await deps.emit({
-      type: "PROGRESS",
-      stream: "messages",
-      message: `ChatGPT conversation-detail lane reached its per-run provider budget (${providerGate.reason}) after ${providerGate.requestCount} provider request(s); deferring the remaining conversation details as resumable DETAIL_GAP records for the next run`,
-    });
-    return emitTailConversationDetailGaps(from, (item) =>
-      makeRunCapDeferredConversationDetailGap(item, providerBudgetDeferReason)
-    );
-  }
-
-  async function admitProviderBudget(from: ConversationListItem): Promise<ChatGptFetchResult | null> {
-    const providerGate = await providerBudget?.beforeRequest();
-    if (!providerGate) {
-      return null;
-    }
-    if (providerGate.ok) {
-      providerBudget?.recordRequest();
-      return null;
-    }
-    return deferForProviderBudgetGate(from, providerGate);
-  }
-
   async function maybeDeferForRateLimitDensity(from: ConversationListItem): Promise<ChatGptFetchResult | null> {
     if (!densityTracker.shouldStop()) {
       return null;
@@ -2316,10 +2328,11 @@ export async function runMessagesAndConversationsWithDetail(
   async function maybeDeferForFetchError(from: ConversationListItem, err: unknown): Promise<ChatGptFetchResult | null> {
     if (err instanceof ChatGptPlannedProviderBudgetDeferredError) {
       runCapDeferReason = err.reason;
+      const providerBudgetReason = err.gate?.reason ?? err.reason;
       await deps.emit({
         type: "PROGRESS",
         stream: "messages",
-        message: `ChatGPT conversation-detail lane reached its per-run provider budget (${err.reason}); deferring remaining conversation details as resumable DETAIL_GAP records`,
+        message: `ChatGPT conversation-detail lane reached its per-run provider budget (${providerBudgetReason}); deferring remaining conversation details as resumable DETAIL_GAP records`,
       });
       return emitTailConversationDetailGaps(from, (item) => makeRunCapDeferredConversationDetailGap(item, err.reason));
     }
@@ -2376,11 +2389,6 @@ export async function runMessagesAndConversationsWithDetail(
     if (runBudgetDefer) {
       return runBudgetDefer;
     }
-    const providerBudgetDefer = await admitProviderBudget(c);
-    if (providerBudgetDefer) {
-      return providerBudgetDefer;
-    }
-
     let detail: ChatGptFetchResult;
     try {
       detail = await deps.api.fetch(`/conversation/${encodeURIComponent(c.id)}`);

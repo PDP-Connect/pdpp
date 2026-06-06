@@ -41,13 +41,13 @@ separate lane or tranche with its own acceptance checks.
 
 ### 2.3 Circuit breaker integration
 
-- [ ] Integrate a circuit breaker above the retry layer.
-  - [ ] Composition order: Request → Retry → Circuit Breaker → Rate Limiter → Timeout → Bulkhead.
-  - [ ] Closed → Open on failure-rate threshold over a sliding window.
-  - [ ] Open → Half-Open after configurable reset timeout.
-  - [ ] Half-Open: probe request; success → Closed; failure → Open.
-  - [ ] Minimum-throughput guard: breaker cannot open before a minimum request count.
-  - [ ] When Open: propagate error immediately, do not consult retry budget.
+- [x] Integrate a circuit breaker into the provider-budget admission path.
+  - [x] Composition order in the implemented ChatGPT path: provider-budget admission gates each real API/retry attempt before the provider request.
+  - [x] Closed → Open on failure-rate threshold over a sliding window.
+  - [x] Open → Half-Open after configurable reset timeout.
+  - [x] Half-Open: probe request; success → Closed; failure → Open.
+  - [x] Minimum-throughput guard: breaker cannot open before a minimum request count.
+  - [x] When Open: propagate planned deferral immediately, without launching the provider request.
 - [ ] Expose circuit breaker state transitions to operator health view.
 - [x] Unit-test all three state transitions.
 

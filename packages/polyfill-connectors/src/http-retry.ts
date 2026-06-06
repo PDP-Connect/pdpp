@@ -21,6 +21,11 @@ export interface HttpRetryKeepRetryingInput<T extends HttpRetryResponse> {
 
 export interface HttpRetryOptions<T extends HttpRetryResponse> {
   baseDelayMs: number;
+  /**
+   * Optional gate checked before every provider attempt. Unlike `request`, an
+   * error from this hook is propagated immediately and is not retried.
+   */
+  beforeAttempt?: () => void | Promise<void>;
   maxAttempts: number;
   maxDelayMs: number;
   maxRetryAfterMs: number;
@@ -123,6 +128,7 @@ export function jitteredExponentialDelayMs({
 export async function retryHttp<T extends HttpRetryResponse>(options: HttpRetryOptions<T>): Promise<T> {
   const {
     baseDelayMs,
+    beforeAttempt,
     maxAttempts,
     maxDelayMs,
     maxRetryAfterMs,
@@ -139,6 +145,7 @@ export async function retryHttp<T extends HttpRetryResponse>(options: HttpRetryO
   let lastFailure: unknown = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    await beforeAttempt?.();
     let response: T;
     try {
       response = await request();

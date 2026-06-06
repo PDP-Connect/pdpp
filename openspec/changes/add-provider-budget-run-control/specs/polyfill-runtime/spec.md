@@ -75,13 +75,13 @@ maximum available rate.
 SHALL the polyfill-runtime support a per-run request cap (maximum number of
 provider-attempt tokens consumed in one run). The generic runtime primitive
 SHALL support an unbounded mode so callers can preserve prior behavior when no
-budget is configured. A provider connector MAY ship conservative provider-
-specific defaults when the connector cannot safely infer the provider's rate
-limit policy; such defaults SHALL have an explicit disable escape hatch for
-owner-supervised probes. A request cap SHALL NOT be used as a substitute for
-adaptive provider pacing: the cap is an outer run envelope, while the per-
-provider token bucket controls how fast requests are admitted. When a configured
-request cap is reached, the runtime
+budget is configured. Provider connectors SHOULD prefer adaptive pacing, finite
+retry budget, circuit-breaker protection, and source-pressure deferral over
+arbitrary fixed request-count defaults. A fixed request cap SHALL be an explicit
+owner/system envelope and SHALL NOT be used as a substitute for adaptive
+provider pacing: the cap bounds how much a run may attempt, while the
+per-provider token bucket controls how fast requests are admitted. When a
+configured request cap is reached, the runtime
 SHALL stop launching new provider requests and SHALL emit a named, resumable
 gap record for the remaining work, advancing the checkpoint only to the last
 durably written position.
@@ -106,10 +106,10 @@ durably written position.
 
 SHALL the polyfill-runtime support a per-run wall-clock deadline that bounds the
 maximum real time a single run occupies. The generic runtime primitive SHALL
-support an unbounded mode. A provider connector MAY ship a conservative provider-
-specific default deadline when unattended runs would otherwise be unsafe, but
-the deadline SHALL NOT be treated as the mechanism for collecting faster or
-slower. On expiry, the runtime SHALL emit a resumable gap record for the
+support an unbounded mode. A fixed wall-clock deadline SHALL be an explicit
+owner/system envelope, not the default mechanism for hands-off provider
+collection. The deadline SHALL NOT be treated as the mechanism for collecting
+faster or slower. On expiry, the runtime SHALL emit a resumable gap record for the
 remaining work and advance the checkpoint to the last durably written position.
 The wall-clock deadline SHALL be checked between provider-fetch attempts, never
 mid-fetch, so an in-flight request is not interrupted. The deadline MAY be
