@@ -14,16 +14,18 @@
 //   - storage left on the non-durable default;
 //   - SQLite chosen but PDPP_DB_PATH left at a default that is not a mount;
 //   - Postgres chosen, or inferred from PDPP_DATABASE_URL, but the database URL is missing;
-//   - console's private AS/RS targets unset.
+//   - selected core-service path accidentally carries topology constants that
+//     should stay baked into the image/supervisor.
 //
 // It does not contact Railway, Docker, or any network. It reads the dotenv-style
-// files an operator intends to set on the console and reference services and
-// reports contract violations. The service split matters: some variable names
-// intentionally have different values per service (for example PDPP_RS_URL).
+// files an operator intends to set on the Railway app services and reports
+// contract violations. The selected pushbutton path is one `core` service. The
+// older split-service path is still supported for manual operator runs.
 //
 // Usage:
+//   node scripts/check-railway-deploy-env.mjs --core core.env
 //   node scripts/check-railway-deploy-env.mjs --console console.env --reference reference.env
-//   node scripts/check-railway-deploy-env.mjs --console console.env --reference reference.env --json
+//   node scripts/check-railway-deploy-env.mjs --core core.env --json
 //
 // Exit codes: 0 = contract satisfied; 1 = one or more violations.
 
@@ -224,6 +226,30 @@ export function evaluateRailwayDeployEnv(env) {
   return violations;
 }
 
+export function evaluateRailwayCoreServiceEnv(coreEnv) {
+  const violations = [];
+  const deployEnv = {
+    ...coreEnv,
+    PDPP_AS_URL: coreEnv.PDPP_AS_URL ?? 'http://127.0.0.1:7662',
+    PDPP_RS_URL: coreEnv.PDPP_RS_URL ?? 'http://127.0.0.1:7663',
+  };
+  violations.push(
+    ...evaluateRailwayDeployEnv(deployEnv).filter((violation) => {
+      return !violation.startsWith('PDPP_AS_URL') && !violation.startsWith('PDPP_RS_URL');
+    }),
+  );
+
+  for (const key of ['PORT', 'AS_PORT', 'RS_PORT', 'PDPP_AS_URL', 'PDPP_RS_URL']) {
+    if (!isPlaceholder(coreEnv[key])) {
+      violations.push(
+        `core ${key} must not be set as a Railway service variable; the railway-core image keeps it internal.`,
+      );
+    }
+  }
+
+  return violations;
+}
+
 export function evaluateRailwayServiceEnvs({ consoleEnv, referenceEnv }) {
   const violations = [];
 
@@ -332,14 +358,41 @@ function readEnvFile(filePath) {
 function main(argv) {
   const args = argv.slice(2);
   const json = args.includes('--json');
+  const coreFlag = args.indexOf('--core');
   const consoleFlag = args.indexOf('--console');
   const referenceFlag = args.indexOf('--reference');
+  const coreFile = coreFlag === -1 ? null : args[coreFlag + 1];
   const consoleFile = consoleFlag === -1 ? null : args[consoleFlag + 1];
   const referenceFile = referenceFlag === -1 ? null : args[referenceFlag + 1];
 
+  if (coreFile && !coreFile.startsWith('--')) {
+    let coreEnv;
+    try {
+      coreEnv = readEnvFile(coreFile);
+    } catch (error) {
+      process.stderr.write(`${error?.message ?? error}\n`);
+      process.exit(1);
+    }
+    const violations = evaluateRailwayCoreServiceEnv(coreEnv);
+    const ok = violations.length === 0;
+    if (json) {
+      process.stdout.write(`${JSON.stringify({ ok, core: coreFile, violations }, null, 2)}\n`);
+    } else if (ok) {
+      process.stdout.write(`Railway core env contract satisfied: core=${coreFile}\n`);
+    } else {
+      process.stderr.write(
+        `Railway core env contract violations:\n` +
+          violations.map((v) => `- ${v}`).join('\n') +
+          '\n',
+      );
+    }
+    process.exit(ok ? 0 : 1);
+  }
+
   if (!consoleFile || !referenceFile || consoleFile.startsWith('--') || referenceFile.startsWith('--')) {
     process.stderr.write(
-      'Usage: node scripts/check-railway-deploy-env.mjs --console <console-env> --reference <reference-env> [--json]\n',
+      'Usage: node scripts/check-railway-deploy-env.mjs --core <core-env> [--json]\n' +
+        '   or: node scripts/check-railway-deploy-env.mjs --console <console-env> --reference <reference-env> [--json]\n',
     );
     process.exit(1);
   }

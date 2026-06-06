@@ -1,15 +1,14 @@
 #!/usr/bin/env node
 // Anonymous GHCR public-image probe for the Railway pushbutton publish gate.
 //
-// The selected first-button shape (deploy/railway/template.md Option 1) points
-// both Railway app services at public, anonymously pullable GHCR images:
+// The selected first-button shape points the Railway app service at a public,
+// anonymously pullable GHCR image:
 //
-//   console   -> ghcr.io/vana-com/pdpp/web
-//   reference -> ghcr.io/vana-com/pdpp/reference
+//   core -> ghcr.io/vana-com/pdpp/railway-core
 //
-// A reusable Railway Template CANNOT be published while those packages are
+// A reusable Railway Template CANNOT be published while this package is
 // private — Railway pulls the image with no credentials, and the template SHALL
-// NOT carry credentials. As of 2026-06-05 both packages are private, so this is
+// NOT carry credentials. Until this package is public, this is
 // the single known blocker between the repo and a live "Deploy on Railway"
 // button. This script is the runnable form of the probe embedded in
 // deploy/railway/template.md "Source accessibility gate": it makes the blocker
@@ -26,8 +25,8 @@
 //   token 401                   -> PRIVATE  (auth required; gate BLOCKED)
 //   token 403                   -> ABSENT   (no such package path)
 //
-// The blocker is cleared only when BOTH images report PUBLIC. The owner clears
-// it by flipping each package's visibility to Public (GitHub -> org vana-com ->
+// The blocker is cleared only when the image reports PUBLIC. The owner clears
+// it by flipping the package's visibility to Public (GitHub -> org vana-com ->
 // Packages -> the package -> Change visibility -> Public). This script does not
 // perform the flip; it only reports the gate state and exits non-zero until the
 // owner has cleared it.
@@ -37,17 +36,16 @@
 //   node scripts/check-railway-ghcr-public.mjs --json
 //   node scripts/check-railway-ghcr-public.mjs --tag 0.1.0-beta.7   # also assert the pin exists
 //
-// Exit codes: 0 = both images PUBLIC (gate clear); 1 = one or more not pullable
+// Exit codes: 0 = template image PUBLIC (gate clear); 1 = image not pullable
 // (gate blocked); 2 = bad usage.
 
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
-// The two app-service images, mapped to their Railway service and Dockerfile
-// stage. Repository path only — no registry host, no tag.
+// The app-service image, mapped to its Railway service and Dockerfile stage.
+// Repository path only — no registry host, no tag.
 export const TEMPLATE_IMAGES = [
-  { image: 'vana-com/pdpp/web', service: 'console', stage: 'console' },
-  { image: 'vana-com/pdpp/reference', service: 'reference', stage: 'reference' },
+  { image: 'vana-com/pdpp/railway-core', service: 'core', stage: 'railway-core' },
 ];
 
 // Map an anonymous GHCR pull-token HTTP status onto a package-visibility verdict.
@@ -157,10 +155,10 @@ export function parseArgs(argv) {
 
 const USAGE = `Usage: node scripts/check-railway-ghcr-public.mjs [--json] [--tag <version-tag>]
 
-Probes the two Railway template images for anonymous (public) GHCR pullability:
+Probes the Railway template image for anonymous (public) GHCR pullability:
   ${TEMPLATE_IMAGES.map((i) => `ghcr.io/${i.image} (${i.service})`).join('\n  ')}
 
-Exit codes: 0 = both public (publish gate clear); 1 = blocked; 2 = bad usage.`;
+Exit codes: 0 = public (publish gate clear); 1 = blocked; 2 = bad usage.`;
 
 async function ghcrGet(url, headers) {
   const response = await fetch(url, { headers: headers ?? {} });
@@ -253,7 +251,7 @@ async function main() {
     process.stdout.write(`${mark}ghcr.io/${result.image} (${result.service}): ${result.reason}\n`);
   }
   if (summary.ready) {
-    process.stdout.write('\nPublish gate CLEAR: both template images are anonymously pullable.\n');
+    process.stdout.write('\nPublish gate CLEAR: the template image is anonymously pullable.\n');
   } else {
     process.stdout.write(`\nPublish gate BLOCKED.\n${summary.ownerAction}\n`);
   }

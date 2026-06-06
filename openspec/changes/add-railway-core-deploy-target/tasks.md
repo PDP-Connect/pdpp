@@ -1,45 +1,38 @@
 # Tasks: add-railway-core-deploy-target
 
-Topology is decided (single public console front door + private reference
-service + explicit durable storage; see `design.md`). The slices below make the
-first live test reproducible. They are documentation and deploy artifacts plus a
-verification harness, with narrow image/runtime defaults added only where the
-Railway Template would otherwise turn safe constants into user prompts. Doctor
-CLI is an explicit follow-on, not a blocker. The browser-free Core reference
-image is part of this change because the live Railway pushbutton path must not
-carry browser runtime bloat.
+Topology is decided (single public origin, private AS/RS listeners, explicit
+durable storage; see `design.md`). The selected Railway button shape is one
+`railway-core` app service plus Postgres. The slices below make the first live
+test reproducible. Doctor CLI is an explicit follow-on, not a blocker. The
+browser-free Core image is part of this change because the live Railway
+pushbutton path must not carry browser runtime bloat.
 
 ## 1. Deploy artifacts and env contract
 
-- [x] 1.1 Add `deploy/railway/` with a runbook describing the two services
-  (public console, private reference), the storage choice (managed Postgres or
-  SQLite-on-volume), the healthcheck path, and the rollback/cleanup steps.
+- [x] 1.1 Add `deploy/railway/` with a runbook describing the selected
+  one-service Railway button shape (`core` plus Postgres), the storage choice,
+  the healthcheck path, and the rollback/cleanup steps.
   (`deploy/railway/README.md`.)
-- [x] 1.2 Add a documented environment block (public origin, `PDPP_AS_URL` /
-  `PDPP_RS_URL` private targets, owner password, storage vars,
-  `NODE_ENV=production`, semantic off) and confirm it is consistent with
-  `.env.docker.example`. (`deploy/railway/console.env.example`,
-  `deploy/railway/reference.env.example`, and consolidated reference
-  `deploy/railway/env.example` — same variable names and meanings as
-  `.env.docker.example`, Railway-scoped subset.)
-- [x] 1.3 Add (or reference) a `railway.json` / config-as-code pointing at the
-  service Dockerfile paths (console public, reference private) and the
-  healthcheck path; document the `$PORT` mapping for the console standalone server.
-  (`deploy/railway/railway.console.json`, `deploy/railway/railway.reference.json`;
-  the reference service uses `deploy/railway/reference.Dockerfile` so a Railway
-  template can select it by Dockerfile path, and the README notes that `$PORT`
-  is Railway-injected — do not set `PORT`.)
+- [x] 1.2 Add a documented environment block (public origin, owner password,
+  storage vars, semantic off) and confirm it is consistent with
+  `.env.docker.example`. (`deploy/railway/core.env.example` and consolidated
+  reference `deploy/railway/env.example`; the split-service examples remain a
+  manual fallback.)
+- [x] 1.3 Add the `railway-core` image target and supervisor that run the console
+  on Railway `$PORT` and AS/RS on loopback; keep old service Dockerfile-path
+  artifacts as manual fallback, not the selected button shape. (`Dockerfile`,
+  `deploy/railway/core-supervisor.mjs`, `deploy/railway/reference.Dockerfile`.)
 - [x] 1.4 Add an operator-voice "Deploy on Railway" section to the deployment
   guide; run the `docs/voice-and-framing.md` self-check (no hosted-service
   language; Core / Collection / reference / console kept distinct; honest cost
   framing). (`deploy/railway/README.md`; self-check run, only match for
   "sign up" is the negation.)
-- [x] 1.5 Add a template-safe reference service Dockerfile so the private service
-  can be selected by Dockerfile path instead of a manual Docker build-target
-  setting. (`deploy/railway/reference.Dockerfile`;
-  `deploy/railway/railway.reference.json`.)
+- [x] 1.5 Add a browser-free `railway-core` image target and keep a
+  template-safe reference service Dockerfile for manual split-service fallback.
+  (`Dockerfile`; `deploy/railway/core-supervisor.mjs`;
+  `deploy/railway/reference.Dockerfile`.)
 - [x] 1.6 Add the Railway Template publication handoff and deploy-button markup,
-  including the exact service shape, variable bindings, scratch-template QA, and
+  including the exact one-service shape, variable bindings, scratch-template QA, and
   the rule that the placeholder button URL is not user-facing until Railway
   assigns a template code. (`deploy/railway/template.md`;
   `pnpm railway:template:test`.)
@@ -102,20 +95,19 @@ carry browser runtime bloat.
   Added beyond the original list: `scripts/check-railway-deploy-env.mjs` (+
   `.test.mjs`, 21 tests) — a deterministic, offline env-contract preflight that
   catches the avoidable misconfigurations (no/non-HTTPS origin, empty owner
-  password, mismatched shared service values, console AS/RS targets that do not
-  use Railway private networking, an explicit reference `PORT` prompt, and
-  non-durable or unmounted-default storage) before a live run.
+  password, selected core-service topology variables that would become prompts,
+  split-service fallback mismatches, and non-durable or unmounted-default
+  storage) before a live run.
 
 ## 4. Follow-on and image-slimming work
 
 - [x] 4.1 (Deferred) `pdpp doctor` CLI (human + `--json`) consuming
   `GET /_ref/deployment` for the Core subset. Deferred by design, not required:
   smoke + diagnostics already cover the gate.
-- [x] 4.2 Promote the private `reference` image to a browser-free Core AS/RS
-  runtime for Railway and keep browser execution out of the pushbutton profile.
-  The root Dockerfile retains an explicit `reference-browser` target for profiles
-  that need Patchright/Chromium; `deploy/railway/reference.Dockerfile` uses the
-  slim Core shape directly so Railway templates do not pull browser binaries.
+- [x] 4.2 Promote the Railway button image to a browser-free Core runtime and
+  keep browser execution out of the pushbutton profile. The root Dockerfile
+  retains an explicit `reference-browser` target for profiles that need
+  Patchright/Chromium; `railway-core` uses the slim Core shape directly.
 
 ## 5. Owner-only live verification
 
@@ -139,10 +131,9 @@ Run before handing back and before any live platform run is requested:
 - `openspec validate add-railway-core-deploy-target --strict` — passes.
 - `openspec validate --all --strict` — passes.
 - `git diff --check` — clean.
-- `pnpm railway:template:test` — passes: the reference service uses the
-  template-safe Dockerfile path, the runbook does not require manual target-stage
-  setup, and the handoff carries Railway deploy-button markup plus required
-  variable bindings.
+- `pnpm railway:template:test` — passes: the handoff uses the `railway-core`
+  image shape, the runbook does not require manual target-stage setup, and the
+  handoff carries Railway deploy-button markup plus required variable bindings.
 - `pnpm docker:smoke` (from the main checkout) — passes: composed-origin
   assertions (`issuer` / `resource` / `authorization_servers[0]` equal the public
   origin, no internal-URL leak) and the `/dashboard` -> `/owner/login` redirect on

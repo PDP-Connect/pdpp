@@ -64,8 +64,6 @@ ENV NODE_ENV=production \
 
 COPY --from=source /app /app
 
-# Railway infers the primary service port from image metadata. The RS still
-# listens on 7663 for private-network calls from the console.
-EXPOSE 7662
+EXPOSE 7662 7663
 
 CMD ["sh", "-c", "export AS_PORT=\"${PORT:-${AS_PORT:-7662}}\"; export PDPP_RS_URL=\"${PDPP_RS_URL:-http://127.0.0.1:${RS_PORT:-7663}}\"; exec node reference-implementation/server/index.js"]

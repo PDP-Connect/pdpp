@@ -10,6 +10,7 @@ on:
       - ".github/workflows/docker-images.yml"
       - "Dockerfile"
       - "apps/console/**"
+      - "deploy/railway/**"
       - "docker-compose*.yml"
       - "package.json"
       - "packages/**"
@@ -24,6 +25,7 @@ on:
       - ".github/workflows/docker-images.yml"
       - "Dockerfile"
       - "apps/console/**"
+      - "deploy/railway/**"
       - "docker-compose*.yml"
       - "package.json"
       - "packages/**"
@@ -58,6 +60,10 @@ jobs:
             target: console
             title: PDPP reference operator console
             description: PDPP browser-facing reference operator console
+          - image: railway-core
+            target: railway-core
+            title: PDPP Railway Core node
+            description: PDPP Railway pushbutton Core node with console and loopback AS/RS
 
     steps:
       - name: Checkout
@@ -127,6 +133,10 @@ jobs:
             target: console
             title: PDPP reference operator console
             description: PDPP browser-facing reference operator console
+          - image: railway-core
+            target: railway-core
+            title: PDPP Railway Core node
+            description: PDPP Railway pushbutton Core node with console and loopback AS/RS
 
     steps:
       - name: Checkout

@@ -17,12 +17,10 @@ import {
   parseArgs,
 } from './check-railway-ghcr-public.mjs';
 
-test('TEMPLATE_IMAGES map the two app services to the documented GHCR paths', () => {
+test('TEMPLATE_IMAGES maps the app service to the documented GHCR path', () => {
   const byService = Object.fromEntries(TEMPLATE_IMAGES.map((i) => [i.service, i]));
-  assert.equal(byService.console.image, 'vana-com/pdpp/web');
-  assert.equal(byService.console.stage, 'console');
-  assert.equal(byService.reference.image, 'vana-com/pdpp/reference');
-  assert.equal(byService.reference.stage, 'reference');
+  assert.equal(byService.core.image, 'vana-com/pdpp/railway-core');
+  assert.equal(byService.core.stage, 'railway-core');
 });
 
 test('classifyTokenStatus: 200 public, 401 private, 403 absent, else unknown', () => {
@@ -34,7 +32,7 @@ test('classifyTokenStatus: 200 public, 401 private, 403 absent, else unknown', (
 
 test('classifyProbeResult: public image with readable tags is ok', () => {
   const result = classifyProbeResult({
-    image: 'vana-com/pdpp/web',
+    image: 'vana-com/pdpp/railway-core',
     service: 'console',
     stage: 'console',
     tokenStatus: 200,
@@ -48,7 +46,7 @@ test('classifyProbeResult: public image with readable tags is ok', () => {
 
 test('classifyProbeResult: private image (401) is blocked with the owner-flip reason', () => {
   const result = classifyProbeResult({
-    image: 'vana-com/pdpp/web',
+    image: 'vana-com/pdpp/railway-core',
     service: 'console',
     stage: 'console',
     tokenStatus: 401,
@@ -73,7 +71,7 @@ test('classifyProbeResult: absent path (403) is blocked and names the cause', ()
 
 test('classifyProbeResult: token granted but tags/list fails is not ok', () => {
   const result = classifyProbeResult({
-    image: 'vana-com/pdpp/web',
+    image: 'vana-com/pdpp/railway-core',
     service: 'console',
     stage: 'console',
     tokenStatus: 200,
@@ -85,7 +83,7 @@ test('classifyProbeResult: token granted but tags/list fails is not ok', () => {
 
 test('classifyProbeResult: --tag pin must be present even when public', () => {
   const missing = classifyProbeResult({
-    image: 'vana-com/pdpp/web',
+    image: 'vana-com/pdpp/railway-core',
     service: 'console',
     stage: 'console',
     tokenStatus: 200,
@@ -97,7 +95,7 @@ test('classifyProbeResult: --tag pin must be present even when public', () => {
   assert.match(missing.reason, /0\.1\.0-beta\.7/);
 
   const present = classifyProbeResult({
-    image: 'vana-com/pdpp/web',
+    image: 'vana-com/pdpp/railway-core',
     service: 'console',
     stage: 'console',
     tokenStatus: 200,
@@ -110,7 +108,7 @@ test('classifyProbeResult: --tag pin must be present even when public', () => {
 
 test('classifyProbeResult: --tag pin can pass by direct manifest when tags/list lags', () => {
   const result = classifyProbeResult({
-    image: 'vana-com/pdpp/web',
+    image: 'vana-com/pdpp/railway-core',
     service: 'console',
     stage: 'console',
     tokenStatus: 200,
@@ -125,7 +123,7 @@ test('classifyProbeResult: --tag pin can pass by direct manifest when tags/list 
 
 test('classifyProbeResult: --tag pin fails when neither tags/list nor manifest exposes it', () => {
   const result = classifyProbeResult({
-    image: 'vana-com/pdpp/web',
+    image: 'vana-com/pdpp/railway-core',
     service: 'console',
     stage: 'console',
     tokenStatus: 200,
@@ -150,14 +148,13 @@ test('summarizePublishReadiness: ready only when every image is ok', () => {
   assert.match(oneBlocked.ownerAction, /Public/);
 });
 
-test('summarizePublishReadiness: current known blocker (both private) is not ready', () => {
-  // Mirrors the documented 2026-06-05 state: both packages return 401.
+test('summarizePublishReadiness: private template image is not ready', () => {
   const results = TEMPLATE_IMAGES.map((i) =>
     classifyProbeResult({ ...i, tokenStatus: 401 }),
   );
   const summary = summarizePublishReadiness(results);
   assert.equal(summary.ready, false);
-  assert.equal(summary.blocked.length, 2);
+  assert.equal(summary.blocked.length, 1);
 });
 
 test('parseArgs: --json, --tag, --help, and unknown', () => {

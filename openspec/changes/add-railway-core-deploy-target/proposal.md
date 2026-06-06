@@ -35,12 +35,15 @@ was resolved against the actual routing code rather than the reports:
 So the "two HTTP listeners (AS + RS) but one public port" problem that two
 reports treated as gating does **not** gate the console front door. It only
 applies if a deploy naively points the platform at the `reference` image
-directly. The supported Railway shape is therefore the same single-public-origin
-composed topology the smoke test already validates: **one public console
-service, one private reference service, and a storage backend**. Railway template
-publication then adds one constraint: safe constants must live in image/runtime
-defaults or Railway reference variables, not literal source env values that turn
-into user prompts.
+directly. The selected Railway button shape is therefore the same
+single-public-origin composed topology packaged as **one public `railway-core`
+service plus a storage backend**: the console binds Railway's injected `$PORT`,
+while the reference AS/RS listeners stay private on loopback inside the same
+container. Live Railway template publication added one constraint: a separate
+private `reference` image service requires an explicit service `PORT` to boot
+reliably, and Railway turns that `PORT` into an extra required deploy-page
+prompt. The one-service `railway-core` image removes that prompt without adding
+a second public origin.
 
 This change records that topology decision as a durable deployment contract,
 adds the platform-neutral deploy artifacts and env block needed to reproduce it,
@@ -55,12 +58,12 @@ test.
 
 - Add a `reference-implementation-architecture` requirement defining a
   **managed-platform Core deploy target** built from the existing composed-origin
-  topology: exactly one public service (the console) fronting the full protocol
-  surface, the AS/RS reference service kept private, and AS/RS internal URLs and
-  the public origin supplied through the existing
-`PDPP_REFERENCE_ORIGIN` / `PDPP_AS_URL` / `PDPP_RS_URL` env contract. The
-  public service SHALL be the only internet-reachable origin; the AS and RS
-  listeners SHALL NOT be published as separate public origins for this target.
+  topology: exactly one internet-reachable origin fronts the full protocol
+  surface, the AS/RS listeners stay private, and the public origin is supplied
+  through `PDPP_REFERENCE_ORIGIN`. For the selected Railway Template this is one
+  `railway-core` app service that runs console plus loopback AS/RS in the same
+  image; split public/private app services remain a manual platform shape, not
+  the published-button path.
 - Require the deploy target to provide **durable storage explicitly**: either a
   managed Postgres backend (`PDPP_DATABASE_URL`, with
   `PDPP_STORAGE_BACKEND=postgres` optional because the runtime selects Postgres
@@ -82,11 +85,12 @@ test.
   stack before any live platform run is requested.
 - Add the platform-neutral **deploy artifacts** required to reproduce the target:
   a documented env block (consistent with `.env.docker.example`), a
-  `deploy/railway/` config/runbook describing the two services, the storage
-  choice, the healthcheck path, and the rollback steps, and an operator-voice
-  "Deploy on Railway" section. Add a Railway Template handoff and button
-  placeholder that can be filled only after Railway assigns the published
-  template code. No protocol, API, manifest, or connector behavior changes.
+  `deploy/railway/` config/runbook describing the selected one-service Railway
+  button shape, the storage choice, the healthcheck path, and the rollback steps,
+  and an operator-voice "Deploy on Railway" section. Add a Railway Template
+  handoff and button placeholder that can be filled only after Railway assigns
+  the published template code. No protocol, API, manifest, or connector behavior
+  changes.
 
 ## Capabilities
 
@@ -111,11 +115,10 @@ Removed:
   deployed, and adds defaults only where Railway would otherwise turn safe
   constants into user prompts.
 - The deploy target is platform-neutral by construction (it is the existing
-  composed-origin contract plus a public/private service split and explicit
-  storage), so Fly / a VPS / Coolify follow the same shape with different
-  service plumbing. Railway is the first concrete target because it has the
-  lowest-friction push-button path and the cleanest mapping onto the existing
-  `Dockerfile` targets.
+  composed-origin contract plus private AS/RS listeners and explicit storage),
+  so Fly / a VPS / Coolify can reproduce it with different service plumbing.
+  Railway is the first concrete target because it has the lowest-friction
+  pushbutton path once the app is packaged as `railway-core`.
 - Deliberately out of scope, recorded as explicit non-goals: browser / ChatGPT
   collection (off-box via local-collector; fails closed in-container), the
   operator-console-as-separate-public-service variant, semantic retrieval and the

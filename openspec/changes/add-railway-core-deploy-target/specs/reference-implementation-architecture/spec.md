@@ -4,19 +4,18 @@
 
 The reference implementation SHALL define a managed-platform Core deploy target
 that exposes exactly one internet-reachable origin and keeps the Authorization
-Server and Resource Server listeners private. The single public origin SHALL be
-the operator console service, which fronts the full protocol surface — OAuth
-metadata, OAuth endpoints, the hosted MCP endpoint, the `/v1` query API, owner
-and device surfaces — by proxying to the internal AS and RS using the existing
-`PDPP_AS_URL` and `PDPP_RS_URL` internal targets, while the public origin is
+Server and Resource Server listeners private. The single public origin SHALL
+front the full protocol surface — OAuth metadata, OAuth endpoints, the hosted
+MCP endpoint, the `/v1` query API, owner and device surfaces — by proxying to
+the internal AS and RS using private internal targets, while the public origin is
 advertised through composed mode via `PDPP_REFERENCE_ORIGIN` (or
 `AS_PUBLIC_URL` / `RS_PUBLIC_URL`).
 
 The AS and RS listeners SHALL NOT be published as separate public origins for
-this deploy target. The reference service SHALL be reachable only over the
-platform's private network, and the public origin SHALL terminate TLS with the
-forwarded protocol trusted so that browser-facing metadata, owner sessions, and
-CSRF protection bind to the public HTTPS origin.
+this deploy target. They SHALL be reachable only through private network or
+loopback targets, and the public origin SHALL terminate TLS with the forwarded
+protocol trusted so that browser-facing metadata, owner sessions, and CSRF
+protection bind to the public HTTPS origin.
 
 Browser-facing metadata served through the public origin SHALL advertise the
 public origin and SHALL NOT leak an internal service name as a browser-facing
@@ -24,10 +23,10 @@ URL.
 
 #### Scenario: Public origin fronts the full protocol surface
 
-- **WHEN** the managed-platform Core deploy target is configured with one public console service and a private reference service
+- **WHEN** the managed-platform Core deploy target is configured with one public origin and private AS/RS listeners
 - **THEN** the public origin SHALL serve OAuth authorization-server metadata, OAuth protected-resource metadata, the OAuth endpoints, the hosted MCP endpoint, and the `/v1` query API by proxying to the internal AS and RS
 - **AND** the AS and RS listeners SHALL NOT be published as separate public origins
-- **AND** the reference service SHALL be reachable only over the platform private network
+- **AND** the AS and RS listeners SHALL be reachable only over private network or loopback targets
 
 #### Scenario: Composed-origin metadata is consistent on the public origin
 
@@ -149,12 +148,12 @@ NOT depend on browser-backed connector collection.
 ### Requirement: Managed-platform Core deploy target SHALL provide platform-neutral deploy artifacts
 
 The reference implementation SHALL provide deploy artifacts that reproduce the
-managed-platform Core deploy target from the existing Docker assembly without a
-runtime code change. The artifacts SHALL include a documented environment block
-consistent with the committed Docker example environment, a deploy configuration
-and runbook describing the public console service, the private reference service,
-the storage choice, the healthcheck path, and the rollback steps, and an
-operator-voice deployment guide section.
+managed-platform Core deploy target from the existing Docker assembly. The
+artifacts SHALL include a documented environment block consistent with the
+committed Docker example environment, a deploy configuration and runbook
+describing the public origin, the private AS/RS listener placement, the storage
+choice, the healthcheck path, and the rollback steps, and an operator-voice
+deployment guide section.
 
 The deploy artifacts SHALL keep the public-versus-internal URL distinction
 explicit, SHALL describe the storage choice and its persistence requirement, and
@@ -167,8 +166,7 @@ Profile, reference implementation, and operator console distinct.
 
 - **WHEN** an operator follows the deploy artifacts for the managed-platform Core deploy target
 - **THEN** the documented environment block SHALL be consistent with the committed Docker example environment
-- **AND** the runbook SHALL define the public console service, the private reference service, the storage choice, the healthcheck path, and the rollback steps
-- **AND** no runtime code change SHALL be required to reproduce the target
+- **AND** the runbook SHALL define the public origin, the private AS/RS listener placement, the storage choice, the healthcheck path, and the rollback steps
 
 #### Scenario: Deploy documentation uses operator voice
 
@@ -182,15 +180,16 @@ Profile, reference implementation, and operator console distinct.
 The reference implementation SHALL provide a Railway Template publication
 handoff that can produce a user-facing "Deploy on Railway" button after the
 template owner publishes a validated project. The handoff SHALL define the
-multi-service template shape, service Dockerfile paths, private networking,
-durable storage binding, required owner secret, public-origin binding, smoke
-checks, and button markup.
+selected one-service `railway-core` template shape, private loopback AS/RS
+listeners, durable storage binding, required owner secret, public-origin binding,
+smoke checks, and button markup.
 
 The template handoff SHALL NOT rely on an unencoded manual Docker build-target
-setting. Each application service SHALL be selectable by a Dockerfile path whose
-final stage is the intended service image, or by an equivalent platform setting
-that is captured in the published template. The user-facing deploy button SHALL
-NOT be published with a placeholder template code.
+setting or on topology constants that Railway turns into deploy-page prompts.
+The selected application service SHALL be selectable by a public image source or
+by an equivalent platform setting that is captured in the published template.
+The user-facing deploy button SHALL NOT be published with a placeholder template
+code.
 
 The user-facing template SHALL use a source that an arbitrary Railway user can
 deploy without organization-specific repository or registry access. Local-upload
@@ -200,24 +199,24 @@ images SHALL NOT be used for the public button unless the template intentionally
 and safely supplies reusable public access; this template SHALL NOT embed private
 registry credentials.
 
-#### Scenario: Template service selection is encoded by Dockerfile path
+#### Scenario: Template service selection is encoded by public image source
 
-- **WHEN** the Railway Template defines the public console service and private reference service
-- **THEN** the console service SHALL select a Dockerfile whose final image is the console
-- **AND** the reference service SHALL select a Dockerfile whose final image is the reference runtime
-- **AND** the template SHALL NOT require the deploying operator to set a manual Docker target stage after clicking the deploy button
+- **WHEN** the Railway Template defines the selected pushbutton app service
+- **THEN** the app service SHALL reference the public `railway-core` image or an equivalent reusable public source
+- **AND** the image SHALL run the console plus private loopback AS/RS listeners
+- **AND** the template SHALL NOT require the deploying operator to set a manual Docker target stage or AS/RS topology values after clicking the deploy button
 
 #### Scenario: Template variables are sufficient for first boot
 
 - **WHEN** an operator deploys from the published Railway Template
-- **THEN** the template SHALL define the private console-to-reference URLs, composed-mode public origin, owner password, and Postgres database binding needed for first boot
-- **AND** the reference service SHALL stay private
-- **AND** the public console service SHALL be the only internet-reachable application origin
+- **THEN** the template SHALL define the composed-mode public origin, owner password, and Postgres database binding needed for first boot
+- **AND** AS/RS topology constants SHALL stay internal to the image/supervisor rather than becoming deploy-page prompts
+- **AND** the core service SHALL be the only internet-reachable application origin
 
 #### Scenario: Template source is reusable by arbitrary Railway users
 
 - **WHEN** the template is published for user-facing deployment
-- **THEN** each app service SHALL reference a public repository source or a public anonymously pullable image
+- **THEN** the app service SHALL reference a public repository source or a public anonymously pullable image
 - **AND** upload-only services SHALL NOT be used as the public template source
 - **AND** private source credentials SHALL NOT be embedded in the template
 

@@ -24,13 +24,12 @@ test('Railway service configs use template-safe Dockerfile paths', () => {
   assert.equal(referenceConfig.build.dockerfilePath, 'deploy/railway/reference.Dockerfile');
 });
 
-test('private reference Dockerfile is a final-stage service image, not a target-stage instruction', () => {
+test('manual split-service reference Dockerfile remains a final-stage service image', () => {
   const dockerfile = read('deploy/railway/reference.Dockerfile');
 
   assert.match(dockerfile, /Railway templates\/config-as-code expose a Dockerfile path/);
   assert.match(dockerfile, /FROM base AS reference/);
-  assert.match(dockerfile, /\nEXPOSE 7662\n/);
-  assert.doesNotMatch(dockerfile, /EXPOSE 7662 7663/);
+  assert.match(dockerfile, /\nEXPOSE 7662 7663\n/);
   assert.match(dockerfile, /export AS_PORT=\\"?\$\{PORT:-\$\{AS_PORT:-7662\}\}\\"?/);
   assert.match(dockerfile, /exec node reference-implementation\/server\/index\.js/);
   assert.doesNotMatch(dockerfile, /FROM browsers AS reference/);
@@ -40,54 +39,59 @@ test('private reference Dockerfile is a final-stage service image, not a target-
   assert.doesNotMatch(dockerfile, /ENV[\s\S]*?\n\s+PORT=/);
 });
 
-test('Railway runbook and template handoff do not require manual Docker target-stage setup', () => {
+test('Railway core image runs console plus loopback reference AS/RS', () => {
+  const dockerfile = read('Dockerfile');
+  const supervisor = read('deploy/railway/core-supervisor.mjs');
+
+  assert.match(dockerfile, /FROM base AS railway-core/);
+  assert.match(dockerfile, /CMD \["node", "\/app\/deploy\/railway\/core-supervisor\.mjs"\]/);
+  assert.match(dockerfile, /\nEXPOSE 3000\n/);
+  assert.match(supervisor, /127\.0\.0\.1:7662/);
+  assert.match(supervisor, /127\.0\.0\.1:7663/);
+  assert.match(supervisor, /\/app\/reference-implementation\/server\/index\.js/);
+  assert.match(supervisor, /\/console\/apps\/console\/server\.js/);
+});
+
+test('Railway runbook and template handoff use the one-service core button shape', () => {
   const readme = read('deploy/railway/README.md');
   const handoff = read('deploy/railway/template.md');
 
   assert.match(readme, /https:\/\/railway\.com\/new\/template\/<template-code>/);
-  assert.match(readme, /deploy\/railway\/reference\.Dockerfile/);
+  assert.match(readme, /ghcr\.io\/vana-com\/pdpp\/railway-core/);
+  assert.match(readme, /one public Core app service/i);
   assert.doesNotMatch(readme, /Settings\s*->\s*Build\s*->\s*Docker\s*->\s*Target Stage/i);
 
   assert.match(handoff, /https:\/\/railway\.com\/button\.svg/);
   assert.match(handoff, /https:\/\/railway\.com\/new\/template\/<template-code>/);
-  assert.match(handoff, /PDPP_REFERENCE_ORIGIN=https:\/\/\$\{\{console\.RAILWAY_PUBLIC_DOMAIN\}\}/);
-  assert.match(handoff, /PDPP_OWNER_PASSWORD=\$\{\{reference\.PDPP_OWNER_PASSWORD\}\}/);
-  assert.match(handoff, /PDPP_AS_URL=http:\/\/\$\{\{reference\.RAILWAY_PRIVATE_DOMAIN\}\}:\$\{\{reference\.PORT\}\}/);
-  assert.match(handoff, /PDPP_RS_URL=http:\/\/\$\{\{reference\.RAILWAY_PRIVATE_DOMAIN\}\}:7663/);
+  assert.match(handoff, /PDPP_REFERENCE_ORIGIN=https:\/\/\$\{\{core\.RAILWAY_PUBLIC_DOMAIN\}\}/);
   assert.match(handoff, /PDPP_DATABASE_URL=\$\{\{Postgres\.DATABASE_URL\}\}/);
   assert.match(handoff, /PGDATA=\$\{\{RAILWAY_VOLUME_MOUNT_PATH\}\}\/pgdata/);
   assert.match(handoff, /DATABASE_URL=postgresql:\/\/postgres:\$\{\{POSTGRES_PASSWORD\}\}@\$\{\{RAILWAY_PRIVATE_DOMAIN\}\}:5432\/postgres/);
   assert.match(handoff, /Source accessibility gate/);
-  assert.match(handoff, /railway up/);
-  assert.match(handoff, /public container images/);
-  assert.doesNotMatch(handoff, /PDPP_AS_URL=http:\/\/\$\{\{reference\.RAILWAY_PRIVATE_DOMAIN\}\}:7662/);
+  assert.match(handoff, /core\.PDPP_OWNER_PASSWORD/);
+  assert.doesNotMatch(handoff, /PDPP_AS_URL=http:\/\/\$\{\{reference\.RAILWAY_PRIVATE_DOMAIN\}\}/);
+  assert.doesNotMatch(handoff, /reference\.PORT/);
   assert.doesNotMatch(handoff, /Settings\s*->\s*Build\s*->\s*Docker\s*->\s*Target Stage/i);
 });
 
-test('Railway handoff documents the public GHCR image-source template shape', () => {
+test('Railway handoff documents the public railway-core image-source template shape', () => {
   const handoff = read('deploy/railway/template.md');
 
-  // Exact image URIs, mapped to the correct service.
-  assert.match(handoff, /ghcr\.io\/vana-com\/pdpp\/web/);
-  assert.match(handoff, /ghcr\.io\/vana-com\/pdpp\/reference/);
-
-  // The image source supersedes the Dockerfile-path build, and the committed
-  // Dockerfile-path artifacts are explicitly off the image deploy path.
-  assert.match(handoff, /supersedes\*{0,2}\s*`?build\.dockerfilePath`?/i);
+  assert.match(handoff, /ghcr\.io\/vana-com\/pdpp\/railway-core/);
+  assert.match(handoff, /one application service plus a Postgres plugin/i);
 
   // A concrete version tag must be pinned; latest/moving tags are disallowed.
   assert.match(handoff, /never\s+`?latest`?/i);
   assert.match(handoff, /<version-tag>/);
 });
 
-test('Railway runbook documents the public GHCR image-source mapping', () => {
+test('Railway runbook documents the public railway-core image-source mapping', () => {
   const readme = read('deploy/railway/README.md');
 
-  assert.match(readme, /ghcr\.io\/vana-com\/pdpp\/web/);
-  assert.match(readme, /ghcr\.io\/vana-com\/pdpp\/reference/);
-  // The README must record which published image is which stage.
-  assert.match(readme, /`web` image is the[\s\S]*?`console` stage/);
-  assert.match(readme, /`reference` image is the[\s\S]*?`reference` stage/);
+  assert.match(readme, /ghcr\.io\/vana-com\/pdpp\/railway-core/);
+  assert.match(readme, /console[\s\S]*Railway[\s\S]*\$PORT/i);
+  assert.match(readme, /127\.0\.0\.1:7662/);
+  assert.match(readme, /127\.0\.0\.1:7663/);
 });
 
 test('Railway handoff wires the runnable GHCR public-image probe into the publish gate', () => {

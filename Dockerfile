@@ -85,9 +85,7 @@ ENV NODE_ENV=production \
 
 COPY --from=source /app /app
 
-# Managed platforms infer one primary service port from image metadata. The RS
-# still listens on 7663 for private-network calls from the console.
-EXPOSE 7662
+EXPOSE 7662 7663
 
 CMD ["sh", "-c", "export AS_PORT=\"${PORT:-${AS_PORT:-7662}}\"; export PDPP_RS_URL=\"${PDPP_RS_URL:-http://127.0.0.1:${RS_PORT:-7663}}\"; exec node reference-implementation/server/index.js"]
 
@@ -157,3 +155,30 @@ COPY --from=console-builder /app/apps/console/public ./apps/console/public
 EXPOSE 3000
 
 CMD ["node", "apps/console/server.js"]
+
+# Railway pushbutton Core image: one public service runs the console on Railway
+# $PORT and the reference AS/RS on loopback. This avoids a separate private app
+# service whose reserved PORT variable becomes a template prompt.
+FROM base AS railway-core
+
+ARG PDPP_REFERENCE_REVISION=unknown
+
+ENV NODE_ENV=production \
+    HOSTNAME=0.0.0.0 \
+    PORT=3000 \
+    AS_PORT=7662 \
+    RS_PORT=7663 \
+    PDPP_AS_URL=http://127.0.0.1:7662 \
+    PDPP_RS_URL=http://127.0.0.1:7663 \
+    PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0 \
+    PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1 \
+    PDPP_REFERENCE_REVISION=${PDPP_REFERENCE_REVISION}
+
+COPY --from=source /app /app
+COPY --from=console-builder /app/apps/console/.next/standalone /console
+COPY --from=console-builder /app/apps/console/.next/static /console/apps/console/.next/static
+COPY --from=console-builder /app/apps/console/public /console/apps/console/public
+
+EXPOSE 3000
+
+CMD ["node", "/app/deploy/railway/core-supervisor.mjs"]

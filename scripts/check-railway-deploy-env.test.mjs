@@ -5,6 +5,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
+  evaluateRailwayCoreServiceEnv,
   evaluateRailwayDeployEnv,
   evaluateRailwayServiceEnvs,
   isPlaceholder,
@@ -52,6 +53,15 @@ function validConsoleServiceEnv(overrides = {}) {
 function validReferenceServiceEnv(overrides = {}) {
   return {
     PDPP_REFERENCE_ORIGIN: 'https://${{console.RAILWAY_PUBLIC_DOMAIN}}',
+    PDPP_OWNER_PASSWORD: 's3cret-owner-pw',
+    PDPP_DATABASE_URL: '${{Postgres.DATABASE_URL}}',
+    ...overrides,
+  };
+}
+
+function validCoreServiceEnv(overrides = {}) {
+  return {
+    PDPP_REFERENCE_ORIGIN: 'https://${{core.RAILWAY_PUBLIC_DOMAIN}}',
     PDPP_OWNER_PASSWORD: 's3cret-owner-pw',
     PDPP_DATABASE_URL: '${{Postgres.DATABASE_URL}}',
     ...overrides,
@@ -173,6 +183,33 @@ test('fully-configured service envs satisfy the Railway deploy contract', () => 
     }),
     [],
   );
+});
+
+test('fully-configured core service env satisfies the selected Railway deploy contract', () => {
+  assert.deepEqual(evaluateRailwayCoreServiceEnv(validCoreServiceEnv()), []);
+});
+
+test('core service env rejects topology variables owned by the image', () => {
+  const violations = evaluateRailwayCoreServiceEnv(
+    validCoreServiceEnv({
+      PORT: '3000',
+      PDPP_AS_URL: 'http://127.0.0.1:7662',
+      PDPP_RS_URL: 'http://127.0.0.1:7663',
+    }),
+  );
+  assert.equal(violations.some((v) => v.includes('core PORT must not be set')), true);
+  assert.equal(violations.some((v) => v.includes('core PDPP_AS_URL must not be set')), true);
+  assert.equal(violations.some((v) => v.includes('core PDPP_RS_URL must not be set')), true);
+});
+
+test('committed core env template fails only because the owner secret is not committed', () => {
+  const coreText = readFileSync(path.join(repoRoot, 'deploy/railway/core.env.example'), 'utf8');
+  const violations = evaluateRailwayCoreServiceEnv(parseEnv(coreText));
+  assert.equal(violations.some((v) => v.includes('PDPP_REFERENCE_ORIGIN is not set')), false);
+  assert.equal(violations.some((v) => v.includes('PDPP_OWNER_PASSWORD is empty')), true);
+  assert.equal(violations.some((v) => v.includes('PDPP_DATABASE_URL')), false);
+  assert.equal(violations.some((v) => v.includes('PDPP_AS_URL')), false);
+  assert.equal(violations.some((v) => v.includes('PDPP_RS_URL')), false);
 });
 
 test('service env preflight rejects mismatched shared values', () => {

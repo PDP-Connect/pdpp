@@ -13,9 +13,9 @@ auditable.
 
 ## The topology decision (the load-bearing call)
 
-**Decision: single public console front door + private reference service +
-explicit durable storage. Two application services. Configuration plus safe
-image/runtime defaults.**
+**Decision: single public origin + private AS/RS listeners + explicit durable
+storage. For the Railway pushbutton, package the console and reference AS/RS in
+one `railway-core` app service.**
 
 The reference server binds two HTTP listeners in one Node process — AS on
 `AS_PORT` (default `7662` outside Railway; Railway maps its injected `PORT` to
@@ -51,13 +51,21 @@ is the console:
   `/dashboard` -> `/owner/login` redirect.
 
 So the supported managed-platform shape is the same composed-origin topology the
-smoke test validates: the console is a single Next.js standalone process on
-`$PORT` (`Dockerfile` console stage: `HOSTNAME=0.0.0.0`, `PORT=3000`, which the
-platform's injected `$PORT` overrides), it is the only public origin, and it
-reaches a **private** reference service over the platform's private network. No
-path-prefix support and no new combined listener are required, because each of
-the AS and RS still believes it owns a whole origin — the console multiplexes by
-path on the public side and by `PDPP_AS_URL` / `PDPP_RS_URL` on the private side.
+smoke test validates: the console is the only public origin and fronts the AS/RS
+listeners. No path-prefix support and no new combined listener are required,
+because each of the AS and RS still believes it owns a whole origin — the
+console multiplexes by path on the public side and by `PDPP_AS_URL` /
+`PDPP_RS_URL` on the private side.
+
+For Railway's published button, live testing changed the packaging decision. A
+separate private `reference` image service does not reliably boot unless
+`PORT=7662` is set as a Railway service variable; when a source project carries
+that literal variable, Railway's generated template turns it into an extra
+required deploy-page prompt. The selected Railway Template shape therefore uses
+one `railway-core` image: the console binds Railway's injected `$PORT`, while
+the reference AS listens on `127.0.0.1:7662` and the RS listens on
+`127.0.0.1:7663` inside the same container. This preserves one public origin and
+private AS/RS listeners while eliminating topology prompts.
 
 Dockerfile note that reinforces the split: the `reference` stage is the
 browser-free Core AS/RS runtime. Browser binaries stay out of the Railway Core
@@ -68,27 +76,27 @@ Patchright/Chromium.
 
 ## Template publication decision
 
-**Decision: publish the pushbutton Railway Template from service-specific
-Dockerfile paths, not from a manual Docker target-stage setting.**
+**Decision: publish the pushbutton Railway Template from a public
+`railway-core` image source.**
 
 Railway's template/share docs and live config schema expose a Dockerfile path
-(`build.dockerfilePath`) but not a Docker build target field. A template that
-depends on a maintainer or end user setting "console" / "reference" as a target
-stage after deploy is therefore not a pushbutton template. The safe construction
-is to make each service selectable by a Dockerfile path whose final stage is the
-desired image:
+(`build.dockerfilePath`) but not a Docker build target field. Earlier artifacts
+added service-specific Dockerfile paths for a split-service project, which
+remains valid for manual operator experiments. Live template generation then
+showed the stronger button constraint: the private `reference` service needs a
+literal `PORT` variable, and Railway promotes that variable to a deploy prompt.
 
-- `console`: the root `Dockerfile`, whose final image is already the operator
-  console.
-- `reference`: `deploy/railway/reference.Dockerfile`, a template-safe copy of
-  the reference runtime build whose final image is the private AS/RS runtime.
+The selected construction is therefore one public GHCR image source:
+`ghcr.io/vana-com/pdpp/railway-core:<version-tag>`. The image's supervisor owns
+the internal AS/RS ports and loopback targets, so the generated template should
+ask for one app value: `core.PDPP_OWNER_PASSWORD`.
 
 The template publication itself is still an owner/Railway-console action because
 Railway assigns the template code when the workspace publishes the template.
-That owner action is narrow and testable: create a project with the two app
-services plus Postgres, generate the template from that project, publish it,
-deploy a fresh scratch project from the published template, run the live smoke
-and restart smoke, then replace `<template-code>` in the button markup.
+That owner action is narrow and testable: create a project with `core` plus
+Postgres, generate the template from that project, publish it, deploy a fresh
+scratch project from the published template, run the live smoke and restart
+smoke, then replace `<template-code>` in the button markup.
 
 The service source is a separate publication gate. A `railway up` local-upload
 deployment proves runtime behavior, but Railway cannot generate a reusable
@@ -124,6 +132,11 @@ template SHALL NOT embed private registry credentials.
   button. It is useful for first-live runtime proof, but Railway rejects
   upload-only services as template sources because another user has no source to
   rebuild from.
+- **Two Railway app services for the public button** (`console` public plus
+  `reference` private). Rejected for the published button after live evidence:
+  the private image service needed explicit `PORT=7662`, and the generated
+  template made that a required user prompt. This remains a manual deploy shape,
+  not the selected pushbutton shape.
 
 ## Storage decision
 
@@ -169,9 +182,9 @@ storage choice is actually durable before it is trusted.
 - No connector credentials and no `PDPP_CREDENTIAL_ENCRYPTION_KEY` are needed for
   a Core query test; the credential store fails closed without the key, which is
   acceptable because the first slice stores no static-secret connectors.
-- The private reference service is not published; only the console origin is
-  internet-reachable. Upstream token-kind gates (`requireOwner` /
-  `requireClient` / `requireClientOrMcpPackage`) remain the authoritative
+- The reference AS/RS listeners are not public; in the Railway button they bind
+  loopback inside the `core` service. Upstream token-kind gates (`requireOwner`
+  / `requireClient` / `requireClientOrMcpPackage`) remain the authoritative
   authorization, unchanged by this change.
 
 ## First-live-test acceptance (the executable gate)
@@ -181,11 +194,11 @@ local composed-origin stack. The live run validates platform specifics (real
 TLS, real public DNS, volume / managed-DB durability across a real restart), not
 first-discovery of application bugs.
 
-1. Deploy contract applied: one public console service, one private reference
-   service, durable storage, `PDPP_REFERENCE_ORIGIN` / `PDPP_AS_URL` /
-   `PDPP_RS_URL` set to the real public origin and the private internal targets.
+1. Deploy contract applied: one public `core` service, private loopback AS/RS
+   listeners, durable storage, and `PDPP_REFERENCE_ORIGIN` set to the real
+   public origin. `PDPP_AS_URL` / `PDPP_RS_URL` stay internal image defaults.
 2. Service reaches healthy unattended via the healthcheck path
-   (`/.well-known/oauth-authorization-server` on the public console).
+   (`/.well-known/oauth-authorization-server` on the public origin).
 3. Composed-origin smoke assertions hold against the public origin: AS `issuer`,
    RS `resource`, and RS `authorization_servers[0]` all equal the public origin,
    and no internal service name leaks.
@@ -206,7 +219,7 @@ first-discovery of application bugs.
 
 - `openspec validate add-railway-core-deploy-target --strict` passes.
 - `openspec validate --all --strict` passes.
-- `pnpm railway:template:test` passes for the template-safe Dockerfile paths,
+- `pnpm railway:template:test` passes for the `railway-core` image shape,
   deploy-button handoff, and no stale manual target-stage runbook instruction.
 - `pnpm docker:smoke` passes from the main checkout (composed-origin assertions +
   owner-gating redirect on the real images) — the canonical local proxy for
@@ -216,9 +229,8 @@ first-discovery of application bugs.
   <pw>` proves anonymous `/mcp` refusal plus a scoped `query_records` success
   against a running composed origin.
 - `pnpm railway:sqlite-restart-smoke` boots on SQLite forced onto the persistent
-  volume, seeds through the MCP query smoke, force-recreates the private
-  reference container, and proves records plus owner login survive (acceptance
-  step 7's durability check).
+  volume, seeds through the MCP query smoke, force-recreates the service, and
+  proves records plus owner login survive (acceptance step 7's durability check).
 - The documented service env blocks are consistent with `.env.docker.example`;
   `git diff --check` is clean; all deploy-doc links/paths exist; voice-guide self-check
   (operator-voice, honest cost framing, Core / Collection / reference kept
