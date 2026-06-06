@@ -371,7 +371,7 @@ export function createSqliteConnectorDetailGapStore() {
           AND connector_id = ?
           AND (? IS NULL OR grant_id = ?)
           AND status = 'in_progress'
-          AND last_run_id != ?
+          AND (last_run_id IS NULL OR last_run_id != ?)
       `, [now, cii, connectorId, grantId, grantId, currentRunId]);
     },
 
@@ -517,7 +517,7 @@ export function createPostgresConnectorDetailGapStore() {
           AND connector_id = $3
           AND ($4::text IS NULL OR grant_id = $4)
           AND status = 'in_progress'
-          AND last_run_id != $5
+          AND (last_run_id IS NULL OR last_run_id != $5)
       `, [now, cii, connectorId, grantId, currentRunId]);
     },
 

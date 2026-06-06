@@ -165,6 +165,7 @@ function createDetailGapPageReader({
   connectorInstanceId,
   detailGapStore,
   grantId,
+  runId,
   allServedGapIds,
 }) {
   let observedAverageBytes = DETAIL_GAP_PAGE_ASSUMED_AVG_BYTES;
@@ -216,7 +217,7 @@ function createDetailGapPageReader({
       // emits DETAIL_GAP again) revert to pending via upsertPendingGap while
       // keeping the incremented attempt_count. Recovered gaps advance to
       // 'recovered' via DETAIL_GAP_RECOVERED handling.
-      await Promise.all(servedGapIds.map((gapId) => detailGapStore.markGapStatus(gapId, 'in_progress')));
+      await Promise.all(servedGapIds.map((gapId) => detailGapStore.markGapStatus(gapId, 'in_progress', { runId })));
       if (allServedGapIds) {
         for (const gapId of servedGapIds) allServedGapIds.add(gapId);
       }
@@ -1990,6 +1991,7 @@ export async function runConnector(opts) {
     connectorInstanceId: normalizedConnectorInstanceId,
     detailGapStore,
     grantId,
+    runId,
     allServedGapIds,
   });
 

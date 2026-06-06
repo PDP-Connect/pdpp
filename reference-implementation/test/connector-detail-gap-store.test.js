@@ -678,8 +678,8 @@ test('runtime includes pending detail gaps in START as reference-only safe rows'
       assert.deepEqual(input.streams, ['messages']);
       return [pendingGap];
     },
-    async markGapStatus(gapId, status) {
-      markedInProgress.push({ gapId, status });
+    async markGapStatus(gapId, status, options) {
+      markedInProgress.push({ gapId, status, options });
       return { ...pendingGap, status };
     },
     async upsertPendingGap() {
@@ -707,6 +707,7 @@ test('runtime includes pending detail gaps in START as reference-only safe rows'
     assert.equal(markedInProgress.length, 1, 'served gap is marked in_progress before connector gets it');
     assert.equal(markedInProgress[0].gapId, pendingGap.gap_id);
     assert.equal(markedInProgress[0].status, 'in_progress');
+    assert.equal(markedInProgress[0].options.runId, result.run_id);
   } finally {
     cleanup();
   }
