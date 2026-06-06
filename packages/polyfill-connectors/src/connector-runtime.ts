@@ -1534,7 +1534,6 @@ export function makeSessionEstablishWatchdog(args: {
         resolve(TRIP);
       };
       timer = setInterval(onTick, pollIntervalMs);
-      timer.unref?.();
     });
 
     const workPromise = work();

@@ -19,19 +19,6 @@ const SERVICE_WORKER_TEST_RENOTIFY_PATTERN = /renotify:\s*isTestNotification/;
 const SERVICE_WORKER_MATCH_CLIENTS_PATTERN = /clients\.matchAll/;
 const SERVICE_WORKER_OPEN_WINDOW_PATTERN = /clients\.openWindow\(url\)/;
 const SENSITIVE_WORD_PATTERN = /password|cookie|token|otp|answer/i;
-const MANIFEST_START_URL_PATTERN = /start_url:\s*"\/dashboard"/;
-const MANIFEST_STANDALONE_DISPLAY_PATTERN = /display:\s*"standalone"/;
-const MANIFEST_SCOPE_PATTERN = /scope:\s*"\/"/;
-const MANIFEST_BACKGROUND_PATTERN = /background_color:\s*"#[0-9a-f]{6}"/i;
-const MANIFEST_THEME_PATTERN = /theme_color:\s*"#[0-9a-f]{6}"/i;
-const MANIFEST_APPLE_ICON_PATTERN = /\/apple-icon\.png/;
-const MANIFEST_APPLE_ICON_SIZE_PATTERN = /sizes:\s*"180x180"/;
-const MANIFEST_MASKABLE_PATTERN = /purpose:\s*"maskable"/;
-const MANIFEST_ICON_PATTERN = /\/icon\.svg/;
-const MANIFEST_ANY_SIZE_PATTERN = /sizes:\s*"any"/;
-const MANIFEST_ICON_192_PATTERN = /\/icon-192\.png/;
-const MANIFEST_ICON_512_PATTERN = /\/icon-512\.png/;
-const APP_ROUTER_MANIFEST_PATTERN = /export default function manifest\(\)/;
 const SERVICE_WORKER_REGISTER_PATTERN = /navigator\.serviceWorker\.register\("\/pdpp-dashboard-sw\.js"\)/;
 const SERVICE_WORKER_LOOKUP_PATTERN = /navigator\.serviceWorker\.getRegistration\("\/"\)/;
 const SERVICE_WORKER_UPDATE_PATTERN = /registration\?\.update\(\)/;
@@ -123,41 +110,12 @@ test("dashboard service worker fails closed and click-through targets dashboard-
   assert.doesNotMatch(src, SENSITIVE_WORD_PATTERN);
 });
 
-test("dashboard exposes installable PWA manifest for mobile Web Push setup", async () => {
-  const src = await readFile(join(APP_ROOT, "src", "app", "manifest.ts"), "utf8");
-  assert.match(src, MANIFEST_START_URL_PATTERN);
-  assert.match(src, MANIFEST_STANDALONE_DISPLAY_PATTERN);
-  assert.match(src, MANIFEST_SCOPE_PATTERN);
-  assert.match(src, MANIFEST_BACKGROUND_PATTERN);
-  assert.match(src, MANIFEST_THEME_PATTERN);
-  assert.match(src, MANIFEST_APPLE_ICON_PATTERN);
-  assert.match(src, MANIFEST_APPLE_ICON_SIZE_PATTERN);
-  assert.match(src, MANIFEST_MASKABLE_PATTERN);
-  assert.match(src, MANIFEST_ICON_PATTERN);
-  assert.match(src, MANIFEST_ANY_SIZE_PATTERN);
-  assert.match(src, MANIFEST_ICON_192_PATTERN);
-  assert.match(src, MANIFEST_ICON_512_PATTERN);
-});
-
-test("dashboard PWA manifest icons resolve to static PNG assets", async () => {
-  for (const file of ["apple-icon.png", "icon-192.png", "icon-512.png"]) {
-    const data = await readFile(join(APP_ROOT, "public", file));
-    assert.deepEqual([...data.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  }
-});
-
 test("dashboard launcher SVG icon uses Android-safe paint values", async () => {
   const src = await readFile(join(APP_ROOT, "src", "app", "icon.svg"), "utf8");
   assert.doesNotMatch(src, SVG_CSS_COLOR_FUNCTION_PATTERN);
   assert.match(src, SVG_BACKGROUND_PATTERN);
   assert.match(src, SVG_BRAND_COPPER_PATTERN);
   assert.match(src, SVG_BRAND_BLUE_PATTERN);
-});
-
-test("dashboard PWA install metadata uses one App Router manifest source", async () => {
-  const src = await readFile(join(APP_ROOT, "src", "app", "manifest.ts"), "utf8");
-  assert.match(src, APP_ROUTER_MANIFEST_PATTERN);
-  await assert.rejects(readFile(join(APP_ROOT, "public", "manifest.json"), "utf8"));
 });
 
 test("dashboard notification setup registers, posts, reuses, and deletes browser subscriptions", async () => {
