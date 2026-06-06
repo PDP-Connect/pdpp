@@ -285,14 +285,16 @@ interface PendingDetailGapSummary {
    * `rowToGap` returns it; the source-pressure backlog rollup reads it as the
    * cooldown governor's `attemptCount`. Optional/`unknown` because not every
    * gap projection populates it.
-   */
+  */
   readonly attempt_count?: unknown;
   readonly connector_instance_id?: unknown;
+  readonly last_attempt_at?: unknown;
   readonly next_attempt_after?: unknown;
   readonly reason?: unknown;
   readonly source?: unknown;
   readonly status?: unknown;
   readonly stream?: unknown;
+  readonly updated_at?: unknown;
 }
 
 interface DetailGapProjection {
@@ -2092,6 +2094,12 @@ function combineUnreliableSources(
 function mapPendingPressureGaps(gaps: readonly PendingDetailGapSummary[]): readonly PendingPressureGap[] {
   return gaps.map((gap) => ({
     attemptCount: typeof gap.attempt_count === "number" ? gap.attempt_count : null,
+    lastPressureAt:
+      typeof gap.last_attempt_at === "string"
+        ? gap.last_attempt_at
+        : typeof gap.updated_at === "string"
+          ? gap.updated_at
+          : null,
     nextAttemptAfter: typeof gap.next_attempt_after === "string" ? gap.next_attempt_after : null,
     reason: typeof gap.reason === "string" ? gap.reason : null,
   }));

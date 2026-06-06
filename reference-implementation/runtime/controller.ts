@@ -907,9 +907,11 @@ export function __resetControllerPathResolverCachesForTests(): void {
 interface PendingDetailGapRow {
   readonly attempt_count?: number | null;
   readonly connector_instance_id?: string | null;
+  readonly last_attempt_at?: string | null;
   readonly next_attempt_after?: string | null;
   readonly reason?: string | null;
   readonly stream?: string | null;
+  readonly updated_at?: string | null;
 }
 
 /**
@@ -1035,6 +1037,12 @@ function bucketPressureGapsByInstance(
       reason: gap.reason,
       attemptCount: typeof gap.attempt_count === "number" ? gap.attempt_count : null,
       nextAttemptAfter: typeof gap.next_attempt_after === "string" ? gap.next_attempt_after : null,
+      lastPressureAt:
+        typeof gap.last_attempt_at === "string"
+          ? gap.last_attempt_at
+          : typeof gap.updated_at === "string"
+            ? gap.updated_at
+            : null,
     });
   }
 }
@@ -3314,6 +3322,12 @@ export function createController(opts: ControllerOptions = {}): Controller {
           reason: row.reason as string,
           attemptCount: typeof row.attempt_count === "number" ? row.attempt_count : null,
           nextAttemptAfter: typeof row.next_attempt_after === "string" ? row.next_attempt_after : null,
+          lastPressureAt:
+            typeof row.last_attempt_at === "string"
+              ? row.last_attempt_at
+              : typeof row.updated_at === "string"
+                ? row.updated_at
+                : null,
         }));
 
       if (pendingPressureGaps.length > 0) {

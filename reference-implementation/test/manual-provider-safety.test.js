@@ -84,9 +84,11 @@ function pressureGap(overrides = {}) {
   return {
     reason: 'upstream_pressure',
     attempt_count: 2,
+    last_attempt_at: null,
     next_attempt_after: null,
     connector_instance_id: null,
     stream: null,
+    updated_at: null,
     ...overrides,
   };
 }
@@ -260,6 +262,63 @@ test('manual cooldown gate uses recent run history when persisted last-run row i
         runId: null,
         source: { kind: 'connector', id: TEST_CONNECTOR_ID },
         startedAt: new Date(recent).toISOString(),
+        status: 'skipped',
+      }],
+    },
+  );
+});
+
+test('manual cooldown gate does not let recent skip history slide an elapsed pressure window', async () => {
+  const recentSkip = Date.now();
+  const stale = recentSkip - 30 * 24 * 60 * 60 * 1000;
+  const pressureObserved = recentSkip - 10 * 60 * 1000;
+  await withPreGateController(
+    () =>
+      fakeDetailGapStore([
+        pressureGap({
+          connector_instance_id: 'cin_target',
+          attempt_count: 0,
+          updated_at: new Date(pressureObserved).toISOString(),
+        }),
+      ]),
+    async (controller) => {
+      let err;
+      try {
+        await controller.runNow(TEST_CONNECTOR_ID, {
+          connectorInstanceId: 'cin_target',
+          manifest: buildManifest(),
+        });
+      } catch (e) {
+        err = e;
+      }
+      if (err) {
+        assert.notEqual(
+          err.code,
+          'provider_pressure_cooldown',
+          `recent skip history must not slide elapsed pressure window; got ${err.code}: ${err.message}`,
+        );
+      }
+    },
+    {
+      schedule: { interval_seconds: 60 },
+      lastRunTimes: [{
+        connector_id: TEST_CONNECTOR_ID,
+        connector_instance_id: 'cin_target',
+        last_run_time_ms: String(stale),
+        updated_at: new Date(stale).toISOString(),
+      }],
+      runHistory: [{
+        attempt: 0,
+        checkpointSummary: null,
+        completedAt: new Date(recentSkip).toISOString(),
+        connectorId: TEST_CONNECTOR_ID,
+        connectorInstanceId: 'cin_target',
+        error: 'source_pressure_cooldown_applied: fixture',
+        knownGaps: [],
+        recordsEmitted: 0,
+        runId: null,
+        source: { kind: 'connector', id: TEST_CONNECTOR_ID },
+        startedAt: new Date(recentSkip).toISOString(),
         status: 'skipped',
       }],
     },

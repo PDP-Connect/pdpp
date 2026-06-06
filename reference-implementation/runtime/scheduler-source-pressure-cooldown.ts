@@ -101,6 +101,12 @@ export interface PendingPressureGap {
    * guessing.
    */
   readonly nextAttemptAfter?: string | null;
+  /**
+   * Last observed provider-pressure timestamp (ISO). Prefer the durable
+   * gap's `last_attempt_at`, falling back to `updated_at` when the connector
+   * deferred before a retry lease existed.
+   */
+  readonly lastPressureAt?: string | null;
   /** Source-pressure reason. Only `SOURCE_PRESSURE_GAP_REASONS` count. */
   readonly reason: string | null;
 }
@@ -212,12 +218,17 @@ export function computeSourcePressureCooldown(
   const rawDelay = normalizedBaseIntervalMs * multiplier;
   const cappedIntervalMs = Math.min(rawDelay, maxMs);
 
+  // Anchor cooldown to the provider-pressure observation itself when present,
+  // not to scheduler skip audit rows. Skip rows explain why the scheduler did
+  // not run; they are not provider attempts and must not slide the window.
+  const anchorMs = maxLastPressureAtMs(pressureGaps) || normalizedLastRunAtMs;
+
   // Honour a connector/runtime-authored `next_attempt_after` floor when it
   // pushes the schedule out further than our computed cooldown.
   const explicitFloorMs = maxNextAttemptAfterMs(pressureGaps);
-  const explicitFloorIntervalMs = Math.max(0, explicitFloorMs - normalizedLastRunAtMs);
+  const explicitFloorIntervalMs = Math.max(0, explicitFloorMs - anchorMs);
   const effectiveIntervalMs = Math.max(cappedIntervalMs, explicitFloorIntervalMs);
-  const nextRunMs = normalizedLastRunAtMs + effectiveIntervalMs;
+  const nextRunMs = anchorMs + effectiveIntervalMs;
 
   const reasonSummary = summarizeReasons(pressureGaps);
 
@@ -269,6 +280,20 @@ function maxNextAttemptAfterMs(gaps: readonly PendingPressureGap[]): number {
       continue;
     }
     const parsed = Date.parse(gap.nextAttemptAfter);
+    if (Number.isFinite(parsed) && parsed > max) {
+      max = parsed;
+    }
+  }
+  return max;
+}
+
+function maxLastPressureAtMs(gaps: readonly PendingPressureGap[]): number {
+  let max = 0;
+  for (const gap of gaps) {
+    if (typeof gap.lastPressureAt !== "string") {
+      continue;
+    }
+    const parsed = Date.parse(gap.lastPressureAt);
     if (Number.isFinite(parsed) && parsed > max) {
       max = parsed;
     }

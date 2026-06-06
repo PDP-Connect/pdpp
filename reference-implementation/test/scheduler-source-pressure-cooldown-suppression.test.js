@@ -82,8 +82,8 @@ function anchorStore(anchors) {
 }
 
 function pressureGap(overrides = {}) {
-  const { reason = 'upstream_pressure', attemptCount = 0, nextAttemptAfter = null } = overrides;
-  return { reason, attemptCount, nextAttemptAfter };
+  const { reason = 'upstream_pressure', attemptCount = 0, nextAttemptAfter = null, lastPressureAt = null } = overrides;
+  return { reason, attemptCount, nextAttemptAfter, lastPressureAt };
 }
 
 function readAttempts(path) {
@@ -196,6 +196,45 @@ test('pending pressure gaps do not defer once the computed nextRunAt has arrived
     assert.equal(cooldownSkips(completedRuns).length, 0, 'due pressure cooldown must not emit a skip');
     assert.ok(policySkips(completedRuns).length >= 1, 'due pressure cooldown falls through to eligibility/policy gate');
     assert.equal(readAttempts(attemptsPath).length, 0, 'policy-blocked manifest never spawns the connector');
+  } finally {
+    scheduler.stop();
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('scheduler skip history does not slide source-pressure cooldown forward', async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-cooldown-no-slide-'));
+  const { connectorPath } = writeUnusedConnector(tmpDir, 'no-slide.mjs');
+  const completedRuns = [];
+  const connectorId = 'chatgpt-cooldown-no-slide-connector';
+
+  const scheduler = createScheduler({
+    connectors: [{
+      connectorId,
+      connectorPath,
+      manifest: POLICY_BLOCKED_MANIFEST,
+      intervalMs: 50,
+      maxRetries: 0,
+      ownerToken: 'owner-token',
+    }],
+    rsUrl: 'http://localhost.invalid',
+    // Simulates a restart after a recent cooldown skip was written. The
+    // pressure itself was observed long enough ago that retry is due now.
+    schedulerStore: anchorStore([{ connectorId, lastRunTimeMs: Date.now() }]),
+    onInteraction: cancelledInteractionResponse,
+    onRunComplete: (record) => completedRuns.push(record),
+    getSourcePressureGaps: () => [
+      pressureGap({ attemptCount: 0, lastPressureAt: new Date(Date.now() - 5_000).toISOString() }),
+    ],
+  });
+
+  try {
+    scheduler.start();
+    await waitFor(() => policySkips(completedRuns).length >= 1, 5000);
+    scheduler.stop();
+
+    assert.equal(cooldownSkips(completedRuns).length, 0, 'skip history must not create a fresh cooldown window');
+    assert.ok(policySkips(completedRuns).length >= 1, 'elapsed provider-pressure window is eligible');
   } finally {
     scheduler.stop();
     rmSync(tmpDir, { recursive: true, force: true });

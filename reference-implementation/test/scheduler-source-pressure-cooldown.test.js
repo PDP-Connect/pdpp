@@ -16,8 +16,8 @@ const BASE_INTERVAL_MS = 60_000; // 1 minute
 const T0 = 1_700_000_000_000; // arbitrary fixed epoch
 
 function gap(overrides = {}) {
-  const { reason = 'upstream_pressure', attemptCount = 0, nextAttemptAfter = null } = overrides;
-  return { reason, attemptCount, nextAttemptAfter };
+  const { reason = 'upstream_pressure', attemptCount = 0, nextAttemptAfter = null, lastPressureAt = null } = overrides;
+  return { reason, attemptCount, nextAttemptAfter, lastPressureAt };
 }
 
 // ─── No pressure / empty ─────────────────────────────────────────────────
@@ -164,6 +164,15 @@ test('an explicit next_attempt_after earlier than the computed cooldown does not
   );
   // computed = T0 + 4x base; the earlier floor must not pull it in.
   assert.equal(decision.nextRunAt, new Date(T0 + BASE_INTERVAL_MS * 4).toISOString());
+});
+
+test('lastPressureAt anchors cooldown instead of later scheduler skip history', () => {
+  const decision = computeSourcePressureCooldown(
+    [gap({ attemptCount: 0, lastPressureAt: new Date(T0).toISOString() })],
+    BASE_INTERVAL_MS,
+    T0 + BASE_INTERVAL_MS * 30,
+  );
+  assert.equal(decision.nextRunAt, new Date(T0 + BASE_INTERVAL_MS).toISOString());
 });
 
 // ─── Force override ──────────────────────────────────────────────────────

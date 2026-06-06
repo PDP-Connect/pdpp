@@ -4908,6 +4908,12 @@ function createReferenceSchedulerManager({
             reason: row.reason,
             attemptCount: typeof row.attempt_count === 'number' ? row.attempt_count : null,
             nextAttemptAfter: typeof row.next_attempt_after === 'string' ? row.next_attempt_after : null,
+            lastPressureAt:
+              typeof row.last_attempt_at === 'string'
+                ? row.last_attempt_at
+                : typeof row.updated_at === 'string'
+                  ? row.updated_at
+                  : null,
           });
         }
         return gaps;
