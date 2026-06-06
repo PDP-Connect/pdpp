@@ -407,7 +407,7 @@ const FORWARD_DISPOSITION_LABELS: Record<RefForwardDisposition, ForwardDispositi
     label: "refresh due",
     ownerActionNeeded: true,
     title:
-      "Coverage is complete but the retained data has gone stale, and this connection refreshes only when you run it. The reference will not refresh it on its own — start a run on your instance to bring it current. This is aged data, not missing data.",
+      "Coverage is complete but the retained data has gone stale, and this connection needs an owner-initiated run to refresh — either because it refreshes only when you run it, or because it refreshes on schedule but may need your bounded help to catch up. Start a run on your instance to bring it current. This is aged data, not missing data.",
     tone: "warning",
   },
   terminal: {

@@ -1308,19 +1308,27 @@ function getMaximumStalenessSeconds(refreshPolicy: unknown): number | null {
 
 /**
  * Project the manifest `refresh_policy` into the `background_safe` /
- * `recommended_mode` evidence the connection-health projection needs to tell
- * a schedulable connector apart from a manual / paused / background-unsafe one.
+ * `recommended_mode` / `interaction_posture` evidence the connection-health
+ * projection needs to tell a schedulable connector apart from a manual /
+ * paused / background-unsafe one, and an assisted-refresh connector (whose
+ * posture predicts bounded owner help) apart from a truly unattended one.
  * Reads the same refresh-policy values the schedule auto-enroll gate
- * (`auto-enroll-eligible-schedules.ts`) uses to deny a background schedule, so
- * the health story stays consistent with "this connector cannot auto-refresh".
- * Returns `null` when the policy is absent/malformed, preserving the prior
- * behavior (treated as schedulable; staleness degrades).
+ * (`auto-enroll-eligible-schedules.ts`) and run-automation policy
+ * (`run-automation-policy.ts`) use, so the health story stays consistent with
+ * "this connector cannot auto-refresh" and "this connector refreshes on
+ * schedule but may ask for bounded owner help". Returns `null` when the policy
+ * is absent/malformed, preserving the prior behavior (treated as schedulable;
+ * staleness degrades).
  */
 function buildRefreshEvidence(refreshPolicy: unknown): ConnectionRefreshEvidence | null {
   if (!refreshPolicy || typeof refreshPolicy !== "object" || Array.isArray(refreshPolicy)) {
     return null;
   }
-  const policy = refreshPolicy as { background_safe?: unknown; recommended_mode?: unknown };
+  const policy = refreshPolicy as {
+    background_safe?: unknown;
+    interaction_posture?: unknown;
+    recommended_mode?: unknown;
+  };
   const backgroundSafe = typeof policy.background_safe === "boolean" ? policy.background_safe : null;
   const recommendedMode =
     policy.recommended_mode === "manual" ||
@@ -1328,10 +1336,17 @@ function buildRefreshEvidence(refreshPolicy: unknown): ConnectionRefreshEvidence
     policy.recommended_mode === "paused"
       ? policy.recommended_mode
       : null;
-  if (backgroundSafe === null && recommendedMode === null) {
+  const interactionPosture =
+    policy.interaction_posture === "credentials" ||
+    policy.interaction_posture === "manual_action_likely" ||
+    policy.interaction_posture === "otp_likely" ||
+    policy.interaction_posture === "none"
+      ? policy.interaction_posture
+      : null;
+  if (backgroundSafe === null && recommendedMode === null && interactionPosture === null) {
     return null;
   }
-  return { backgroundSafe, recommendedMode };
+  return { backgroundSafe, interactionPosture, recommendedMode };
 }
 
 function mapFreshnessAxis(freshness: Freshness): FreshnessAxis {

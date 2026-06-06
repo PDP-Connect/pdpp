@@ -847,6 +847,234 @@ test('manual stale: a never-run manual connector that is stale stays idle (not a
   assert.notEqual(snap.reason_code, 'stale_manual_refresh');
 });
 
+// ─── Assisted-refresh connector freshness ─────────────────────────────────
+// A connector whose manifest refresh policy is schedulable
+// (recommended_mode automatic / background_safe true) but whose
+// interaction_posture predicts bounded owner help (e.g. ChatGPT:
+// interaction_posture "manual_action_likely", assisted_after_owner_auth
+// true) refreshes on its own schedule yet may need the owner's bounded
+// assistance to complete a refresh. Stale data for such a connector is an
+// owner-assistance advisory, NOT a degradation — but only when nothing else
+// is wrong. Every real failure still degrades or blocks exactly as for a
+// truly unattended connector.
+
+test('assisted stale: schedulable+assistance-posture complete+succeeded+stale is idle advisory, not degraded', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: true, recommendedMode: 'automatic', interactionPosture: 'manual_action_likely' },
+    })
+  );
+  assert.equal(snap.state, 'idle');
+  assert.equal(snap.reason_code, 'stale_assisted_refresh');
+  // The stale axis and badge stay on so the UI still says "stale — refresh due".
+  assert.equal(snap.axes.freshness, 'stale');
+  assert.equal(snap.badges.stale, true);
+  const fresh = findCondition(snap, 'Fresh');
+  assert.equal(fresh?.status, 'false');
+  assert.equal(fresh?.severity, 'info');
+  assert.equal(fresh?.reason, 'stale_assisted_refresh');
+  assert.equal(fresh?.remediation?.action, 'retry_by_runtime');
+  assert.equal(fresh?.remediation?.target, 'run');
+  // The advisory is the dominant condition so the surface explains why idle.
+  assert.equal(snap.dominant_condition_id, fresh?.id);
+  // The forward disposition is owner-refresh-due, not a coverage gap.
+  assert.equal(snap.forward_disposition, 'owner_refresh_due');
+});
+
+test('assisted stale: otp_likely posture is enough to advisory', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: true, recommendedMode: 'automatic', interactionPosture: 'otp_likely' },
+    })
+  );
+  assert.equal(snap.state, 'idle');
+  assert.equal(snap.reason_code, 'stale_assisted_refresh');
+});
+
+test('assisted stale: credentials posture is enough to advisory', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: true, recommendedMode: 'automatic', interactionPosture: 'credentials' },
+    })
+  );
+  assert.equal(snap.state, 'idle');
+  assert.equal(snap.reason_code, 'stale_assisted_refresh');
+});
+
+test('assisted stale: posture with recommended_mode absent (null) still advisories', () => {
+  // background_safe true + an assistance posture is enough; recommended_mode
+  // null is treated as schedulable (not manual-refresh-only).
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: true, recommendedMode: null, interactionPosture: 'credentials' },
+    })
+  );
+  assert.equal(snap.state, 'idle');
+  assert.equal(snap.reason_code, 'stale_assisted_refresh');
+});
+
+test('assisted stale: a truly unattended connector (posture none) with the SAME stale evidence still degrades', () => {
+  // The distinction is purely the interaction posture. A schedulable
+  // connector with NO assistance posture was supposed to refresh on its own
+  // and did not, so the identical stale+complete+succeeded evidence degrades.
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: true, recommendedMode: 'automatic', interactionPosture: 'none' },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+  assert.equal(findCondition(snap, 'Fresh')?.severity, 'warning');
+  assert.equal(findCondition(snap, 'Fresh')?.reason, 'stale');
+});
+
+test('assisted stale: schedulable connector with NO posture evidence still degrades (prior behavior)', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: true, recommendedMode: 'automatic' },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+});
+
+test('assisted stale: a manual connector that ALSO declares a posture stays the manual advisory', () => {
+  // Manual-refresh-only wins: background_safe false makes it manual, and the
+  // assisted predicate excludes any manual-refresh-only connector, so the
+  // reason is the manual one, not the assisted one.
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: false, recommendedMode: 'manual', interactionPosture: 'credentials' },
+    })
+  );
+  assert.equal(snap.state, 'idle');
+  assert.equal(snap.reason_code, 'stale_manual_refresh');
+});
+
+test('assisted stale: incomplete coverage still degrades an assisted connector', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'partial' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: true, recommendedMode: 'automatic', interactionPosture: 'manual_action_likely' },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+  assert.equal(findCondition(snap, 'SourceCoverageComplete')?.status, 'false');
+});
+
+test('assisted stale: terminal-gap coverage still degrades an assisted connector', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'terminal_gap' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: true, recommendedMode: 'automatic', interactionPosture: 'otp_likely' },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+});
+
+test('assisted stale: failed last run still degrades an assisted connector', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ latestStatus: 'failed', lastSuccessAt: null, reasonCode: 'chatgpt_scrape_timeout' }),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: true, recommendedMode: 'automatic', interactionPosture: 'manual_action_likely' },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+  assert.equal(findCondition(snap, 'CollectionSucceeded')?.status, 'false');
+});
+
+test('assisted stale: a credential-rejected failure still blocks an assisted connector', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ latestStatus: 'failed', lastSuccessAt: null, reasonCode: 'chatgpt_login_failed' }),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: true, recommendedMode: 'automatic', interactionPosture: 'credentials' },
+    })
+  );
+  assert.equal(snap.state, 'blocked');
+  assert.equal(findCondition(snap, 'CredentialsValid')?.status, 'false');
+});
+
+test('assisted stale: stalled outbox still degrades an assisted connector', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      outbox: { axis: 'stalled', cause: 'stale_pending' },
+      refresh: { backgroundSafe: true, recommendedMode: 'automatic', interactionPosture: 'manual_action_likely' },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+});
+
+test('assisted stale: open attention still dominates an assisted connector', () => {
+  // A real open prompt is more urgent than the freshness advisory and must
+  // win — needs_attention, not idle.
+  const snap = computeConnectionHealth(
+    input({
+      observedAt: NOW,
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      attention: { lifecycle: 'open', expiresAt: null, reasonCode: 'needs_login', actionTarget: 'external_app', id: 'att-1', ownerAction: 'act_elsewhere', responseContract: 'response_required' },
+      refresh: { backgroundSafe: true, recommendedMode: 'automatic', interactionPosture: 'manual_action_likely' },
+    })
+  );
+  assert.equal(snap.state, 'needs_attention');
+});
+
+test('assisted stale: an assisted connector that is fresh still projects healthy', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      refresh: { backgroundSafe: true, recommendedMode: 'automatic', interactionPosture: 'manual_action_likely' },
+    })
+  );
+  assert.equal(snap.state, 'healthy');
+});
+
+test('assisted stale: a never-run assisted connector that is stale stays idle (not advisory-reclassified)', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: null,
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: true, recommendedMode: 'automatic', interactionPosture: 'manual_action_likely' },
+    })
+  );
+  assert.equal(snap.state, 'idle');
+  assert.notEqual(snap.reason_code, 'stale_assisted_refresh');
+});
+
 // ─── Syncing badge (never a headline state) ───────────────────────────────
 
 test('activity: active work surfaces as syncing badge without replacing health pill', () => {

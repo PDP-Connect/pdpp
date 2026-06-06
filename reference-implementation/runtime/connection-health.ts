@@ -31,6 +31,9 @@
  *   5. backoff currently delaying retry            -> cooling_off
  *   6. outbox stalled / coverage/run incomplete    -> degraded
  *   7. current evidence without collection verdict -> unknown
+ *   7b. otherwise-green stale connector that cannot or may-not refresh
+ *       unattended (manual / paused / background-unsafe, or assisted-refresh
+ *       whose posture predicts bounded owner help)  -> idle (stale advisory)
  *   8. never-run with no stronger evidence         -> idle
  *   9. clean evidence, fresh enough                -> healthy
  *   10. fallback                                  -> unknown
@@ -132,6 +135,7 @@ export const CONNECTION_CONDITION_REASONS = Object.freeze({
   SCHEDULE_PAUSED: "schedule_paused",
   SCHEDULER_BACKOFF_ACTIVE: "scheduler_backoff_active",
   STALE: "stale",
+  STALE_ASSISTED_REFRESH: "stale_assisted_refresh",
   STALE_MANUAL_REFRESH: "stale_manual_refresh",
 } as const);
 
@@ -934,9 +938,29 @@ export interface ConnectionScheduleEvidence {
  * connector still degrades on the same staleness, because the system was
  * supposed to refresh it and did not. Both `null`/absent fields preserve
  * the prior behavior (treated as schedulable).
+ *
+ * A connector is **assisted-refresh** when it is schedulable
+ * (`recommended_mode` automatic/absent and `background_safe !== false`) but
+ * its `interaction_posture` predicts the connector will periodically need
+ * bounded owner help (credentials, an OTP, or a manual action) before a
+ * scheduled refresh can complete — the same posture the run-automation policy
+ * projects as `automation_mode: "assisted"` (`run-automation-policy.ts`). Such
+ * a connector DOES refresh on its own schedule, so it is not manual-refresh-
+ * only; but when its data ages past the staleness window it may simply be
+ * between scheduled refreshes awaiting the bounded assistance the manifest
+ * itself predicts. Surfacing that as `degraded` — identical to a genuinely
+ * broken unattended connector — is dishonest. The projection therefore treats
+ * assisted-refresh staleness as the same kind of owner-action advisory it
+ * gives a manual connector (an `idle` headline plus the `stale` badge), but
+ * only when the connector is otherwise green; every real failure, incomplete
+ * coverage, or open attention still degrades or blocks. `interactionPosture`
+ * `null`/absent preserves the prior behavior (an automatic/background-safe
+ * connector with no assistance posture degrades on staleness, because the
+ * system was supposed to refresh it unattended and did not).
  */
 export interface ConnectionRefreshEvidence {
   readonly backgroundSafe: boolean | null;
+  readonly interactionPosture?: "credentials" | "manual_action_likely" | "none" | "otp_likely" | null;
   readonly recommendedMode: "automatic" | "manual" | "paused" | null;
 }
 
@@ -1029,6 +1053,7 @@ const HEALTH_CLASSIFICATION_STEPS: readonly ClassificationStep[] = [
   classifyDegradedEvidence,
   classifyCurrentEvidenceWithoutVerdict,
   classifyManualStaleAdvisory,
+  classifyAssistedStaleAdvisory,
   classifyNeverRunIdle,
   classifyHealthy,
 ];
@@ -1235,22 +1260,29 @@ function classifyCurrentEvidenceWithoutVerdict(ctx: ClassificationContext): Retu
   };
 }
 
-function classifyManualStaleAdvisory(ctx: ClassificationContext): ReturnType<ClassificationStep> {
-  // 6b'. Manual / paused / background-unsafe connector that is otherwise
-  //      green but whose data has aged past its staleness window -> idle with
-  //      a manual-refresh advisory, NOT degraded. Reaching this step already
-  //      means no degrading condition fired (classifyDegradedEvidence ran
-  //      first), so coverage is complete, the last collection succeeded, the
-  //      outbox is not stalled, and no credential/runtime/attention/backoff
-  //      blocker exists. The only non-green signal is the `info`-severity
-  //      manual-stale `Fresh` condition. We require those positive proofs
-  //      explicitly so a never-run or unproven connection can never be
-  //      reclassified out of `unknown`/`idle` by this step.
-  if (!isManualRefreshOnly(ctx.input.refresh)) {
+/**
+ * Shared body for the two non-degrading stale advisories (manual and
+ * assisted). A connector that cannot or may-not refresh purely on its own and
+ * whose data has aged past the staleness window is `idle` with a stale
+ * advisory, NOT degraded — but only when it is otherwise green. Reaching this
+ * step already means no degrading condition fired (`classifyDegradedEvidence`
+ * ran first), so coverage is complete, the last collection succeeded, the
+ * outbox is not stalled, and no credential/runtime/attention/backoff blocker
+ * exists. The only non-green signal is the `info`-severity stale `Fresh`
+ * condition carrying `expectedReason`. We require the `CollectionSucceeded` and
+ * `SourceCoverageComplete` proofs explicitly so a never-run or unproven
+ * connection can never be reclassified out of `unknown`/`idle` by this step.
+ */
+function classifyStaleAdvisory(
+  ctx: ClassificationContext,
+  applies: boolean,
+  expectedReason: SharedConnectionConditionReason
+): ReturnType<ClassificationStep> {
+  if (!applies) {
     return null;
   }
   const fresh = ctx.conditionSet.get("Fresh");
-  if (fresh?.status !== "false" || fresh.reason !== CONDITION_REASON.STALE_MANUAL_REFRESH) {
+  if (fresh?.status !== "false" || fresh.reason !== expectedReason) {
     return null;
   }
   if (
@@ -1263,13 +1295,31 @@ function classifyManualStaleAdvisory(ctx: ClassificationContext): ReturnType<Cla
   }
   return {
     state: "idle",
-    reasonCode: CONDITION_REASON.STALE_MANUAL_REFRESH,
+    reasonCode: expectedReason,
     lastSuccessAt: ctx.lastSuccessAt,
     nextAttemptAt: ctx.nextAttemptAt,
     axes: ctx.axes,
     badges: ctx.badges,
     remoteSurface: ctx.remoteSurface,
   };
+}
+
+function classifyManualStaleAdvisory(ctx: ClassificationContext): ReturnType<ClassificationStep> {
+  // 6b'. Manual / paused / background-unsafe connector that is otherwise green
+  //      but whose data has aged past its staleness window -> idle with a
+  //      manual-refresh advisory, NOT degraded.
+  return classifyStaleAdvisory(ctx, isManualRefreshOnly(ctx.input.refresh), CONDITION_REASON.STALE_MANUAL_REFRESH);
+}
+
+function classifyAssistedStaleAdvisory(ctx: ClassificationContext): ReturnType<ClassificationStep> {
+  // 6b''. Assisted-refresh connector (schedulable, but its interaction_posture
+  //       predicts bounded owner help) that is otherwise green but whose data
+  //       has aged past its staleness window -> idle with an assisted-refresh
+  //       advisory, NOT degraded. It refreshes on schedule and may simply be
+  //       between refreshes awaiting the bounded assistance the manifest
+  //       predicts; that is honest operation, not a failure. Every real failure
+  //       still degraded/blocked above via the ordered precedence.
+  return classifyStaleAdvisory(ctx, isAssistedRefresh(ctx.input.refresh), CONDITION_REASON.STALE_ASSISTED_REFRESH);
 }
 
 function classifyNeverRunIdle(ctx: ClassificationContext): ReturnType<ClassificationStep> {
@@ -1981,6 +2031,25 @@ function isManualRefreshOnly(refresh: ConnectionRefreshEvidence | null | undefin
   return refresh.backgroundSafe === false || refresh.recommendedMode === "manual" || refresh.recommendedMode === "paused";
 }
 
+/**
+ * A connector is **assisted-refresh** when it refreshes on its own schedule
+ * (it is NOT manual-refresh-only) yet its `interaction_posture` predicts the
+ * connector will periodically need bounded owner help — credentials, an OTP, or
+ * a manual action — before a scheduled refresh can complete. This is the
+ * projection-side mirror of the run-automation policy's `assisted`
+ * automation_mode (`run-automation-policy.ts` `canNotifyDuringRun`): the same
+ * three postures that make a run owner-assisted. `none`/`null`/absent posture,
+ * or any manual-refresh-only connector, is not assisted-refresh. The projection
+ * trusts the caller's flags and never re-reads the manifest.
+ */
+function isAssistedRefresh(refresh: ConnectionRefreshEvidence | null | undefined): boolean {
+  if (!refresh || isManualRefreshOnly(refresh)) {
+    return false;
+  }
+  const posture = refresh.interactionPosture;
+  return posture === "credentials" || posture === "manual_action_likely" || posture === "otp_likely";
+}
+
 function freshCondition(input: ComputeConnectionHealthInput, axes: ConnectionAxes): ConnectionHealthCondition {
   if (axes.freshness === "fresh") {
     return condition({
@@ -2010,6 +2079,28 @@ function freshCondition(input: ComputeConnectionHealthInput, axes: ConnectionAxe
         message: "Retained data is stale; this manual connector needs an owner-initiated run to refresh.",
         origin: "connector",
         remediation: { action: "retry_by_runtime", label: "Run the connector manually", retryable: true, target: "run" },
+      });
+    }
+    // An assisted-refresh connector refreshes on its own schedule but may need
+    // bounded owner help (credentials / OTP / a manual action) for a scheduled
+    // refresh to complete. Stale data is therefore an owner-assistance advisory,
+    // not a failure: emit the stale `Fresh` condition at `info` severity so it
+    // never trips the degrading threshold. The headline becomes `idle` with the
+    // `stale` badge on, exactly like the manual advisory, while the operator
+    // copy names scheduled refresh and bounded assistance rather than a manual
+    // run. A truly unattended connector (no assistance posture) falls through to
+    // the degrading `warning` below, because the system was supposed to refresh
+    // it on its own and did not.
+    if (isAssistedRefresh(input.refresh)) {
+      return condition({
+        type: "Fresh",
+        status: "false",
+        severity: "info",
+        reason: CONDITION_REASON.STALE_ASSISTED_REFRESH,
+        message:
+          "Retained data is stale; this assisted connector refreshes on schedule and may ask for bounded owner help to catch up.",
+        origin: "connector",
+        remediation: { action: "retry_by_runtime", label: "Run the connector now", retryable: true, target: "run" },
       });
     }
     return condition({
@@ -2146,11 +2237,15 @@ export function deriveForwardDisposition(input: ForwardDispositionInput): Forwar
 
   // Rule 4: a complete stream on a manual-refresh-only connection whose data has
   // gone stale needs an owner-initiated run — the system will not refresh it on
-  // its own. Coverage stays complete; only the disposition carries the freshness
-  // fact. A schedulable, background-safe stale stream is the scheduler's job and
-  // stays `complete` here (the connection-health projection raises its own
-  // schedulable-stale warning).
-  if (input.freshness === "stale" && isManualRefreshOnly(input.refresh)) {
+  // its own. An assisted-refresh connection (schedulable, but whose posture
+  // predicts bounded owner help) is likewise owner-refresh-due when stale: it
+  // refreshes on schedule but may need the owner's bounded assistance to catch
+  // up, so the disposition honestly names an owner-initiated/assisted run rather
+  // than re-encoding staleness as a coverage gap. Coverage stays complete; only
+  // the disposition carries the freshness fact. A truly unattended schedulable
+  // stream is the scheduler's job and stays `complete` here (the connection-
+  // health projection raises its own schedulable-stale warning).
+  if (input.freshness === "stale" && (isManualRefreshOnly(input.refresh) || isAssistedRefresh(input.refresh))) {
     return "owner_refresh_due";
   }
 
@@ -2372,11 +2467,11 @@ function pickDominantConditionId(
     case "unknown":
       return failingConditionId(byType.get("ProjectionReliable")) ?? unknownConditionId(conditions);
     case "idle":
-      // Manual-stale advisory idle surfaces the stale `Fresh` condition so the
-      // owner sees "run it manually"; a paused-schedule idle surfaces the
-      // paused `ScheduleEligible` condition.
+      // A stale advisory idle (manual-refresh-only or assisted-refresh)
+      // surfaces the stale `Fresh` condition so the owner sees "refresh due";
+      // a paused-schedule idle surfaces the paused `ScheduleEligible` condition.
       return (
-        manualStaleFreshConditionId(byType.get("Fresh")) ?? conditionId(byType.get("ScheduleEligible"), "false") ?? null
+        staleAdvisoryFreshConditionId(byType.get("Fresh")) ?? conditionId(byType.get("ScheduleEligible"), "false") ?? null
       );
     case "needs_attention":
       return failingConditionId(byType.get("AttentionClear"));
@@ -2439,8 +2534,12 @@ function failingConditionId(conditionValue: ConnectionHealthCondition | undefine
   return conditionId(conditionValue, "false");
 }
 
-function manualStaleFreshConditionId(conditionValue: ConnectionHealthCondition | undefined): string | null {
-  return conditionValue?.status === "false" && conditionValue.reason === CONDITION_REASON.STALE_MANUAL_REFRESH
+function staleAdvisoryFreshConditionId(conditionValue: ConnectionHealthCondition | undefined): string | null {
+  if (conditionValue?.status !== "false") {
+    return null;
+  }
+  return conditionValue.reason === CONDITION_REASON.STALE_MANUAL_REFRESH ||
+    conditionValue.reason === CONDITION_REASON.STALE_ASSISTED_REFRESH
     ? conditionValue.id
     : null;
 }
