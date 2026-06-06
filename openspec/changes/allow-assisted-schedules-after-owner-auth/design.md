@@ -17,6 +17,8 @@ When a listed manifest has `public_listing.status: "needs_human_auth"`, the mani
 
 This keeps the manifest honest while allowing an owner to explicitly enable a schedule for a configured ChatGPT connection.
 
+For connection health, assisted-after-owner-auth connectors are schedulable once the owner has enabled a schedule. They should therefore degrade on stale freshness like other scheduled connectors rather than using the manual-refresh-only stale advisory. If auth expires or manual action is required, the run-assistance/attention path blocks automatic execution separately.
+
 ## Alternatives
 
 - Leave ChatGPT manual-only. This preserves honesty but prevents the best available catch-up mode for large histories.

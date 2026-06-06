@@ -39,6 +39,13 @@ A connector manifest whose `capabilities.public_listing.status` is `"needs_human
 - **THEN** the manifest set's honesty test SHALL pass for this posture
 - **AND** explicit owner schedule creation MAY enable a schedule for a configured connection, subject to the normal schedule interval and runtime readiness gates.
 
+#### Scenario: Assisted scheduled connector is treated as schedulable for freshness health
+
+- **WHEN** a connector with `capabilities.refresh_policy.assisted_after_owner_auth: true` has an enabled schedule
+- **AND** the connection's retained data is stale under `capabilities.refresh_policy.maximum_staleness_seconds`
+- **THEN** the reference health projection SHALL treat that stale freshness as schedulable stale data rather than as manual-refresh-only advisory staleness
+- **AND** any auth-expired or manual-action-needed condition SHALL be surfaced through the existing owner-attention gates before a scheduled run starts.
+
 ### Requirement: The reference auto-enrolls eligible connectors when deployment credentials are present
 The reference implementation SHALL, on server boot, enroll a default enabled
 schedule for every first-party connector whose shipped manifest meets all of

@@ -13,5 +13,5 @@
 ## 3. Verification
 
 - [x] 3.1 Run focused manifest, honesty, run-policy, and schedule tests.
-- [ ] 3.2 Reconcile/restart the local reference and prove ChatGPT schedule creation succeeds at the conservative interval.
-- [ ] 3.3 Update the owner ledger with active lanes, validation, and residual risks.
+- [x] 3.2 Reconcile/restart the local reference and prove ChatGPT schedule creation succeeds at the conservative interval.
+- [x] 3.3 Update the owner ledger with active lanes, validation, and residual risks.
