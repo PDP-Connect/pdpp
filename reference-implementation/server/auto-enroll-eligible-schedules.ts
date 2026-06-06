@@ -91,6 +91,7 @@ function getCapabilities(manifest: unknown): ManifestCapabilities | null {
 }
 
 interface PolicyFacts {
+  readonly assistedAfterOwnerAuth: boolean | null;
   readonly backgroundSafe: boolean | null;
   readonly recommendedIntervalSeconds: number | null;
   readonly recommendedMode: string | null;
@@ -99,16 +100,28 @@ interface PolicyFacts {
 function getPolicyFacts(caps: ManifestCapabilities): PolicyFacts {
   const policy = caps.refresh_policy;
   if (!policy || typeof policy !== "object" || Array.isArray(policy)) {
-    return { recommendedMode: null, backgroundSafe: null, recommendedIntervalSeconds: null };
+    return {
+      assistedAfterOwnerAuth: null,
+      backgroundSafe: null,
+      recommendedIntervalSeconds: null,
+      recommendedMode: null,
+    };
   }
   const p = policy as Record<string, unknown>;
   const mode = typeof p.recommended_mode === "string" ? p.recommended_mode : null;
   const safe = typeof p.background_safe === "boolean" ? (p.background_safe as boolean) : null;
+  const assisted =
+    typeof p.assisted_after_owner_auth === "boolean" ? (p.assisted_after_owner_auth as boolean) : null;
   const interval =
     typeof p.recommended_interval_seconds === "number" && Number.isFinite(p.recommended_interval_seconds)
       ? (p.recommended_interval_seconds as number)
       : null;
-  return { recommendedMode: mode, backgroundSafe: safe, recommendedIntervalSeconds: interval };
+  return {
+    assistedAfterOwnerAuth: assisted,
+    backgroundSafe: safe,
+    recommendedIntervalSeconds: interval,
+    recommendedMode: mode,
+  };
 }
 
 interface ListingFacts {
@@ -229,6 +242,9 @@ function checkPolicyEligibility(caps: ManifestCapabilities): PolicyEligibility {
   }
   if (policy.backgroundSafe === false) {
     return { eligible: false, reason: "background_safe=false" };
+  }
+  if (policy.assistedAfterOwnerAuth === true) {
+    return { eligible: false, reason: "assisted_after_owner_auth=true" };
   }
   const listing = getListingFacts(caps);
   if (listing.listed !== true) {

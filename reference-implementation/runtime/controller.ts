@@ -147,6 +147,7 @@ export interface SchedulerBackoffApi {
 }
 
 export interface RefreshPolicy {
+  readonly assisted_after_owner_auth?: boolean;
   readonly background_safe?: boolean;
   readonly bot_detection_sensitivity?: "high" | "low" | "medium";
   readonly interaction_posture?: "credentials" | "manual_action_likely" | "none" | "otp_likely";

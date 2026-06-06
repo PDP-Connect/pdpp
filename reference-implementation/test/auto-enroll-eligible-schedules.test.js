@@ -255,6 +255,20 @@ test('background_safe=false is never auto-enrolled even when env is present', as
   assert.equal(summary.enrolled, 0);
 });
 
+test('assisted_after_owner_auth=true is never auto-enrolled even when env is present', async () => {
+  const controller = createFakeController();
+  const m = manifest();
+  m.capabilities.refresh_policy.assisted_after_owner_auth = true;
+  const summary = await autoEnrollEligibleSchedules({
+    controller,
+    env: { WIDGET_TOKEN: 'set' },
+    listConnectors: singleManifestList(m),
+  });
+  assert.equal(summary.skipped_policy, 1);
+  assert.equal(summary.enrolled, 0);
+  assert.equal(controller.schedules.size, 0);
+});
+
 test('public_listing.status != "proven" is never auto-enrolled', async () => {
   const controller = createFakeController();
   const m = manifest();

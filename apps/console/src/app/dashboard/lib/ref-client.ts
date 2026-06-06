@@ -201,6 +201,7 @@ export interface RefConnectorRunSummary {
 }
 
 export interface RefreshPolicy {
+  assisted_after_owner_auth?: boolean;
   background_safe?: boolean;
   bot_detection_sensitivity?: "high" | "low" | "medium";
   interaction_posture?: "credentials" | "manual_action_likely" | "none" | "otp_likely";

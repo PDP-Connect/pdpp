@@ -2,6 +2,7 @@ export type RunTriggerKind = "manual" | "retry" | "scheduled" | "webhook";
 export type RunAutomationMode = "ask_before_run" | "assisted" | "manual_only" | "unattended";
 
 export interface AutomationRefreshPolicy {
+  readonly assisted_after_owner_auth?: boolean;
   readonly background_safe?: boolean;
   readonly interaction_posture?: "credentials" | "manual_action_likely" | "none" | "otp_likely";
   readonly recommended_mode?: "automatic" | "manual" | "paused";

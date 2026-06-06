@@ -34,6 +34,7 @@ interface PublicListing {
 }
 
 interface RefreshPolicy {
+  assisted_after_owner_auth?: unknown;
   background_safe?: unknown;
   recommended_mode?: unknown;
 }
@@ -172,12 +173,11 @@ test("broken-in-current-deployment manifests are not background-safe or auto-sch
   );
 });
 
-test("needs-human-auth manifests are not background-safe or auto-scheduled", () => {
+test("needs-human-auth manifests require assisted-after-owner-auth posture for automatic scheduling", () => {
   // A manifest that needs human-supplied credentials, OTP, or a manual
-  // browser action cannot honestly run unattended. The reference today has
-  // no modeled durable no-human unattended auth capability, so this rule
-  // is absolute: if public_listing.status is "needs_human_auth" the
-  // manifest MUST stay manual and MUST NOT be background-safe.
+  // browser action cannot honestly claim durable unattended auth. It may
+  // still allow explicit assisted scheduling after owner auth is bootstrapped
+  // when that posture is modeled in refresh_policy.
   const offenders: string[] = [];
   for (const name of MANIFEST_NAMES) {
     const caps = readManifest(name).capabilities;
@@ -186,16 +186,17 @@ test("needs-human-auth manifests are not background-safe or auto-scheduled", () 
     }
     const backgroundSafe = caps?.refresh_policy?.background_safe === true;
     const automatic = caps?.refresh_policy?.recommended_mode === "automatic";
-    if (backgroundSafe || automatic) {
+    const assisted = caps?.refresh_policy?.assisted_after_owner_auth === true;
+    if ((backgroundSafe || automatic) && !assisted) {
       offenders.push(
-        `${name} (background_safe=${String(caps?.refresh_policy?.background_safe)}, recommended_mode=${String(caps?.refresh_policy?.recommended_mode)})`
+        `${name} (background_safe=${String(caps?.refresh_policy?.background_safe)}, recommended_mode=${String(caps?.refresh_policy?.recommended_mode)}, assisted_after_owner_auth=${String(caps?.refresh_policy?.assisted_after_owner_auth)})`
       );
     }
   }
   assert.deepEqual(
     offenders,
     [],
-    `manifests marked needs_human_auth must not be background-safe or recommended_mode="automatic": ${offenders.join(", ")}`
+    `manifests marked needs_human_auth must declare assisted_after_owner_auth=true before background-safe or recommended_mode="automatic": ${offenders.join(", ")}`
   );
 });
 

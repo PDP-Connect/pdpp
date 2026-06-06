@@ -2004,6 +2004,7 @@ const REFRESH_POLICY_ALLOWED_KEYS = new Set([
   'recommended_interval_seconds',
   'minimum_interval_seconds',
   'maximum_staleness_seconds',
+  'assisted_after_owner_auth',
   'interaction_posture',
   'session_lifetime_seconds',
   'rate_limit_sensitivity',
@@ -2178,6 +2179,12 @@ function validateRefreshPolicyCapability(manifest, code) {
   if (policy.background_safe !== undefined && typeof policy.background_safe !== 'boolean') {
     throw invalidConnectorManifest(
       'capabilities.refresh_policy.background_safe must be a boolean when declared',
+      code,
+    );
+  }
+  if (policy.assisted_after_owner_auth !== undefined && typeof policy.assisted_after_owner_auth !== 'boolean') {
+    throw invalidConnectorManifest(
+      'capabilities.refresh_policy.assisted_after_owner_auth must be a boolean when declared',
       code,
     );
   }
