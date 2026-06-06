@@ -1,0 +1,55 @@
+# fly.toml — PDPP Core console app (public)
+#
+# This is the public Fly app: the Next.js console that fronts the full protocol
+# surface. It is the only internet-reachable origin in the Fly.io Core deploy
+# target. The private reference app is configured separately in fly.reference.toml.
+#
+# Rename this to `fly.toml` in a dedicated console app directory, or pass it
+# explicitly: `fly deploy --config deploy/flyio/fly.toml`
+#
+# Before deploying, set the required secrets:
+#   fly secrets set PDPP_OWNER_PASSWORD="$(openssl rand -base64 24)"
+#   fly secrets set PDPP_DATABASE_URL="<postgres-connection-string>"
+#   fly secrets set PDPP_REFERENCE_ORIGIN="https://<console-app-name>.fly.dev"
+#   fly secrets set PDPP_AS_URL="http://<reference-app-name>.internal:7662"
+#   fly secrets set PDPP_RS_URL="http://<reference-app-name>.internal:7663"
+#
+# See deploy/flyio/README.md for the full first-deploy walkthrough.
+
+app = "pdpp-console"       # Replace with your chosen app name
+primary_region = "iad"     # Replace with your preferred region
+
+[build]
+  dockerfile = "Dockerfile"
+  # The root Dockerfile's final stage is the console image; no target needed.
+  # For explicit selection:
+  # target = "console"
+
+[env]
+  NODE_ENV = "production"
+  # Public origin, AS/RS internal targets, and owner password are set as
+  # secrets (fly secrets set ...) not baked into fly.toml.
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 25
+    soft_limit = 20
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    path = "/.well-known/oauth-authorization-server"
+    timeout = "5s"
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
