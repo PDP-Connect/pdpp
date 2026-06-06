@@ -42,9 +42,9 @@ import {
 } from "../../src/connector-runtime.ts";
 import { attachDownloadQueue, type DownloadQueue } from "../../src/download-queue.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
-import { statementFingerprintExcludeKeys } from "../../src/statement-content-fingerprint.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { readPlaywrightDownloadBufferDetailed } from "../../src/playwright-download.ts";
+import { statementFingerprintExcludeKeys } from "../../src/statement-content-fingerprint.ts";
 import {
   openStatementHydrationCursor,
   readPriorStatementHydration,

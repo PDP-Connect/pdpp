@@ -48,14 +48,14 @@ import {
 } from "../../src/connector-runtime.ts";
 import { attachDownloadQueue } from "../../src/download-queue.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
-import {
-  extractStatementContentFingerprint,
-  statementFingerprintExcludeKeys,
-} from "../../src/statement-content-fingerprint.ts";
 import type { CaptureSession, LocatorProbe } from "../../src/fixture-capture.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { savePlaywrightDownload } from "../../src/playwright-download.ts";
 import { resourceSet } from "../../src/scope-filters.ts";
+import {
+  extractStatementContentFingerprint,
+  statementFingerprintExcludeKeys,
+} from "../../src/statement-content-fingerprint.ts";
 import {
   isHydrated,
   openStatementHydrationCursor,

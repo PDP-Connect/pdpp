@@ -119,6 +119,11 @@ export interface FingerprintCursorOptions {
    *  changed". Without exclusion, the fingerprint would never match across
    *  runs even when the source has not moved. */
   excludeFromFingerprint?: readonly string[];
+  /** Optional pre-decoded prior fingerprint map. Use this when the caller
+   *  has already pulled the map out of a non-standard cursor shape. If
+   *  omitted, the cursor decodes `priorState` itself with the tolerant
+   *  rules described on `openFingerprintCursor`. */
+  priorFingerprints?: ReadonlyMap<string, string>;
   /** Compute the exclusion list per record instead of using one static list.
    *  Used by content-gated streams (PDF statements) whose exclusion depends on
    *  whether the record carries a positive content fingerprint: the gate moves
@@ -126,11 +131,6 @@ export interface FingerprintCursorOptions {
    *  signal, stay conservative" on a per-record basis. When provided, this
    *  takes precedence over `excludeFromFingerprint` for every record. */
   resolveExcludeFromFingerprint?: (record: Record<string, unknown>) => readonly string[];
-  /** Optional pre-decoded prior fingerprint map. Use this when the caller
-   *  has already pulled the map out of a non-standard cursor shape. If
-   *  omitted, the cursor decodes `priorState` itself with the tolerant
-   *  rules described on `openFingerprintCursor`. */
-  priorFingerprints?: ReadonlyMap<string, string>;
 }
 
 export interface FingerprintCursor {

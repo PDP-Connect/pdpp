@@ -1596,7 +1596,10 @@ test("runConversationsAndMessagesStreams: capped forward run covers full listed 
   const coverage = harness.protocolMessages.find(
     (m): m is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> => m.type === "DETAIL_COVERAGE"
   );
-  assert.deepEqual(coverage?.required_keys, listItems.map((item) => item.id));
+  assert.deepEqual(
+    coverage?.required_keys,
+    listItems.map((item) => item.id)
+  );
   assert.deepEqual(coverage?.hydrated_keys, ["convo-1", "convo-2"]);
   assert.deepEqual(coverage?.gap_keys, ["convo-3", "convo-4", "convo-5", "convo-6", "convo-7", "convo-8"]);
 

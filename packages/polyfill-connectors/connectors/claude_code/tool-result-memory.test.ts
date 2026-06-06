@@ -12,6 +12,7 @@
  */
 
 import assert from "node:assert/strict";
+import type { Stats } from "node:fs";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,8 +32,8 @@ afterEach(async () => {
 });
 
 interface Emitted {
-  stream: string;
   data: RecordData;
+  stream: string;
 }
 
 async function emitFor(name: string, body: Buffer | string): Promise<Emitted[]> {
@@ -44,16 +45,17 @@ async function emitFor(name: string, body: Buffer | string): Promise<Emitted[]> 
 
 async function runEmit(toolResultsDir: string, full: string): Promise<Emitted[]> {
   const emitted: Emitted[] = [];
-  const st = await stat(full);
+  const st: Stats = await stat(full);
   await emitToolResultFile({
     emitRecord: async (stream, data) => {
       emitted.push({ stream, data });
+      await Promise.resolve();
     },
     full,
     toolResultsDir,
     projectDir: "proj",
     sessionId: "sess-1",
-    st: st as unknown as import("node:fs").Stats,
+    st,
   });
   return emitted;
 }
@@ -109,18 +111,19 @@ test("unreadable tool-result path: emits nothing (caller-tolerant)", async () =>
   await mkdir(toolResultsDir, { recursive: true });
   const missing = join(toolResultsDir, "gone.txt");
   await writeFile(missing, "x");
-  const st = await stat(missing);
+  const st: Stats = await stat(missing);
   await rm(missing);
   const emitted: Emitted[] = [];
   await emitToolResultFile({
     emitRecord: async (stream, data) => {
       emitted.push({ stream, data });
+      await Promise.resolve();
     },
     full: missing,
     toolResultsDir,
     projectDir: "proj",
     sessionId: "sess-1",
-    st: st as unknown as import("node:fs").Stats,
+    st,
   });
   assert.equal(emitted.length, 0);
 });

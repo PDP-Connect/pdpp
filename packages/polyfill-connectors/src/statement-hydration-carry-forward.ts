@@ -51,10 +51,10 @@ import { type CarryForwardCursor, openCarryForwardCursor } from "./fingerprint-c
  *  before this field existed) decode cleanly. */
 export interface StatementHydration {
   document_url: string | null;
+  pdf_page_count?: number | null;
   pdf_path: string | null;
   pdf_sha256: string | null;
   pdf_text_sha256?: string | null;
-  pdf_page_count?: number | null;
 }
 
 /** The all-null index-only triple a never-hydrated statement emits. */

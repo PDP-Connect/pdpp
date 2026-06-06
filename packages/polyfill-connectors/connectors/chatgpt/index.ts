@@ -2091,7 +2091,10 @@ export async function runMessagesAndConversationsWithDetail(
     from: ConversationListItem,
     makeGap: (item: ConversationListItem, indexFromTailStart: number) => DetailGapMessage
   ): Promise<ChatGptFetchResult> {
-    const start = Math.max(0, convosToSync.findIndex((item) => item.id === from.id));
+    const start = Math.max(
+      0,
+      convosToSync.findIndex((item) => item.id === from.id)
+    );
     const tail = convosToSync.slice(start);
     for (const [index, item] of tail.entries()) {
       await emitConversationDetailGapOnce(item, makeGap(item, index));

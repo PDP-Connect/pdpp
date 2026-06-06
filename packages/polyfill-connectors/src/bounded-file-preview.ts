@@ -55,6 +55,7 @@ function trailingIncompleteUtf8Bytes(buf: Buffer): number {
   let continuation = 0;
   while (i >= 0) {
     const byte = buf[i];
+    // biome-ignore lint/suspicious/noBitwiseOperators: UTF-8 byte-class checks require bit masks.
     if (byte === undefined || (byte & 0b1100_0000) !== 0b1000_0000) {
       break;
     }
@@ -72,12 +73,16 @@ function trailingIncompleteUtf8Bytes(buf: Buffer): number {
   }
   // Expected total length of the sequence introduced by `lead`.
   let expected: number;
+  // biome-ignore lint/suspicious/noBitwiseOperators: UTF-8 byte-class checks require bit masks.
   if ((lead & 0b1000_0000) === 0) {
     expected = 1; // ASCII
+    // biome-ignore lint/suspicious/noBitwiseOperators: UTF-8 byte-class checks require bit masks.
   } else if ((lead & 0b1110_0000) === 0b1100_0000) {
     expected = 2;
+    // biome-ignore lint/suspicious/noBitwiseOperators: UTF-8 byte-class checks require bit masks.
   } else if ((lead & 0b1111_0000) === 0b1110_0000) {
     expected = 3;
+    // biome-ignore lint/suspicious/noBitwiseOperators: UTF-8 byte-class checks require bit masks.
   } else if ((lead & 0b1111_1000) === 0b1111_0000) {
     expected = 4;
   } else {

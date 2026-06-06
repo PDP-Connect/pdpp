@@ -13,16 +13,16 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { recordFingerprint } from "./fingerprint-cursor.ts";
 import {
+  hasStatementContentFingerprint,
+  normalizeStatementText,
   STATEMENT_BLOB_IDENTITY_KEYS,
   STATEMENT_CONTENT_GATED_EXCLUDE_KEYS,
   STATEMENT_RUN_CLOCK_EXCLUDE_KEYS,
-  hasStatementContentFingerprint,
-  normalizeStatementText,
   statementContentFingerprintFromText,
   statementFingerprintExcludeKeys,
 } from "./statement-content-fingerprint.ts";
-import { recordFingerprint } from "./fingerprint-cursor.ts";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -93,7 +93,9 @@ test("statementFingerprintExcludeKeys: content-bearing → full content-gated ex
   const keys = statementFingerprintExcludeKeys(CONTENT_BEARING);
   assert.deepEqual([...keys].sort(), [...STATEMENT_CONTENT_GATED_EXCLUDE_KEYS].sort());
   // blob keys AND run clock are excluded
-  for (const k of STATEMENT_BLOB_IDENTITY_KEYS) assert.ok(keys.includes(k), `missing blob key ${k}`);
+  for (const k of STATEMENT_BLOB_IDENTITY_KEYS) {
+    assert.ok(keys.includes(k), `missing blob key ${k}`);
+  }
   assert.ok(keys.includes("fetched_at"));
 });
 
@@ -101,7 +103,9 @@ test("statementFingerprintExcludeKeys: content-less → conservative run-clock-o
   const keys = statementFingerprintExcludeKeys(CONTENT_LESS);
   assert.deepEqual([...keys].sort(), [...STATEMENT_RUN_CLOCK_EXCLUDE_KEYS].sort());
   // blob keys must NOT be excluded
-  for (const k of STATEMENT_BLOB_IDENTITY_KEYS) assert.ok(!keys.includes(k), `blob key ${k} must not be excluded`);
+  for (const k of STATEMENT_BLOB_IDENTITY_KEYS) {
+    assert.ok(!keys.includes(k), `blob key ${k} must not be excluded`);
+  }
 });
 
 // ─── AC-1: blob-only churn is a no-op when content fields present ─────────

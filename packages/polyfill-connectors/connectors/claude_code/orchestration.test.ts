@@ -469,12 +469,12 @@ test("scanProjectDirs: an unchanged session does NOT re-emit a sessions record o
       requested,
       sessionAccumulators: run1Accumulators,
     });
-    await emitSessionsFromAccumulators({ emitRecord: run1.emitRecord, requested, sessionAccumulators: run1Accumulators });
-    assert.equal(
-      run1.emitted.filter((r) => r.stream === "sessions").length,
-      1,
-      "run 1 emits the session once"
-    );
+    await emitSessionsFromAccumulators({
+      emitRecord: run1.emitRecord,
+      requested,
+      sessionAccumulators: run1Accumulators,
+    });
+    assert.equal(run1.emitted.filter((r) => r.stream === "sessions").length, 1, "run 1 emits the session once");
 
     // Run 2: feed run 1's captured mtimes as the prior cursor. The file is
     // untouched, so its mtime matches → processJsonlFile returns early →
@@ -491,7 +491,11 @@ test("scanProjectDirs: an unchanged session does NOT re-emit a sessions record o
       requested,
       sessionAccumulators: run2Accumulators,
     });
-    await emitSessionsFromAccumulators({ emitRecord: run2.emitRecord, requested, sessionAccumulators: run2Accumulators });
+    await emitSessionsFromAccumulators({
+      emitRecord: run2.emitRecord,
+      requested,
+      sessionAccumulators: run2Accumulators,
+    });
 
     assert.equal(run2Accumulators.size, 0, "unchanged session file is skipped — no accumulator rebuilt");
     assert.equal(
@@ -537,7 +541,11 @@ test("scanProjectDirs: a grown session re-emits once with the higher message_cou
       requested,
       sessionAccumulators: run1Accumulators,
     });
-    await emitSessionsFromAccumulators({ emitRecord: run1.emitRecord, requested, sessionAccumulators: run1Accumulators });
+    await emitSessionsFromAccumulators({
+      emitRecord: run1.emitRecord,
+      requested,
+      sessionAccumulators: run1Accumulators,
+    });
     const firstSession = run1.emitted.find((r) => r.stream === "sessions");
     assert.equal(firstSession?.data.message_count, 1, "run 1 session has one message");
 
@@ -565,7 +573,11 @@ test("scanProjectDirs: a grown session re-emits once with the higher message_cou
       requested,
       sessionAccumulators: run2Accumulators,
     });
-    await emitSessionsFromAccumulators({ emitRecord: run2.emitRecord, requested, sessionAccumulators: run2Accumulators });
+    await emitSessionsFromAccumulators({
+      emitRecord: run2.emitRecord,
+      requested,
+      sessionAccumulators: run2Accumulators,
+    });
 
     const sessions2 = run2.emitted.filter((r) => r.stream === "sessions");
     assert.equal(sessions2.length, 1, "grown session re-emits exactly once");

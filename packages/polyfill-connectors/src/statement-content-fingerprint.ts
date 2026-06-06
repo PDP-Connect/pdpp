@@ -45,8 +45,8 @@ export const STATEMENT_CONTENT_GATED_EXCLUDE_KEYS = [
  *  fields are `null` when text extraction failed or returned empty text
  *  (fail-closed). */
 export interface StatementContentFingerprint {
-  pdf_text_sha256: string | null;
   pdf_page_count: number | null;
+  pdf_text_sha256: string | null;
 }
 
 /** The all-null fingerprint emitted on extraction failure / empty text. */
