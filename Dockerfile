@@ -182,3 +182,7 @@ COPY --from=console-builder /app/apps/console/public /console/apps/console/publi
 EXPOSE 3000
 
 CMD ["node", "/app/deploy/railway/core-supervisor.mjs"]
+
+# Generic managed-platform Core alias. It uses the same one-public-service
+# supervisor as the Railway target: console on $PORT, AS/RS on loopback.
+FROM railway-core AS platform-core

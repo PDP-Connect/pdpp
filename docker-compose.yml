@@ -92,8 +92,8 @@ services:
       # filesystem-class Claude Code / Codex collectors, not browser-backed
       # Patchright connectors.
     ports:
-      - "7662:7662"
-      - "7663:7663"
+      - "${PDPP_REFERENCE_AS_PORT:-7662}:7662"
+      - "${PDPP_REFERENCE_RS_PORT:-7663}:7663"
     depends_on:
       postgres:
         condition: service_healthy

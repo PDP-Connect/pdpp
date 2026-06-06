@@ -1,36 +1,27 @@
 #!/usr/bin/env node
 // Deterministic preflight check for the Fly.io Core deploy target env contract.
 //
-// This is the small, offline "doctor" the first-live-test gate runs BEFORE any
-// live Fly.io run is requested (see openspec/changes/add-flyio-core-deploy-target
-// and deploy/flyio/README.md). The richer live checks — composed-origin metadata
-// consistency, owner-gating redirect, restart survival, MCP reachability — run
-// against a real stack via `pnpm docker:smoke` and the live go/no-go checklist.
-// This script catches the env-contract mistakes that would make those checks fail
-// for an avoidable reason:
+// The selected Fly path is one public Core app plus Fly Postgres. The Core app
+// runs the console on Fly's public port and the reference AS/RS listeners on
+// loopback, matching the Railway one-service shape.
 //
+// This script is offline: it reads a dotenv-style file and catches avoidable
+// deploy mistakes before a live Fly run:
 //   - public origin not set, or not HTTPS;
-//   - owner data left ungated (empty PDPP_OWNER_PASSWORD on a public origin);
-//   - storage left on the non-durable default (no PDPP_DATABASE_URL);
-//   - console's private AS/RS targets unset, not *.internal, or pointing at a
-//     public URL or localhost;
-//   - PDPP_REFERENCE_ORIGIN mismatch between the console and reference apps.
-//
-// It does not contact Fly.io, Docker, or any network. It reads the dotenv-style
-// files an operator intends to set on each app and reports contract violations.
+//   - owner data left ungated;
+//   - durable Postgres not attached as PDPP_DATABASE_URL or DATABASE_URL;
+//   - topology variables that should remain owned by the platform-core image.
 //
 // Usage:
-//   node scripts/check-flyio-deploy-env.mjs --console console.env --reference reference.env
-//   node scripts/check-flyio-deploy-env.mjs --console console.env --reference reference.env --json
-//
-// Exit codes: 0 = contract satisfied; 1 = one or more violations.
+//   node scripts/check-flyio-deploy-env.mjs --core core.env
+//   node scripts/check-flyio-deploy-env.mjs --core core.env --json
 
 import { readFileSync } from 'node:fs';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
-// A placeholder is an unfilled template value, not a real configured value.
 const PLACEHOLDER_RE = /<[^>]+>/;
+const FORBIDDEN_CORE_KEYS = ['PORT', 'AS_PORT', 'RS_PORT', 'PDPP_AS_URL', 'PDPP_RS_URL'];
 
 export function isPlaceholder(value) {
   if (value === undefined || value === null) {
@@ -69,139 +60,45 @@ export function parseEnv(text) {
   return env;
 }
 
-// Returns true if the URL uses a *.internal hostname — Fly's private WireGuard
-// DNS. These are the only valid values for PDPP_AS_URL / PDPP_RS_URL on Fly.
-export function isFlyInternalUrl(url, port) {
-  if (isPlaceholder(url)) {
-    return false;
-  }
-  try {
-    const parsed = new URL(String(url).trim());
-    return (
-      parsed.protocol === 'http:' &&
-      parsed.hostname.endsWith('.internal') &&
-      parsed.port === String(port)
-    );
-  } catch {
-    return false;
-  }
-}
-
-// Evaluate the console and reference envs against the Fly.io deploy contract.
-// Returns an array of violation strings (empty means the contract is satisfied).
-// Pure function so the test suite can exercise every branch without a filesystem.
-export function evaluateFlyioDeployEnv(consoleEnv, referenceEnv) {
+export function evaluateFlyioCoreEnv(coreEnv) {
   const violations = [];
 
-  // 1. Single public HTTPS origin must be set on both apps and must match.
-  const consoleOrigin = consoleEnv.PDPP_REFERENCE_ORIGIN;
-  const referenceOrigin = referenceEnv.PDPP_REFERENCE_ORIGIN;
-
-  if (isPlaceholder(consoleOrigin)) {
+  const origin = coreEnv.PDPP_REFERENCE_ORIGIN;
+  if (isPlaceholder(origin)) {
     violations.push(
-      'PDPP_REFERENCE_ORIGIN is not set on the console app. Set it to the public ' +
-        'console HTTPS origin (e.g. https://<app-name>.fly.dev).',
+      'PDPP_REFERENCE_ORIGIN is not set. Set it to the public Core HTTPS origin ' +
+        '(e.g. https://<app-name>.fly.dev).',
     );
-  } else if (!/^https:\/\//.test(String(consoleOrigin).trim())) {
+  } else if (!/^https:\/\//.test(String(origin).trim())) {
     violations.push(
-      `PDPP_REFERENCE_ORIGIN on the console app must be an https:// origin; got "${consoleOrigin}".`,
+      `PDPP_REFERENCE_ORIGIN must be an https:// origin for a public deploy; got "${origin}".`,
     );
   }
 
-  if (isPlaceholder(referenceOrigin)) {
+  if (isPlaceholder(coreEnv.PDPP_OWNER_PASSWORD)) {
     violations.push(
-      'PDPP_REFERENCE_ORIGIN is not set on the reference app. Set it to the same ' +
-        'public HTTPS origin as the console app.',
-    );
-  } else if (!/^https:\/\//.test(String(referenceOrigin).trim())) {
-    violations.push(
-      `PDPP_REFERENCE_ORIGIN on the reference app must be an https:// origin; got "${referenceOrigin}".`,
+      'PDPP_OWNER_PASSWORD is empty. A public origin with no owner password serves the ' +
+        'dashboard and device-approval surfaces anonymously. Set a non-empty secret.',
     );
   }
 
-  if (
-    !isPlaceholder(consoleOrigin) &&
-    !isPlaceholder(referenceOrigin) &&
-    String(consoleOrigin).trim() !== String(referenceOrigin).trim()
-  ) {
+  if (isPlaceholder(coreEnv.PDPP_DATABASE_URL) && isPlaceholder(coreEnv.DATABASE_URL)) {
     violations.push(
-      `PDPP_REFERENCE_ORIGIN must match on both apps; console has "${consoleOrigin}", ` +
-        `reference has "${referenceOrigin}".`,
+      'No durable database URL is set. Use Fly Postgres (`fly launch --db`) or attach Postgres ' +
+        'with PDPP_DATABASE_URL/DATABASE_URL so data survives restart.',
     );
   }
 
-  // 2. Owner gate required on both apps, and must match.
-  if (isPlaceholder(consoleEnv.PDPP_OWNER_PASSWORD)) {
-    violations.push(
-      'PDPP_OWNER_PASSWORD is empty on the console app. A public origin with no owner password ' +
-        'serves the dashboard and device-approval surfaces anonymously. Set a non-empty secret.',
-    );
-  }
-  if (isPlaceholder(referenceEnv.PDPP_OWNER_PASSWORD)) {
-    violations.push(
-      'PDPP_OWNER_PASSWORD is empty on the reference app. Set it to the same non-empty ' +
-        'value as the console app.',
-    );
-  }
-  if (
-    !isPlaceholder(consoleEnv.PDPP_OWNER_PASSWORD) &&
-    !isPlaceholder(referenceEnv.PDPP_OWNER_PASSWORD) &&
-    String(consoleEnv.PDPP_OWNER_PASSWORD).trim() !== String(referenceEnv.PDPP_OWNER_PASSWORD).trim()
-  ) {
-    violations.push(
-      'PDPP_OWNER_PASSWORD must match on both apps; the values differ.',
-    );
-  }
-
-  // 3. Console private AS/RS targets must be set and use *.internal hostnames.
-  const asUrl = consoleEnv.PDPP_AS_URL;
-  const rsUrl = consoleEnv.PDPP_RS_URL;
-
-  if (isPlaceholder(asUrl)) {
-    violations.push(
-      'PDPP_AS_URL is not set on the console app. Set it to the private reference app ' +
-        'Authorization Server (e.g. http://<reference-app>.internal:7662).',
-    );
-  } else if (!isFlyInternalUrl(asUrl, 7662)) {
-    violations.push(
-      `PDPP_AS_URL must use a *.internal hostname and port 7662 for the Fly.io private ` +
-        `network (e.g. http://<reference-app>.internal:7662); got "${asUrl}". ` +
-        'Public URLs and localhost are not valid for the private reference app.',
-    );
-  }
-
-  if (isPlaceholder(rsUrl)) {
-    violations.push(
-      'PDPP_RS_URL is not set on the console app. Set it to the private reference app ' +
-        'Resource Server (e.g. http://<reference-app>.internal:7663).',
-    );
-  } else if (!isFlyInternalUrl(rsUrl, 7663)) {
-    violations.push(
-      `PDPP_RS_URL must use a *.internal hostname and port 7663 for the Fly.io private ` +
-        `network (e.g. http://<reference-app>.internal:7663); got "${rsUrl}". ` +
-        'Public URLs and localhost are not valid for the private reference app.',
-    );
-  }
-
-  // 4. Durable storage required on both apps.
-  if (isPlaceholder(consoleEnv.PDPP_DATABASE_URL)) {
-    violations.push(
-      'PDPP_DATABASE_URL is not set on the console app. The non-durable in-memory SQLite ' +
-        'default cannot survive restart. Set it to the Fly Postgres connection string ' +
-        '(use `fly postgres attach` to wire it automatically).',
-    );
-  }
-  if (isPlaceholder(referenceEnv.PDPP_DATABASE_URL)) {
-    violations.push(
-      'PDPP_DATABASE_URL is not set on the reference app. Set it to the same Postgres ' +
-        'connection string as the console app.',
-    );
+  for (const key of FORBIDDEN_CORE_KEYS) {
+    if (!isPlaceholder(coreEnv[key])) {
+      violations.push(
+        `core ${key} must not be set as a Fly app variable; the platform-core image keeps it internal.`,
+      );
+    }
   }
 
   return violations;
 }
-
-// --- CLI ---
 
 function loadEnvFile(path) {
   try {
@@ -214,30 +111,25 @@ function loadEnvFile(path) {
 
 function main() {
   const args = process.argv.slice(2);
-  let consolePath;
-  let referencePath;
+  let corePath;
   let jsonOutput = false;
 
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--console' && args[i + 1]) {
-      consolePath = args[++i];
-    } else if (args[i] === '--reference' && args[i + 1]) {
-      referencePath = args[++i];
+    if (args[i] === '--core' && args[i + 1]) {
+      corePath = args[++i];
     } else if (args[i] === '--json') {
       jsonOutput = true;
     }
   }
 
-  if (!consolePath || !referencePath) {
+  if (!corePath) {
     process.stderr.write(
-      'Usage: node scripts/check-flyio-deploy-env.mjs --console <env-file> --reference <env-file> [--json]\n',
+      'Usage: node scripts/check-flyio-deploy-env.mjs --core <env-file> [--json]\n',
     );
     process.exit(1);
   }
 
-  const consoleEnv = loadEnvFile(consolePath);
-  const referenceEnv = loadEnvFile(referencePath);
-  const violations = evaluateFlyioDeployEnv(consoleEnv, referenceEnv);
+  const violations = evaluateFlyioCoreEnv(loadEnvFile(corePath));
 
   if (jsonOutput) {
     process.stdout.write(JSON.stringify({ ok: violations.length === 0, violations }, null, 2) + '\n');
@@ -245,8 +137,8 @@ function main() {
     process.stdout.write('Fly.io deploy env contract: OK\n');
   } else {
     process.stdout.write(`Fly.io deploy env contract: ${violations.length} violation(s)\n\n`);
-    for (const v of violations) {
-      process.stdout.write(`  • ${v}\n`);
+    for (const violation of violations) {
+      process.stdout.write(`  • ${violation}\n`);
     }
     process.stdout.write('\nSee deploy/flyio/README.md for the correct values.\n');
     process.exit(1);

@@ -2,8 +2,9 @@
  * Explicit Postgres runtime storage bootstrap for the final Postgres slice.
  *
  * SQLite remains the default runtime backend. This module only opens a pg pool
- * when `PDPP_STORAGE_BACKEND=postgres` is set or when `PDPP_DATABASE_URL` is
- * present and no explicit backend opts out.
+ * when `PDPP_STORAGE_BACKEND=postgres` is set or when `PDPP_DATABASE_URL`
+ * (or the platform-standard `DATABASE_URL`) is present and no explicit backend
+ * opts out.
  *
  * Spec: openspec/changes/add-postgres-runtime-storage/
  */
@@ -124,7 +125,7 @@ function normalizeBackend(value) {
 }
 
 export function resolveStorageBackend({ env = process.env, opts = {} } = {}) {
-  const databaseUrl = opts.databaseUrl ?? env.PDPP_DATABASE_URL;
+  const databaseUrl = opts.databaseUrl ?? env.PDPP_DATABASE_URL ?? env.DATABASE_URL;
   const explicitBackend = nonEmptyString(opts.storageBackend ?? env.PDPP_STORAGE_BACKEND);
   const backend = normalizeBackend(explicitBackend ?? (nonEmptyString(databaseUrl) ? 'postgres' : 'sqlite'));
   if (backend === 'sqlite') {
@@ -132,7 +133,7 @@ export function resolveStorageBackend({ env = process.env, opts = {} } = {}) {
   }
 
   if (!databaseUrl) {
-    throw new Error('PDPP_STORAGE_BACKEND=postgres requires PDPP_DATABASE_URL.');
+    throw new Error('PDPP_STORAGE_BACKEND=postgres requires PDPP_DATABASE_URL or DATABASE_URL.');
   }
   return { backend, databaseUrl };
 }

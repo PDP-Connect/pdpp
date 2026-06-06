@@ -108,13 +108,13 @@ async function closeStartedServer(server) {
   ]);
 }
 
-test('Postgres runtime storage config fails fast without PDPP_DATABASE_URL', () => {
+test('Postgres runtime storage config fails fast without a database URL', () => {
   assert.throws(
     () =>
       resolveStorageBackend({
         env: { PDPP_STORAGE_BACKEND: 'postgres' },
       }),
-    /requires PDPP_DATABASE_URL/,
+    /requires PDPP_DATABASE_URL or DATABASE_URL/,
   );
 });
 
@@ -133,6 +133,24 @@ test('Postgres runtime storage auto-selects Postgres when PDPP_DATABASE_URL is p
       },
     }),
     { backend: 'sqlite' },
+  );
+});
+
+test('Postgres runtime storage accepts standard DATABASE_URL when PDPP_DATABASE_URL is absent', () => {
+  assert.deepEqual(
+    resolveStorageBackend({
+      env: { DATABASE_URL: 'postgres://user:pass@localhost:5432/pdpp' },
+    }),
+    { backend: 'postgres', databaseUrl: 'postgres://user:pass@localhost:5432/pdpp' },
+  );
+  assert.deepEqual(
+    resolveStorageBackend({
+      env: {
+        PDPP_DATABASE_URL: 'postgres://explicit:pass@localhost:5432/pdpp',
+        DATABASE_URL: 'postgres://standard:pass@localhost:5432/pdpp',
+      },
+    }),
+    { backend: 'postgres', databaseUrl: 'postgres://explicit:pass@localhost:5432/pdpp' },
   );
 });
 
