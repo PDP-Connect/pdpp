@@ -288,31 +288,32 @@ export class ChatGptRateLimitDensityTracker {
 // hot). The records already collected stay valid and the cursor still commits
 // the hydrated prefix.
 //
-// ChatGPT ships conservative run-control defaults because large-history accounts
-// otherwise require operator-supplied env vars before schedules are safe. Set a
-// non-positive env value as an explicit escape hatch for owner-supervised probes.
+// ChatGPT ships an adaptive provider-control profile by default: conservative
+// cold-start pacing, AIMD speed-up on clean success, retry-budget protection,
+// and source-pressure deferral on real throttling. Size/time caps are explicit
+// owner/system envelopes only; they are not the default throttle.
 const CHATGPT_MAX_DETAIL_FETCHES_PER_RUN_ENV = "PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN";
 const CHATGPT_MAX_RUN_WALL_CLOCK_MS_ENV = "PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS";
 const CHATGPT_PACING_INITIAL_INTERVAL_MS_ENV = "PDPP_CHATGPT_PACING_INITIAL_INTERVAL_MS";
 const CHATGPT_PACING_MIN_INTERVAL_MS_ENV = "PDPP_CHATGPT_PACING_MIN_INTERVAL_MS";
 const CHATGPT_PACING_BURST_TOLERANCE_MS_ENV = "PDPP_CHATGPT_PACING_BURST_TOLERANCE_MS";
-const CHATGPT_DEFAULT_MAX_DETAIL_FETCHES_PER_RUN = 25;
-const CHATGPT_DEFAULT_MAX_RUN_WALL_CLOCK_MS = 15 * 60_000;
+const CHATGPT_RETRY_BUDGET_CAPACITY_ENV = "PDPP_CHATGPT_RETRY_BUDGET_CAPACITY";
 const CHATGPT_DEFAULT_PACING_INITIAL_INTERVAL_MS = 2500;
-const CHATGPT_DEFAULT_PACING_MIN_INTERVAL_MS = 1500;
+const CHATGPT_DEFAULT_PACING_MIN_INTERVAL_MS = 250;
+const CHATGPT_DEFAULT_RETRY_BUDGET_CAPACITY = 5;
 
 /**
  * Resolve the maximum conversation-detail provider requests a single run may
  * admit before deferring the remaining tail as resumable DETAIL_GAP records.
- * Unset uses the conservative ChatGPT default. Any value < 1 is the disable
- * escape hatch and returns Infinity. A positive integer overrides the cap. The
- * env var keeps its legacy detail-fetch name because this lane has a
- * one-detail-fetch-to-one-provider-request mapping.
+ * Unset or any value < 1 returns Infinity: no detail-count cap. A positive
+ * integer opts into an owner/system envelope. The env var keeps its legacy
+ * detail-fetch name because this lane has a one-detail-fetch-to-one-provider-
+ * request mapping.
  */
 export function resolveChatGptMaxDetailFetchesPerRun(env: NodeJS.ProcessEnv = process.env): number {
   const trimmed = env[CHATGPT_MAX_DETAIL_FETCHES_PER_RUN_ENV]?.trim();
   if (trimmed == null || trimmed === "") {
-    return CHATGPT_DEFAULT_MAX_DETAIL_FETCHES_PER_RUN;
+    return Number.POSITIVE_INFINITY;
   }
   const parsed = Number(trimmed);
   if (!Number.isInteger(parsed) || parsed < 1) {
@@ -323,19 +324,33 @@ export function resolveChatGptMaxDetailFetchesPerRun(env: NodeJS.ProcessEnv = pr
 
 /**
  * Resolve the maximum wall-clock (ms) the conversation-detail phase may spend
- * before deferring the remaining tail as resumable DETAIL_GAP records. Unset
- * uses the conservative ChatGPT default. Any value <= 0 is the disable escape
- * hatch and returns Infinity. A positive value overrides the cap. The budget
- * spans the gap-recovery pass and the forward-walk pass of a single run.
+ * before deferring the remaining tail as resumable DETAIL_GAP records. Unset or
+ * any value <= 0 returns Infinity: no wall-clock cap. A positive value opts into
+ * an owner/system envelope. The budget spans the gap-recovery pass and the
+ * forward-walk pass of a single run.
  */
 export function resolveChatGptMaxRunWallClockMs(env: NodeJS.ProcessEnv = process.env): number {
   const trimmed = env[CHATGPT_MAX_RUN_WALL_CLOCK_MS_ENV]?.trim();
   if (trimmed == null || trimmed === "") {
-    return CHATGPT_DEFAULT_MAX_RUN_WALL_CLOCK_MS;
+    return Number.POSITIVE_INFINITY;
   }
   const parsed = Number(trimmed);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     return Number.POSITIVE_INFINITY;
+  }
+  return Math.floor(parsed);
+}
+
+function resolveChatGptRetryBudgetCapacity(env: NodeJS.ProcessEnv, maxRequests: number): number | null {
+  const trimmed = env[CHATGPT_RETRY_BUDGET_CAPACITY_ENV]?.trim();
+  if (trimmed == null || trimmed === "") {
+    return Number.isFinite(maxRequests)
+      ? retryBudgetCapacityFromRequestCap({ maxRequests })
+      : CHATGPT_DEFAULT_RETRY_BUDGET_CAPACITY;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
   }
   return Math.floor(parsed);
 }
@@ -359,8 +374,8 @@ export function resolveChatGptProviderBudget(env: NodeJS.ProcessEnv = process.en
       ? CHATGPT_DEFAULT_PACING_INITIAL_INTERVAL_MS
       : resolvePositiveFiniteMs(env, CHATGPT_PACING_INITIAL_INTERVAL_MS_ENV);
   const maxRequests = resolveChatGptMaxDetailFetchesPerRun(env);
-  const retryBudgetCapacity = retryBudgetCapacityFromRequestCap({ maxRequests });
-  const hasRetryBudget = Number.isFinite(retryBudgetCapacity);
+  const retryBudgetCapacity = resolveChatGptRetryBudgetCapacity(env, maxRequests);
+  const hasRetryBudget = retryBudgetCapacity != null;
   if (initialIntervalMs == null && !hasRetryBudget) {
     return null;
   }
@@ -2355,8 +2370,8 @@ export async function runMessagesAndConversationsWithDetail(
     // spent its provider-request budget, or spent its wall-clock budget, stop
     // launching new fetches and defer this + every later conversation as a
     // resumable run-cap DETAIL_GAP. NOT a source failure — `reason` stays
-    // `retry_exhausted` so no source-pressure cooldown is armed. Defaults are
-    // the disable sentinel, so a normal run never reaches this branch.
+    // `retry_exhausted` so no source-pressure cooldown is armed. The ChatGPT
+    // default has no fixed size/time cap; this branch is for explicit envelopes.
     const runBudgetDefer = await maybeDeferForRunBudget(c);
     if (runBudgetDefer) {
       return runBudgetDefer;
@@ -2623,10 +2638,9 @@ if (isMainModule(import.meta.url)) {
       // stop so pre-detail source pressure defers the tail earlier.
       const preDetailPressure: ChatGptPreDetailPressure = { rateLimited: 0 };
 
-      // Run-scoped bounded-run cap, created once so the gap-recovery pass and the
-      // forward-walk pass share one budget — a large recovery backlog plus new
-      // conversations are bounded together. ChatGPT ships conservative defaults;
-      // non-positive env values are explicit disable sentinels for supervised probes.
+      // Run-scoped bounded-run envelope, created once so the gap-recovery pass
+      // and the forward-walk pass share one budget. By default ChatGPT has no
+      // fixed size/time cap; positive env values opt into explicit envelopes.
       const runBudget = new ChatGptRunBudget({
         maxFetches: resolveChatGptMaxDetailFetchesPerRun(),
         maxWallClockMs: resolveChatGptMaxRunWallClockMs(),

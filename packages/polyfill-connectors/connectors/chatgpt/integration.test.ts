@@ -1207,13 +1207,16 @@ test("runMessagesAndConversationsWithDetail: a zero pre-detail seed preserves th
 
 // ─── Bounded-run budget (provider requests / wall-clock per run) ───────────
 
-test("resolveChatGptMaxDetailFetchesPerRun: unset → safe default; non-positive disables; positive int overrides", () => {
-  assert.equal(resolveChatGptMaxDetailFetchesPerRun({}), 25);
-  assert.equal(resolveChatGptMaxDetailFetchesPerRun({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "" }), 25);
+test("resolveChatGptMaxDetailFetchesPerRun: unset/non-positive → no cap; positive int opts into envelope", () => {
+  assert.equal(resolveChatGptMaxDetailFetchesPerRun({}), Number.POSITIVE_INFINITY);
+  assert.equal(
+    resolveChatGptMaxDetailFetchesPerRun({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "" }),
+    Number.POSITIVE_INFINITY
+  );
   assert.equal(
     resolveChatGptMaxDetailFetchesPerRun({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "0" }),
     Number.POSITIVE_INFINITY,
-    "0 is the documented disable escape hatch"
+    "0 keeps the adaptive default unbounded by detail count"
   );
   assert.equal(
     resolveChatGptMaxDetailFetchesPerRun({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "-5" }),
@@ -1227,12 +1230,12 @@ test("resolveChatGptMaxDetailFetchesPerRun: unset → safe default; non-positive
   assert.equal(resolveChatGptMaxDetailFetchesPerRun({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "250" }), 250);
 });
 
-test("resolveChatGptMaxRunWallClockMs: unset → safe default; non-positive disables; positive ms overrides", () => {
-  assert.equal(resolveChatGptMaxRunWallClockMs({}), 900_000);
+test("resolveChatGptMaxRunWallClockMs: unset/non-positive → no cap; positive ms opts into envelope", () => {
+  assert.equal(resolveChatGptMaxRunWallClockMs({}), Number.POSITIVE_INFINITY);
   assert.equal(
     resolveChatGptMaxRunWallClockMs({ PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS: "0" }),
     Number.POSITIVE_INFINITY,
-    "0 disables the wall-clock budget"
+    "0 keeps the adaptive default unbounded by wall-clock"
   );
   assert.equal(resolveChatGptMaxRunWallClockMs({ PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS: "-1" }), Number.POSITIVE_INFINITY);
   assert.equal(resolveChatGptMaxRunWallClockMs({ PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS: "1800000" }), 1_800_000);
@@ -1246,8 +1249,10 @@ test("resolveChatGptMaxRunWallClockMs: unset → safe default; non-positive disa
 test("resolveChatGptProviderBudget: defaults enable retry budget and pacing; explicit disables stay available", async () => {
   const defaultBudget = resolveChatGptProviderBudget({});
   assert.ok(defaultBudget instanceof ProviderBudgetController);
-  assert.ok(defaultBudget.pacing, "ChatGPT default enables conservative inter-request pacing");
-  assert.ok(defaultBudget.retryBudget, "ChatGPT default derives a ratio-based retry budget");
+  assert.ok(defaultBudget.pacing, "ChatGPT default enables adaptive inter-request pacing");
+  assert.equal(defaultBudget.pacing.currentIntervalMs, 2500, "ChatGPT starts at a conservative cold interval");
+  assert.ok(defaultBudget.retryBudget, "ChatGPT default keeps a retry budget even without a request cap");
+  assert.equal(defaultBudget.retryBudget.capacity, 5);
 
   const retryOnlyByPacingDisable = resolveChatGptProviderBudget({ PDPP_CHATGPT_PACING_INITIAL_INTERVAL_MS: "0" });
   assert.ok(retryOnlyByPacingDisable instanceof ProviderBudgetController);
@@ -1256,17 +1261,18 @@ test("resolveChatGptProviderBudget: defaults enable retry budget and pacing; exp
 
   assert.equal(
     resolveChatGptProviderBudget({
-      PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "0",
       PDPP_CHATGPT_PACING_INITIAL_INTERVAL_MS: "0",
+      PDPP_CHATGPT_RETRY_BUDGET_CAPACITY: "0",
     }),
     null,
-    "request/retry budget and pacing can both be disabled for supervised probes"
+    "retry budget and pacing can both be disabled for supervised probes"
   );
 
   const retryOnly = resolveChatGptProviderBudget({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "10" });
   assert.ok(retryOnly instanceof ProviderBudgetController);
   assert.ok(retryOnly.pacing, "run cap override preserves default inter-request pacing");
   assert.ok(retryOnly.retryBudget, "run cap derives a ratio-based retry budget");
+  assert.equal(retryOnly.retryBudget.capacity, 2);
 
   const sleeps: number[] = [];
   const budget = resolveChatGptProviderBudget({

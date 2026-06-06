@@ -54,8 +54,8 @@ separate lane or tranche with its own acceptance checks.
 ### 2.4 Run budget envelope (request cap + wall-clock deadline)
 
 - [x] Implement run-scoped request cap and wall-clock deadline.
-  - [x] Generic primitive supports unbounded mode; ChatGPT uses conservative
-        defaults with explicit disable escape hatches.
+  - [x] Generic primitive supports unbounded mode; ChatGPT defaults to adaptive
+        pacing/retry protection, with fixed caps only as explicit envelopes.
   - [x] Wall-clock checked between fetch attempts, never mid-fetch.
   - [x] On exhaustion: emit resumable gap record; checkpoint reflects last durable write only.
   - [x] Gap reason is not in source-pressure reason set.
