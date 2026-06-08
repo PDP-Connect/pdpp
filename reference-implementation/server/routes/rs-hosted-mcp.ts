@@ -221,7 +221,7 @@ export function mountRsHostedMcp(app: AppLike, ctx: MountRsHostedMcpContext): vo
   function setHostedMcpProtectedResourceMetadata(req: RouteRequest, res: RouteResponse, next: () => void): void {
     if (isTrustedMetadataRequestOrigin(req, explicitResource, trustedMetadataHosts)) {
       const resource = resolvePublicUrl(req, explicitResource);
-      res.locals[PROTECTED_RESOURCE_METADATA_URL_LOCAL] = protectedResourceMetadataUrlForResource(resource);
+      res.locals[PROTECTED_RESOURCE_METADATA_URL_LOCAL] = protectedResourceMetadataUrlForResource(`${resource}/mcp`);
       res.setHeader("link", hostedMcpIconLink(resource));
     }
     next();

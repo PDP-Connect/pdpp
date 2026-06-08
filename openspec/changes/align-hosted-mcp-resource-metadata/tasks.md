@@ -1,7 +1,7 @@
 ## 1. Metadata Alignment
 
- - [x] Update hosted MCP 401 challenge metadata URL to the provider protected-resource metadata URL.
- - [x] Preserve the path-specific hosted MCP metadata document.
+ - [x] Update hosted MCP 401 challenge metadata URL to the path-specific hosted MCP protected-resource metadata URL.
+ - [x] Preserve the provider-root protected-resource metadata document.
 
 ## 2. Validation
 

@@ -1,24 +1,24 @@
 ## Decision
 
-The hosted MCP HTTP boundary uses the provider origin as the canonical OAuth resource identity. Anonymous `/mcp` requests SHALL challenge with the provider protected-resource metadata URL, not a `/mcp`-derived metadata URL.
+The hosted MCP HTTP boundary uses the path-specific MCP endpoint as the OAuth resource identity. Anonymous `/mcp` requests SHALL challenge with the hosted MCP protected-resource metadata URL at `/.well-known/oauth-protected-resource/mcp`.
 
-The path-specific metadata document remains served at `/.well-known/oauth-protected-resource/mcp` because MCP clients may request a path-derived well-known URI. It advertises the hosted MCP endpoint and accepted token kinds, but the 401 challenge avoids switching resource identities mid-flow.
+The provider-root metadata document remains served at `/.well-known/oauth-protected-resource` for non-MCP clients. Hosted MCP challenges do not use it because Claude live testing showed OAuth could complete but the client could still fail before attaching the connected server when the challenge pointed at provider-root metadata.
 
 ## Rationale
 
-Claude's observed authorization request used `resource=https://pdpp.vivid.fish/` while the `/mcp` challenge returned metadata for `resource=https://pdpp.vivid.fish/mcp`. MCP authorization requires the `resource` parameter to identify the MCP server the client intends to use. A host that binds tokens strictly can treat the later `/mcp` challenge as a different resource and fail before retrying with the token.
+Claude's observed authorization request can use a provider-origin resource while the server itself is mounted at `/mcp`. The earlier provider-root challenge was intended to keep one resource identity, but live evidence after deployment showed Claude successfully created an active package grant and active `mcp_package` tokens, then failed before using the connected MCP server. That makes the path-specific MCP resource the safer interoperability default for the challenged `/mcp` surface.
 
-Using one provider-origin resource identity is the smallest interoperable fix for the reference's composed AS/RS deployment. It avoids requiring chat hosts to discover and preserve a second resource identity for the same operator instance.
+Using path-specific metadata in the `/mcp` challenge matches the mounted MCP endpoint, keeps the well-known resource document self-consistent (`resource = <origin>/mcp`), and is the smallest reversible rollback from the failed Claude attempt.
 
 ## Alternatives
 
-- Require users to connect `https://host/mcp` instead of `https://host`: rejected for poor operator UX and because Claude already derived `/mcp` after authorizing the root resource.
-- Accept both identities only server-side: insufficient because Claude failed before sending an authenticated MCP request.
-- Remove the path-specific metadata document: rejected because MCP clients may construct that well-known URL for path-mounted servers.
+- Challenge with provider-root metadata. Rejected because Claude live testing completed OAuth but still failed to attach/use the server after that behavior shipped.
+- Remove provider-root metadata. Rejected because non-MCP clients use the provider protected-resource metadata document.
+- Accept both identities only server-side. Insufficient because the failing host may validate discovery and resource identity before sending authenticated MCP requests.
 
 ## Acceptance Checks
 
-- Anonymous `/mcp` returns `401` with `WWW-Authenticate` pointing at `/.well-known/oauth-protected-resource`.
+- Anonymous `/mcp` returns `401` with `WWW-Authenticate` pointing at `/.well-known/oauth-protected-resource/mcp`.
 - The JSON error body reports the same metadata URL.
 - `/.well-known/oauth-protected-resource/mcp` remains available and advertises hosted MCP token kinds.
 - Hosted MCP still rejects owner bearers and accepts grant-scoped client/package bearers.

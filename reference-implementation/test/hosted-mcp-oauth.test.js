@@ -663,11 +663,9 @@ test('/mcp rejects missing and owner bearers', async () => {
     const missing = await fetchJson(`${rsUrl}/mcp`, { method: 'POST' });
     assert.equal(missing.status, 401);
     assert.equal(missing.resp.headers.get('link'), `<${rsUrl}/icon.svg>; rel="icon"; type="image/svg+xml"`);
-    assert.equal(missing.body.error.resource_metadata, `${rsUrl}/.well-known/oauth-protected-resource`);
-    const rootMetadata = await fetchProtectedResourceMetadata(missing.body.error.resource_metadata);
-    assert.equal(rootMetadata.resource, rsUrl);
+    assert.equal(missing.body.error.resource_metadata, `${rsUrl}/.well-known/oauth-protected-resource/mcp`);
 
-    const mcpMetadata = await fetchProtectedResourceMetadata(`${rsUrl}/.well-known/oauth-protected-resource/mcp`);
+    const mcpMetadata = await fetchProtectedResourceMetadata(missing.body.error.resource_metadata);
     assert.equal(mcpMetadata.resource, `${rsUrl}/mcp`);
     assert.deepEqual(mcpMetadata.pdpp_token_kinds_supported, ['client', 'mcp_package']);
     assert.equal(mcpMetadata.pdpp_agent_discovery.mcp.endpoint, `${rsUrl}/mcp`);
@@ -1035,7 +1033,7 @@ test('revoking the package invalidates /mcp access and the refresh-token exchang
     assert.equal(after.body.error.code, 'authentication_error');
     assert.equal(
       after.body.error.resource_metadata,
-      `${rsUrl}/.well-known/oauth-protected-resource`,
+      `${rsUrl}/.well-known/oauth-protected-resource/mcp`,
     );
 
     // The refresh-token exchange must also fail — the package's refresh
