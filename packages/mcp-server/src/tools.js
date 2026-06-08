@@ -58,7 +58,7 @@ const SUPPORTED_AGGREGATE_QUERY_KEYS = new Set([
 ]);
 
 const CONNECTION_ID_DESCRIPTION =
-  'Optional connection_id from a prior list_streams response or typed `available_connections` error envelope. Omit to fan in across every connection your grant authorizes for the named stream; pass it to scope the call to one account/device/profile. Required to recover from a typed `ambiguous_connection` (409) error returned by `fetch`, `fetch_blob`, or package-token event-subscription creation — the error envelope lists candidate `available_connections` entries with current-authorization `grant_id`, `connector_key`, `connection_id`, and optional `display_name`, and instructs you to retry with `connection_id`. Persist `connection_id`, not `grant_id`, for source disambiguation across reconnects or reauthorization; `grant_id` identifies the current grant and can change when the owner reconnects. Granted connection identities and canonical connector-type metadata are advertised by `GET /v1/schema`.';
+  'Optional. Scope this call to one connection. Omit to fan in across all granted connections. Obtain from `list_streams`, `schema`, or the `available_connections` field in a typed 409 error — each entry includes `connector_key` and `connection_id`. Persist `connection_id` (not `grant_id`) across reconnects.';
 
 const CONNECTOR_INSTANCE_ID_DESCRIPTION =
   'Deprecated wire alias for `connection_id`. Accepted only for pre-migration compatibility — new clients SHOULD pass `connection_id` instead and ignore this field on the response.';
@@ -315,8 +315,11 @@ const EVENT_SUB_DISCOVERY_OUTPUT_SCHEMA_SHAPE = {
   http_status: z.number().int(),
 };
 
-const SUBSCRIPTION_TOOL_FOOTER =
-  ' Use event subscriptions when you need low-latency notification of changes from a long-lived receiver; prefer polling via `query_records` with `changes_since` for one-shot reads or short-lived clients. Receivers must be HTTPS endpoints reachable from the configured PDPP instance (http://localhost is permitted only in development). Events are signed per Standard Webhooks (`webhook-id`, `webhook-timestamp`, `webhook-signature: v1,<base64>`) using the per-subscription secret returned at create. Envelope is CloudEvents 1.0 JSON structured mode (`application/cloudevents+json`); record bodies are never pushed — events carry IDs and a `data.changes_since` cursor that clients pull via `query_records` with `changes_since=<data.changes_since>`. Call `discover_event_subscription_capabilities` for the authoritative supported event types, retry schedule, and signing profile (sourced from `capabilities.client_event_subscriptions` on `/.well-known/oauth-protected-resource`).';
+const SUBSCRIPTION_DISCOVERY_GUIDANCE =
+  ' Use event subscriptions when you need low-latency notification of changes from a long-lived receiver; prefer polling via `query_records` with `changes_since` for one-shot reads or short-lived clients. Receivers must be HTTPS endpoints reachable from the configured PDPP instance (http://localhost is permitted only in development). Events are signed per Standard Webhooks (`webhook-id`, `webhook-timestamp`, `webhook-signature: v1,<base64>`) using the per-subscription secret returned at create. Envelope is CloudEvents 1.0 JSON structured mode (`application/cloudevents+json`); record bodies are never pushed — events carry IDs and a `data.changes_since` cursor that clients pull via `query_records` with `changes_since=<data.changes_since>`.';
+
+const SUBSCRIPTION_TOOL_POINTER =
+  ' Prefer polling via `query_records` with `changes_since` for one-shot reads. Callback receivers must be HTTPS endpoints (http://localhost is accepted in development). Call `discover_event_subscription_capabilities` first; it reads `capabilities.client_event_subscriptions` for supported event types, signing profile, retry schedule, callback URL rules, and the change-cursor delivery contract.';
 
 const SUBSCRIPTION_ID_DESCRIPTION =
   'Subscription identifier returned by `create_event_subscription` or `list_event_subscriptions` (prefix `sub_`).';
@@ -448,7 +451,7 @@ export function buildTools({ rs, providerUrl }) {
       name: 'query_records',
       title: 'Query PDPP records',
       description:
-        'Query records in a stream via `GET /v1/streams/{stream}/records`. Forwards canonical public read args verbatim — MCP does not silently drop a parameter the RS would reject. The page is bounded by default: omitting `limit` returns at most 25 records and `limit` is capped at 100 (the spec-core §8 contract). This tool enforces that cap at input validation, so a `limit` above 100 is rejected here rather than silently clamped; a direct REST client that sends `limit>100` is clamped to 100 and told so via a `limit_clamped` entry in the response `meta.warnings[]`. Either way the page size is never silently surprising. The tool is safe to call before you know a stream is small; page forward with the returned `cursor` and narrow the payload with `fields` (a schema-advertised projection) when records are wide. The `content[]` text summary previews up to the first 5 records within a fixed character budget; the full page stays in `structuredContent.data`. Omitting `connection_id` on a multi-connection grant fans in across granted connections; records carry `connection_id` for attribution and package-source metadata uses canonical `connector_key` for connector type. ' +
+        'Query records in a stream via `GET /v1/streams/{stream}/records`. Default returns at most 25 records; `limit` is capped at 100 (enforced at input — a REST client that sends `limit>100` gets `limit_clamped` in `meta.warnings[]`). Page forward with `cursor`; narrow with `fields`. `structuredContent.data` carries the full canonical envelope; `content[]` previews up to the first 5 records. Forwards all args verbatim. ' +
         CANONICAL_SCHEMA_HINT +
         ' Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
@@ -489,7 +492,7 @@ export function buildTools({ rs, providerUrl }) {
       name: 'aggregate',
       title: 'Aggregate PDPP records',
       description:
-        'Compute a single-stream grant-safe aggregation via `GET /v1/streams/{stream}/aggregate`. Prefer this over paging `query_records` whenever you only need a count, sum, min/max, distinct count, or a grouped/time-bucketed rollup: it returns small bucket rows, never record bodies, so it answers "how many / how much / grouped by" without pulling pages of records into context. Metrics: `count`, `sum`, `min`, `max`, `count_distinct` (`field` required for all but `count`). Group with exactly one dimension per call — `group_by=<scalar_field>` XOR `group_by_time=<date_field>`; combining them is rejected. `group_by_time` requires `granularity` (`minute|hour|day|week|month|quarter|year`, calendar-aware, weeks start Monday) and accepts an optional IANA `time_zone` (defaults to UTC, echoed in the response). Groupable, time-bucketable, and distinct-able fields are advertised by `GET /v1/schema` (`field_capabilities.*.aggregation`); undeclared or undeclared-for-the-operation fields are rejected by the RS rather than silently ignored. Scalar `group_by` buckets order by count descending then key ascending; `group_by_time` buckets order by bucket start ascending with a single `null` bucket (sorted last) for null/unparseable times. `count_distinct` excludes null and is exact (`approximate: false`). Forwards args verbatim — MCP does not silently drop a parameter the RS would reject. ' +
+        'Compute a single-stream aggregation via `GET /v1/streams/{stream}/aggregate`. Prefer over `query_records` when you only need a count, sum, min/max, distinct count, or grouped/time-bucketed rollup — returns small bucket rows, never record bodies. Metrics: `count`, `sum`, `min`, `max`, `count_distinct` (`field` required for all but `count`). Group with one dimension: `group_by` XOR `group_by_time` (requires `granularity`). Groupable fields are advertised by `GET /v1/schema`. Forwards args verbatim. ' +
         CANONICAL_SCHEMA_HINT +
         ' Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
@@ -548,7 +551,7 @@ export function buildTools({ rs, providerUrl }) {
       name: 'search',
       title: 'Search PDPP records',
       description:
-        'Search records via `GET /v1/search` (lexical), `/v1/search/semantic`, or `/v1/search/hybrid` per the `mode` argument. Returns the RS search envelope plus ChatGPT-compatible flattened `results`. Hits carry `connection_id` and `display_name`; package-source metadata uses canonical `connector_key` for connector type. Pass `connection_id` to scope, omit to fan in. The page is bounded: omitting `limit` returns at most 25 hits and `limit` is capped at 100 — the bound the published search contract declares and every mode honors (advertised as `capabilities.{lexical,semantic,hybrid}_retrieval.max_limit`). This tool enforces that cap at input validation, so a `limit` above 100 is rejected here rather than forwarded to be silently clamped by the RS. Page forward with the returned `cursor` (lexical and semantic; hybrid does not page) instead of asking for a larger page. Per-mode pagination, filter, and capability support are advertised by `GET /v1/schema` and the protected-resource metadata `capabilities` block. If the deployment does not advertise search, the RS error envelope is preserved in the tool result. Read-only.',
+        'Search records via `GET /v1/search` (lexical), `/v1/search/semantic`, or `/v1/search/hybrid` per `mode`. Returns the RS envelope plus ChatGPT-compatible flattened `results`. Hits carry `connection_id` and `connector_key`. Pass `connection_id` to scope, omit to fan in. Page default is 25 hits; `limit` is capped at 100 (enforced at input). Page forward with `cursor` (lexical/semantic; hybrid does not page). Per-mode capability support is advertised by `GET /v1/schema`. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({
@@ -583,7 +586,7 @@ export function buildTools({ rs, providerUrl }) {
       name: 'fetch',
       title: 'Fetch PDPP search result',
       description:
-        'Fetch a single ChatGPT-compatible document by a result id returned from `search`. The default id format is `stream:record_id` and is read through `GET /v1/streams/{stream}/records/{record_id}`. When the identifier resolves to more than one connection under your grant and `connection_id` is omitted, the RS returns a typed `ambiguous_connection` (409) error listing `available_connections` entries with current-authorization `grant_id`, canonical `connector_key`, `connection_id`, and optional `display_name`; retry with the chosen `connection_id`. Persist `connection_id`, not `grant_id`, across reconnects. Read-only.',
+        'Fetch a single ChatGPT-compatible document by a result id from `search`. Id format: `stream:record_id` → `GET /v1/streams/{stream}/records/{record_id}`. Result carries `connection_id` and `connector_key`. On `ambiguous_connection` (409), pick a `connection_id` from `available_connections` in the error and retry. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({
@@ -612,7 +615,9 @@ export function buildTools({ rs, providerUrl }) {
       name: 'discover_event_subscription_capabilities',
       title: 'Discover event subscription capabilities',
       description:
-        'Return the reference implementation\'s event-subscription advertisement by fetching `GET /.well-known/oauth-protected-resource` and extracting `capabilities.client_event_subscriptions`. Use this before calling `create_event_subscription` to learn supported event types (e.g. `pdpp.records.changed`, `pdpp.grant.revoked`), signing profile, retry schedule, verification handshake, callback-URL byte limit, and the hint cursor location. This endpoint is unauthenticated by design (RFC 9728). If the deployment does not advertise event subscriptions, the tool surfaces the absence as `supported: false`. Read-only.',
+        'Return the reference implementation\'s event-subscription advertisement by fetching `GET /.well-known/oauth-protected-resource` and extracting `capabilities.client_event_subscriptions`. Use this before calling `create_event_subscription` to learn supported event types (e.g. `pdpp.records.changed`, `pdpp.grant.revoked`), signing profile, retry schedule, verification handshake, callback-URL byte limit, and the hint cursor location. This endpoint is unauthenticated by design (RFC 9728). If the deployment does not advertise event subscriptions, the tool surfaces the absence as `supported: false`.' +
+        SUBSCRIPTION_DISCOVERY_GUIDANCE +
+        ' Read-only.',
       annotations: SUBSCRIPTION_READ_ANNOTATIONS,
       inputSchema: EMPTY_TOOL_INPUT_SCHEMA,
       outputSchema: z.object(EVENT_SUB_DISCOVERY_OUTPUT_SCHEMA_SHAPE),
@@ -625,8 +630,8 @@ export function buildTools({ rs, providerUrl }) {
       name: 'create_event_subscription',
       title: 'Create event subscription',
       description:
-        'Create an outbound event subscription via `POST /v1/event-subscriptions` using the configured scoped client bearer. Persists a `(grant_id, client_id, subject_id)`-bound subscription on the RS and returns the per-subscription `whsec_`-prefixed delivery secret exactly once (rotate via `update_event_subscription`). Under a hosted MCP package token covering multiple sources, pass `connection_id` so the new subscription binds to exactly one child grant; the adapter rejects ambiguous calls with a typed `ambiguous_connection` (409) whose `available_connections` entries include current-authorization `grant_id`, canonical `connector_key`, `connection_id`, and optional `display_name`. Persist the returned `subscription_id` for subscription management and `connection_id` for source disambiguation; do not persist `grant_id` as a reconnect-stable source identifier.' +
-        SUBSCRIPTION_TOOL_FOOTER,
+        'Create an outbound event subscription via `POST /v1/event-subscriptions`. Returns the `whsec_`-prefixed delivery secret exactly once — store it on the receiver immediately. Pass `connection_id` when the grant covers multiple sources; on ambiguous calls the RS returns `available_connections` entries with `connector_key` and `connection_id`.' +
+        SUBSCRIPTION_TOOL_POINTER,
       annotations: SUBSCRIPTION_WRITE_ANNOTATIONS,
       inputSchema: z
         .object({
@@ -654,8 +659,8 @@ export function buildTools({ rs, providerUrl }) {
       name: 'list_event_subscriptions',
       title: 'List event subscriptions',
       description:
-        'List event subscriptions owned by the configured scoped client bearer via `GET /v1/event-subscriptions`. Each entry SHALL include `subscription_id`, `status`, `callback_url`, and the snapshotted grant scope. Returns subscriptions belonging to the bearer\'s `(client_id, grant_id)` only; the RS hides the per-subscription secret. Read-only.' +
-        SUBSCRIPTION_TOOL_FOOTER,
+        'List event subscriptions for the configured bearer via `GET /v1/event-subscriptions`. Returns `subscription_id`, `status`, `callback_url`, and grant scope. Secret is not returned on list. Read-only.' +
+        SUBSCRIPTION_TOOL_POINTER,
       annotations: SUBSCRIPTION_READ_ANNOTATIONS,
       inputSchema: EMPTY_TOOL_INPUT_SCHEMA,
       outputSchema: z.object(EVENT_SUB_OUTPUT_SCHEMA_SHAPE),
@@ -668,8 +673,8 @@ export function buildTools({ rs, providerUrl }) {
       name: 'get_event_subscription',
       title: 'Get event subscription',
       description:
-        'Fetch a single subscription owned by the configured scoped client bearer via `GET /v1/event-subscriptions/:id`. Returns 404 (typed `not_found`) if the subscription belongs to a different client/grant or is deleted. Read-only.' +
-        SUBSCRIPTION_TOOL_FOOTER,
+        'Fetch a single subscription via `GET /v1/event-subscriptions/:id`. Returns 404 if not owned by this bearer or already deleted. Read-only.' +
+        SUBSCRIPTION_TOOL_POINTER,
       annotations: SUBSCRIPTION_READ_ANNOTATIONS,
       inputSchema: z
         .object({
@@ -687,8 +692,8 @@ export function buildTools({ rs, providerUrl }) {
       name: 'update_event_subscription',
       title: 'Update event subscription',
       description:
-        'Update a subscription via `PATCH /v1/event-subscriptions/:id`. Pass `enabled: false` to disable (transitions `active`/`pending_verification` → `disabled`), `enabled: true` to re-enable from a `disabled`/`disabled_failure` state, or `rotate_secret: true` to mint a fresh `whsec_`-prefixed signing secret (returned in the response exactly once). A grant-revoked subscription cannot be re-enabled and will return a typed `grant_revoked` (409) error. Each call is a state mutation — calling it twice is NOT a no-op when `rotate_secret: true`.' +
-        SUBSCRIPTION_TOOL_FOOTER,
+        'Update a subscription via `PATCH /v1/event-subscriptions/:id`. `enabled: false` disables; `enabled: true` re-enables from disabled state; `rotate_secret: true` mints a new `whsec_` secret (returned once). Grant-revoked subscriptions return `grant_revoked` (409). NOT idempotent when `rotate_secret: true`.' +
+        SUBSCRIPTION_TOOL_POINTER,
       annotations: SUBSCRIPTION_WRITE_ANNOTATIONS,
       inputSchema: z
         .object({
@@ -714,7 +719,7 @@ export function buildTools({ rs, providerUrl }) {
       title: 'Delete event subscription',
       description:
         'Delete a subscription via `DELETE /v1/event-subscriptions/:id`. Marks the subscription `deleted` and drops queued deliveries. Subsequent reads return 404. Destructive: there is no undelete.' +
-        SUBSCRIPTION_TOOL_FOOTER,
+        SUBSCRIPTION_TOOL_POINTER,
       annotations: SUBSCRIPTION_DELETE_ANNOTATIONS,
       inputSchema: z
         .object({
@@ -732,8 +737,8 @@ export function buildTools({ rs, providerUrl }) {
       name: 'send_test_event',
       title: 'Send subscription test event',
       description:
-        'Enqueue a `pdpp.subscription.test` event for the named subscription via `POST /v1/event-subscriptions/:id/test-event`. Returns the freshly minted `event_id`. The RS responds 202 once the event is enqueued — actual delivery happens out-of-band via the delivery worker against the subscription\'s callback URL. The subscription must be `active` or `pending_verification`; other states return a typed `invalid_state` (409). Each call mints a new event id and is NOT a no-op.' +
-        SUBSCRIPTION_TOOL_FOOTER,
+        'Enqueue a `pdpp.subscription.test` event via `POST /v1/event-subscriptions/:id/test-event`. Returns a new `event_id`; delivery happens out-of-band. Subscription must be `active` or `pending_verification`. Each call is NOT a no-op.' +
+        SUBSCRIPTION_TOOL_POINTER,
       annotations: SUBSCRIPTION_WRITE_ANNOTATIONS,
       inputSchema: z
         .object({
@@ -754,7 +759,7 @@ export function buildTools({ rs, providerUrl }) {
       name: 'fetch_blob',
       title: 'Fetch PDPP blob',
       description:
-        'Fetch a blob referenced by a prior authorized record via `GET /v1/blobs/{blob_id}` using the configured scoped token. Returns base64 bytes and the RS-reported mime type. When the blob identifier resolves to more than one connection under your grant and `connection_id` is omitted, the RS returns a typed `ambiguous_connection` (409) error listing `available_connections` entries with current-authorization `grant_id`, canonical `connector_key`, `connection_id`, and optional `display_name`; retry with the chosen `connection_id`. Persist `connection_id`, not `grant_id`, across reconnects. Read-only.',
+        'Fetch a blob via `GET /v1/blobs/{blob_id}`. Returns base64 bytes, mime type, and source `connector_key`. On `ambiguous_connection` (409), pick a `connection_id` from `available_connections` in the error and retry. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({

@@ -8,6 +8,16 @@ import { RsClient } from './rs-client.js';
 export const DEFAULT_SERVER_NAME = 'pdpp-mcp-server';
 export const DEFAULT_SERVER_VERSION = '0.0.0';
 
+// Shared MCP server instructions. The first 512 characters must be
+// self-contained for ChatGPT and Codex (OpenAI Apps SDK guidance).
+// Cross-tool details that would otherwise repeat across tool descriptions live
+// here; tool descriptions stay concise and routing-specific.
+export const PDPP_MCP_INSTRUCTIONS =
+  'PDPP tools are grant-scoped. Start with `list_streams`, then `schema(stream)`. Use `connection_id` from schema/list results or `available_connections` errors to disambiguate sources. Filters must be typed objects, not bracket strings. Page and narrow with `limit`, `cursor`, and `fields`; prefer `aggregate` or `search` when you do not need full records. ' +
+  'The configured bearer limits every result; do not use owner or control-plane tokens for normal MCP access. Schema advertises valid fields, filter operators, expand relations, sort/count support, connection identities, and connector keys. Persist `connection_id`, not `grant_id`, across reconnects. ' +
+  'Call `discover_event_subscription_capabilities` before any event-subscription write to learn supported event types, signing profile, retry schedule, and callback-URL rules. ' +
+  'Both `content[]` and `structuredContent` are model-visible; `content[]` is a concise summary and `structuredContent.data` is the full canonical envelope.';
+
 /**
  * Build an MCP server wired to a PDPP resource server through the supplied scoped token.
  *
@@ -33,7 +43,7 @@ export function createPdppMcpServer({
   if (Array.isArray(serverIcons) && serverIcons.length > 0) {
     serverInfo.icons = serverIcons;
   }
-  const server = new McpServer(serverInfo);
+  const server = new McpServer(serverInfo, { instructions: PDPP_MCP_INSTRUCTIONS });
 
   const tools = buildTools({ rs, providerUrl });
   for (const tool of tools) {
