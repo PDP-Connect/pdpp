@@ -10,7 +10,7 @@
 //   - `requireClientOrMcpPackage` — only `client` or `mcp_package` token kinds
 //     may reach the MCP surface; owner tokens are always rejected.
 //   - `requireTrustedHostedMcpResource` — host-based guard identical to the
-//     one that guards `/.well-known/oauth-protected-resource/mcp`.
+//     one that guards the canonical provider protected-resource metadata.
 //
 // `handleStreamableHttpRequest` and `createPackageRsClient` are injected via
 // context because `@pdpp/mcp-server` ships as a JS-only workspace package
@@ -189,7 +189,7 @@ export function mountRsHostedMcp(app: AppLike, ctx: MountRsHostedMcpContext): vo
 
   function setHostedMcpProtectedResourceMetadata(req: RouteRequest, res: RouteResponse, next: () => void): void {
     if (isTrustedMetadataRequestOrigin(req, explicitResource, trustedMetadataHosts)) {
-      const resource = `${resolvePublicUrl(req, explicitResource)}/mcp`;
+      const resource = resolvePublicUrl(req, explicitResource);
       res.locals[PROTECTED_RESOURCE_METADATA_URL_LOCAL] = protectedResourceMetadataUrlForResource(resource);
     }
     next();
