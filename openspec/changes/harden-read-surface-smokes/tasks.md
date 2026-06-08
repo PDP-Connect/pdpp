@@ -13,4 +13,4 @@
 
 - [x] 3.1 Run OpenSpec strict validation.
 - [x] 3.2 Run targeted unit tests.
-- [ ] 3.3 Run live REST/MCP/CLI read-surface smoke when a grant is available.
+- [x] 3.3 Run live REST/MCP/CLI read-surface smoke when a grant is available.
