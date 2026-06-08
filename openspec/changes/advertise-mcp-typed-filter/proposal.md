@@ -1,12 +1,12 @@
 ## Why
 
-Chat-hosted MCP clients build tool calls from the advertised JSON Schema. A top-level object/string union for `filter` can collapse to `filter?: string`, leaving clients unable to send typed filter objects even though the resource server prefers them.
+Chat-hosted MCP clients build tool calls from the advertised JSON Schema. MCP tool inputs are object-root JSON payloads; exposing `filter` as an object/string union or as a raw query string makes structured filters hard for clients to construct and easy to misroute into a bare REST `filter=` parameter.
 
 ## What Changes
 
 - Advertise MCP `filter` inputs as typed object records for read tools that support filters.
-- Preserve legacy literal bracket filter strings at runtime for existing MCP clients.
-- Add schema and legacy-compatibility tests.
+- Reject string filters at the MCP input boundary; bracket query syntax remains an internal REST encoding detail.
+- Add schema and validation tests.
 
 ## Capabilities
 

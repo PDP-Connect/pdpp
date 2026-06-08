@@ -76,7 +76,7 @@ const VIEW_DESCRIPTION =
   'Named projection. A stream-declared view id (advertised by `GET /v1/schema` under each stream\'s `views`) that projects the returned records down to the view\'s field set. Mutually exclusive with `fields` (passing both is rejected by the RS); an unknown view id is rejected rather than silently ignored. Use `view` for a curated projection and `fields` for an ad-hoc one.';
 
 const FILTER_DESCRIPTION =
-  'Typed per-field filter. Pass an OBJECT keyed by field name — never a pre-encoded query string. Exact match: `{ "user_id": "U123" }`. Range: `{ "created_at": { "gte": "2026-01-01T00:00:00Z", "lt": "2026-02-01T00:00:00Z" } }`, where the operator is one of `gte`, `gt`, `lte`, `lt`. Multiple fields AND together. The adapter encodes this into the RS `filter[field]=value` / `filter[field][op]=value` query shape for you. Allowed fields and operators are advertised by `GET /v1/schema` (`field_capabilities`); unsupported fields or operators are rejected by the RS rather than silently ignored. A legacy raw query string using literal `filter[field]=value` bracket syntax is still accepted and parsed; any other string shape (a bare value, `field=value`, `field>value`, or JSON-in-a-string) is rejected with an actionable error telling you to use the typed object — it is never silently no-opped.';
+  'Typed per-field filter. Pass an OBJECT keyed by field name — never a pre-encoded query string. Exact match: `{ "user_id": "U123" }`. Range: `{ "created_at": { "gte": "2026-01-01T00:00:00Z", "lt": "2026-02-01T00:00:00Z" } }`, where the operator is one of `gte`, `gt`, `lte`, `lt`. Multiple fields AND together. The adapter encodes this into the RS `filter[field]=value` / `filter[field][op]=value` query shape for you. Allowed fields and operators are advertised by `GET /v1/schema` (`field_capabilities`); unsupported fields or operators are rejected by the RS rather than silently ignored.';
 
 const EXPAND_DESCRIPTION =
   'One-hop inline expansion list. Each entry is a manifest-declared parent-to-child relation. Expandable relations and per-relation `expand_limit` caps are advertised by `GET /v1/schema` (`expand_capabilities`); unadvertised relations are rejected by the RS.';
@@ -105,17 +105,12 @@ const SUPPORTED_RANGE_OPERATORS = new Set(['gte', 'gt', 'lte', 'lt']);
 // exact matches.
 const FilterScalar = z.union([z.string(), z.number(), z.boolean()]);
 
-// Private field used only after Zod preprocessing a legacy string filter. The
-// key intentionally contains brackets so it can never be confused with a valid
-// typed field name (those are rejected below before forwarding).
-const LEGACY_FILTER_STRING_FIELD = '[pdpp_legacy_filter_string]';
-
 // Typed filter input object. Each field maps either to a scalar (exact match)
 // or to a range object keyed by `gte`/`gt`/`lte`/`lt`. This mirrors the parsed
 // shape the RS receives from `qs.parse(filter[field][op]=value)`, so the
 // adapter can encode it back into bracket query params with no semantic
 // invention.
-const TypedFilterObjectInput = z.record(
+const TypedFilterInput = z.record(
   z.string().min(1),
   z.union([
     FilterScalar,
@@ -130,19 +125,9 @@ const TypedFilterObjectInput = z.record(
   ]),
 );
 
-// MCP clients build their tool UI from the advertised JSON Schema. A top-level
-// union of `{object|string}` is standards-valid, but some clients collapse it
-// to the string branch. Preprocessing keeps the advertised schema object-shaped
-// while still accepting legacy literal bracket strings at validation time.
-const TypedFilterInput = z.preprocess(
-  (value) => (typeof value === 'string' ? { [LEGACY_FILTER_STRING_FIELD]: value } : value),
-  TypedFilterObjectInput,
-);
-
-// Thrown when a legacy string filter cannot be unambiguously parsed into RS
-// bracket params. Surfaced as a typed MCP tool error (`server.js`
-// `toolHandlerError` reads `.code`) so the agent gets an actionable instruction
-// instead of a silently-ignored filter.
+// Thrown when a typed filter object is structurally ambiguous. Surfaced as a
+// typed MCP tool error (`server.js` `toolHandlerError` reads `.code`) so the
+// agent gets an actionable instruction instead of a silently-ignored filter.
 class MalformedFilterError extends Error {
   constructor(message) {
     super(message);
@@ -162,13 +147,6 @@ class MalformedExpandLimitError extends Error {
 // Translate a typed filter object into `[bracketKey, value]` query entries the
 // RsClient appends verbatim (`filter[field]=value`, `filter[field][op]=value`).
 function filterObjectToBracketEntries(filter) {
-  if (Object.hasOwn(filter, LEGACY_FILTER_STRING_FIELD)) {
-    const legacyFilterString = filter[LEGACY_FILTER_STRING_FIELD];
-    if (typeof legacyFilterString !== 'string') {
-      throw new MalformedFilterError('legacy filter string marker must be a string; pass a typed filter object instead');
-    }
-    return legacyFilterStringToBracketEntries(legacyFilterString);
-  }
   if (Object.keys(filter).length === 0) {
     throw new MalformedFilterError(
       'filter object must include at least one field; omit filter entirely or pass a typed object such as filter: { "field": "value" }',
@@ -205,69 +183,10 @@ function filterObjectToBracketEntries(filter) {
   return entries;
 }
 
-// Parse a legacy raw query-string filter. Only the canonical bracket shape
-// (`filter[field]=value`, `filter[field][op]=value`, optionally `&`-joined) is
-// accepted; every other string shape is rejected with an actionable error
-// rather than forwarded as a bare `filter=` param that the RS silently ignores.
-function legacyFilterStringToBracketEntries(raw) {
-  const trimmed = raw.trim();
-  if (trimmed.length === 0) {
-    throw new MalformedFilterError(
-      'filter string is empty; omit filter entirely or pass a typed object such as filter: { "field": "value" }',
-    );
-  }
-  const pairs = trimmed.split('&').filter((segment) => segment.length > 0);
-  const entries = [];
-  for (const pair of pairs) {
-    const eq = pair.indexOf('=');
-    if (eq === -1) {
-      throw new MalformedFilterError(
-        `unparseable filter string segment '${pair}'; pass a typed filter object instead, e.g. filter: { "field": "value" } or filter: { "field": { "gte": <value> } }`,
-      );
-    }
-    const rawKey = pair.slice(0, eq);
-    const rawValue = pair.slice(eq + 1);
-    const key = rawKey.trim();
-    const match = /^filter\[([^\]]+)\](?:\[([^\]]+)\])?$/.exec(key);
-    if (!match) {
-      throw new MalformedFilterError(
-        `filter string must use literal bracket syntax 'filter[field]=value' or 'filter[field][op]=value'; got '${rawKey}'. Prefer the typed filter object, e.g. filter: { "field": "value" }`,
-      );
-    }
-    const field = match[1];
-    const op = match[2];
-    if (op !== undefined && !SUPPORTED_RANGE_OPERATORS.has(op)) {
-      throw new MalformedFilterError(
-        `unsupported range operator '${op}' on '${field}'; supported operators are gte, gt, lte, lt`,
-      );
-    }
-    const value = decodeFilterComponent(rawValue);
-    entries.push([op === undefined ? `filter[${field}]` : `filter[${field}][${op}]`, value]);
-  }
-  if (entries.length === 0) {
-    throw new MalformedFilterError(
-      'filter string did not include any filter[field]=value entries; pass a typed filter object instead',
-    );
-  }
-  return entries;
-}
-
-function decodeFilterComponent(value) {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
-}
-
-// Resolve the tool `filter` argument (typed object or legacy string) into the
-// `filter[...]` query entries the RS expects. Returns [] when no filter was
-// supplied. Throws MalformedFilterError on an ambiguous/malformed string.
+// Resolve the tool `filter` argument into the `filter[...]` query entries the
+// RS expects. Returns [] when no filter was supplied.
 function resolveFilterQueryEntries(filter) {
   if (filter === undefined || filter === null) return [];
-  if (typeof filter === 'string') {
-    return legacyFilterStringToBracketEntries(filter);
-  }
   if (typeof filter === 'object' && !Array.isArray(filter)) {
     return filterObjectToBracketEntries(filter);
   }

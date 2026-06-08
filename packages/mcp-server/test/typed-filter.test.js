@@ -6,16 +6,14 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { createPdppMcpServer } from '../src/server.js';
 
-// Live external MCP testing exposed an agent-usability failure: MCP exposed
-// `filter` as a single string, so agents sent JSON or `filter[user_id]=...`
-// strings that became a bare REST `filter=` param the RS silently ignored
+// Live external MCP testing exposed an agent-usability failure: MCP advertised
+// `filter` as a string, so agents sent JSON or `filter[user_id]=...` strings
+// that became a bare REST `filter=` param the RS silently ignored
 // (query_records) or rejected (aggregate). REST itself is correct — its
 // `qs.parse(filter[field][op]=value)` decodes the canonical bracket shape.
-// This suite pins the MCP-layer fix: a typed filter object is encoded into
-// `filter[field]=value` / `filter[field][op]=value`, a legacy bracket string
-// still parses, and any other string shape is rejected with an actionable
-// error rather than silently no-opped. See
-//   openspec/changes/make-mcp-query-filters-agent-usable
+// This suite pins the MCP-layer fix: MCP accepts a JSON-native typed filter
+// object, encodes it into `filter[field]=value` / `filter[field][op]=value`,
+// and rejects every string filter before it can reach REST.
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -107,6 +105,10 @@ async function connectClient(fakeFetch) {
   return { client, server };
 }
 
+function resultText(result) {
+  return result.content?.map((c) => c.text ?? '').join('\n') ?? '';
+}
+
 test('tools/list advertises filter as a typed object record on query_records, aggregate, and search', async () => {
   const { fetch } = recordingFetch();
   const { client, server } = await connectClient(fetch);
@@ -174,26 +176,25 @@ test('query_records typed range filter forwards as filter[field][op]=value', asy
   await server.close();
 });
 
-test('query_records accepts a legacy literal bracket string and parses it into bracket params', async () => {
+test('query_records rejects string filters at MCP validation and never reaches REST', async () => {
   const { fetch, calls } = recordingFetch();
   const { client, server } = await connectClient(fetch);
 
-  const result = await client.callTool({
-    name: 'query_records',
-    arguments: { stream: 'messages', filter: 'filter[user_id]=U123' },
-  });
-  assert.equal(result.isError, undefined);
-
-  const call = calls.find((c) => c.url.includes('/v1/streams/messages/records'));
-  assert.equal(call.searchParams.get('filter[user_id]'), 'U123');
-  assert.equal(call.searchParams.get('filter'), null);
-  assert.equal(result.structuredContent.data.records.length, 1);
+  for (const filter of ['filter[user_id]=U123', 'user_id=U123', 'amount>100', '{"user_id":"U123"}', '']) {
+    const result = await client.callTool({
+      name: 'query_records',
+      arguments: { stream: 'messages', filter },
+    });
+    assert.equal(result.isError, true, `string filter ${JSON.stringify(filter)} must be rejected`);
+    assert.match(resultText(result), /validation|object|string|invalid/i);
+  }
+  assert.equal(calls.length, 0, 'string filters must be rejected before any REST request');
 
   await client.close();
   await server.close();
 });
 
-test('aggregate and search accept legacy literal bracket strings after object-shaped schema preprocessing', async () => {
+test('aggregate and search reject string filters at MCP validation and never reach REST', async () => {
   const { fetch, calls } = recordingFetch();
   const { client, server } = await connectClient(fetch);
 
@@ -201,43 +202,16 @@ test('aggregate and search accept legacy literal bracket strings after object-sh
     name: 'aggregate',
     arguments: { stream: 'messages', metric: 'count', filter: 'filter[user_id]=U123' },
   });
-  assert.equal(aggregate.isError, undefined);
-  const aggregateCall = calls.find((c) => c.url.includes('/v1/streams/messages/aggregate'));
-  assert.equal(aggregateCall.searchParams.get('filter[user_id]'), 'U123');
-  assert.equal(aggregateCall.searchParams.get('filter'), null);
+  assert.equal(aggregate.isError, true);
+  assert.match(resultText(aggregate), /validation|object|string|invalid/i);
 
   const search = await client.callTool({
     name: 'search',
     arguments: { q: 'hi', filter: 'filter[user_id]=U123' },
   });
-  assert.equal(search.isError, undefined);
-  const searchCall = calls.find((c) => c.url.includes('/v1/search'));
-  assert.equal(searchCall.searchParams.get('filter[user_id]'), 'U123');
-  assert.equal(searchCall.searchParams.get('filter'), null);
-
-  await client.close();
-  await server.close();
-});
-
-test('query_records rejects an ambiguous/malformed string filter with an actionable error (no silent no-op)', async () => {
-  const { fetch, calls } = recordingFetch();
-  const { client, server } = await connectClient(fetch);
-
-  for (const bad of ['amount>100', 'user_id=U123', 'Vana', '{"user_id":"U123"}']) {
-    const result = await client.callTool({
-      name: 'query_records',
-      arguments: { stream: 'messages', filter: bad },
-    });
-    assert.equal(result.isError, true, `string filter "${bad}" must be rejected, not silently ignored`);
-    assert.equal(result.structuredContent.error.code, 'invalid_filter');
-    assert.match(result.structuredContent.error.message, /typed filter object|filter\[field\]/i);
-  }
-  // None of the malformed filters should have reached the RS as a bare param.
-  assert.equal(
-    calls.some((c) => c.searchParams.get('filter') !== null),
-    false,
-    'a malformed filter must never be forwarded as a bare filter= param',
-  );
+  assert.equal(search.isError, true);
+  assert.match(resultText(search), /validation|object|string|invalid/i);
+  assert.equal(calls.length, 0, 'string filters must be rejected before any REST request');
 
   await client.close();
   await server.close();
@@ -300,21 +274,6 @@ test('aggregate typed filter forwards as bracket params and scopes the count', a
   assert.equal(call.searchParams.get('filter[user_id]'), 'U123');
   assert.equal(call.searchParams.get('filter'), null);
   assert.equal(result.structuredContent.data.value, 4, 'count scoped by the forwarded filter');
-
-  await client.close();
-  await server.close();
-});
-
-test('aggregate malformed string filter is rejected the same way as query_records', async () => {
-  const { fetch } = recordingFetch();
-  const { client, server } = await connectClient(fetch);
-
-  const result = await client.callTool({
-    name: 'aggregate',
-    arguments: { stream: 'messages', metric: 'count', filter: 'user_id=U123' },
-  });
-  assert.equal(result.isError, true);
-  assert.equal(result.structuredContent.error.code, 'invalid_filter');
 
   await client.close();
   await server.close();

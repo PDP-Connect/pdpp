@@ -2,7 +2,7 @@
 
 ### Requirement: MCP Read Tools SHALL Advertise Typed Filter Objects
 
-MCP read tools that support filtering SHALL advertise `filter` as a typed object record in their tool input schemas. The MCP adapter SHALL preserve runtime compatibility for legacy literal bracket filter strings, but the advertised schema SHALL NOT expose a top-level string branch that causes chat-hosted clients to hide typed filter objects.
+MCP read tools that support filtering SHALL advertise `filter` as a typed object record in their tool input schemas. The MCP adapter SHALL NOT accept a top-level string filter argument; REST bracket query syntax is an internal adapter encoding detail, not an MCP tool input contract.
 
 #### Scenario: Client lists filtered read tools
 
@@ -11,8 +11,8 @@ MCP read tools that support filtering SHALL advertise `filter` as a typed object
 - **AND** the `filter` schema SHALL describe scalar exact-match values and range operator objects
 - **AND** the `filter` schema SHALL NOT expose a top-level string alternative
 
-#### Scenario: Legacy string filter is supplied
+#### Scenario: String filter is supplied
 
-- **WHEN** an existing MCP client supplies a literal bracket filter string
-- **THEN** the adapter SHALL parse and forward it as bracket query parameters when unambiguous
-- **AND** malformed strings SHALL return an actionable MCP error rather than silently widening the query.
+- **WHEN** an MCP client supplies `filter` as a string
+- **THEN** the MCP input SHALL be rejected before the adapter calls the resource server
+- **AND** the string SHALL NOT be forwarded as a bare REST `filter=` query parameter.
