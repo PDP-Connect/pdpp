@@ -51,6 +51,7 @@ test('npm package contents stay narrowly allowlisted', () => {
     'src/owner-agent/lifecycle.js',
     'src/package-info.d.ts',
     'src/package-info.js',
+    'src/read/commands.js',
     'src/ref/args.js',
     'src/ref/auth.js',
     'src/ref/commands/call.js',

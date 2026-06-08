@@ -200,7 +200,7 @@ class PackageRsClient {
   }
 
   async sourceRequiredJson(method, path, opts) {
-    const child = this.resolveChildOrError(opts);
+    const child = await this.resolveChildOrError(opts);
     if (child.error) return child.error;
     return child.client[method === 'GET' ? 'getJson' : method === 'POST' ? 'postJson' : method === 'PATCH' ? 'patchJson' : 'deleteJson'](
       path,
@@ -209,12 +209,12 @@ class PackageRsClient {
   }
 
   async sourceRequiredRaw(_method, path, opts) {
-    const child = this.resolveChildOrError(opts);
+    const child = await this.resolveChildOrError(opts);
     if (child.error) return child.error;
     return child.client.getRaw(path, opts);
   }
 
-  resolveChildOrError({ query }) {
+  async resolveChildOrError({ query }) {
     const connectionId = query?.connection_id;
     if (connectionId) {
       const child = pickChildByConnectionId(this.children, connectionId);
@@ -222,7 +222,45 @@ class PackageRsClient {
       return { error: typedError('not_found', `connection_id "${connectionId}" is not part of this package`, this.children) };
     }
     if (this.children.length === 1) return this.children[0];
-    return { error: typedError('ambiguous_connection', 'This hosted MCP package contains multiple sources. Pass `connection_id` to select one. Use `list_streams` or `schema` to discover available connections.', this.children) };
+    return {
+      error: await this.ambiguousConnectionError(
+        'This hosted MCP package contains multiple sources. Pass `connection_id` to select one. Use `list_streams` or `schema` to discover available connections.',
+      ),
+    };
+  }
+
+  async ambiguousConnectionError(message) {
+    const health = await this.probeChildReadHealth();
+    return typedError('ambiguous_connection', message, health.availableChildren, {
+      unavailableChildren: health.unavailableChildren,
+    });
+  }
+
+  async probeChildReadHealth() {
+    const probes = await Promise.all(
+      this.children.map(async (child) => {
+        try {
+          const response = await child.client.getJson('/v1/streams');
+          if (response.ok) return { child, available: true };
+          return { child, available: false, error: summarizeChildProbeError(response) };
+        } catch (error) {
+          return {
+            child,
+            available: false,
+            error: { code: 'probe_failed', message: error?.message ?? String(error), status: null },
+          };
+        }
+      }),
+    );
+    const availableChildren = probes.filter((probe) => probe.available).map((probe) => probe.child);
+    const unavailableChildren = probes
+      .filter((probe) => !probe.available)
+      .map((probe) => ({ child: probe.child, error: probe.error }));
+
+    return {
+      availableChildren,
+      unavailableChildren,
+    };
   }
 
   // -------- event subscriptions --------
@@ -237,7 +275,7 @@ class PackageRsClient {
     } else if (this.children.length === 1) {
       child = this.children[0];
     } else {
-      return typedError('ambiguous_connection', 'This hosted MCP package contains multiple sources. Pass `connection_id` when creating an event subscription so it binds to exactly one child grant.', this.children);
+      return await this.ambiguousConnectionError('This hosted MCP package contains multiple sources. Pass `connection_id` when creating an event subscription so it binds to exactly one child grant.');
     }
     const childBody = body ? { ...body } : {};
     delete childBody.connection_id;
@@ -415,19 +453,44 @@ function availableConnectionsList(children) {
   }));
 }
 
-function typedError(code, message, children) {
+function unavailableConnectionsList(entries) {
+  return entries.map(({ child, error }) => ({
+    ...availableConnectionsList([child])[0],
+    status: error?.status ?? null,
+    error: {
+      code: error?.code ?? 'source_unavailable',
+      message: error?.message ?? 'Source is unavailable',
+    },
+  }));
+}
+
+function typedError(code, message, children, options = {}) {
+  const unavailableConnections = unavailableConnectionsList(options.unavailableChildren ?? []);
+  const error = {
+    type: code,
+    code,
+    message,
+    available_connections: availableConnectionsList(children),
+    retry_with: 'connection_id',
+  };
+  if (unavailableConnections.length > 0) {
+    error.unavailable_connections = unavailableConnections;
+  }
   return {
     ok: false,
     status: code === 'not_found' ? 404 : 409,
-    error: {
-      type: code,
-      code,
-      message,
-      available_connections: availableConnectionsList(children),
-      retry_with: 'connection_id',
-    },
+    error,
     requestId: null,
     contentType: 'application/json',
+  };
+}
+
+function summarizeChildProbeError(response) {
+  const error = response?.error && typeof response.error === 'object' ? response.error : {};
+  return {
+    status: response?.status ?? null,
+    code: error.code ?? error.type ?? `http_${response?.status ?? 'unknown'}`,
+    message: error.message ?? `Source returned HTTP ${response?.status ?? 'unknown'}`,
   };
 }
 

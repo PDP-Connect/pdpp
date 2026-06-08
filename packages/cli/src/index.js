@@ -12,6 +12,7 @@ import { runRefLogin } from './ref/commands/login.js';
 import { runRefConnectors } from './ref/commands/connectors.js';
 import { runRefEventSubscriptions } from './ref/commands/event-subscriptions.js';
 import { runRefCall } from './ref/commands/call.js';
+import { readHelp, runRead } from './read/commands.js';
 import { runOwnerAgent } from './owner-agent/command.js';
 import { PdppCliError, PdppUsageError } from './ref/errors.js';
 
@@ -22,6 +23,8 @@ Usage:
   ${PDPP_CLI_BIN_NAME} package-info [--provider-url <url>]
   ${PDPP_CLI_BIN_NAME} connect <provider-url>
   ${PDPP_CLI_BIN_NAME} token <provider-url>
+
+${readHelp(PDPP_CLI_BIN_NAME)}
 
 Agent access:
   ${createPdppCliCommand()}
@@ -122,6 +125,22 @@ export async function runCli(argv, io = { stdout: process.stdout, stderr: proces
 
   if (command === 'collector') {
     return await runCollector(rest, io);
+  }
+
+  if (command === 'read') {
+    try {
+      return await runRead(rest, io);
+    } catch (error) {
+      if (error instanceof PdppUsageError) {
+        io.stderr.write(`${error.message}\n`);
+        return error.exitCode;
+      }
+      if (error instanceof PdppCliError) {
+        io.stderr.write(`${error.message}\n`);
+        return error.exitCode;
+      }
+      throw error;
+    }
   }
 
   if (command === 'owner-agent') {

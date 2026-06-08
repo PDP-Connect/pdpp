@@ -403,9 +403,10 @@ test('search with unknown connection_id returns not_found without fanout', async
 });
 
 test('query_records without selector returns ambiguous_connection 409 with candidates', async () => {
-  let called = 0;
-  const fetch = makeRouter(async () => {
-    called += 1;
+  const calls = [];
+  const fetch = makeRouter(async (req) => {
+    calls.push({ path: req.path, token: req.token });
+    if (req.path === '/v1/streams') return jsonResponse(200, { data: [{ name: 'repos' }] });
     return jsonResponse(500, {});
   });
   const rs = createPackageRsClient({ providerUrl: PROVIDER, members: [memberA(), memberB()], fetch });
@@ -414,7 +415,7 @@ test('query_records without selector returns ambiguous_connection 409 with candi
   assert.equal(out.status, 409);
   assert.equal(out.error.code, 'ambiguous_connection');
   assert.equal(out.error.available_connections.length, 2);
-  assert.equal(called, 0, 'no child token is called when the package is ambiguous');
+  assert.deepEqual(calls.map((call) => call.path), ['/v1/streams', '/v1/streams']);
 });
 
 test('query_records with connection_id routes to one child only', async () => {
@@ -432,6 +433,52 @@ test('query_records with connection_id routes to one child only', async () => {
   assert.equal(bCalled, 0);
 });
 
+test('query_records ambiguity marks invalid child grants unavailable instead of advertising them as normal candidates', async () => {
+  const fetch = makeRouter(async (req) => {
+    if (req.path === '/v1/streams') {
+      if (req.token === 'tok_A') return jsonResponse(200, { data: [{ name: 'repos' }] });
+      if (req.token === 'tok_B') {
+        return jsonResponse(403, {
+          error: { type: 'grant_invalid', code: 'grant_invalid', message: 'Grant is no longer usable' },
+        });
+      }
+    }
+    return jsonResponse(500, {});
+  });
+  const rs = createPackageRsClient({ providerUrl: PROVIDER, members: [memberA(), memberB()], fetch });
+  const out = await rs.getJson('/v1/streams/repos/records', { query: { limit: 10 } });
+
+  assert.equal(out.ok, false);
+  assert.equal(out.status, 409);
+  assert.equal(out.error.code, 'ambiguous_connection');
+  assert.deepEqual(out.error.available_connections.map((entry) => entry.connection_id), ['gh_main']);
+  assert.deepEqual(out.error.unavailable_connections.map((entry) => entry.connection_id), ['slack_main']);
+  assert.equal(out.error.unavailable_connections[0].error.code, 'grant_invalid');
+});
+
+test('query_records with selected invalid child preserves the child grant_invalid response', async () => {
+  let aCalled = 0;
+  let bCalled = 0;
+  const fetch = makeRouter(async (req) => {
+    if (req.token === 'tok_A') aCalled += 1;
+    if (req.token === 'tok_B') bCalled += 1;
+    if (req.token === 'tok_B' && req.path === '/v1/streams/repos/records') {
+      return jsonResponse(403, {
+        error: { type: 'grant_invalid', code: 'grant_invalid', message: 'Grant is no longer usable' },
+      });
+    }
+    return jsonResponse(200, { data: [] });
+  });
+  const rs = createPackageRsClient({ providerUrl: PROVIDER, members: [memberA(), memberB()], fetch });
+  const out = await rs.getJson('/v1/streams/repos/records', { query: { connection_id: 'slack_main' } });
+
+  assert.equal(out.ok, false);
+  assert.equal(out.status, 403);
+  assert.equal(out.error.code, 'grant_invalid');
+  assert.equal(aCalled, 0);
+  assert.equal(bCalled, 1);
+});
+
 test('query_records with unknown connection_id returns not_found', async () => {
   const fetch = makeRouter(async () => jsonResponse(200, { data: [] }));
   const rs = createPackageRsClient({ providerUrl: PROVIDER, members: [memberA(), memberB()], fetch });
@@ -442,29 +489,29 @@ test('query_records with unknown connection_id returns not_found', async () => {
 });
 
 test('fetch_blob (getRaw) requires selector and never returns multi-source default', async () => {
-  let called = 0;
-  const fetch = makeRouter(async () => {
-    called += 1;
+  const calls = [];
+  const fetch = makeRouter(async (req) => {
+    calls.push({ path: req.path, token: req.token });
     return jsonResponse(200, {});
   });
   const rs = createPackageRsClient({ providerUrl: PROVIDER, members: [memberA(), memberB()], fetch });
   const out = await rs.getRaw('/v1/blobs/blob-xyz');
   assert.equal(out.ok, false);
   assert.equal(out.status, 409);
-  assert.equal(called, 0);
+  assert.deepEqual(calls.map((call) => call.path), ['/v1/streams', '/v1/streams']);
 });
 
 test('create_event_subscription with multi-source package requires connection_id', async () => {
-  let called = 0;
-  const fetch = makeRouter(async () => {
-    called += 1;
+  const calls = [];
+  const fetch = makeRouter(async (req) => {
+    calls.push({ path: req.path, token: req.token });
     return jsonResponse(201, {});
   });
   const rs = createPackageRsClient({ providerUrl: PROVIDER, members: [memberA(), memberB()], fetch });
   const out = await rs.postJson('/v1/event-subscriptions', { body: { callback_url: 'https://x/y' } });
   assert.equal(out.ok, false);
   assert.equal(out.status, 409);
-  assert.equal(called, 0, 'no child is called without a selector');
+  assert.deepEqual(calls.map((call) => call.path), ['/v1/streams', '/v1/streams']);
 });
 
 test('create_event_subscription with single-source package infers the child', async () => {
@@ -559,7 +606,10 @@ test('unknown event subscription returns adapter not_found without touching reco
 // These are regression tests for task 5.3.
 
 test('ambiguous_connection error envelope includes grant_id and connector_key (not connector_id)', async () => {
-  const fetch = makeRouter(async () => jsonResponse(500, {}));
+  const fetch = makeRouter(async (req) => {
+    if (req.path === '/v1/streams') return jsonResponse(200, { data: [{ name: 'repos' }] });
+    return jsonResponse(500, {});
+  });
   const rs = createPackageRsClient({ providerUrl: PROVIDER, members: [memberA(), memberB()], fetch });
   const out = await rs.getJson('/v1/streams/repos/records', { query: { limit: 10 } });
   assert.equal(out.error.code, 'ambiguous_connection');
@@ -598,7 +648,10 @@ test('not_found error envelope includes grant_id and connector_key for event sub
 });
 
 test('create_event_subscription ambiguous envelope carries connector_key and grant_id', async () => {
-  const fetch = makeRouter(async () => jsonResponse(500, {}));
+  const fetch = makeRouter(async (req) => {
+    if (req.path === '/v1/streams') return jsonResponse(200, { data: [{ name: 'repos' }] });
+    return jsonResponse(500, {});
+  });
   const rs = createPackageRsClient({ providerUrl: PROVIDER, members: [memberA(), memberB()], fetch });
   const out = await rs.postJson('/v1/event-subscriptions', { body: { callback_url: 'https://x/y' } });
   assert.equal(out.error.code, 'ambiguous_connection');

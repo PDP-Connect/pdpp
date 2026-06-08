@@ -1045,6 +1045,9 @@
             "has_files",
             "is_thread_parent",
             "is_tombstone"
+          ],
+          "group_by_time": [
+            "sent_at"
           ]
         },
         "expand": [
