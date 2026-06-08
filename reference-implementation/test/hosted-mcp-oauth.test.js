@@ -769,6 +769,21 @@ test('dynamic registration accepts only public authorization-code and refresh-to
     assert.equal(insecureWeb.status, 400);
     assert.match(insecureWeb.body.error_description, /https for web clients/);
 
+    const explicitWebLoopback = await fetchJson(`${asUrl}/oauth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_name: 'Explicit web loopback redirect client',
+        redirect_uris: ['http://127.0.0.1:43210/callback'],
+        grant_types: ['authorization_code'],
+        response_types: ['code'],
+        application_type: 'web',
+        token_endpoint_auth_method: 'none',
+      }),
+    });
+    assert.equal(explicitWebLoopback.status, 400);
+    assert.match(explicitWebLoopback.body.error_description, /https for web clients/);
+
     const nativeLoopback = await fetchJson(`${asUrl}/oauth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -782,6 +797,35 @@ test('dynamic registration accepts only public authorization-code and refresh-to
       }),
     });
     assert.equal(nativeLoopback.status, 201);
+    assert.equal(nativeLoopback.body.application_type, 'native');
+
+    const inferredIpv4NativeLoopback = await fetchJson(`${asUrl}/oauth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_name: 'Inferred IPv4 native loopback redirect client',
+        redirect_uris: ['http://127.0.0.1:43211/callback'],
+        grant_types: ['authorization_code'],
+        response_types: ['code'],
+        token_endpoint_auth_method: 'none',
+      }),
+    });
+    assert.equal(inferredIpv4NativeLoopback.status, 201);
+    assert.equal(inferredIpv4NativeLoopback.body.application_type, 'native');
+
+    const inferredLocalhostNativeLoopback = await fetchJson(`${asUrl}/oauth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_name: 'Inferred localhost native loopback redirect client',
+        redirect_uris: ['http://localhost:43212/callback'],
+        grant_types: ['authorization_code'],
+        response_types: ['code'],
+        token_endpoint_auth_method: 'none',
+      }),
+    });
+    assert.equal(inferredLocalhostNativeLoopback.status, 201);
+    assert.equal(inferredLocalhostNativeLoopback.body.application_type, 'native');
   } finally {
     await closeServer(server);
   }

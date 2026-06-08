@@ -344,6 +344,15 @@ function isLoopbackRedirectHost(hostname) {
   return normalized === 'localhost' || normalized === '::1' || normalized.startsWith('127.');
 }
 
+function isLoopbackHttpRedirectUri(redirectUri) {
+  const parsed = new URL(redirectUri);
+  return parsed.protocol === 'http:' && isLoopbackRedirectHost(parsed.hostname);
+}
+
+function inferApplicationTypeFromRedirectUris(redirectUris = []) {
+  return redirectUris.some((redirectUri) => isLoopbackHttpRedirectUri(redirectUri)) ? 'native' : undefined;
+}
+
 function validateAuthorizationCodeRedirectUris(redirectUris = [], applicationType = 'web') {
   for (const redirectUri of redirectUris) {
     const parsed = new URL(redirectUri);
@@ -422,6 +431,8 @@ function normalizeClientRegistrationMetadata(input = {}) {
       err.code = 'invalid_client_metadata';
       throw err;
     }
+  } else if (metadata.redirect_uris?.length) {
+    metadata.application_type = inferApplicationTypeFromRedirectUris(metadata.redirect_uris);
   }
 
   const wantsAuthorizationCode =
@@ -1967,6 +1978,7 @@ export async function registerDynamicClient(input = {}, extraMetadata = {}) {
     redirect_uris: registered.metadata.redirect_uris || undefined,
     grant_types: registered.metadata.grant_types || undefined,
     response_types: registered.metadata.response_types || undefined,
+    application_type: registered.metadata.application_type || undefined,
     client_uri: registered.metadata.client_uri || null,
     logo_uri: registered.metadata.logo_uri || null,
     policy_uri: registered.metadata.policy_uri || null,
