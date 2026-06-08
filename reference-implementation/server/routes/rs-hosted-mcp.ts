@@ -65,11 +65,18 @@ export interface GrantPackageAccess {
   readonly members: readonly GrantPackageMember[];
 }
 
+interface McpServerIcon {
+  readonly mimeType?: string;
+  readonly sizes?: readonly string[];
+  readonly src: string;
+}
+
 interface McpServerOptions {
   readonly accessToken?: string;
   readonly fetch: typeof globalThis.fetch;
   readonly providerUrl: string;
   readonly rsClient?: unknown;
+  readonly serverIcons?: readonly McpServerIcon[];
   readonly serverName: string;
   readonly serverVersion: string;
 }
@@ -158,17 +165,41 @@ function buildMcpWebRequest(req: RouteRequest, resource: string): Request {
   return new Request(url.toString(), init);
 }
 
-async function sendWebResponse(res: RouteResponse, response: Response): Promise<void> {
+interface SendWebResponseOptions {
+  readonly iconLink?: string;
+}
+
+async function sendWebResponse(
+  res: RouteResponse,
+  response: Response,
+  options: SendWebResponseOptions = {}
+): Promise<void> {
   res.status(response.status);
   response.headers.forEach((value: string, key: string) => {
     res.setHeader(key, value);
   });
+  if (options.iconLink) {
+    const existing = response.headers.get("link");
+    res.setHeader("link", existing ? `${existing}, ${options.iconLink}` : options.iconLink);
+  }
   if (response.status === 204 || response.status === 304) {
     res.end();
     return;
   }
   const body = Buffer.from(await response.arrayBuffer());
   res.send(body);
+}
+
+function hostedMcpIconUrl(resource: string): string {
+  return new URL("/icon.svg", resource).toString();
+}
+
+function hostedMcpIcons(resource: string): readonly McpServerIcon[] {
+  return [{ src: hostedMcpIconUrl(resource), mimeType: "image/svg+xml", sizes: ["any"] }];
+}
+
+function hostedMcpIconLink(resource: string): string {
+  return `<${hostedMcpIconUrl(resource)}>; rel="icon"; type="image/svg+xml"`;
 }
 
 export function mountRsHostedMcp(app: AppLike, ctx: MountRsHostedMcpContext): void {
@@ -191,6 +222,7 @@ export function mountRsHostedMcp(app: AppLike, ctx: MountRsHostedMcpContext): vo
     if (isTrustedMetadataRequestOrigin(req, explicitResource, trustedMetadataHosts)) {
       const resource = resolvePublicUrl(req, explicitResource);
       res.locals[PROTECTED_RESOURCE_METADATA_URL_LOCAL] = protectedResourceMetadataUrlForResource(resource);
+      res.setHeader("link", hostedMcpIconLink(resource));
     }
     next();
   }
@@ -225,6 +257,7 @@ export function mountRsHostedMcp(app: AppLike, ctx: MountRsHostedMcpContext): vo
         providerUrl: resource,
         rsClient,
         fetch: globalThis.fetch,
+        serverIcons: hostedMcpIcons(resource),
         serverName: "pdpp-reference-mcp",
         serverVersion: referenceRevision,
       };
@@ -247,6 +280,7 @@ export function mountRsHostedMcp(app: AppLike, ctx: MountRsHostedMcpContext): vo
         providerUrl: resource,
         rsClient,
         fetch: globalThis.fetch,
+        serverIcons: hostedMcpIcons(resource),
         serverName: "pdpp-reference-mcp",
         serverVersion: referenceRevision,
       };
@@ -254,7 +288,7 @@ export function mountRsHostedMcp(app: AppLike, ctx: MountRsHostedMcpContext): vo
 
     const webRequest = buildMcpWebRequest(req, resource);
     const response = await ctx.handleStreamableHttpRequest(webRequest, mcpServerOptions);
-    await sendWebResponse(res, response);
+    await sendWebResponse(res, response, { iconLink: hostedMcpIconLink(resource) });
   }
 
   const middlewareChain = [

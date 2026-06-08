@@ -23,12 +23,17 @@ export function createPdppMcpServer({
   fetch = globalThis.fetch,
   serverName = DEFAULT_SERVER_NAME,
   serverVersion = DEFAULT_SERVER_VERSION,
+  serverIcons,
 }) {
   // Callers may inject a custom RsClient-compatible adapter (e.g. the hosted
   // adapter's PackageRsClient fan-out). Otherwise we build a single-bearer
   // RsClient from the supplied accessToken.
   const rs = rsClient ?? new RsClient({ providerUrl, accessToken, fetch });
-  const server = new McpServer({ name: serverName, version: serverVersion });
+  const serverInfo = { name: serverName, version: serverVersion };
+  if (Array.isArray(serverIcons) && serverIcons.length > 0) {
+    serverInfo.icons = serverIcons;
+  }
+  const server = new McpServer(serverInfo);
 
   const tools = buildTools({ rs, providerUrl });
   for (const tool of tools) {

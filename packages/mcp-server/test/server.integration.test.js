@@ -757,6 +757,9 @@ test('Streamable HTTP helper handles initialize and tools/list statelessly', asy
   assert.equal(initialize.headers.get('mcp-session-id'), null);
   const initialized = await initialize.json();
   assert.equal(initialized.result.serverInfo.name, 'pdpp-mcp-server');
+  assert.deepEqual(initialized.result.serverInfo.icons, [
+    { src: 'https://provider.test/icon.svg', mimeType: 'image/svg+xml', sizes: ['any'] },
+  ]);
 
   const tools = await postMcpJson(
     {
@@ -787,6 +790,7 @@ async function postMcpJson(message, fakeFetch) {
       providerUrl: 'https://provider.test',
       accessToken: 'scoped-token',
       fetch: fakeFetch,
+      serverIcons: [{ src: 'https://provider.test/icon.svg', mimeType: 'image/svg+xml', sizes: ['any'] }],
     }
   );
 }

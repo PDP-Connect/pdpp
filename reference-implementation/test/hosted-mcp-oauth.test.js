@@ -208,6 +208,8 @@ async function completeOauthCodeFlow({ asUrl, client, manifest }) {
   });
   assert.equal(status, 200);
   assert.equal(body.token_type, 'Bearer');
+  assert.equal(Number.isInteger(body.expires_in), true);
+  assert.ok(body.expires_in > 0);
   assert.ok(body.access_token);
   return {
     accessToken: body.access_token,
@@ -308,6 +310,8 @@ async function completeMultiSourcePackageFlow({ asUrl, client, connectorIds }) {
   });
   assert.equal(status, 200);
   assert.equal(body.token_type, 'Bearer');
+  assert.equal(Number.isInteger(body.expires_in), true);
+  assert.ok(body.expires_in > 0);
   assert.ok(body.access_token);
   assert.ok(body.grant_package_id, 'multi-source approval issues a package-bound token');
   assert.equal(body.grant_id, undefined, 'package tokens MUST NOT carry a child grant_id at the OAuth surface');
@@ -417,6 +421,8 @@ test('hosted MCP OAuth code flow issues a scoped client token usable at /mcp', a
     });
     assert.equal(refreshed.status, 200);
     assert.equal(refreshed.body.token_type, 'Bearer');
+    assert.equal(Number.isInteger(refreshed.body.expires_in), true);
+    assert.ok(refreshed.body.expires_in > 0);
     assert.equal(refreshed.body.refresh_token, refreshToken);
     assert.equal(refreshed.body.grant_id, grantId);
     assert.ok(refreshed.body.access_token);
@@ -446,6 +452,10 @@ test('hosted MCP OAuth code flow issues a scoped client token usable at /mcp', a
     });
     assert.equal(initialize.status, 200);
     assert.equal(initialize.body.result.serverInfo.name, 'pdpp-reference-mcp');
+    assert.deepEqual(initialize.body.result.serverInfo.icons, [
+      { src: `${rsUrl}/icon.svg`, mimeType: 'image/svg+xml', sizes: ['any'] },
+    ]);
+    assert.equal(initialize.resp.headers.get('link'), `<${rsUrl}/icon.svg>; rel="icon"; type="image/svg+xml"`);
 
     const tools = await postMcpJson(rsUrl, accessToken, {
       jsonrpc: '2.0',
@@ -652,6 +662,7 @@ test('/mcp rejects missing and owner bearers', async () => {
   try {
     const missing = await fetchJson(`${rsUrl}/mcp`, { method: 'POST' });
     assert.equal(missing.status, 401);
+    assert.equal(missing.resp.headers.get('link'), `<${rsUrl}/icon.svg>; rel="icon"; type="image/svg+xml"`);
     assert.equal(missing.body.error.resource_metadata, `${rsUrl}/.well-known/oauth-protected-resource`);
     const rootMetadata = await fetchProtectedResourceMetadata(missing.body.error.resource_metadata);
     assert.equal(rootMetadata.resource, rsUrl);
@@ -660,6 +671,11 @@ test('/mcp rejects missing and owner bearers', async () => {
     assert.equal(mcpMetadata.resource, `${rsUrl}/mcp`);
     assert.deepEqual(mcpMetadata.pdpp_token_kinds_supported, ['client', 'mcp_package']);
     assert.equal(mcpMetadata.pdpp_agent_discovery.mcp.endpoint, `${rsUrl}/mcp`);
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(mcpMetadata, 'logo_uri'),
+      false,
+      'OAuth protected-resource metadata must not grow a non-standard logo_uri field',
+    );
 
     const ownerToken = await issueOwnerToken(asUrl);
     const owner = await postMcpJson(rsUrl, ownerToken, {
@@ -876,6 +892,8 @@ test('multi-source hosted MCP picker issues a package token usable at /mcp with 
       }).toString(),
     });
     assert.equal(refreshed.status, 200);
+    assert.equal(Number.isInteger(refreshed.body.expires_in), true);
+    assert.ok(refreshed.body.expires_in > 0);
     assert.equal(refreshed.body.grant_package_id, packageId);
     assert.equal(refreshed.body.grant_id, undefined);
     assert.ok(refreshed.body.access_token);

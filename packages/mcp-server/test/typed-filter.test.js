@@ -107,6 +107,30 @@ async function connectClient(fakeFetch) {
   return { client, server };
 }
 
+test('tools/list advertises filter as a typed object record on query_records, aggregate, and search', async () => {
+  const { fetch } = recordingFetch();
+  const { client, server } = await connectClient(fetch);
+
+  const { tools } = await client.listTools();
+  for (const name of ['query_records', 'aggregate', 'search']) {
+    const tool = tools.find((entry) => entry.name === name);
+    assert.ok(tool, `${name} tool must be registered`);
+    const filterSchema = tool.inputSchema.properties.filter;
+    assert.equal(filterSchema.type, 'object', `${name}.filter must advertise an object, not only a string`);
+    assert.ok(filterSchema.additionalProperties, `${name}.filter must advertise record values`);
+    assert.equal(filterSchema.anyOf, undefined, `${name}.filter must not be a top-level object/string union`);
+    assert.equal(filterSchema.oneOf, undefined, `${name}.filter must not be a top-level object/string union`);
+    assert.match(
+      JSON.stringify(filterSchema.additionalProperties),
+      /gte/,
+      `${name}.filter record values must include range operator objects`,
+    );
+  }
+
+  await client.close();
+  await server.close();
+});
+
 test('query_records typed exact filter forwards as filter[field]=value and narrows results', async () => {
   const { fetch, calls } = recordingFetch();
   const { client, server } = await connectClient(fetch);
@@ -164,6 +188,32 @@ test('query_records accepts a legacy literal bracket string and parses it into b
   assert.equal(call.searchParams.get('filter[user_id]'), 'U123');
   assert.equal(call.searchParams.get('filter'), null);
   assert.equal(result.structuredContent.data.records.length, 1);
+
+  await client.close();
+  await server.close();
+});
+
+test('aggregate and search accept legacy literal bracket strings after object-shaped schema preprocessing', async () => {
+  const { fetch, calls } = recordingFetch();
+  const { client, server } = await connectClient(fetch);
+
+  const aggregate = await client.callTool({
+    name: 'aggregate',
+    arguments: { stream: 'messages', metric: 'count', filter: 'filter[user_id]=U123' },
+  });
+  assert.equal(aggregate.isError, undefined);
+  const aggregateCall = calls.find((c) => c.url.includes('/v1/streams/messages/aggregate'));
+  assert.equal(aggregateCall.searchParams.get('filter[user_id]'), 'U123');
+  assert.equal(aggregateCall.searchParams.get('filter'), null);
+
+  const search = await client.callTool({
+    name: 'search',
+    arguments: { q: 'hi', filter: 'filter[user_id]=U123' },
+  });
+  assert.equal(search.isError, undefined);
+  const searchCall = calls.find((c) => c.url.includes('/v1/search'));
+  assert.equal(searchCall.searchParams.get('filter[user_id]'), 'U123');
+  assert.equal(searchCall.searchParams.get('filter'), null);
 
   await client.close();
   await server.close();

@@ -105,28 +105,39 @@ const SUPPORTED_RANGE_OPERATORS = new Set(['gte', 'gt', 'lte', 'lt']);
 // exact matches.
 const FilterScalar = z.union([z.string(), z.number(), z.boolean()]);
 
-// Typed filter input. Each field maps either to a scalar (exact match) or to a
-// range object keyed by `gte`/`gt`/`lte`/`lt`. This mirrors the parsed shape the
-// RS receives from `qs.parse(filter[field][op]=value)`, so the adapter can
-// encode it back into bracket query params with no semantic invention. A legacy
-// raw query string is also accepted (and parsed) for pre-typed-input clients.
-const TypedFilterInput = z.union([
-  z.record(
-    z.string().min(1),
-    z.union([
-      FilterScalar,
-      z
-        .object({
-          gte: FilterScalar.optional(),
-          gt: FilterScalar.optional(),
-          lte: FilterScalar.optional(),
-          lt: FilterScalar.optional(),
-        })
-        .strict(),
-    ]),
-  ),
-  z.string(),
-]);
+// Private field used only after Zod preprocessing a legacy string filter. The
+// key intentionally contains brackets so it can never be confused with a valid
+// typed field name (those are rejected below before forwarding).
+const LEGACY_FILTER_STRING_FIELD = '[pdpp_legacy_filter_string]';
+
+// Typed filter input object. Each field maps either to a scalar (exact match)
+// or to a range object keyed by `gte`/`gt`/`lte`/`lt`. This mirrors the parsed
+// shape the RS receives from `qs.parse(filter[field][op]=value)`, so the
+// adapter can encode it back into bracket query params with no semantic
+// invention.
+const TypedFilterObjectInput = z.record(
+  z.string().min(1),
+  z.union([
+    FilterScalar,
+    z
+      .object({
+        gte: FilterScalar.optional(),
+        gt: FilterScalar.optional(),
+        lte: FilterScalar.optional(),
+        lt: FilterScalar.optional(),
+      })
+      .strict(),
+  ]),
+);
+
+// MCP clients build their tool UI from the advertised JSON Schema. A top-level
+// union of `{object|string}` is standards-valid, but some clients collapse it
+// to the string branch. Preprocessing keeps the advertised schema object-shaped
+// while still accepting legacy literal bracket strings at validation time.
+const TypedFilterInput = z.preprocess(
+  (value) => (typeof value === 'string' ? { [LEGACY_FILTER_STRING_FIELD]: value } : value),
+  TypedFilterObjectInput,
+);
 
 // Thrown when a legacy string filter cannot be unambiguously parsed into RS
 // bracket params. Surfaced as a typed MCP tool error (`server.js`
@@ -151,6 +162,13 @@ class MalformedExpandLimitError extends Error {
 // Translate a typed filter object into `[bracketKey, value]` query entries the
 // RsClient appends verbatim (`filter[field]=value`, `filter[field][op]=value`).
 function filterObjectToBracketEntries(filter) {
+  if (Object.hasOwn(filter, LEGACY_FILTER_STRING_FIELD)) {
+    const legacyFilterString = filter[LEGACY_FILTER_STRING_FIELD];
+    if (typeof legacyFilterString !== 'string') {
+      throw new MalformedFilterError('legacy filter string marker must be a string; pass a typed filter object instead');
+    }
+    return legacyFilterStringToBracketEntries(legacyFilterString);
+  }
   if (Object.keys(filter).length === 0) {
     throw new MalformedFilterError(
       'filter object must include at least one field; omit filter entirely or pass a typed object such as filter: { "field": "value" }',

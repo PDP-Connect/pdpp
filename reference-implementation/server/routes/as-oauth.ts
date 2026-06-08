@@ -57,6 +57,8 @@ interface AppLike {
   post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
 }
 
+const HOSTED_MCP_OAUTH_ACCESS_TOKEN_EXPIRES_IN_SECONDS = 365 * 24 * 60 * 60;
+
 // Narrows an unknown body field to `string | null | undefined` as required by
 // operation input types. Non-string values are treated as absent (undefined).
 function bodyString(value: unknown): string | null | undefined {
@@ -189,6 +191,7 @@ async function handleAuthCodeExchange(
     return res.json({
       access_token: token.access_token,
       token_type: token.token_type,
+      expires_in: HOSTED_MCP_OAUTH_ACCESS_TOKEN_EXPIRES_IN_SECONDS,
       ...(token.refresh_token ? { refresh_token: token.refresh_token } : {}),
       ...buildGrantIdPayload(token),
     });
@@ -211,6 +214,7 @@ async function handleRefreshTokenExchange(
     return res.json({
       access_token: token.access_token,
       token_type: token.token_type,
+      expires_in: HOSTED_MCP_OAUTH_ACCESS_TOKEN_EXPIRES_IN_SECONDS,
       refresh_token: token.refresh_token,
       ...buildGrantIdPayload(token),
     });
