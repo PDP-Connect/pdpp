@@ -826,6 +826,20 @@ test('dynamic registration accepts only public authorization-code and refresh-to
     });
     assert.equal(inferredLocalhostNativeLoopback.status, 201);
     assert.equal(inferredLocalhostNativeLoopback.body.application_type, 'native');
+
+    const inferredIpv6NativeLoopback = await fetchJson(`${asUrl}/oauth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_name: 'Inferred IPv6 native loopback redirect client',
+        redirect_uris: ['http://[::1]:43213/callback'],
+        grant_types: ['authorization_code'],
+        response_types: ['code'],
+        token_endpoint_auth_method: 'none',
+      }),
+    });
+    assert.equal(inferredIpv6NativeLoopback.status, 201);
+    assert.equal(inferredIpv6NativeLoopback.body.application_type, 'native');
   } finally {
     await closeServer(server);
   }

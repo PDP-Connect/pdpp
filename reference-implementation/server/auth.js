@@ -340,7 +340,11 @@ function normalizeUriArray(value, fieldName) {
 }
 
 function isLoopbackRedirectHost(hostname) {
-  const normalized = String(hostname || '').toLowerCase();
+  // URL.hostname keeps IPv6 literals bracketed (e.g. "[::1]"); strip the
+  // brackets before comparing so IPv6 loopback is recognized (RFC 8252).
+  const normalized = String(hostname || '')
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '');
   return normalized === 'localhost' || normalized === '::1' || normalized.startsWith('127.');
 }
 

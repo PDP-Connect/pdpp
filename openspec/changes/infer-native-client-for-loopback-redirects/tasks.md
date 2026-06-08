@@ -12,4 +12,4 @@
 
 - [x] 3.1 Add `/oauth/register` tests for omitted-type `127.0.0.1` and `localhost` redirects.
 - [x] 3.2 Add a regression test proving explicit `web` plus loopback HTTP still rejects.
-- [ ] 3.3 Run focused tests, typecheck, OpenSpec validation, and live DCR smoke after deploy.
+- [x] 3.3 Run focused tests, typecheck, OpenSpec validation, and live DCR smoke after deploy. (Live revision `02406c29`; omitted-type `http://127.0.0.1:53111/callback` returned `application_type: "native"`; explicit `application_type: "web"` loopback returned `invalid_client_metadata`.)

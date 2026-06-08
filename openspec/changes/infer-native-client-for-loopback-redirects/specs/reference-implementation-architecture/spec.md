@@ -16,6 +16,12 @@ When dynamic client registration receives authorization-code public-client metad
 - **THEN** the AS SHALL register the client
 - **AND** the registration response SHALL include `application_type: "native"`.
 
+#### Scenario: Loopback IPv6 redirect infers native
+
+- **WHEN** a public client posts `/oauth/register` with `grant_types: ["authorization_code"]`, `response_types: ["code"]`, no `application_type`, and a redirect URI on `http://[::1]:{port}/...`
+- **THEN** the AS SHALL register the client
+- **AND** the registration response SHALL include `application_type: "native"`.
+
 #### Scenario: Explicit web client remains strict
 
 - **WHEN** a public client posts `/oauth/register` with `application_type: "web"` and a loopback HTTP redirect URI
