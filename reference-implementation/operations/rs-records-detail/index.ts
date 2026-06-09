@@ -20,6 +20,7 @@
  *
  * What the operation owns:
  *   - `not_found` error mapping when the record does not exist;
+ *   - field projection validation against the manifest stream;
  *   - owner read-grant construction for the actor's stream;
  *   - output shape (decorated record + instrumentation data blocks).
  *
@@ -51,8 +52,14 @@ export type RecordDetailActor =
       grant_id: string | null;
     };
 
+export interface RecordDetailManifestStream {
+  name: string;
+  schema?: { properties?: Record<string, unknown> };
+  [extra: string]: unknown;
+}
+
 export interface RecordDetailManifest {
-  streams: Array<{ name: string; [extra: string]: unknown }>;
+  streams: RecordDetailManifestStream[];
   [extra: string]: unknown;
 }
 
@@ -113,6 +120,15 @@ export interface RecordDetailDependencies {
    * carry blob refs).
    */
   decorateRecord(record: Record<string, unknown>): Record<string, unknown>;
+  /**
+   * Validate request-level projection params against the manifest stream.
+   * This mirrors `rs.records.list` so single-record fetch does not silently
+   * drop unknown fields while list rejects them.
+   */
+  validateRequestFields(
+    requestParams: Record<string, unknown>,
+    manifestStream: RecordDetailManifestStream | null,
+  ): void;
 }
 
 export interface RecordDetailInput {
@@ -184,6 +200,13 @@ export async function executeRecordDetail(
   }
 
   const expandOptions: RecordDetailExpandOptions = input.expandOptions ?? {};
+  const manifestStream =
+    manifest.streams.find((s) => s.name === input.streamName) ?? null;
+  dependencies.validateRequestFields(
+    expandOptions as Record<string, unknown>,
+    manifestStream,
+  );
+
   const rawRecord = await dependencies.getRecord(
     input.streamName,
     input.recordId,

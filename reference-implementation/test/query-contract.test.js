@@ -1220,6 +1220,25 @@ test('fields projection on an unknown field is rejected under a full-stream gran
   });
 });
 
+test('record-detail fields projection on an unknown field is rejected under a full-stream grant', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorId = spotifyManifest.connector_id;
+    await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, [
+      { id: 'a1', name: 'A', source_updated_at: '2026-01-01T00:00:00Z' },
+    ]);
+    const url = `${rsUrl}/v1/streams/top_artists/records/a1`
+      + `?connector_id=${encodeURIComponent(connectorId)}`
+      + `&fields=id,not_a_real_field`;
+    const { status, body } = await fetchJson(url, {
+      headers: { 'Authorization': `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 400, 'unknown fetch projection field must fail loudly, not return {}');
+    assert.equal(body.error.code, 'unknown_field');
+    assert.match(body.error.message || '', /Unknown field: not_a_real_field/);
+  });
+});
+
 test('fields projection on a manifest-unknown field is rejected under a restricted grant', async () => {
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
     const connectorId = spotifyManifest.connector_id;

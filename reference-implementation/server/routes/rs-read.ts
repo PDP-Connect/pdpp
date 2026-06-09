@@ -1899,6 +1899,8 @@ export function mountRsRecordDetail(app: AppLike, ctx: MountRsReadContext): void
             });
           },
           decorateRecord: (record: unknown) => ctx.decorateRecordBlobRefs(record),
+          validateRequestFields: (requestParams: Record<string, unknown>, manifestStream: ManifestStreamLike | null) =>
+            ctx.validateRequestedQueryFieldParams(requestParams, manifestStream ?? undefined),
         };
 
         // The native `getRecord` capability throws an `Error` carrying
