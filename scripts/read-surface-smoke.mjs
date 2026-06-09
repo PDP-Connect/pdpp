@@ -227,6 +227,11 @@ export function extractMcpToolData(rpc) {
   }
 }
 
+export function extractMcpToolStructuredContent(rpc) {
+  const structured = rpc?.result?.structuredContent;
+  return structured && typeof structured === 'object' ? structured : extractMcpToolData(rpc);
+}
+
 export function extractMcpToolError(rpc) {
   if (rpc?.error) {
     return {
@@ -1180,7 +1185,7 @@ async function runMcpChecks({ origin, token, connectionId, stream, searchQuery, 
     const resp = await call('search', { q: searchQuery, streams: [stream], limit, mode: 'lexical' });
     const failure = requireMcpOk(resp, 'search.fan_in_limit_source_identity');
     if (failure) return failure;
-    const verdict = classifySearchLimitAndSource(extractMcpToolData(resp.rpc), limit);
+    const verdict = classifySearchLimitAndSource(extractMcpToolStructuredContent(resp.rpc), limit);
     return result(verdict.status, 'MCP', 'search.fan_in_limit_source_identity', verdict.detail, verdict.extra);
   });
 

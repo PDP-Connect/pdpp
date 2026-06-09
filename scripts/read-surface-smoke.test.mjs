@@ -18,6 +18,7 @@ import {
   extractListData,
   extractMcpToolData,
   extractMcpToolError,
+  extractMcpToolStructuredContent,
   extractRecordId,
   mcpInitializeMessage,
   mcpToolCallMessage,
@@ -109,6 +110,15 @@ test('extractListData and extractRecordId handle common envelopes', () => {
 test('MCP tool data/error extraction handles structured content and text JSON', () => {
   const okRpc = { result: { structuredContent: { data: { data: [{ id: 'r1' }] } } } };
   assert.deepEqual(extractMcpToolData(okRpc), { data: [{ id: 'r1' }] });
+  const searchRpc = {
+    result: {
+      structuredContent: {
+        data: { object: 'list', results_ref: 'structuredContent.results' },
+        results: [{ id: 'r1', connection_id: 'cin_1' }],
+      },
+    },
+  };
+  assert.deepEqual(extractMcpToolStructuredContent(searchRpc), searchRpc.result.structuredContent);
 
   const textRpc = { result: { content: [{ type: 'text', text: '{"code":"x","message":"bad"}' }] } };
   assert.deepEqual(extractMcpToolData(textRpc), { code: 'x', message: 'bad' });
@@ -191,6 +201,13 @@ test('classifySearchLimitAndSource catches per-source fanout and missing source 
           { id: 'b', source: { connection_id: 'cin_b' } },
         ],
       },
+    }, 3).status,
+    'pass',
+  );
+  assert.equal(
+    classifySearchLimitAndSource({
+      data: { object: 'list', results_ref: 'structuredContent.results' },
+      results: [{ id: 'a', connection_id: 'cin_a' }],
     }, 3).status,
     'pass',
   );
