@@ -21,6 +21,36 @@ const LEGACY_SYNC_STATE_OWNER_SUBJECT_ID = 'owner_local';
 let activeBackend = 'sqlite';
 let pool = null;
 
+// Semantic embedding storage mode, detected at bootstrap. 'vector' when the
+// pgvector extension is available and `semantic_search_blob.embedding` carries
+// the pgvector `vector` type; 'jsonb' otherwise (legacy/brute-force fallback).
+// See openspec/changes/migrate-postgres-semantic-index-to-pgvector/.
+let semanticEmbeddingColumnMode = 'jsonb';
+// Whether the server supports `hnsw.iterative_scan` (pgvector >= 0.8), so
+// filtered HNSW scans keep exact distance order without under-returning.
+let semanticIterativeScanSupported = false;
+
+// Production embedding profile dimensionality (search-semantic.js profiles).
+// The HNSW index is a partial expression index pinned at this width — the
+// documented pgvector pattern for a dimension-untyped `vector` column. Rows of
+// other dimensions (test stub backends) fall outside the partial index and are
+// scanned exactly.
+const SEMANTIC_VECTOR_INDEXED_DIMENSIONS = 384;
+const SEMANTIC_HNSW_INDEX_NAME = 'idx_pg_semantic_search_embedding_hnsw';
+
+function semanticVectorMigrationBatchSize() {
+  const parsed = Number.parseInt(process.env.PDPP_PG_SEMANTIC_MIGRATION_BATCH_SIZE || '', 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 50_000;
+}
+
+export function isPostgresSemanticVectorEmbedding() {
+  return activeBackend === 'postgres' && semanticEmbeddingColumnMode === 'vector';
+}
+
+export function isPostgresSemanticIterativeScanSupported() {
+  return semanticIterativeScanSupported;
+}
+
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
@@ -278,7 +308,7 @@ export async function withPostgresTransaction(fn) {
   }
 }
 
-export async function initPostgresStorage(config) {
+export async function initPostgresStorage(config, { log } = {}) {
   if (!config || config.backend !== 'postgres') {
     activeBackend = 'sqlite';
     return null;
@@ -290,7 +320,7 @@ export async function initPostgresStorage(config) {
   pool = new Pool({ connectionString: config.databaseUrl });
   activeBackend = 'postgres';
 
-  await bootstrapPostgresSchema();
+  await bootstrapPostgresSchema({ log });
   return pool;
 }
 
@@ -298,16 +328,20 @@ export async function closePostgresStorage() {
   const current = pool;
   pool = null;
   activeBackend = 'sqlite';
+  semanticEmbeddingColumnMode = 'jsonb';
+  semanticIterativeScanSupported = false;
   if (current) {
     await current.end();
   }
 }
 
-export async function bootstrapPostgresSchema() {
+export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
   const client = await getPostgresPool().connect();
   try {
-    // pgvector is optional. Semantic fallback stores vectors as JSONB and
-    // computes distances after grant-scoped candidate narrowing.
+    // pgvector is optional. When available, the boot migration below moves
+    // semantic embeddings to the pgvector representation; without it the
+    // semantic fallback stores vectors as JSONB and computes distances after
+    // grant-scoped candidate narrowing.
     try {
       await client.query('CREATE EXTENSION IF NOT EXISTS vector');
     } catch {}
@@ -1306,8 +1340,169 @@ export async function bootstrapPostgresSchema() {
     await migratePostgresLocalDeviceConnectorInstances(client);
     await migratePostgresLegacyConnectorInstancesToDefaultAccount(client);
     await migratePostgresConnectorInstancesSourceKindBrowserCollector(client);
+    await migratePostgresSemanticEmbeddingToVector(client, log);
   } finally {
     client.release();
+  }
+}
+
+async function hasPgvectorExtension(client) {
+  const result = await client.query("SELECT 1 FROM pg_extension WHERE extname = 'vector' LIMIT 1");
+  return result.rowCount > 0;
+}
+
+async function postgresColumnUdtName(client, table, column) {
+  const result = await client.query(
+    `SELECT udt_name
+       FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = $1
+        AND column_name = $2
+      LIMIT 1`,
+    [table, column],
+  );
+  return result.rows[0]?.udt_name ?? null;
+}
+
+async function detectSemanticIterativeScanSupport(client) {
+  // `hnsw.iterative_scan` exists from pgvector 0.8. SET + RESET outside a
+  // transaction is harmless on this short-lived bootstrap client.
+  try {
+    await client.query("SET hnsw.iterative_scan = strict_order");
+    await client.query('RESET hnsw.iterative_scan');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureSemanticEmbeddingHnswIndex(client, log) {
+  const existing = await client.query(
+    `SELECT 1 FROM pg_indexes
+      WHERE schemaname = current_schema() AND tablename = 'semantic_search_blob' AND indexname = $1
+      LIMIT 1`,
+    [SEMANTIC_HNSW_INDEX_NAME],
+  );
+  if (existing.rowCount > 0) return;
+
+  // HNSW builds want the graph in maintenance_work_mem; the Postgres default
+  // (64MB) forces a much slower build at the live table size. SET values
+  // cannot be bound parameters; the value is validated against a strict
+  // size-literal pattern before interpolation.
+  const workMem = process.env.PDPP_PG_SEMANTIC_INDEX_MAINTENANCE_WORK_MEM || '256MB';
+  const workMemValid = /^\d+(kB|MB|GB)$/.test(workMem);
+  if (workMemValid) {
+    await client.query(`SET maintenance_work_mem = '${workMem}'`);
+  }
+  // Parallel HNSW builds allocate dynamic shared memory proportional to
+  // maintenance_work_mem; containerized Postgres commonly runs with the 64MB
+  // /dev/shm default and dies with "could not resize shared memory segment".
+  // Build serially — no DSM involved — so the boot migration succeeds in any
+  // container (verified against pgvector/pgvector:pg16).
+  await client.query('SET max_parallel_maintenance_workers = 0');
+  log(`[PDPP] Semantic index migration: building HNSW index ${SEMANTIC_HNSW_INDEX_NAME} (cosine, ${SEMANTIC_VECTOR_INDEXED_DIMENSIONS} dims${workMemValid ? `, maintenance_work_mem=${workMem}` : ''}, serial build)`);
+  const startedAt = Date.now();
+  await client.query(
+    `CREATE INDEX IF NOT EXISTS ${SEMANTIC_HNSW_INDEX_NAME}
+       ON semantic_search_blob
+       USING hnsw ((embedding::vector(${SEMANTIC_VECTOR_INDEXED_DIMENSIONS})) vector_cosine_ops)
+       WHERE (vector_dims(embedding) = ${SEMANTIC_VECTOR_INDEXED_DIMENSIONS})`,
+  );
+  await client.query('RESET max_parallel_maintenance_workers');
+  if (workMemValid) {
+    await client.query('RESET maintenance_work_mem');
+  }
+  log(`[PDPP] Semantic index migration: HNSW index ready in ${Math.round((Date.now() - startedAt) / 1000)}s`);
+}
+
+/**
+ * Boot migration: move `semantic_search_blob.embedding` from the legacy JSONB
+ * float-array representation to pgvector `vector` so semantic queries can use
+ * the database's cosine-distance operator and HNSW index instead of fetching
+ * candidate embeddings and scoring them in JS.
+ *
+ * Idempotent and resume-safe: every backfill batch is its own statement, the
+ * column swap is one transaction, and re-running after an interruption picks
+ * up at the remaining unconverted rows. When the pgvector extension is not
+ * available the JSONB representation (and the JS brute-force read path) stays
+ * in place unchanged.
+ *
+ * Spec: openspec/changes/migrate-postgres-semantic-index-to-pgvector/
+ */
+async function migratePostgresSemanticEmbeddingToVector(client, log = () => {}) {
+  if (!(await hasPgvectorExtension(client))) {
+    semanticEmbeddingColumnMode = 'jsonb';
+    semanticIterativeScanSupported = false;
+    return;
+  }
+
+  const udtName = await postgresColumnUdtName(client, 'semantic_search_blob', 'embedding');
+  if (udtName === 'vector') {
+    await ensureSemanticEmbeddingHnswIndex(client, log);
+    semanticEmbeddingColumnMode = 'vector';
+    semanticIterativeScanSupported = await detectSemanticIterativeScanSupport(client);
+    return;
+  }
+  if (udtName !== 'jsonb') {
+    // Unknown shape — leave it alone and keep the brute-force path honest.
+    semanticEmbeddingColumnMode = 'jsonb';
+    semanticIterativeScanSupported = false;
+    return;
+  }
+
+  // Index rows are derived data (rebuilt by the semantic backfill machinery),
+  // so rows that cannot cast to a vector — non-array payloads or arrays
+  // containing null — are dropped rather than wedging boot forever.
+  const garbage = await client.query(
+    `DELETE FROM semantic_search_blob
+      WHERE jsonb_typeof(embedding) <> 'array' OR embedding @> 'null'::jsonb`,
+  );
+  if (garbage.rowCount > 0) {
+    log(`[PDPP] Semantic index migration: dropped ${garbage.rowCount} non-castable embedding rows (they will be rebuilt by the semantic backfill)`);
+  }
+
+  const totalResult = await client.query('SELECT COUNT(*) AS n FROM semantic_search_blob');
+  const total = Number(totalResult.rows[0]?.n || 0);
+  if (total > 0) {
+    log(`[PDPP] Semantic index migration: converting semantic_search_blob.embedding JSONB → pgvector (${total} rows)`);
+  }
+
+  await client.query('ALTER TABLE semantic_search_blob ADD COLUMN IF NOT EXISTS embedding_vec vector');
+
+  const batchSize = semanticVectorMigrationBatchSize();
+  let migrated = 0;
+  for (;;) {
+    const batch = await client.query(
+      `UPDATE semantic_search_blob
+          SET embedding_vec = (embedding::text)::vector
+        WHERE ctid IN (
+          SELECT ctid FROM semantic_search_blob WHERE embedding_vec IS NULL LIMIT $1
+        )`,
+      [batchSize],
+    );
+    if (batch.rowCount === 0) break;
+    migrated += batch.rowCount;
+    log(`[PDPP] Semantic index migration: backfilled ${migrated} embeddings`);
+  }
+
+  await client.query('BEGIN');
+  try {
+    await client.query('ALTER TABLE semantic_search_blob DROP COLUMN embedding');
+    await client.query('ALTER TABLE semantic_search_blob RENAME COLUMN embedding_vec TO embedding');
+    await client.query('ALTER TABLE semantic_search_blob ALTER COLUMN embedding SET NOT NULL');
+    await client.query('COMMIT');
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {}
+    throw err;
+  }
+
+  await ensureSemanticEmbeddingHnswIndex(client, log);
+  semanticEmbeddingColumnMode = 'vector';
+  semanticIterativeScanSupported = await detectSemanticIterativeScanSupport(client);
+  if (total > 0) {
+    log('[PDPP] Semantic index migration: complete — semantic queries now use pgvector cosine distance');
   }
 }
 

@@ -4323,7 +4323,7 @@ export async function startServer(opts = {}) {
   // which only reports `postgres` once `initPostgresStorage` has run; seeding
   // before this point would persist pre-registered clients to SQLite even in
   // Postgres mode.
-  await initPostgresStorage(storageBackend);
+  await initPostgresStorage(storageBackend, { log: (msg) => logger.info(msg) });
   if (storageBackend.backend === 'postgres') {
     logger.info('postgres runtime storage initialized');
   }

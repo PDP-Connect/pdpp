@@ -8,7 +8,12 @@
  * Spec: openspec/changes/add-postgres-runtime-storage/
  */
 
-import { postgresQuery } from './postgres-storage.js';
+import {
+  isPostgresSemanticIterativeScanSupported,
+  isPostgresSemanticVectorEmbedding,
+  postgresQuery,
+  withPostgresTransaction,
+} from './postgres-storage.js';
 import { makeDefaultAccountConnectorInstanceId } from './stores/connector-instance-store.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
 
@@ -317,10 +322,17 @@ export async function postgresListExistingSemanticKeys({ connectorId, connectorI
 
 export async function postgresSemanticIndexUpsertMany({ connectorId, connectorInstanceId = defaultConnectorInstanceId(connectorId), stream, recordKey, entries }) {
   await postgresSemanticIndexDelete({ connectorId, connectorInstanceId, stream, recordKey });
+  const vectorMode = isPostgresSemanticVectorEmbedding();
   for (const entry of entries) {
+    const values = Array.from(entry.vector || []);
+    // pgvector rejects empty vectors; an empty embedding could never match a
+    // query anyway (the JSONB path scored it at infinite distance).
+    if (vectorMode && values.length === 0) continue;
     await postgresQuery(
+      // `[0.1,0.2,...]` is simultaneously valid JSON and a valid pgvector
+      // literal, so only the cast differs between the two storage modes.
       `INSERT INTO semantic_search_blob (connector_id, connector_instance_id, scope_key, record_key, embedding)
-       VALUES ($1, $2, $3, $4, $5::jsonb)
+       VALUES ($1, $2, $3, $4, $5::${vectorMode ? 'vector' : 'jsonb'})
        ON CONFLICT (connector_instance_id, scope_key, record_key) DO UPDATE
          SET embedding = EXCLUDED.embedding`,
       [
@@ -328,7 +340,7 @@ export async function postgresSemanticIndexUpsertMany({ connectorId, connectorIn
         entry.connectorInstanceId ?? connectorInstanceId,
         entry.scopeKey,
         entry.recordKey,
-        JSON.stringify(Array.from(entry.vector || [])),
+        JSON.stringify(values),
       ],
     );
   }
@@ -459,6 +471,72 @@ function cosineDistance(a, b) {
   return 1 - dot / (Math.sqrt(magA) * Math.sqrt(magB));
 }
 
+function compareSemanticHits(a, b) {
+  return a.distance - b.distance || a.connectorId.localeCompare(b.connectorId) || a.scopeKey.localeCompare(b.scopeKey) || a.recordKey.localeCompare(b.recordKey);
+}
+
+async function postgresSemanticSearchVector({
+  connectorInstanceId,
+  scopeKeys,
+  queryVector,
+  limit,
+  recordKeys,
+}) {
+  const values = Array.from(queryVector || [], Number);
+  const dims = values.length;
+  // Typmods cannot be bound parameters; `dims` is validated as a small
+  // positive integer (pgvector caps vectors at 16000 dims) before it is
+  // interpolated. Non-finite query components cannot form a vector literal
+  // and could never produce meaningful distances.
+  if (!Number.isInteger(dims) || dims < 1 || dims > 16_000) return [];
+  if (!values.every(Number.isFinite)) return [];
+  const boundedLimit = Math.max(Number(limit) || 200, 1);
+  const params = [connectorInstanceId, scopeKeys, `[${values.join(',')}]`, boundedLimit];
+  let recordClause = '';
+  if (Array.isArray(recordKeys)) {
+    if (recordKeys.length === 0) return [];
+    params.push(recordKeys);
+    recordClause = `AND record_key = ANY($${params.length}::text[])`;
+  }
+  // The HNSW default ef_search (40) would silently cap a larger overscan;
+  // clamp to pgvector's [1, 1000] GUC range. Integer-validated above via
+  // boundedLimit (Number(...) || 200, Math.max 1).
+  const efSearch = Math.min(Math.max(Math.trunc(boundedLimit), 40), 1000);
+  const result = await withPostgresTransaction(async (client) => {
+    await client.query(`SET LOCAL hnsw.ef_search = ${efSearch}`);
+    if (isPostgresSemanticIterativeScanSupported()) {
+      // Keep filtered HNSW scans exact-ordered and complete (pgvector >= 0.8).
+      await client.query("SET LOCAL hnsw.iterative_scan = strict_order");
+    }
+    // Secondary tie-break keys stay out of ORDER BY (they would disqualify
+    // the ANN index); the <= LIMIT rows are re-sorted below under the same
+    // total order the JSONB brute-force path used.
+    return client.query(
+      `SELECT connector_id, connector_instance_id, scope_key, record_key,
+              (embedding::vector(${dims}) <=> $3::vector(${dims}))::float8 AS distance
+       FROM semantic_search_blob
+       WHERE connector_instance_id = $1
+         AND scope_key = ANY($2::text[])
+         AND vector_dims(embedding) = ${dims}
+         ${recordClause}
+       ORDER BY embedding::vector(${dims}) <=> $3::vector(${dims})
+       LIMIT $4`,
+      params,
+    );
+  });
+  return result.rows
+    .map((row) => ({
+      connectorId: row.connector_id,
+      connectorInstanceId: row.connector_instance_id,
+      scopeKey: row.scope_key,
+      recordKey: row.record_key,
+      // Zero-magnitude embeddings score NaN under pgvector cosine distance;
+      // the JS path scored them Infinity. Normalize for parity.
+      distance: Number.isNaN(Number(row.distance)) ? Number.POSITIVE_INFINITY : Number(row.distance),
+    }))
+    .sort(compareSemanticHits);
+}
+
 export async function postgresSemanticSearch({
   connectorId,
   connectorInstanceId = defaultConnectorInstanceId(connectorId),
@@ -467,6 +545,9 @@ export async function postgresSemanticSearch({
   limit = 200,
   recordKeys = null,
 }) {
+  if (isPostgresSemanticVectorEmbedding()) {
+    return postgresSemanticSearchVector({ connectorInstanceId, scopeKeys, queryVector, limit, recordKeys });
+  }
   const params = [connectorInstanceId, scopeKeys, Math.max(Number(limit) || 200, 1)];
   let recordClause = '';
   if (Array.isArray(recordKeys)) {
@@ -491,7 +572,7 @@ export async function postgresSemanticSearch({
       recordKey: row.record_key,
       distance: cosineDistance(queryVector, Array.isArray(row.embedding) ? row.embedding : []),
     }))
-    .sort((a, b) => a.distance - b.distance || a.connectorId.localeCompare(b.connectorId) || a.scopeKey.localeCompare(b.scopeKey) || a.recordKey.localeCompare(b.recordKey))
+    .sort(compareSemanticHits)
     .slice(0, limit);
 }
 
