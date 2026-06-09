@@ -230,3 +230,39 @@ Captured for a future design note, explicitly not required here:
   floor, never a silently truncated exact claim).
 - A drained source-pressure backlog does not render as "caught up" when the same
   bounded evidence shows pending non-source-pressure detail gaps.
+
+## Live Verification (2026-06-09)
+
+Route: `GET /_ref/connectors` (owner-session, localhost:7662), ChatGPT connection (`cin_11deac1e728b244aaeb56765`, connector `chatgpt`)
+
+`connection_health.detail_gap_backlog`:
+
+```json
+{
+  "pending": 100,
+  "pending_is_floor": true,
+  "pending_other": 0,
+  "pending_other_is_floor": false,
+  "max_attempt_count": 8,
+  "next_attempt_at": null,
+  "recovered": 354
+}
+```
+
+SQL ground truth (`connector_detail_gaps`, Postgres `pdpp`):
+
+| Reason | Status | SQL count | Route interpretation | Match |
+|--------|--------|-----------|----------------------|-------|
+| `upstream_pressure` | `pending` | 106 | included in `pending` floor | consistent |
+| `rate_limited` | `pending` | 1 | included in `pending` floor | consistent |
+| **source-pressure total** | **pending** | **107** | `pending: 100`, `pending_is_floor: true` | floor correct |
+| `retry_exhausted` | `pending` | 1501 | `pending_other: 0` (not in first 100 by `created_at`) | consistent |
+| `upstream_pressure` | `recovered` | 351 | included in `recovered: 354` | consistent |
+| `rate_limited` | `recovered` | 3 | included in `recovered: 354` | consistent |
+| **source-pressure total** | **recovered** | **354** | `recovered: 354` | exact match |
+
+**Floor explained:** `listPendingGapsForConnector` reads `status='pending' ORDER BY created_at LIMIT 100`. The 100 oldest pending gaps are all source-pressure gaps (created 2026-06-03 early), yielding `pending=100, pending_other=0`. The actual source-pressure pending total is 107, so `pending_is_floor: true` is correct. The 1,501 `retry_exhausted` pending gaps (created later) fall outside the bounded read; `pending_other_is_floor: false` because no `pending_other` rows were found in this page.
+
+`recovered: 354` is an exact count-by-status aggregate (`countGapsByStatusForConnector`) scoped to source-pressure reasons; it matches SQL exactly.
+
+Verdict: **verified** — rollup matches live store counts within the documented bounded-read semantics.

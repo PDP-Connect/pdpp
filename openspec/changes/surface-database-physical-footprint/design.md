@@ -207,3 +207,20 @@ Captured for follow-up, explicitly not required here:
   `psql -c "SELECT pg_database_size(current_database())"`, and the rendered
   retained payload still matches `/_ref/dataset/summary` `total_retained_bytes`;
   the two numbers being far apart is the expected, now-explained state.
+
+## Live Verification (2026-06-09)
+
+Route: `GET /_ref/deployment` (owner-session, localhost:7662)
+
+| Field | Route value | SQL cross-check | Match |
+|-------|-------------|-----------------|-------|
+| `database.physical_bytes` | 23659494423 | `SELECT pg_database_size('pdpp')` → 23659494423 | exact |
+| `database.path` | `/var/lib/pdpp/pdpp.sqlite` | — (config path; backend is Postgres) | — |
+| `database.top_relations[0]` | `semantic_search_blob`: 11082334208 | — | — |
+| `database.top_relations[1]` | `lexical_search_index`: 3885211648 | — | — |
+| `database.top_relations[2]` | `record_changes`: 3429646336 | — | — |
+| `/_ref/dataset/summary` `total_retained_bytes` | 4921599591 | — (logical, ~4.7 GB) | — |
+
+`physical_bytes` (23659494423 ≈ 22 GB) equals `pg_database_size('pdpp')` exactly.
+`total_retained_bytes` (4921599591 ≈ 4.7 GB) is the logical payload; gap from physical is the expected, now-explained state.
+Note: `database.path` shows the configured SQLite path, but the live backend is Postgres; `physical_bytes` is sourced from Postgres `pg_database_size`. Verdict: **verified**.
