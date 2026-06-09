@@ -35,10 +35,30 @@ test('CIMD URL classification and prefetch validation reject unsafe client_ids',
 });
 
 test('CIMD IP guard blocks loopback private and link-local ranges', () => {
-  for (const ip of ['127.0.0.1', '10.0.0.1', '172.16.1.2', '192.168.1.3', '169.254.1.1', '::1', 'fe80::1', 'fd00::1']) {
+  for (const ip of [
+    '127.0.0.1',
+    '10.0.0.1',
+    '100.64.0.1',
+    '100.127.255.255',
+    '172.16.1.2',
+    '192.168.1.3',
+    '169.254.1.1',
+    '224.0.0.1',
+    '255.255.255.255',
+    '::1',
+    'fe80::1',
+    'fd00::1',
+    '::ffff:127.0.0.1',
+    '::ffff:10.0.0.1',
+    '::ffff:100.64.0.1',
+    '::ffff:169.254.1.1',
+    '::ffff:255.255.255.255',
+    '0:0:0:0:0:ffff:192.168.1.3',
+  ]) {
     assert.equal(isForbiddenIp(ip), true, `${ip} should be forbidden`);
   }
   assert.equal(isForbiddenIp('93.184.216.34'), false);
+  assert.equal(isForbiddenIp('::ffff:93.184.216.34'), false);
   assert.equal(isForbiddenIp('2606:2800:220:1:248:1893:25c8:1946'), false);
 });
 

@@ -138,6 +138,7 @@ const SUPPORTED_NORMALIZED_PENDING_REQUEST_FIELDS = new Set([
 const SUPPORTED_PENDING_CLIENT_FIELDS = new Set([
   'client_display',
   'client_id',
+  'registration_mode',
 ]);
 const SUPPORTED_ACCESS_MODES = new Set(['single_use', 'continuous']);
 const SUPPORTED_PENDING_SELECTION_FIELDS = new Set([
@@ -477,6 +478,15 @@ function buildClientDisplayFromRegistration(metadata = {}) {
     policy_uri: metadata.policy_uri,
     tos_uri: metadata.tos_uri,
   });
+}
+
+function applyRegisteredClientToPendingRequestClient(request, registeredClient) {
+  request.client = {
+    ...request.client,
+    client_id: registeredClient.client_id,
+    registration_mode: registeredClient.registration_mode || 'pre_registered_public',
+    client_display: buildClientDisplayFromRegistration(registeredClient.metadata),
+  };
 }
 
 function normalizeStreamSelection(stream = {}) {
@@ -1184,20 +1194,16 @@ function requirePendingRequestContractAgainstManifest(request = {}, manifest = {
   return resolveGrantSelection(request.selection, manifest);
 }
 
-async function requirePendingRequestClientRegistration(request = {}) {
+async function requirePendingRequestClientRegistration(request = {}, opts = {}) {
   const clientId = request?.client?.client_id || null;
   if (!clientId) {
     throw bindingError('invalid_request', 'client.client_id is required');
   }
-  const registeredClient = await getRegisteredClient(clientId);
+  const registeredClient = await resolveOAuthClient(clientId, opts);
   if (!registeredClient) {
     throw bindingError('invalid_client', `Unknown client_id: ${clientId}`);
   }
-  request.client = {
-    ...request.client,
-    client_id: clientId,
-    client_display: buildClientDisplayFromRegistration(registeredClient.metadata),
-  };
+  applyRegisteredClientToPendingRequestClient(request, registeredClient);
   return registeredClient;
 }
 
@@ -3030,7 +3036,7 @@ export async function initiateGrant(input, opts = {}) {
       err.code = 'invalid_client';
       throw err;
     }
-    normalized.client.client_display = buildClientDisplayFromRegistration(registeredClient.metadata);
+    applyRegisteredClientToPendingRequestClient(normalized, registeredClient);
     const storageBinding = getRequestStorageBinding(normalized);
     const manifest = await requireGrantManifestForBindings(sourceBinding, storageBinding, opts);
     resolveGrantSelection(normalized.selection, manifest);
@@ -3121,13 +3127,13 @@ async function initiateStagedGrantBatch(input, opts = {}) {
   const firstSource = batch.entries[0]?.source_binding || null;
 
   try {
-    const registeredClient = await getRegisteredClient(batch.client.client_id);
+    const registeredClient = await resolveOAuthClient(batch.client.client_id, opts);
     if (!registeredClient) {
       const err = new Error(`Unknown client_id: ${batch.client.client_id}`);
       err.code = 'invalid_client';
       throw err;
     }
-    batch.client.client_display = buildClientDisplayFromRegistration(registeredClient.metadata);
+    applyRegisteredClientToPendingRequestClient(batch, registeredClient);
 
     // Incremental add-source linkage: validate the parent now (same client,
     // exists, active) so a malformed/cross-client link fails closed before a
@@ -3458,9 +3464,9 @@ function narrowResolvedSelectionForSource(baselineResolved, narrowing, sourceLab
   });
 }
 
-async function getPendingConsentBatch(request, row) {
+async function getPendingConsentBatch(request, row, opts = {}) {
   try {
-    await requirePendingRequestClientRegistration(request);
+    await requirePendingRequestClientRegistration(request, opts);
     const cards = await buildBatchConsentCards(request);
     return {
       request,
@@ -3595,7 +3601,7 @@ async function approveStagedGrantBatch(deviceCode, pending, request, subjectId, 
   let parentPackage = null;
   const resolvedEntries = [];
   try {
-    registeredClient = await requirePendingRequestClientRegistration(request);
+    registeredClient = await requirePendingRequestClientRegistration(request, opts);
     // Re-validate incremental add-source linkage now that the approving owner
     // (subjectId) is known. Fail closed before any new package row or child
     // grant is written if the parent is missing, cross-client, cross-owner,
@@ -3791,7 +3797,7 @@ async function approveStagedGrantBatch(deviceCode, pending, request, subjectId, 
 /**
  * Get pending consent request for display in consent UI
  */
-export async function getPendingConsent(deviceCode) {
+export async function getPendingConsent(deviceCode, opts = {}) {
   const row = await getPendingConsentRow(deviceCode);
   if (!row) return null;
   if (row.status !== 'pending') return null;
@@ -3802,13 +3808,13 @@ export async function getPendingConsent(deviceCode) {
   const request = JSON.parse(row.params_json);
   request.trace_context = requirePersistedPendingTraceContext(row);
   if (isStagedBatchRequest(request)) {
-    return getPendingConsentBatch(request, row);
+    return getPendingConsentBatch(request, row, opts);
   }
   let resolvedStreams = null;
   let manifestStreamNames = null;
   try {
     requireStructuredPendingRequestShape(request);
-    await requirePendingRequestClientRegistration(request);
+    await requirePendingRequestClientRegistration(request, opts);
     const { sourceBinding, storageBinding } = requireStructuredPendingRequestBindings(request);
     request.source_binding = describeSourceBinding(sourceBinding);
     request.storage_binding = normalizeStorageBinding(storageBinding);
@@ -3869,7 +3875,7 @@ export async function approveGrant(deviceCode, subjectId = 'owner_local', opts =
 
   try {
     requireStructuredPendingRequestShape(request);
-    registeredClient = await requirePendingRequestClientRegistration(request);
+    registeredClient = await requirePendingRequestClientRegistration(request, opts);
     ({ sourceBinding, storageBinding } = requireStructuredPendingRequestBindings(request));
     request.source_binding = describeSourceBinding(sourceBinding);
     request.storage_binding = normalizeStorageBinding(storageBinding);
@@ -4404,7 +4410,7 @@ export async function createHostedMcpGrantPackage({
     throw buildOAuthAuthorizationCodeError('invalid_request', 'At least one source must be selected');
   }
 
-  const registeredClient = await getRegisteredClient(clientId);
+  const registeredClient = await resolveOAuthClient(clientId, opts);
   if (!registeredClient) {
     throw buildOAuthAuthorizationCodeError('invalid_client', 'Unknown client_id');
   }
@@ -4418,6 +4424,7 @@ export async function createHostedMcpGrantPackage({
     subject: { id: subjectId },
     client: {
       client_id: clientId,
+      registration_mode: registeredClient.registration_mode || 'pre_registered_public',
       client_display: buildClientDisplayFromRegistration(registeredClient.metadata),
     },
     approved_source_count: authorizationDetails.length,
@@ -4468,7 +4475,7 @@ export async function createHostedMcpGrantPackage({
     }
     requireStructuredPendingRequestShape(request);
     request.trace_context = traceContext;
-    const childRegisteredClient = await requirePendingRequestClientRegistration(request);
+    const childRegisteredClient = await requirePendingRequestClientRegistration(request, opts);
     const { sourceBinding, storageBinding } = requireStructuredPendingRequestBindings(request);
     request.source_binding = describeSourceBinding(sourceBinding);
     request.storage_binding = normalizeStorageBinding(storageBinding);

@@ -653,7 +653,7 @@ test('PDPP reference implementation integration', async (t) => {
         redirectUris: ['http://localhost:1455/callback'],
       });
       const clientId = `${publicOrigin}/oauth/client-metadata/${documentId}`;
-      const approved = await approveGrant(asUrl, 'u1', {
+      const { body: initiate } = await startGrantRequest(asUrl, {
         client_id: clientId,
         source: { kind: 'connector', id: spotifyManifest.connector_id },
         purpose_code: 'https://pdpp.org/purpose/personalization',
@@ -662,8 +662,20 @@ test('PDPP reference implementation integration', async (t) => {
         streams: [{ name: 'top_artists', view: 'basic' }],
       });
 
+      const consentResp = await fetch(`${asUrl}/consent?request_uri=${encodeURIComponent(initiate.request_uri)}`);
+      assert.equal(consentResp.status, 200);
+      const consentHtml = await consentResp.text();
+      assert.match(consentHtml, /Client identity/);
+      assert.match(consentHtml, /https:\/\/pdpp\.example\.test/);
+      assert.match(consentHtml, /Self-described app name/);
+      assert.match(consentHtml, /Codex/);
+      assert.doesNotMatch(consentHtml, /Requesting app/);
+
+      const { body: approved } = await approveGrantRequest(asUrl, initiate.request_uri, 'u1');
+
       assert.equal(approved.grant.client.client_id, clientId);
       assert.equal(approved.grant.client.client_display.name, 'Codex');
+      assert.equal(approved.grant.client.registration_mode, 'client_id_metadata_document');
       assert.ok(approved.token);
 
       const clientRecordsResp = await fetch(`${rsUrl}/v1/streams/top_artists/records?limit=1`, {

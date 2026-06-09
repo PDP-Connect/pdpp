@@ -84,7 +84,9 @@ export interface AsConsentDecisionDependencies {
       | {
           ai_training_consented?: unknown;
           approvedSourceIndexes?: readonly number[];
+          baseUrl?: string | null;
           confirmedApproveAll?: boolean;
+          sourceNarrowing?: Readonly<Record<number, unknown>>;
         }
       | undefined,
   ):

@@ -2624,10 +2624,10 @@ function buildAsApp(opts = {}) {
   // `split-reference-server-by-route-family`. Call sites below pass the
   // required context arguments explicitly.
 
-  async function getPendingGrantFromRequestUri(requestUri) {
+  async function getPendingGrantFromRequestUri(requestUri, opts = {}) {
     const deviceCode = consentStore.parseRequestUri(requestUri);
     if (!deviceCode) return { deviceCode: null, pending: null };
-    const pending = await consentStore.getPendingConsentByDeviceCode(deviceCode);
+    const pending = await consentStore.getPendingConsentByDeviceCode(deviceCode, opts);
     return { deviceCode, pending };
   }
 
@@ -2656,8 +2656,8 @@ function buildAsApp(opts = {}) {
     agentConnectTtlMs: opts.agentConnectTtlMs || AGENT_CONNECT_TTL_MS,
     handleError,
     pdppError,
-    async getPendingGrantFromRequestUri(requestUri) {
-      const { pending } = await getPendingGrantFromRequestUri(requestUri);
+    async getPendingGrantFromRequestUri(requestUri, opts2 = {}) {
+      const { pending } = await getPendingGrantFromRequestUri(requestUri, opts2);
       if (!pending) return null;
       const pendingClientId = pending.request?.client?.client_id || null;
       return { pendingClientId };
@@ -3436,6 +3436,7 @@ function buildAsApp(opts = {}) {
     issueOAuthAuthorizationCodeForPackageDeviceCode,
     pdppError,
     providerName,
+    resolveBaseUrl: (req) => resolvePublicUrl(req, explicitAsBaseUrl),
     setReferenceTraceId,
   });
 

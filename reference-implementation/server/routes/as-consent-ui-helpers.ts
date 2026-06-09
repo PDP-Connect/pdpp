@@ -492,6 +492,7 @@ export interface PendingGrantRequest {
   client?: {
     client_display?: { name?: string | null } | null;
     client_id?: string | null;
+    registration_mode?: string | null;
   } | null;
   selection?: {
     streams?: Array<{
@@ -549,6 +550,48 @@ interface PendingConsentCumulativeRisk {
   sensitive_source_count?: number;
   source_count?: number;
   total_stream_count?: number;
+}
+
+interface ConsentClientDisplay {
+  facts: Array<{ label: string; value?: unknown; html?: string }>;
+  titleName: string;
+}
+
+function clientOriginFromClientId(clientId: string | null | undefined): string | null {
+  if (!clientId) {
+    return null;
+  }
+  try {
+    return new URL(clientId).origin;
+  } catch {
+    return null;
+  }
+}
+
+function buildConsentClientDisplay(
+  client: NonNullable<PendingGrantRequest["client"]>,
+  ui: ConsentUiRenderer
+): ConsentClientDisplay {
+  const clientId = typeof client.client_id === "string" ? client.client_id : null;
+  const clientName = client.client_display?.name || clientId || "Client application";
+  if (client.registration_mode !== "client_id_metadata_document") {
+    return {
+      facts: [{ label: "Requesting app", value: clientName }],
+      titleName: clientName,
+    };
+  }
+
+  const identity = clientOriginFromClientId(clientId) || clientId || "Client application";
+  const facts: Array<{ label: string; value?: unknown; html?: string }> = [
+    { label: "Client identity", html: `<code>${ui.escapeHtml(identity)}</code>` },
+  ];
+  if (clientName && clientName !== identity) {
+    facts.push({ label: "Self-described app name", value: clientName });
+  }
+  if (clientId) {
+    facts.push({ label: "Metadata document", html: `<code>${ui.escapeHtml(clientId)}</code>` });
+  }
+  return { facts, titleName: identity };
 }
 
 function buildStreamsBlock(
@@ -754,7 +797,7 @@ function renderBatchConsentHtml(
 ): string {
   const request = pending.request;
   const client = request.client || {};
-  const clientName = client.client_display?.name || client.client_id || "Client application";
+  const clientDisplay = buildConsentClientDisplay(client, ui);
   const cards = Array.isArray(pending.cards) ? pending.cards : [];
   const csrfHidden = csrfToken ? [{ name: csrfFieldName, value: csrfToken }] : [];
   const approveAllSuppressed = pending.approveAllGate?.approve_all_suppressed === true;
@@ -804,8 +847,13 @@ function renderBatchConsentHtml(
   const body = [
     ui.renderPageIntro({
       eyebrow: "Data access request",
-      title: `${clientName} wants access to several sources`,
+      title: `${clientDisplay.titleName} wants access to several sources`,
       lede: "Review each source. Your server will only issue grants for sources you confirm.",
+    }),
+    ui.renderSurface({
+      surface: "human",
+      ariaLabel: "Client identity",
+      children: ui.renderKeyValueList(clientDisplay.facts),
     }),
     overCapWarning,
     broadWarning,
@@ -844,7 +892,7 @@ export function renderPendingGrantConsentHtml(
   const client = request.client || {};
   const selection = request.selection || {};
   const sourceBinding = request.source_binding;
-  const clientName = client.client_display?.name || client.client_id || "Client application";
+  const clientDisplay = buildConsentClientDisplay(client, ui);
   const sourceLabel = sourceBinding?.id || "this source";
   const sourceFactLabel = sourceBinding?.kind === "provider_native" ? "Provider" : "Connector";
 
@@ -869,7 +917,7 @@ export function renderPendingGrantConsentHtml(
   }
 
   const factsRaw: Array<{ label: string; value?: unknown; html?: string } | null> = [
-    { label: "Requesting app", value: clientName },
+    ...clientDisplay.facts,
     sourceBinding?.id ? { label: sourceFactLabel, value: sourceBinding.id } : null,
     {
       label: "Purpose",
@@ -912,7 +960,7 @@ export function renderPendingGrantConsentHtml(
   const body = [
     ui.renderPageIntro({
       eyebrow: "Data access request",
-      title: `${clientName} wants access to your data`,
+      title: `${clientDisplay.titleName} wants access to your data`,
       lede: "Review what this app is asking for. Your server will only release what you allow here.",
     }),
     ui.renderSurface({

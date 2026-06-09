@@ -87,7 +87,7 @@ interface ConsentStore {
   }>;
   denyGrant(deviceCode: string): Promise<boolean>;
   getPendingConsentByApprovalId(id: string): Promise<AsConsentDecisionPendingRow | null>;
-  getPendingConsentByDeviceCode(deviceCode: string): Promise<PendingGrant | null>;
+  getPendingConsentByDeviceCode(deviceCode: string, opts?: { baseUrl?: string | null }): Promise<PendingGrant | null>;
   parseRequestUri(requestUri: string): string | null;
 }
 
@@ -119,6 +119,7 @@ export interface MountAsConsentContext {
   ownerAuth: OwnerAuth;
   pdppError: PdppErrorFn;
   providerName: string;
+  resolveBaseUrl(req: RouteRequest): string;
   setReferenceTraceId(res: unknown, traceId: string): void;
 }
 
@@ -478,7 +479,18 @@ function parseBatchApproveSelection(body: Readonly<Record<string, unknown>> | un
 // ─── Route mount ─────────────────────────────────────────────────────────────
 
 export function mountAsConsent(app: AppLike, ctx: MountAsConsentContext): void {
-  async function getPendingGrantFromRequestUri(requestUri: string): Promise<{
+  function resolveBaseUrlForRequest(req: RouteRequest): string | null {
+    try {
+      return ctx.resolveBaseUrl(req);
+    } catch {
+      return null;
+    }
+  }
+
+  async function getPendingGrantFromRequestUri(
+    requestUri: string,
+    opts: { baseUrl?: string | null } = {}
+  ): Promise<{
     deviceCode: string | null;
     pending: PendingGrant | null;
   }> {
@@ -486,22 +498,24 @@ export function mountAsConsent(app: AppLike, ctx: MountAsConsentContext): void {
     if (!deviceCode) {
       return { deviceCode: null, pending: null };
     }
-    const pending = await ctx.consentStore.getPendingConsentByDeviceCode(deviceCode);
+    const pending = await ctx.consentStore.getPendingConsentByDeviceCode(deviceCode, opts);
     return { deviceCode, pending };
   }
 
-  function buildConsentDecisionDeps(): AsConsentDecisionDependencies {
+  function buildConsentDecisionDeps(req: RouteRequest): AsConsentDecisionDependencies {
+    const baseUrl = resolveBaseUrlForRequest(req);
     return {
       getPendingConsentByApprovalId: (id) => ctx.consentStore.getPendingConsentByApprovalId(id),
       buildPendingConsentRequestUri: (deviceCode) => ctx.buildPendingConsentRequestUri(deviceCode),
       // PendingGrant is structurally richer than AsConsentDecisionPending; cast
       // is safe because the operation only reads trace_context from the pending row.
       getPendingFromRequestUri: (uri) =>
-        getPendingGrantFromRequestUri(uri) as Promise<{
+        getPendingGrantFromRequestUri(uri, { baseUrl }) as Promise<{
           deviceCode: string | null;
           pending: AsConsentDecisionPending | null;
         }>,
-      approveGrant: (deviceCode, subjectId, opts2) => ctx.consentStore.approveGrant(deviceCode, subjectId, opts2),
+      approveGrant: (deviceCode, subjectId, opts2) =>
+        ctx.consentStore.approveGrant(deviceCode, subjectId, { ...(opts2 || {}), baseUrl }),
       denyGrant: (deviceCode) => ctx.consentStore.denyGrant(deviceCode),
     };
   }
@@ -517,7 +531,9 @@ export function mountAsConsent(app: AppLike, ctx: MountAsConsentContext): void {
           ctx.pdppError(res, 400, "invalid_request", "request_uri is required");
           return;
         }
-        const { pending } = await getPendingGrantFromRequestUri(requestUri);
+        const { pending } = await getPendingGrantFromRequestUri(requestUri, {
+          baseUrl: resolveBaseUrlForRequest(req),
+        });
         if (!pending) {
           res.status(404).send(renderPendingConsentNotFoundHtml(ctx.providerName, ctx.consentUi));
           return;
@@ -569,7 +585,7 @@ export function mountAsConsent(app: AppLike, ctx: MountAsConsentContext): void {
               ...parseBatchApproveSelection(req.body),
             },
           },
-          buildConsentDecisionDeps()
+          buildConsentDecisionDeps(req)
         );
         if (outcome.outcome === "failure") {
           ctx.pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
@@ -619,7 +635,7 @@ export function mountAsConsent(app: AppLike, ctx: MountAsConsentContext): void {
             approvalId: (req.body?.approval_id || req.query?.approval_id) as string | null | undefined,
             subjectId,
           },
-          buildConsentDecisionDeps()
+          buildConsentDecisionDeps(req)
         );
         if (outcome.outcome === "failure") {
           ctx.pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);

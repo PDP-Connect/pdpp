@@ -210,7 +210,10 @@ export interface MountAsAgentConnectContext {
    * request is unknown/expired or if no client_id is on the pending record.
    * Returns null if the pending request is not found.
    */
-  getPendingGrantFromRequestUri(requestUri: string): Promise<PendingGrantResult | null>;
+  getPendingGrantFromRequestUri(
+    requestUri: string,
+    opts?: { baseUrl?: string | null }
+  ): Promise<PendingGrantResult | null>;
   handleError(res: unknown, err: unknown): void;
   /**
    * Initiates a grant for the native-manifest shortcut path (no explicit
@@ -274,7 +277,7 @@ export function mountAsAgentConnect(app: AppLike, ctx: MountAsAgentConnectContex
       }
       const { requestUri, clientId } = resolved;
 
-      const pendingResult = await ctx.getPendingGrantFromRequestUri(requestUri);
+      const pendingResult = await ctx.getPendingGrantFromRequestUri(requestUri, { baseUrl });
       if (!pendingResult) {
         return ctx.pdppError(res, 400, "expired_token", "Pending grant request is unknown or expired");
       }

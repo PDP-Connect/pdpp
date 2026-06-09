@@ -55,9 +55,9 @@ export function createConsentStore() {
      * @param {string} requestUri
      * @returns {Promise<object | null>}
      */
-    async getPendingConsentByRequestUri(requestUri) {
+    async getPendingConsentByRequestUri(requestUri, opts = {}) {
       const deviceCode = parsePendingConsentRequestUri(requestUri);
-      return getPendingConsent(deviceCode);
+      return getPendingConsent(deviceCode, opts);
     },
 
     /**
@@ -68,8 +68,8 @@ export function createConsentStore() {
      * @param {string} deviceCode
      * @returns {Promise<object | null>}
      */
-    async getPendingConsentByDeviceCode(deviceCode) {
-      return getPendingConsent(deviceCode);
+    async getPendingConsentByDeviceCode(deviceCode, opts = {}) {
+      return getPendingConsent(deviceCode, opts);
     },
 
     /**
