@@ -3143,11 +3143,12 @@ The reference authorization server SHALL support OAuth `authorization_code` with
 
 #### Scenario: Client exchanges code
 - **WHEN** the client posts `/oauth/token` with `grant_type=authorization_code`, the authorization code, matching client id, matching redirect URI, and a valid PKCE verifier
-- **THEN** the AS SHALL return the scoped client bearer token, return an opaque grant-scoped refresh token when the registered client requested `refresh_token`, and mark the code consumed
+- **THEN** the AS SHALL return the scoped client bearer token, return `expires_in` as a positive integer lifetime hint, return an opaque grant-scoped refresh token when the registered client requested `refresh_token`, and mark the code consumed
 
 #### Scenario: Client refreshes hosted MCP access
 - **WHEN** the client posts `/oauth/token` with `grant_type=refresh_token`, the opaque refresh token, and the matching public client id
 - **THEN** the AS SHALL issue a new scoped client bearer for the same PDPP grant without widening source, stream, subject, purpose, retention, or storage-binding scope
+- **AND** the token response SHALL include `expires_in` as a positive integer lifetime hint
 
 #### Scenario: Refresh token no longer matches an active grant
 - **WHEN** the client posts `/oauth/token` with an unknown refresh token, a mismatched client id, or a token tied to a revoked or invalid grant
@@ -10117,3 +10118,4 @@ The `/mcp` endpoint SHALL reject requests bearing owner bearer tokens or control
 - **WHEN** an MCP client follows the CIMD-based OAuth authorize flow
 - **THEN** it SHALL receive a grant-scoped client token
 - **AND** the owner token SHALL NOT be required or requested at any step of the flow
+
