@@ -144,7 +144,7 @@ services:
     environment:
       POSTGRES_USER: ${PDPP_POSTGRES_USER:-pdpp}
       POSTGRES_PASSWORD: ${PDPP_POSTGRES_PASSWORD:-pdpp}
-      POSTGRES_DB: ${PDPP_POSTGRES_DB:-pdpp_proof}
+      POSTGRES_DB: ${PDPP_POSTGRES_DB:-pdpp}
     # Loopback-only by default. The proof service ships with default
     # `pdpp/pdpp` credentials and must not be reachable from LAN/WAN out of
     # the box. Operators who deliberately want LAN exposure must change
@@ -157,7 +157,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "pg_isready -U ${PDPP_POSTGRES_USER:-pdpp} -d ${PDPP_POSTGRES_DB:-pdpp_proof}",
+          "pg_isready -U ${PDPP_POSTGRES_USER:-pdpp} -d ${PDPP_POSTGRES_DB:-pdpp}",
         ]
       interval: 5s
       timeout: 3s
