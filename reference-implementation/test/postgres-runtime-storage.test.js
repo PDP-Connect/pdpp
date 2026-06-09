@@ -193,6 +193,16 @@ if (!POSTGRES_URL) {
         reconcilePolyfillManifests: false,
       });
       assert.equal(getStorageBackendKind(), 'postgres');
+      const cimdTable = await postgresQuery(
+        `SELECT column_name
+         FROM information_schema.columns
+         WHERE table_name = 'cimd_client_documents'
+         ORDER BY ordinal_position`,
+      );
+      assert.deepEqual(
+        cimdTable.rows.map((row) => row.column_name),
+        ['document_id', 'client_name', 'redirect_uris', 'logo_uri', 'created_at', 'updated_at'],
+      );
     } finally {
       await closeStartedServer(server);
       await closePostgresStorage();

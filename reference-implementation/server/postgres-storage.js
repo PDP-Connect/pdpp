@@ -400,6 +400,15 @@ export async function bootstrapPostgresSchema() {
       CREATE INDEX IF NOT EXISTS idx_pg_oauth_clients_registration_mode
         ON oauth_clients(registration_mode, created_at);
 
+      CREATE TABLE IF NOT EXISTS cimd_client_documents (
+        document_id TEXT PRIMARY KEY,
+        client_name TEXT,
+        redirect_uris JSONB NOT NULL DEFAULT '[]'::jsonb,
+        logo_uri TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
         id TEXT PRIMARY KEY,
         device_code TEXT NOT NULL UNIQUE,
