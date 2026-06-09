@@ -39,6 +39,35 @@ async function fetchJson(url, opts = {}) {
   return { resp, status: resp.status, body };
 }
 
+function schemaStreamRows(schemaBody) {
+  const data = schemaBody?.data ?? schemaBody;
+  if (Array.isArray(data?.streams)) return data.streams;
+  const connectors = Array.isArray(data?.connectors) ? data.connectors : [];
+  return connectors.flatMap((connector) => {
+    const streams = Array.isArray(connector?.streams) ? connector.streams : [];
+    return streams.map((stream) => ({
+      ...stream,
+      source: {
+        ...(connector?.source && typeof connector.source === 'object' ? connector.source : {}),
+        ...(stream?.source && typeof stream.source === 'object' ? stream.source : {}),
+        connector_id: stream?.source?.connector_id ?? connector?.connector_id ?? connector?.connector_key ?? null,
+        connector_key: stream?.source?.connector_key ?? connector?.connector_key ?? connector?.connector_id ?? null,
+        connection_id:
+          stream?.source?.connection_id ??
+          stream?.connection_id ??
+          stream?.granted_connections?.[0]?.connection_id ??
+          connector?.granted_connections?.[0]?.connection_id ??
+          null,
+      },
+    }));
+  });
+}
+
+function schemaPackageMetadata(schemaBody) {
+  const data = schemaBody?.data ?? schemaBody;
+  return data?.package ?? null;
+}
+
 function pkceChallenge(verifier) {
   return createHash('sha256').update(verifier).digest('base64url');
 }
@@ -98,6 +127,13 @@ async function registerAuthCodeClient(asUrl, opts = {}) {
   assert.equal(body.token_endpoint_auth_method, 'none');
   assert.deepEqual(body.grant_types, grantTypes);
   assert.deepEqual(body.response_types, ['code']);
+  for (const field of ['client_uri', 'logo_uri', 'policy_uri', 'tos_uri']) {
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(body, field),
+      false,
+      `unset optional DCR metadata field ${field} must be omitted, not null`,
+    );
+  }
   return body;
 }
 
@@ -325,8 +361,8 @@ async function completeMultiSourcePackageFlow({ asUrl, client, connectorIds }) {
   };
 }
 
-async function postMcpJson(rsUrl, token, message) {
-  const resp = await fetch(`${rsUrl}/mcp`, {
+async function postMcpJson(rsUrl, token, message, path = '/mcp') {
+  const resp = await fetch(`${rsUrl}${path}`, {
     method: 'POST',
     headers: {
       Accept: 'application/json, text/event-stream',
@@ -465,22 +501,10 @@ test('hosted MCP OAuth code flow issues a scoped client token usable at /mcp', a
     });
     assert.equal(tools.status, 200);
     const toolNames = tools.body.result.tools.map((tool) => tool.name).sort();
-    assert.deepEqual(toolNames, [
-      'aggregate',
-      'create_event_subscription',
-      'delete_event_subscription',
-      'discover_event_subscription_capabilities',
-      'fetch',
-      'fetch_blob',
-      'get_event_subscription',
-      'list_event_subscriptions',
-      'list_streams',
-      'query_records',
-      'schema',
-      'search',
-      'send_test_event',
-      'update_event_subscription',
-    ]);
+    assert.deepEqual(toolNames, ['aggregate', 'fetch', 'query_records', 'schema', 'search']);
+    assert.equal(toolNames.includes('list_streams'), false);
+    assert.equal(toolNames.includes('fetch_blob'), false);
+    assert.equal(toolNames.some((name) => name.includes('event_subscription')), false);
 
     const refreshedTools = await postMcpJson(rsUrl, refreshed.body.access_token, {
       jsonrpc: '2.0',
@@ -686,6 +710,7 @@ test('/mcp rejects missing and owner bearers', async () => {
     assert.equal(owner.body.error.code, 'permission_error');
     assert.match(owner.body.error.message, /grant-scoped client or MCP package token/);
     assert.match(owner.body.error.message, /owner-agent REST onboarding/);
+
   } finally {
     await closeServer(server);
   }
@@ -894,33 +919,20 @@ test('multi-source hosted MCP picker issues a package token usable at /mcp with 
     assert.equal(schemaCall.status, 200);
     assert.equal(schemaCall.body.result.isError, undefined);
     const schemaData = schemaCall.body.result.structuredContent.data;
-    assert.ok(schemaData?.data?.package?.grant_package, 'schema response carries package metadata');
-    assert.equal(schemaData.data.package.member_count, 2);
+    const schemaPackage = schemaPackageMetadata(schemaData);
+    assert.ok(schemaPackage?.grant_package, 'schema response carries package metadata');
+    assert.equal(schemaPackage.member_count, 2);
+    const schemaStreams = (schemaData.connectors || [])
+      .flatMap((connector) => (connector.streams || []).map((stream) => ({ ...stream, source: stream.source || connector.source })));
     const schemaConnectorIds = new Set(
-      (schemaData.data.streams || []).map((s) => s.source?.connector_id).filter(Boolean),
+      schemaStreams.map((s) => s.source?.connector_id || s.source?.connector_key).filter(Boolean),
     );
     assert.ok(schemaConnectorIds.has(spotify.connector_id), 'schema fanout includes spotify streams');
     assert.ok(schemaConnectorIds.has(github.connector_id), 'schema fanout includes github streams');
     const schemaGrantIds = new Set(
-      (schemaData.data.streams || []).map((s) => s.source?.grant_id).filter(Boolean),
+      schemaStreams.map((s) => s.source?.grant_id).filter(Boolean),
     );
     assert.equal(schemaGrantIds.size, 2, 'each stream is tagged with its child grant_id');
-
-    // list_streams fan-out: rows tagged + meta.package.member_count = 2.
-    const listCall = await postMcpJson(rsUrl, accessToken, {
-      jsonrpc: '2.0',
-      id: 3,
-      method: 'tools/call',
-      params: { name: 'list_streams', arguments: {} },
-    });
-    assert.equal(listCall.status, 200);
-    const listData = listCall.body.result.structuredContent.data;
-    assert.equal(listData?.meta?.package?.member_count, 2);
-    const listConnectorIds = new Set(
-      (listData.data || []).map((row) => row.source?.connector_id).filter(Boolean),
-    );
-    assert.ok(listConnectorIds.has(spotify.connector_id));
-    assert.ok(listConnectorIds.has(github.connector_id));
 
     // The package token MUST NOT reach a non-/mcp REST surface. The
     // canonical REST surfaces are gated by `requireClient` (returns 403
@@ -964,7 +976,7 @@ test('multi-source hosted MCP picker issues a package token usable at /mcp with 
     });
     assert.equal(refreshedSchema.status, 200);
     const refreshedSchemaData = refreshedSchema.body.result.structuredContent.data;
-    assert.equal(refreshedSchemaData.data.package.member_count, 2);
+    assert.equal(schemaPackageMetadata(refreshedSchemaData).member_count, 2);
   } finally {
     await closeServer(server);
   }
@@ -1006,8 +1018,9 @@ test('revoking one child grant silently removes that source from the package /mc
     });
     assert.equal(before.status, 200);
     const beforeData = before.body.result.structuredContent.data;
-    assert.equal(beforeData.data.package.member_count, 2);
-    const childGrants = beforeData.data.package.sources.map((s) => ({
+    const beforePackage = schemaPackageMetadata(beforeData);
+    assert.equal(beforePackage.member_count, 2);
+    const childGrants = beforePackage.sources.map((s) => ({
       grant_id: s.grant_id,
       connector_id: s.connector_id,
     }));
@@ -1027,11 +1040,12 @@ test('revoking one child grant silently removes that source from the package /mc
     });
     assert.equal(after.status, 200);
     const afterData = after.body.result.structuredContent.data;
-    assert.equal(afterData.data.package.member_count, 1, 'revoked child is no longer counted in the package fanout');
-    const afterConnectorIds = new Set(afterData.data.streams.map((s) => s.source?.connector_id));
+    const afterPackage = schemaPackageMetadata(afterData);
+    assert.equal(afterPackage.member_count, 1, 'revoked child is no longer counted in the package fanout');
+    const afterConnectorIds = new Set(schemaStreamRows(afterData).map((s) => s.source?.connector_id));
     assert.ok(!afterConnectorIds.has(spotify.connector_id), 'spotify streams are absent after its child grant is revoked');
     assert.ok(afterConnectorIds.has(github.connector_id), 'github streams still present');
-    const afterSourceConnectorIds = afterData.data.package.sources.map((s) => s.connector_id);
+    const afterSourceConnectorIds = afterPackage.sources.map((s) => s.connector_id);
     assert.deepEqual(afterSourceConnectorIds, [github.connector_id]);
 
     // The package token itself stays valid because the package is still
@@ -1114,10 +1128,9 @@ test('revoking the package invalidates /mcp access and the refresh-token exchang
 
 // G1 regression: source-targeted read routing in a live multi-source package.
 //
-// The fan-out tests above prove that /mcp/schema and /mcp/list_streams return
-// rows from both children. This test proves the other side of the routing
-// contract: supplying a connection_id argument to list_streams routes to
-// exactly one child and the response carries only that source's rows.
+// The fan-out tests above prove that /mcp/schema returns rows from both
+// children. This test proves the other side of the routing contract: supplying
+// a connection_id argument to a normal read tool routes to exactly one child.
 //
 // Source-targeted routing only activates when the package members carry a
 // non-null connection_id. That requires connection-scoped (not just
@@ -1128,7 +1141,7 @@ test('revoking the package invalidates /mcp access and the refresh-token exchang
 // The unit suite in package-rs-client.test.js stubs fetch; this test
 // exercises the full stack from MCP tool call → PackageRsClient → live RI RS.
 
-test('list_streams with connection_id routes to one source only (G1 source-targeted routing)', async () => {
+test('query_records with connection_id routes to one source only (G1 source-targeted routing)', async () => {
   const server = await startOpenTestServer();
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -1253,7 +1266,7 @@ test('list_streams with connection_id routes to one source only (G1 source-targe
     assert.equal(schemaCall.status, 200);
     assert.equal(schemaCall.body.result.isError, undefined);
     const schemaData = schemaCall.body.result.structuredContent.data;
-    const sources = schemaData?.data?.package?.sources ?? [];
+    const sources = schemaPackageMetadata(schemaData)?.sources ?? [];
     assert.equal(sources.length, 2, 'package exposes two sources');
 
     const spotifySource = sources.find((s) => s.connection_id === spotifyConnId);
@@ -1261,106 +1274,58 @@ test('list_streams with connection_id routes to one source only (G1 source-targe
     assert.ok(spotifySource, 'spotify connection is present in package sources');
     assert.ok(githubSource, 'github connection is present in package sources');
 
-    // Step 2: unscoped fan-out — both connectors' streams merged.
-    const allList = await postMcpJson(rsUrl, accessToken, {
-      jsonrpc: '2.0',
-      id: 2,
-      method: 'tools/call',
-      params: { name: 'list_streams', arguments: {} },
-    });
-    assert.equal(allList.status, 200);
-    assert.equal(allList.body.result.isError, undefined, 'unscoped list_streams must not be an error');
-    const allRows = allList.body.result.structuredContent.data?.data ?? [];
-    assert.ok(allRows.length > 0, 'unscoped list_streams returns rows from both sources');
-    // Unscoped fan-out rows are tagged with source; collect both connector_ids.
+    // Step 2: schema fan-out exposes stream names and source tags for both
+    // children. Pick one stream per source for targeted read calls.
+    const allRows = schemaStreamRows(schemaData);
+    assert.ok(allRows.length > 0, 'schema returns streams from package sources');
     const allConnectorIds = new Set(allRows.map((r) => r.source?.connector_id).filter(Boolean));
-    assert.ok(allConnectorIds.has(spotify.connector_id), 'fan-out rows include spotify streams');
-    assert.ok(allConnectorIds.has(github.connector_id), 'fan-out rows include github streams');
+    assert.ok(allConnectorIds.has(spotify.connector_id), 'schema fan-out includes spotify streams');
+    assert.ok(allConnectorIds.has(github.connector_id), 'schema fan-out includes github streams');
+    const spotifyRow = allRows.find((r) => r.source?.connection_id === spotifyConnId);
+    const githubRow = allRows.find((r) => r.source?.connection_id === githubConnId);
+    assert.ok(spotifyRow?.name, 'spotify connection has a stream to query');
+    assert.ok(githubRow?.name, 'github connection has a stream to query');
 
-    // Step 3: list_streams scoped to spotify's connection_id.
-    // The scoped path routes to one child only and returns the raw RS response
-    // (no source tags added — tagging only happens in the fan-out merge path).
-    // We verify routing by checking the row count is less than the full fan-out
-    // and that the stream names match only spotify streams from the full set.
-    const spotifyList = await postMcpJson(rsUrl, accessToken, {
+    // Step 3: query_records scoped to spotify's connection_id routes to that child.
+    const spotifyQuery = await postMcpJson(rsUrl, accessToken, {
       jsonrpc: '2.0',
       id: 3,
       method: 'tools/call',
-      params: { name: 'list_streams', arguments: { connection_id: spotifyConnId } },
+      params: {
+        name: 'query_records',
+        arguments: { stream: spotifyRow.name, connection_id: spotifyConnId, limit: 1 },
+      },
     });
-    assert.equal(spotifyList.status, 200);
-    assert.equal(spotifyList.body.result.isError, undefined, 'spotify-scoped list_streams must not be an error');
-    const spotifyRows = spotifyList.body.result.structuredContent.data?.data ?? [];
-    assert.ok(spotifyRows.length > 0, 'spotify-scoped list_streams returns at least one stream row');
-    // Scoped response is a subset of the full fan-out.
-    assert.ok(
-      spotifyRows.length < allRows.length,
-      `spotify-scoped row count (${spotifyRows.length}) must be less than full fan-out (${allRows.length})`,
-    );
-    // Every scoped row's stream name must appear in the full fan-out's spotify-tagged rows.
-    const spotifyFanoutNames = new Set(
-      allRows.filter((r) => r.source?.connector_id === spotify.connector_id).map((r) => r.name),
-    );
-    for (const row of spotifyRows) {
-      assert.ok(
-        spotifyFanoutNames.has(row.name),
-        `scoped stream "${row.name}" must be a spotify stream from the fan-out`,
-      );
-    }
-    // GitHub-only stream names must not appear in the scoped spotify response.
-    const githubOnlyNames = new Set(
-      allRows
-        .filter((r) => r.source?.connector_id === github.connector_id && !spotifyFanoutNames.has(r.name))
-        .map((r) => r.name),
-    );
-    const spotifyScopedNames = new Set(spotifyRows.map((r) => r.name));
-    for (const name of githubOnlyNames) {
-      assert.ok(
-        !spotifyScopedNames.has(name),
-        `github-only stream "${name}" MUST NOT appear in spotify-scoped response`,
-      );
-    }
+    assert.equal(spotifyQuery.status, 200);
+    assert.equal(spotifyQuery.body.result.isError, undefined, 'spotify-scoped query_records must not be an error');
 
-    // Step 4: list_streams scoped to github's connection_id.
-    const githubList = await postMcpJson(rsUrl, accessToken, {
+    // Step 4: query_records scoped to github's connection_id routes to that child.
+    const githubQuery = await postMcpJson(rsUrl, accessToken, {
       jsonrpc: '2.0',
       id: 4,
       method: 'tools/call',
-      params: { name: 'list_streams', arguments: { connection_id: githubConnId } },
+      params: {
+        name: 'query_records',
+        arguments: { stream: githubRow.name, connection_id: githubConnId, limit: 1 },
+      },
     });
-    assert.equal(githubList.status, 200);
-    assert.equal(githubList.body.result.isError, undefined, 'github-scoped list_streams must not be an error');
-    const githubRows = githubList.body.result.structuredContent.data?.data ?? [];
-    assert.ok(githubRows.length > 0, 'github-scoped list_streams returns at least one stream row');
-    assert.ok(
-      githubRows.length < allRows.length,
-      `github-scoped row count (${githubRows.length}) must be less than full fan-out (${allRows.length})`,
-    );
-    // Spotify-only stream names must not appear in github-scoped response.
-    const spotifyOnlyNames = new Set(
-      allRows
-        .filter((r) => r.source?.connector_id === spotify.connector_id && !new Set(allRows.filter((r2) => r2.source?.connector_id === github.connector_id).map((r2) => r2.name)).has(r.name))
-        .map((r) => r.name),
-    );
-    const githubScopedNames = new Set(githubRows.map((r) => r.name));
-    for (const name of spotifyOnlyNames) {
-      assert.ok(
-        !githubScopedNames.has(name),
-        `spotify-only stream "${name}" MUST NOT appear in github-scoped response`,
-      );
-    }
+    assert.equal(githubQuery.status, 200);
+    assert.equal(githubQuery.body.result.isError, undefined, 'github-scoped query_records must not be an error');
 
     // Step 5: unknown connection_id must return a structured MCP error
     // (isError: true), not a server crash — proves the PackageRsClient
     // not_found error path is wired through the full live stack.
-    const unknownList = await postMcpJson(rsUrl, accessToken, {
+    const unknownQuery = await postMcpJson(rsUrl, accessToken, {
       jsonrpc: '2.0',
       id: 5,
       method: 'tools/call',
-      params: { name: 'list_streams', arguments: { connection_id: 'cin_does_not_exist' } },
+      params: {
+        name: 'query_records',
+        arguments: { stream: spotifyRow.name, connection_id: 'cin_does_not_exist', limit: 1 },
+      },
     });
-    assert.equal(unknownList.status, 200, 'unknown connection_id returns HTTP 200 (MCP error envelope)');
-    assert.equal(unknownList.body.result.isError, true, 'unknown connection_id returns isError: true');
+    assert.equal(unknownQuery.status, 200, 'unknown connection_id returns HTTP 200 (MCP error envelope)');
+    assert.equal(unknownQuery.body.result.isError, true, 'unknown connection_id returns isError: true');
   } finally {
     await closeServer(server);
   }

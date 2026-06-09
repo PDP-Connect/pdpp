@@ -2203,6 +2203,7 @@ async function buildConnectorSchemaItem({ source, storageBinding, manifest, gran
     streams,
   };
   if (connectorId) {
+    item.connector_key = connectorId;
     item.connector_id = connectorId;
   }
   return item;
@@ -2234,6 +2235,7 @@ async function buildConnectorDiscoveryItem({ source, storageBinding, manifest, g
   };
 
   if (connectorId) {
+    item.connector_key = connectorId;
     item.connector_id = connectorId;
   }
 
@@ -3489,6 +3491,8 @@ function buildAgentDiscoveryMetadata(origin, { noOwnerToken = true, docsOrigin =
     mcp: {
       transport: 'streamable_http',
       endpoint: `${base}/mcp`,
+      setup_intent: 'grant_scoped_read',
+      tool_surface: 'profile_free_normal_read',
       no_owner_token: true,
     },
     ...(docs

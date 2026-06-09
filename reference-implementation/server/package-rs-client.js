@@ -32,8 +32,10 @@
  */
 
 import { RsClient } from '../../packages/mcp-server/src/rs-client.js';
+import { schemaSourceOptions } from '../operations/rs-schema-get/compact-view.ts';
 
 const PACKAGE_INTROSPECTION_PATH = null;
+const AMBIGUOUS_CONNECTION_LIST_LIMIT = 12;
 
 /**
  * Build one single-bearer RsClient. Thin factory so the hosted-MCP route
@@ -158,6 +160,57 @@ class PackageRsClient {
   // -------- fanout strategies --------
 
   async fanoutSchema({ query, headers }) {
+    if (query?.connection_id) {
+      const scoped = pickChildByConnectionId(this.children, query.connection_id);
+      if (!scoped) {
+        return typedError('not_found', `connection_id "${query.connection_id}" is not part of this package`, this.children);
+      }
+      const result = await scoped.client.getJson('/v1/schema', { query: stripConnectionId(query), headers });
+      return mergeSchemaEnvelopes([scoped], [result]);
+    }
+
+    if (query?.detail === 'full') {
+      if (!query?.stream) {
+        return typedError(
+          'invalid_request',
+          'schema detail "full" requires `stream`; call /v1/schema?view=compact for global discovery, then /v1/schema?stream=<name>&connection_id=<cin>&detail=full for exhaustive detail.',
+          this.children,
+          { status: 400, param: 'detail', includeAvailableConnections: false },
+        );
+      }
+
+      const preflightQuery = { ...query, view: 'compact' };
+      delete preflightQuery.detail;
+      const preflight = await Promise.all(
+        this.children.map(({ client }) => client.getJson('/v1/schema', { query: preflightQuery, headers })),
+      );
+      const matches = [];
+      const available = [];
+      preflight.forEach((result, index) => {
+        if (!result.ok) return;
+        const options = schemaSourceOptions(schemaDocument(result.body), { stream: query.stream });
+        if (options.length === 0) return;
+        matches.push({ child: this.children[index], options });
+        available.push(...options);
+      });
+      if (available.length > 1) {
+        return typedError(
+          'ambiguous_schema_detail',
+          `schema detail "full" for stream "${query.stream}" matches ${available.length} sources; retry with connection_id to fetch one source's exhaustive schema.`,
+          this.children,
+          {
+            param: 'connection_id',
+            availableConnections: available,
+            retryWith: 'connection_id',
+          },
+        );
+      }
+      if (matches.length === 1) {
+        const result = await matches[0].child.client.getJson('/v1/schema', { query, headers });
+        return mergeSchemaEnvelopes([matches[0].child], [result]);
+      }
+    }
+
     const results = await Promise.all(
       this.children.map(({ client }) => client.getJson('/v1/schema', { query, headers })),
     );
@@ -196,7 +249,7 @@ class PackageRsClient {
         return client.getJson(path, { query: childQuery, headers });
       }),
     );
-    return mergeSearchEnvelopes(this.children, results, path);
+    return mergeSearchEnvelopes(this.children, results, path, query);
   }
 
   async sourceRequiredJson(method, path, opts) {
@@ -224,43 +277,13 @@ class PackageRsClient {
     if (this.children.length === 1) return this.children[0];
     return {
       error: await this.ambiguousConnectionError(
-        'This hosted MCP package contains multiple sources. Pass `connection_id` to select one. Use `list_streams` or `schema` to discover available connections.',
+        'This hosted MCP package contains multiple sources. Pass `connection_id` to select one. Use `schema` to discover available connections.',
       ),
     };
   }
 
   async ambiguousConnectionError(message) {
-    const health = await this.probeChildReadHealth();
-    return typedError('ambiguous_connection', message, health.availableChildren, {
-      unavailableChildren: health.unavailableChildren,
-    });
-  }
-
-  async probeChildReadHealth() {
-    const probes = await Promise.all(
-      this.children.map(async (child) => {
-        try {
-          const response = await child.client.getJson('/v1/streams');
-          if (response.ok) return { child, available: true };
-          return { child, available: false, error: summarizeChildProbeError(response) };
-        } catch (error) {
-          return {
-            child,
-            available: false,
-            error: { code: 'probe_failed', message: error?.message ?? String(error), status: null },
-          };
-        }
-      }),
-    );
-    const availableChildren = probes.filter((probe) => probe.available).map((probe) => probe.child);
-    const unavailableChildren = probes
-      .filter((probe) => !probe.available)
-      .map((probe) => ({ child: probe.child, error: probe.error }));
-
-    return {
-      availableChildren,
-      unavailableChildren,
-    };
+    return typedError('ambiguous_connection', message, this.children);
   }
 
   // -------- event subscriptions --------
@@ -444,8 +467,8 @@ function memberSourceTag(member) {
   };
 }
 
-function availableConnectionsList(children) {
-  return children.map(({ member }) => ({
+function availableConnectionsList(children, { limit = Infinity } = {}) {
+  return children.slice(0, limit).map(({ member }) => ({
     grant_id: member.grant_id,
     connector_key: member.source?.id ?? null,
     connection_id: member.connection_id ?? null,
@@ -466,32 +489,41 @@ function unavailableConnectionsList(entries) {
 
 function typedError(code, message, children, options = {}) {
   const unavailableConnections = unavailableConnectionsList(options.unavailableChildren ?? []);
+  const limit = options.availableConnectionLimit ?? AMBIGUOUS_CONNECTION_LIST_LIMIT;
+  const availableConnections = Array.isArray(options.availableConnections)
+    ? options.availableConnections
+    : options.includeAvailableConnections === false
+      ? []
+      : availableConnectionsList(children, { limit });
   const error = {
     type: code,
     code,
     message,
-    available_connections: availableConnectionsList(children),
-    retry_with: 'connection_id',
+    ...(options.param ? { param: options.param } : {}),
+    ...(availableConnections.length > 0 ? { available_connections: availableConnections } : {}),
+    ...(options.includeAvailableConnections === false ? {} : { available_connection_count: children.length }),
+    ...(options.retryWith === null ? {} : { retry_with: options.retryWith ?? 'connection_id' }),
   };
+  if (options.includeAvailableConnections !== false && !Array.isArray(options.availableConnections) && availableConnections.length < children.length) {
+    error.available_connections_truncated = true;
+    error.available_connections_omitted = children.length - availableConnections.length;
+    error.discovery_hint = 'Call `schema` for the full granted connection index before retrying with `connection_id`.';
+  }
   if (unavailableConnections.length > 0) {
     error.unavailable_connections = unavailableConnections;
   }
   return {
     ok: false,
-    status: code === 'not_found' ? 404 : 409,
+    status: options.status ?? (code === 'not_found' ? 404 : 409),
     error,
     requestId: null,
     contentType: 'application/json',
   };
 }
 
-function summarizeChildProbeError(response) {
-  const error = response?.error && typeof response.error === 'object' ? response.error : {};
-  return {
-    status: response?.status ?? null,
-    code: error.code ?? error.type ?? `http_${response?.status ?? 'unknown'}`,
-    message: error.message ?? `Source returned HTTP ${response?.status ?? 'unknown'}`,
-  };
+function schemaDocument(body) {
+  if (body?.data && typeof body.data === 'object' && !Array.isArray(body.data)) return body.data;
+  return body;
 }
 
 function mergeSchemaEnvelopes(children, results) {
@@ -540,7 +572,10 @@ function mergeSchemaEnvelopes(children, results) {
 
     if (connectorItems.length > 0) {
       for (const item of connectorItems) {
-        allConnectorItems.push({ ...item, source: item?.source ?? sourceTag });
+        const connectorSource = item?.source && typeof item.source === 'object'
+          ? { ...sourceTag, ...item.source }
+          : sourceTag;
+        allConnectorItems.push({ ...item, source: connectorSource });
         const itemStreams = Array.isArray(item?.streams) ? item.streams : [];
         for (const s of itemStreams) {
           const key = `${s?.name ?? ''}::${child.member.grant_id}::${child.member.connection_id ?? ''}`;
@@ -633,13 +668,15 @@ function mergeListEnvelopes(children, results, _path) {
   return { ...ok, body: baseBody };
 }
 
-function mergeSearchEnvelopes(children, results, _path) {
+function mergeSearchEnvelopes(children, results, _path, query = {}) {
   const ok = results.find((r) => r.ok);
   if (!ok) return results[0];
 
+  const requestedLimit = parsePositiveInt(query?.limit) ?? 25;
   const mergedHits = [];
   const warnings = [];
   let totalScanned = 0;
+  let childHasMore = false;
 
   results.forEach((r, i) => {
     const child = children[i];
@@ -653,27 +690,40 @@ function mergeSearchEnvelopes(children, results, _path) {
     }
     const hits = extractSearchHits(r.body);
     for (const hit of hits) {
-      mergedHits.push({ ...hit, source: hit.source || memberSourceTag(child.member) });
+      mergedHits.push(decorateSearchHitWithSource(hit, memberSourceTag(child.member)));
     }
     if (typeof r.body?.data?.scanned === 'number') totalScanned += r.body.data.scanned;
+    if (searchBodyHasMore(r.body)) childHasMore = true;
   });
 
+  const dedupedHits = dedupeSearchHits(mergedHits);
+  const limitedHits = dedupedHits.slice(0, requestedLimit);
+  const truncated = dedupedHits.length > limitedHits.length;
+  const sourceMix = sourceMixForHits(limitedHits);
   const baseBody = ok.body && typeof ok.body === 'object' ? { ...ok.body } : {};
   if (Array.isArray(baseBody.data)) {
-    baseBody.data = mergedHits;
+    baseBody.data = limitedHits;
   } else if (baseBody.data && typeof baseBody.data === 'object' && Array.isArray(baseBody.data.data)) {
-    baseBody.data = { ...baseBody.data, data: mergedHits };
+    baseBody.data = { ...baseBody.data, data: limitedHits };
   } else if (baseBody.data && typeof baseBody.data === 'object' && Array.isArray(baseBody.data.results)) {
-    baseBody.data = { ...baseBody.data, results: mergedHits };
+    baseBody.data = { ...baseBody.data, results: limitedHits };
     if (totalScanned > 0) baseBody.data.scanned = totalScanned;
   } else if (Array.isArray(baseBody.results)) {
-    baseBody.results = mergedHits;
+    baseBody.results = limitedHits;
   } else {
-    baseBody.data = { results: mergedHits };
+    baseBody.data = { results: limitedHits };
   }
+  baseBody.has_more = truncated || childHasMore || baseBody.has_more === true;
   baseBody.meta = {
     ...(baseBody.meta || {}),
-    package: { member_count: children.length, partial: warnings.length > 0 },
+    package: {
+      member_count: children.length,
+      partial: warnings.length > 0,
+      fanout_limit: requestedLimit,
+      merged_hit_count: dedupedHits.length,
+      returned_hit_count: limitedHits.length,
+      source_mix: sourceMix,
+    },
   };
   if (warnings.length > 0) {
     const existing = Array.isArray(baseBody.meta.warnings) ? baseBody.meta.warnings : [];
@@ -689,6 +739,86 @@ function extractSearchHits(body) {
   if (body.data && typeof body.data === 'object' && Array.isArray(body.data.data)) return body.data.data;
   if (body.data && typeof body.data === 'object' && Array.isArray(body.data.results)) return body.data.results;
   return [];
+}
+
+function parsePositiveInt(value) {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) return value;
+  if (typeof value === 'string' && /^[1-9]\d*$/.test(value)) return Number.parseInt(value, 10);
+  return null;
+}
+
+function decorateSearchHitWithSource(hit, fallbackSource) {
+  const source = hit && typeof hit === 'object' && hit.source && typeof hit.source === 'object'
+    ? { ...fallbackSource, ...hit.source }
+    : fallbackSource;
+  return {
+    ...(hit && typeof hit === 'object' ? hit : { value: hit }),
+    source,
+    connection_id: firstNonEmptyString(hit?.connection_id, hit?.connector_instance_id, source.connection_id),
+    connector_key: firstNonEmptyString(hit?.connector_key, hit?.connector_id, source.connector_key, source.connector_id),
+    ...(firstNonEmptyString(hit?.display_name, source.display_name)
+      ? { display_name: firstNonEmptyString(hit?.display_name, source.display_name) }
+      : {}),
+  };
+}
+
+function dedupeSearchHits(hits) {
+  const seen = new Set();
+  const out = [];
+  for (const hit of hits) {
+    const key = searchHitDedupeKey(hit);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(hit);
+  }
+  return out;
+}
+
+function searchHitDedupeKey(hit) {
+  const source = hit && typeof hit === 'object' && hit.source && typeof hit.source === 'object' ? hit.source : {};
+  return [
+    firstNonEmptyString(hit?.connection_id, source.connection_id),
+    firstNonEmptyString(hit?.connector_key, hit?.connector_id, source.connector_key, source.connector_id),
+    firstNonEmptyString(hit?.stream, hit?.stream_name, hit?.streamName),
+    firstNonEmptyString(hit?.record_key, hit?.recordKey, hit?.record_id, hit?.recordId, hit?.id, hit?.url),
+  ].map((part) => part ?? '').join('\0');
+}
+
+function sourceMixForHits(hits) {
+  const byConnection = new Map();
+  for (const hit of hits) {
+    const source = hit && typeof hit === 'object' && hit.source && typeof hit.source === 'object' ? hit.source : {};
+    const connectionId = firstNonEmptyString(hit?.connection_id, source.connection_id) ?? null;
+    const connectorKey = firstNonEmptyString(hit?.connector_key, hit?.connector_id, source.connector_key, source.connector_id) ?? null;
+    const displayName = firstNonEmptyString(hit?.display_name, source.display_name) ?? null;
+    const key = `${connectionId ?? ''}\0${connectorKey ?? ''}`;
+    const existing = byConnection.get(key);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      byConnection.set(key, {
+        connection_id: connectionId,
+        connector_key: connectorKey,
+        ...(displayName ? { display_name: displayName } : {}),
+        count: 1,
+      });
+    }
+  }
+  return [...byConnection.values()];
+}
+
+function searchBodyHasMore(body) {
+  if (!body || typeof body !== 'object') return false;
+  if (body.has_more === true) return true;
+  if (body.data && typeof body.data === 'object' && body.data.has_more === true) return true;
+  return false;
+}
+
+function firstNonEmptyString(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return undefined;
 }
 
 function mergeEventSubListEnvelopes(children, results) {

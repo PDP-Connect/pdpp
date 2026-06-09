@@ -260,6 +260,33 @@ test('rs.records.list applies decorateRecord to every returned record', async ()
   }
 });
 
+test('rs.records.list applies request projection after lower driver required fields', async () => {
+  const result = await executeRecordsList(
+    {
+      actor: ownerActor,
+      streamName: 'pay_statements',
+      requestParams: { fields: ['id'] },
+      rawQueryFields: 'id',
+    },
+    makeDeps({
+      queryRecords: () =>
+        Promise.resolve({
+          object: 'list',
+          data: [
+            {
+              object: 'record',
+              id: 'r1',
+              data: { id: 'r1', channel_id: 'C1', ts: '123.456' },
+            },
+          ],
+          has_more: false,
+        }),
+    }),
+  );
+
+  assert.deepEqual(result.result.data[0].data, { id: 'r1' });
+});
+
 test('rs.records.list passes the manifest stream to validateRequestFields', async () => {
   let observedStream = null;
   await executeRecordsList(

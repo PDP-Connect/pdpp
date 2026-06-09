@@ -245,6 +245,39 @@ test('default (view omitted) /v1/schema stays full and current-compatible', asyn
   });
 });
 
+test('default (view omitted) /v1/schema?stream=<name> scopes the full body without compacting', async () => {
+  await withHttpHarness(async ({ rsUrl, ownerToken }) => {
+    const full = await fetchJson(schemaUrl(rsUrl), {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    const scoped = await fetchJson(schemaUrl(rsUrl, { stream: 'stream_2' }), {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    assert.equal(scoped.status, 200);
+    assert.equal(scoped.body.object, 'schema');
+    assert.equal(scoped.body.detail, undefined, 'full stream scope must not be marked compact');
+
+    const streams = allStreams(scoped.body);
+    assert.equal(streams.length, 1, 'full stream scope keeps exactly one stream');
+    assert.equal(streams[0].name, 'stream_2');
+    for (const connector of scoped.body.connectors) {
+      assert.equal(connector.stream_count, connector.streams.length);
+    }
+
+    const field = streams[0].field_capabilities.field_0;
+    assert.equal(typeof field, 'object', 'full stream scope keeps verbose field capabilities');
+    assert.equal(
+      field.schema.description.length,
+      FIELD_SCHEMA_BLOB_PADDING,
+      'full stream scope keeps the per-field JSON Schema blob for the requested stream',
+    );
+    assert.ok(
+      byteLength(scoped.body) < byteLength(full.body) / 2,
+      'full stream scope must be materially smaller than the all-stream full schema',
+    );
+  });
+});
+
 test('view=compact stays under the documented package byte budget and is far smaller', async () => {
   await withHttpHarness(async ({ rsUrl, ownerToken }) => {
     const full = await fetchJson(schemaUrl(rsUrl), {
@@ -276,6 +309,7 @@ test('view=compact drops per-field JSON Schema but keeps flags + connection iden
       headers: { Authorization: `Bearer ${ownerToken}` },
     });
     const stream = allStreams(body).find((s) => s.name === 'stream_0');
+    const connector = body.connectors[0];
     const field = stream.field_capabilities.field_0;
 
     // Compact grade: each field is a terse flag string, not the verbose object.
@@ -297,6 +331,9 @@ test('view=compact drops per-field JSON Schema but keeps flags + connection iden
     assert.equal(stream.schema, undefined, 'compact stream must drop the raw JSON Schema');
     // Stream identity survives.
     assert.equal(stream.name, 'stream_0');
+    // Connector identity survives in the canonical key form agents carry into
+    // reads after discovery.
+    assert.equal(connector.connector_key, CONNECTOR_ID);
     // Connection identity survives.
     assert.ok(Array.isArray(stream.granted_connections), 'compact keeps granted_connections');
     for (const entry of stream.granted_connections) {
@@ -399,6 +436,83 @@ test('view=compact preserves multi-connection identity on granted_connections', 
       assert.equal(typeof stream.field_capabilities.field_0, 'string');
     },
     { manifest: makeLargeManifest({ streamCount: 1, fieldsPerStream: 4 }) },
+  );
+});
+
+test('/v1/schema scopes stream discovery by connection_id without MCP adapter logic', async () => {
+  await withHttpHarness(
+    async ({ rsUrl, ownerToken }) => {
+      await seedConnection('cin_scope_a', 'Account A', 'a@example.com');
+      await seedConnection('cin_scope_b', 'Account B', 'b@example.com');
+
+      const compact = await fetchJson(
+        schemaUrl(rsUrl, { view: 'compact', stream: 'stream_0', connection_id: 'cin_scope_a' }),
+        { headers: { Authorization: `Bearer ${ownerToken}` } },
+      );
+      assert.equal(compact.status, 200);
+      assert.equal(compact.body.detail, 'compact');
+      assert.equal(allStreams(compact.body).length, 1);
+      assert.equal(allStreams(compact.body)[0].name, 'stream_0');
+      assert.deepEqual(
+        effectiveGrantedConnections(compact.body, 'stream_0').map((entry) => entry.connection_id),
+        ['cin_scope_a'],
+      );
+
+      const full = await fetchJson(
+        schemaUrl(rsUrl, { stream: 'stream_0', connection_id: 'cin_scope_b' }),
+        { headers: { Authorization: `Bearer ${ownerToken}` } },
+      );
+      assert.equal(full.status, 200);
+      assert.equal(full.body.detail, undefined, 'source-scoped full schema keeps full detail');
+      assert.equal(allStreams(full.body).length, 1);
+      assert.deepEqual(
+        effectiveGrantedConnections(full.body, 'stream_0').map((entry) => entry.connection_id),
+        ['cin_scope_b'],
+      );
+    },
+    { manifest: makeLargeManifest({ streamCount: 2, fieldsPerStream: 4 }) },
+  );
+});
+
+test('/v1/schema?detail=full rejects ambiguous stream detail before dumping multiple sources', async () => {
+  await withHttpHarness(
+    async ({ rsUrl, ownerToken }) => {
+      await seedConnection('cin_detail_a', 'Account A', 'a@example.com');
+      await seedConnection('cin_detail_b', 'Account B', 'b@example.com');
+
+      const ambiguous = await fetchJson(
+        schemaUrl(rsUrl, { stream: 'stream_0', detail: 'full' }),
+        { headers: { Authorization: `Bearer ${ownerToken}` } },
+      );
+      assert.equal(ambiguous.status, 409);
+      assert.equal(ambiguous.body.error?.code, 'ambiguous_schema_detail');
+      assert.equal(ambiguous.body.error?.retry_with, 'connection_id');
+      assert.deepEqual(
+        ambiguous.body.error?.available_connections.map((entry) => entry.connection_id).sort(),
+        ['cin_detail_a', 'cin_detail_b'],
+      );
+
+      const unscoped = await fetchJson(
+        schemaUrl(rsUrl, { detail: 'full' }),
+        { headers: { Authorization: `Bearer ${ownerToken}` } },
+      );
+      assert.equal(unscoped.status, 400);
+      assert.equal(unscoped.body.error?.code, 'invalid_request');
+      assert.equal(unscoped.body.error?.param, 'detail');
+
+      const scoped = await fetchJson(
+        schemaUrl(rsUrl, { stream: 'stream_0', connection_id: 'cin_detail_a', detail: 'full' }),
+        { headers: { Authorization: `Bearer ${ownerToken}` } },
+      );
+      assert.equal(scoped.status, 200);
+      assert.equal(scoped.body.detail, undefined, 'explicit scoped full schema keeps full detail');
+      assert.equal(allStreams(scoped.body).length, 1);
+      assert.deepEqual(
+        effectiveGrantedConnections(scoped.body, 'stream_0').map((entry) => entry.connection_id),
+        ['cin_detail_a'],
+      );
+    },
+    { manifest: makeLargeManifest({ streamCount: 2, fieldsPerStream: 4 }) },
   );
 });
 

@@ -111,7 +111,7 @@ const nextConfig = {
       // Excludes reserved top-level sections so they don't get caught.
       {
         source:
-          '/dashboard/:connector((?!traces|grants|runs|records|data|search|explore|timeline|schedules|deployment|device-exporters|event-subscriptions|stream-playground|components|lib)[^/]+)/:rest*',
+          '/dashboard/:connector((?!traces|grants|runs|records|data|search|explore|timeline|schedules|connect|deployment|device-exporters|event-subscriptions|stream-playground|components|lib)[^/]+)/:rest*',
         destination: '/dashboard/records/:connector/:rest*',
         permanent: false,
       },

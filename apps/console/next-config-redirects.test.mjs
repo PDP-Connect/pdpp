@@ -8,6 +8,7 @@ test("bare connector redirect excludes every top-level dashboard section", async
   assert.ok(redirectPattern, "connector redirect pattern should exist");
 
   for (const section of [
+    "connect",
     "deployment",
     "device-exporters",
     "event-subscriptions",

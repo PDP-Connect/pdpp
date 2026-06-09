@@ -20,6 +20,8 @@ export interface AsAuthorizationServerMetadataInput {
   readonly issuer: string;
   readonly dynamicClientRegistrationEnabled: boolean;
   readonly preRegisteredPublicClients?: readonly AsAuthorizationServerPublicClient[];
+  /** When true, advertise client_id_metadata_document in pdpp_registration_modes_supported. */
+  readonly cimdEnabled?: boolean;
 }
 
 export interface AsAuthorizationServerPublicClient {
@@ -45,6 +47,8 @@ export interface AsAuthorizationServerMetadataBuilderInput {
   readonly grantTypesSupported: readonly string[];
   readonly responseTypesSupported: readonly string[];
   readonly codeChallengeMethodsSupported: readonly string[];
+  /** Passed through so buildAuthorizationServerMetadata can emit the standard draft field. */
+  readonly cimdEnabled?: boolean;
 }
 
 export interface AsAuthorizationServerMetadataDependencies {
@@ -57,10 +61,13 @@ export function executeAsAuthorizationServerMetadata(
   input: AsAuthorizationServerMetadataInput,
   deps: AsAuthorizationServerMetadataDependencies,
 ): unknown {
-  const { issuer, dynamicClientRegistrationEnabled, preRegisteredPublicClients = [] } = input;
-  const registrationModesSupported = dynamicClientRegistrationEnabled
-    ? (["dynamic", "pre_registered_public"] as const)
-    : (["pre_registered_public"] as const);
+  const { issuer, dynamicClientRegistrationEnabled, preRegisteredPublicClients = [], cimdEnabled = false } = input;
+  const registrationModesBase = dynamicClientRegistrationEnabled
+    ? ["dynamic", "pre_registered_public"]
+    : ["pre_registered_public"];
+  const registrationModesSupported = cimdEnabled
+    ? [...registrationModesBase, "client_id_metadata_document"]
+    : registrationModesBase;
   return deps.buildAuthorizationServerMetadata({
     issuer,
     authorizationEndpoint: `${issuer}/oauth/authorize`,
@@ -69,6 +76,7 @@ export function executeAsAuthorizationServerMetadata(
     registrationEndpoint: dynamicClientRegistrationEnabled
       ? `${issuer}/oauth/register`
       : null,
+    cimdEnabled,
     providerConnectCapabilities: [
       "owner_self_export",
       "cli_device_connect",

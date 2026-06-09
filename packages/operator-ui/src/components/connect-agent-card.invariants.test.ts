@@ -1,12 +1,9 @@
 /**
- * Source-regex guard for ConnectAgentCard's provider-URL substitution.
+ * Source-regex guard for ConnectAgentCard's MCP URL substitution.
  *
- * The card renders the `pdpp connect <provider-url>` copy that operators
- * paste into AI agents. When the caller knows the running deployment's
- * public origin (e.g. the live operator dashboard at /dashboard/deployment),
- * the card MUST substitute that origin into the command rather than the
- * literal `<provider-url>` placeholder. A regression here trains operators
- * to invent the URL by hand.
+ * The card is the deployment-page pointer to the low-copy setup page. When the
+ * caller knows the running deployment's public origin, the card MUST derive
+ * `<origin>/mcp` rather than rendering a placeholder or broad owner-token setup.
  */
 
 import assert from "node:assert/strict";
@@ -18,18 +15,26 @@ const HERE = fileURLToPath(new URL(".", import.meta.url));
 const CARD_FILE = `${HERE}connect-agent-card.tsx`;
 
 const PROVIDER_URL_PROP_RE = /providerUrl\??:\s*string/;
-const CONDITIONAL_SUBSTITUTION_RE =
-  /providerUrl\s*\?\s*pdppCliConnectCommandFor\(providerUrl\)\s*:\s*pdppCliConnectCommand/;
+const MCP_URL_HELPER_RE = /function mcpUrlFor\(providerUrl\??:\s*string\): string/;
+const MCP_URL_SUBSTITUTION_RE = /providerUrl\s*\?\s*`\$\{trimTrailingSlash\(providerUrl\)\}\/mcp`\s*:\s*"<provider-url>\/mcp"/;
+const CONNECT_HREF_PROP_RE = /connectHref\??:\s*string/;
+const OPEN_SETUP_LINK_RE = /href=\{connectHref\}/;
+const OWNER_TOKEN_SETUP_RE = /Authorization: Bearer|bearer-token-env-var|Issue owner token/;
 
 test("ConnectAgentCard accepts a providerUrl prop", async () => {
   const src = await readFile(CARD_FILE, "utf8");
   assert.match(src, PROVIDER_URL_PROP_RE);
 });
 
-test("ConnectAgentCard substitutes a known providerUrl into the connect command", async () => {
+test("ConnectAgentCard derives the MCP URL from a known providerUrl", async () => {
   const src = await readFile(CARD_FILE, "utf8");
-  // The card MUST switch to `pdppCliConnectCommandFor(providerUrl)` when the
-  // caller knows the URL. Without this conditional, the dashboard's connect
-  // copy regresses to the literal `<provider-url>` placeholder.
-  assert.match(src, CONDITIONAL_SUBSTITUTION_RE);
+  assert.match(src, MCP_URL_HELPER_RE);
+  assert.match(src, MCP_URL_SUBSTITUTION_RE);
+});
+
+test("ConnectAgentCard links to the dedicated setup page without owner-token setup copy", async () => {
+  const src = await readFile(CARD_FILE, "utf8");
+  assert.match(src, CONNECT_HREF_PROP_RE);
+  assert.match(src, OPEN_SETUP_LINK_RE);
+  assert.doesNotMatch(src, OWNER_TOKEN_SETUP_RE);
 });

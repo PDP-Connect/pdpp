@@ -25,7 +25,6 @@ function recordingFetch() {
     'limit',
     'filter',
     'connection_id',
-    'connector_instance_id',
   ]);
   const fetch = async (urlInput, init = {}) => {
     const url = new URL(urlInput.toString());
@@ -155,6 +154,11 @@ test('aggregate forwards a group_by_time request and mirrors the RS body into st
   assert.equal(result.structuredContent.data.granularity, 'day');
   assert.equal(result.structuredContent.data.time_zone, 'UTC');
   assert.equal(result.structuredContent.data.approximate, false);
+  assert.match(
+    result.content[0].text,
+    /time_zone="UTC"/,
+    'group_by_time prose must echo the applied time zone for model-visible verification',
+  );
 
   const aggCall = calls.find((c) => c.url.includes('/v1/streams/events/aggregate'));
   const url = new URL(aggCall.url);
@@ -170,7 +174,7 @@ test('aggregate forwards count_distinct and time_zone verbatim', async () => {
   const { fetch, calls } = recordingFetch();
   const { client, server } = await connectClient(fetch);
 
-  await client.callTool({
+  const timeZoneResult = await client.callTool({
     name: 'aggregate',
     arguments: { stream: 'events', metric: 'count', group_by_time: 'occurred_at', granularity: 'day', time_zone: 'America/New_York' },
   });
@@ -181,6 +185,7 @@ test('aggregate forwards count_distinct and time_zone verbatim', async () => {
   const urls = calls.map((c) => new URL(c.url));
   assert.ok(urls.some((u) => u.searchParams.get('time_zone') === 'America/New_York'));
   assert.ok(urls.some((u) => u.searchParams.get('metric') === 'count_distinct' && u.searchParams.get('field') === 'sender'));
+  assert.match(timeZoneResult.content[0].text, /time_zone="America\/New_York"/);
 
   await client.close();
   await server.close();

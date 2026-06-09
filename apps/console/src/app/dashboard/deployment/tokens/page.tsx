@@ -274,10 +274,10 @@ function OwnerScopeCallout() {
       <p className="pdpp-caption mt-2 text-muted-foreground">
         Ordinary MCP clients (Claude, ChatGPT, third-party agents) should connect through the OAuth scoped-grant flow at{" "}
         <code className="font-mono">/mcp</code>. That path is documented in the{" "}
-        <Link className="underline-offset-2 hover:underline" href="/dashboard/deployment">
-          deployment overview
+        <Link className="underline-offset-2 hover:underline" href="/dashboard/connect">
+          connect page
         </Link>
-        's connect-an-agent card. <code className="font-mono">/mcp</code> rejects owner bearers on purpose.
+        . <code className="font-mono">/mcp</code> rejects owner bearers on purpose.
       </p>
     </Callout>
   );

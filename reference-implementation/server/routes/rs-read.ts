@@ -47,7 +47,11 @@ import {
   type RecordsListInput,
   RecordsListVisibilityError,
 } from "../../operations/rs-records-list/index.ts";
-import { projectSchemaCompactView } from "../../operations/rs-schema-get/compact-view.ts";
+import {
+  projectSchemaCompactView,
+  projectSchemaStreamScope,
+  schemaSourceOptions,
+} from "../../operations/rs-schema-get/compact-view.ts";
 import {
   executeSchemaGet,
   type SchemaGetDependencies,
@@ -376,6 +380,31 @@ function resolveRequestConnectionId(query: Readonly<Record<string, unknown>>): s
   return null;
 }
 
+function sourceIdentityValue(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return null;
+}
+
+function withRecordSourceIdentity(
+  record: unknown,
+  refs: {
+    sourceDescriptor: SourceDescriptorLike | null;
+    storageBinding: StorageBindingLike | null;
+    requestConnectionId: string | null;
+  }
+): unknown {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return record;
+  const connectorKey = sourceIdentityValue(refs.sourceDescriptor?.id, refs.storageBinding?.connector_id);
+  const connectionId = sourceIdentityValue(refs.requestConnectionId, refs.storageBinding?.connector_instance_id);
+  return {
+    ...(connectorKey ? { connector_key: connectorKey } : {}),
+    ...(connectionId ? { connection_id: connectionId } : {}),
+    ...(record as Record<string, unknown>),
+  };
+}
+
 interface ReadScope {
   manifest: ManifestLike;
   sourceDescriptor: SourceDescriptorLike | null;
@@ -679,11 +708,34 @@ function readSchemaView(query: Readonly<Record<string, unknown>>): string | null
   return trimmed.length > 0 ? trimmed : null;
 }
 
+// Explicit detail selector for agent-facing schema discovery. The legacy REST
+// default remains full/current-compatible when this selector is omitted.
+function readSchemaDetail(query: Readonly<Record<string, unknown>>): string | null {
+  const raw = query?.detail;
+  if (typeof raw !== "string") {
+    return null;
+  }
+  const trimmed = raw.trim().toLowerCase();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 // Read the optional `stream` scope off the schema query. Only a non-empty
 // plain string narrows the document; any other shape leaves the document
 // unscoped.
 function readSchemaStreamScope(query: Readonly<Record<string, unknown>>): string | null {
   const raw = query?.stream;
+  if (typeof raw !== "string") {
+    return null;
+  }
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+// Read the optional canonical source scope off the schema query. This mirrors
+// the public read selector used by records/search without accepting the
+// deprecated alias on this discovery path.
+function readSchemaConnectionScope(query: Readonly<Record<string, unknown>>): string | null {
+  const raw = query?.connection_id;
   if (typeof raw !== "string") {
     return null;
   }
@@ -835,10 +887,13 @@ export function mountRsSchema(app: AppLike, ctx: MountRsReadContext): void {
       // `view=compact` selects the additive, token-efficient schema projection;
       // any other (or omitted) `view` preserves the current full body. `stream`
       // narrows the document to one stream for the cheap `schema(stream)`
-      // discovery middle step. Both are read-only request shaping — they never
-      // change visibility, only the rendered detail level / scope.
+      // discovery middle step. `connection_id` narrows common stream names to
+      // one configured source. These are read-only request shaping selectors:
+      // they never change visibility, only the rendered detail level / scope.
       const compactView = readSchemaView(req.query) === "compact";
+      const explicitFullDetail = !compactView && readSchemaDetail(req.query) === "full";
       const streamScope = readSchemaStreamScope(req.query);
+      const connectionScope = readSchemaConnectionScope(req.query);
 
       queryContext = {
         tokenInfo,
@@ -854,7 +909,9 @@ export function mountRsSchema(app: AppLike, ctx: MountRsReadContext): void {
         queryData: {
           query_shape: "schema",
           ...(compactView ? { requested_view: "compact" } : {}),
+          ...(explicitFullDetail ? { requested_detail: "full" } : {}),
           ...(streamScope ? { requested_stream: streamScope } : {}),
+          ...(connectionScope ? { requested_connection_id: connectionScope } : {}),
         },
       };
 
@@ -869,12 +926,42 @@ export function mountRsSchema(app: AppLike, ctx: MountRsReadContext): void {
         dependencies as unknown as SchemaGetDependencies
       );
 
+      if (explicitFullDetail && !streamScope) {
+        const err = new Error(
+          "schema detail \"full\" requires `stream`; call /v1/schema?view=compact for global discovery, then /v1/schema?stream=<name>&connection_id=<cin>&detail=full for exhaustive detail."
+        ) as Error & { code?: string; param?: string };
+        err.code = "invalid_request";
+        err.param = "detail";
+        await ctx.emitQueryReceived(queryContext, req);
+        return await ctx.rejectQuery(res, req, queryContext, err);
+      }
+
+      if (explicitFullDetail && streamScope && !connectionScope) {
+        const sources = schemaSourceOptions(result.response, { stream: streamScope });
+        if (sources.length > 1) {
+          const err = new Error(
+            `schema detail "full" for stream "${streamScope}" matches ${sources.length} sources; retry with connection_id to fetch one source's exhaustive schema.`
+          ) as Error & {
+            code?: string;
+            param?: string;
+            retry_with?: string;
+            available_connections?: unknown[];
+          };
+          err.code = "ambiguous_schema_detail";
+          err.param = "connection_id";
+          err.retry_with = "connection_id";
+          err.available_connections = sources;
+          await ctx.emitQueryReceived(queryContext, req);
+          return await ctx.rejectQuery(res, req, queryContext, err);
+        }
+      }
+
       // Apply the compact projection (and optional stream scope) as a pure,
       // post-operation transform. The operation owns visibility/grant scope and
       // emits the full body; the route only down-projects the rendered detail.
       const responseBody = compactView
-        ? projectSchemaCompactView(result.response, { stream: streamScope })
-        : result.response;
+        ? projectSchemaCompactView(result.response, { stream: streamScope, connectionId: connectionScope })
+        : projectSchemaStreamScope(result.response, { stream: streamScope, connectionId: connectionScope });
       const servedCounts = deriveServedSchemaCounts(responseBody, result.counts);
 
       await ctx.emitQueryReceived(queryContext, req);
@@ -899,6 +986,8 @@ export function mountRsSchema(app: AppLike, ctx: MountRsReadContext): void {
           connector_count: servedCounts.connector_count,
           stream_count: servedCounts.stream_count,
           ...(compactView ? { requested_view: "compact" } : {}),
+          ...(streamScope ? { requested_stream: streamScope } : {}),
+          ...(connectionScope ? { requested_connection_id: connectionScope } : {}),
         },
       });
 
@@ -1781,6 +1870,7 @@ export function mountRsRecordDetail(app: AppLike, ctx: MountRsReadContext): void
           expandOptions: {
             expand: req.query.expand,
             expand_limit: req.query.expand_limit,
+            fields: req.query.fields,
           },
         };
 
@@ -1849,7 +1939,16 @@ export function mountRsRecordDetail(app: AppLike, ctx: MountRsReadContext): void
           token_id: authorizationTokenId(req),
           data: { source: result.sourceDescriptor, ...result.disclosureData },
         });
-        return res.json(ctx.finalizeCanonicalEnvelope(result.record, req));
+        return res.json(
+          ctx.finalizeCanonicalEnvelope(
+            withRecordSourceIdentity(result.record, {
+              sourceDescriptor,
+              storageBinding,
+              requestConnectionId: resolveRequestConnectionId(req.query),
+            }),
+            req
+          )
+        );
       } catch (err) {
         if (queryContext) {
           await ctx.emitQueryReceived(queryContext, req);

@@ -342,28 +342,212 @@ function streamNameOf(entry: unknown): string | undefined {
   return firstString(entry.name as string, entry.stream as string, entry.stream_name as string);
 }
 
+function connectionIdOf(entry: unknown): string | undefined {
+  if (!isObject(entry)) return undefined;
+  const source = isObject(entry.source) ? entry.source : {};
+  return firstString(
+    entry.connection_id as string,
+    entry.connector_instance_id as string,
+    source.connection_id as string,
+    source.connector_instance_id as string,
+  );
+}
+
+function connectorKeyOf(stream: unknown, connector: unknown): string | undefined {
+  const streamObj = isObject(stream) ? stream : {};
+  const connectorObj = isObject(connector) ? connector : {};
+  const streamSource = isObject(streamObj.source) ? streamObj.source : {};
+  const connectorSource = isObject(connectorObj.source) ? connectorObj.source : {};
+  return firstString(
+    streamObj.connector_key as string,
+    streamObj.connector_id as string,
+    streamSource.connector_key as string,
+    streamSource.connector_id as string,
+    connectorObj.connector_key as string,
+    connectorObj.connector_id as string,
+    connectorSource.connector_key as string,
+    connectorSource.connector_id as string,
+    connectorSource.id as string,
+  );
+}
+
+function displayNameOf(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (!isObject(value)) continue;
+    const source = isObject(value.source) ? value.source : {};
+    const name = firstString(
+      value.display_name as string,
+      value.connection_display_name as string,
+      value.name as string,
+      source.display_name as string,
+      source.name as string,
+    );
+    if (name) return name;
+  }
+  return undefined;
+}
+
+function sourceOptionEntries(stream: unknown, connector: ConnectorSchemaItem): unknown[] {
+  if (isObject(stream) && Array.isArray(stream.granted_connections) && stream.granted_connections.length > 0) {
+    return stream.granted_connections;
+  }
+  if (Array.isArray(connector.granted_connections) && connector.granted_connections.length > 0) {
+    return connector.granted_connections;
+  }
+  return [stream, connector].filter((entry) => connectionIdOf(entry) || connectorKeyOf(stream, entry));
+}
+
+function matchingGrantedConnections(value: unknown, connectionId: string | null): unknown[] | null {
+  if (!connectionId) return Array.isArray(value) ? value : null;
+  if (!Array.isArray(value)) return null;
+  return value.filter((entry) => connectionIdOf(entry) === connectionId);
+}
+
+function entryMatchesConnection(entry: unknown, connectionId: string): boolean {
+  return connectionIdOf(entry) === connectionId;
+}
+
+function streamMatchesConnection(
+  stream: unknown,
+  connector: ConnectorSchemaItem,
+  connectionId: string | null,
+): boolean {
+  if (!connectionId) return true;
+  if (entryMatchesConnection(stream, connectionId)) return true;
+  const streamConnections = matchingGrantedConnections(isObject(stream) ? stream.granted_connections : undefined, connectionId);
+  if (streamConnections && streamConnections.length > 0) return true;
+  const connectorConnections = matchingGrantedConnections(connector.granted_connections, connectionId);
+  if (connectorConnections && connectorConnections.length > 0) return true;
+  return entryMatchesConnection(connector, connectionId);
+}
+
+function scopeStreamToConnection(stream: unknown, connectionId: string | null): unknown {
+  if (!connectionId || !isObject(stream)) return stream;
+  const out = { ...stream };
+  if (Array.isArray(stream.granted_connections)) {
+    out.granted_connections = matchingGrantedConnections(stream.granted_connections, connectionId) ?? [];
+  }
+  return out;
+}
+
+function scopeConnectorToConnection(connector: ConnectorSchemaItem, connectionId: string | null): ConnectorSchemaItem {
+  if (!connectionId) return connector;
+  const out: ConnectorSchemaItem = { ...connector };
+  if (Array.isArray(connector.granted_connections)) {
+    out.granted_connections = matchingGrantedConnections(connector.granted_connections, connectionId) ?? [];
+  }
+  return out;
+}
+
 /**
- * Narrow a list of connector items to a single stream, dropping connectors
- * that contribute no matching stream. Preserves the connector envelope and
- * recomputes `stream_count` so the projection stays internally consistent.
+ * Narrow connector items by optional stream and connection identity, dropping
+ * connectors that contribute no matching stream. Preserves the connector
+ * envelope and recomputes `stream_count` so the projection stays internally
+ * consistent.
  */
-function scopeConnectorsToStream(
+function scopeConnectors(
   connectors: ConnectorSchemaItem[],
-  streamTarget: string,
+  { stream = null, connectionId = null }: { stream?: string | null; connectionId?: string | null } = {},
 ): ConnectorSchemaItem[] {
+  if (!stream && !connectionId) return connectors;
   return connectors
     .map((connector) => {
       const streams = Array.isArray(connector.streams) ? connector.streams : [];
-      const matching = streams.filter((entry) => streamNameOf(entry) === streamTarget);
+      const matching = streams
+        .filter((entry) => (stream ? streamNameOf(entry) === stream : true))
+        .filter((entry) => streamMatchesConnection(entry, connector, connectionId))
+        .map((entry) => scopeStreamToConnection(entry, connectionId));
       if (matching.length === 0) return null;
-      return { ...connector, streams: matching, stream_count: matching.length };
+      return { ...scopeConnectorToConnection(connector, connectionId), streams: matching, stream_count: matching.length };
     })
     .filter((item): item is ConnectorSchemaItem => item !== null);
+}
+
+function schemaCounts(connectors: ConnectorSchemaItem[]): { connector_count: number; stream_count: number } {
+  return {
+    connector_count: connectors.length,
+    stream_count: connectors.reduce((total, connector) => {
+      const streams = Array.isArray(connector.streams) ? connector.streams : [];
+      return total + streams.length;
+    }, 0),
+  };
+}
+
+export interface SchemaSourceOption {
+  connection_id?: string;
+  connector_key?: string;
+  stream?: string;
+  display_name?: string;
+}
+
+/**
+ * Return the concrete configured-source options represented by a schema scope.
+ * Used by adapters that need to reject exhaustive detail over an ambiguous
+ * stream without reconstructing schema source identity locally.
+ */
+export function schemaSourceOptions(
+  response: SchemaResponse,
+  { stream = null, connectionId = null }: SchemaStreamScopeOptions = {},
+): SchemaSourceOption[] {
+  const connectors = Array.isArray(response.connectors) ? response.connectors : [];
+  const scoped = scopeConnectors(connectors, { stream, connectionId });
+  const seen = new Set<string>();
+  const options: SchemaSourceOption[] = [];
+  for (const connector of scoped) {
+    const streams = Array.isArray(connector.streams) ? connector.streams : [];
+    for (const entry of streams) {
+      const streamName = streamNameOf(entry);
+      for (const sourceEntry of sourceOptionEntries(entry, connector)) {
+        const sourceObj = isObject(sourceEntry) ? sourceEntry : {};
+        const connection_id = connectionIdOf(sourceObj);
+        const connector_key = connectorKeyOf(entry, connector);
+        const display_name = displayNameOf(sourceObj, entry, connector);
+        const key = `${connection_id ?? ""}\0${connector_key ?? ""}\0${streamName ?? ""}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        options.push({
+          ...(connection_id ? { connection_id } : {}),
+          ...(connector_key ? { connector_key } : {}),
+          ...(streamName ? { stream: streamName } : {}),
+          ...(display_name ? { display_name } : {}),
+        });
+      }
+    }
+  }
+  return options;
+}
+
+export interface SchemaStreamScopeOptions {
+  /** When set, scope the document to a single stream. */
+  stream?: string | null;
+  /** When set, scope the document to a single configured source. */
+  connectionId?: string | null;
+}
+
+/**
+ * Scope a canonical `rs.schema.get` response without compacting it. This keeps
+ * the full-detail response current-compatible while honoring the same `stream`
+ * and `connection_id` request shape that compact discovery uses.
+ */
+export function projectSchemaStreamScope(
+  response: SchemaResponse,
+  { stream = null, connectionId = null }: SchemaStreamScopeOptions = {},
+): SchemaResponse {
+  if (!stream && !connectionId) return response;
+  const connectors = Array.isArray(response.connectors) ? response.connectors : [];
+  const scoped = scopeConnectors(connectors, { stream, connectionId });
+  return {
+    ...response,
+    ...schemaCounts(scoped),
+    connectors: scoped,
+  };
 }
 
 export interface CompactSchemaOptions {
   /** When set, scope the document to a single stream before compaction. */
   stream?: string | null;
+  /** When set, scope the document to a single configured source before compaction. */
+  connectionId?: string | null;
 }
 
 /**
@@ -387,13 +571,14 @@ export interface CompactSchemaOptions {
  */
 export function projectSchemaCompactView(
   response: SchemaResponse,
-  { stream = null }: CompactSchemaOptions = {},
+  { stream = null, connectionId = null }: CompactSchemaOptions = {},
 ): SchemaResponse {
   const connectors = Array.isArray(response.connectors) ? response.connectors : [];
-  const scoped = stream ? scopeConnectorsToStream(connectors, stream) : connectors;
+  const scoped = scopeConnectors(connectors, { stream, connectionId });
   return {
     ...response,
     detail: "compact",
+    ...schemaCounts(scoped),
     connectors: scoped.map((connector) => compactConnector(connector)),
   };
 }

@@ -6,9 +6,8 @@ adapter for grant-scoped access to a [PDPP](https://pdpp.vivid.fish) resource se
 The adapter is a thin client of the PDPP resource server (RS). It does not run connectors,
 issue grants, or replicate any RS authorization logic. Every data-bearing tool call is a
 forwarded request to an existing `/v1/*` endpoint, authenticated with the scoped client
-access token already cached by `pdpp connect`. Side-effectful tools (the event-subscription
-management surface) are honestly annotated with `readOnlyHint: false` so MCP harnesses can
-prompt the user before invoking them.
+access token already cached by `pdpp connect`. The MCP setup is a profile-free normal
+read surface; event-subscription management is not part of the recommended MCP tool list.
 
 ## What this is not
 
@@ -59,22 +58,15 @@ The adapter writes only MCP protocol messages to stdout. Diagnostics go to stder
 
 ## Tools
 
-All tools forward to existing RS endpoints under the scoped client token.
-
 ### Read tools (read-only, idempotent)
 
 | Tool | RS endpoint |
 | --- | --- |
 | `schema` | `GET /v1/schema` |
-| `list_streams` | `GET /v1/streams` |
 | `query_records` | `GET /v1/streams/{stream}/records` |
 | `aggregate` | `GET /v1/streams/{stream}/aggregate` |
 | `search` | `GET /v1/search` |
 | `fetch` | `GET /v1/streams/{stream}/records/{record_id}` |
-| `fetch_blob` | `GET /v1/blobs/{blob_id}` |
-| `list_event_subscriptions` | `GET /v1/event-subscriptions` |
-| `get_event_subscription` | `GET /v1/event-subscriptions/{id}` |
-| `discover_event_subscription_capabilities` | `GET /.well-known/oauth-protected-resource` |
 
 Plus one resource template: `pdpp://stream/{name}` → `GET /v1/streams/{name}`.
 
@@ -83,28 +75,42 @@ ChatGPT-compatible `structuredContent.results[]` entries with `id`, `title`, `ur
 and available source handles such as `connection_id`. Its `content[]` text also
 previews a bounded set of top hits so clients that cannot inspect structured
 tool output can still fetch a result.
-`fetch` accepts result ids in `stream:record_id` form and returns `id`, `title`, `text`,
-`url`, and `metadata`.
+`fetch` accepts result ids in `stream:record_id` form and follows the
+MCP/OpenAI search-fetch document contract: `structuredContent` is exactly
+`id`, `title`, `text`, `url`, and `metadata`, and `content[]` contains the same
+object as JSON text for hosts that hide structured output. It does not return a
+canonical PDPP record envelope under `structuredContent.data`; use
+`query_records` for canonical structured record reads. `fetch(fields)` projects
+the source record before rendering the document so unrequested source-native
+payload fields do not leak into `text` or `metadata`; source handles such as
+stream, `connection_id`, and `connector_key` remain in `metadata`.
 
-Discovery tools (`schema`, `list_streams`) include concise parseable text with stream
+The `schema` tool includes concise parseable text with stream
 names, `connection_id`, `connector_key`, display labels, and schema field-capability
 essentials so MCP clients whose models read only `content[]` can still choose streams,
 fields, and connection scopes.
 
-`schema` defaults to a **compact** `structuredContent.data` projection (`detail: "compact"`).
+`schema` defaults to a **compact** schema document under `structuredContent.data`
+(`detail: "compact"`). It does not wrap the REST `/v1/schema` body again, so
+callers read `structuredContent.data.connectors`, not `structuredContent.data.data.connectors`.
 A real owner's grant-scoped `GET /v1/schema` body can exceed 2 MB once every connector
 advertises full per-field JSON Schema, which is too large as the default agent-facing
 payload. The compact projection collapses each field to a terse capability flag string
 (declared type, grant, and usable filter/search/aggregation flags — e.g.
 `type=string,granted=true,exact,range=gte|lt,agg=group_by_time`) and drops the raw
-per-field JSON Schema, while preserving connection identities (`connection_id`, deprecated
-`connector_instance_id`, `display_name`) and canonical `connector_key` metadata. This keeps
-the discovery path `list_streams -> schema(stream) -> query_records` cheap: the package-level
-text summary lists streams without per-field flags and points the agent at `schema(stream)`
-for them. Pass `detail: "full"` to get the exhaustive verbatim body (raw per-field JSON
-Schema and structured capability sub-objects), and `stream` to scope the document to a
-single stream (the cheapest middle step of the discovery path). `list_streams` continues to
-preserve the full RS body in `structuredContent.data`.
+per-field JSON Schema, while preserving connection identities (`connection_id`,
+`display_name`) and canonical `connector_key` metadata. This keeps
+the discovery path `schema -> schema(stream) -> schema(stream, connection_id) -> query_records`
+cheap: the package-level text summary lists streams without per-field flags and
+points the agent at scoped schema calls for them. Stream names are not globally
+unique; `schema(stream)` returns every granted connector/connection with that
+stream name. Add `connection_id` when you need one configured source, especially
+before requesting `detail: "full"`. Pass `detail: "full"` only together with
+`stream`; if that stream name spans multiple sources, retry with `connection_id`
+to get deduped exhaustive schema for one configured source. Full detail
+preserves raw per-field JSON Schema and structured capability sub-objects, but
+does not repeat the same selected stream list in both top-level and
+connector-nested locations.
 
 `query_records` also preserves the full RS envelope in `structuredContent.data`, and its
 text content includes a bounded preview of returned records. This keeps agents that can
@@ -134,8 +140,8 @@ encodes it into the resource server's `filter[field]=value` (exact) and
 
 Allowed fields and operators are advertised per stream by `GET /v1/schema`
 (`field_capabilities`) — discover them with the cheap
-`list_streams -> schema(stream) -> query_records` path before constructing a
-filter. A legacy raw string using literal bracket syntax
+`schema -> schema(stream) -> schema(stream, connection_id) -> query_records`
+path before constructing a filter. A legacy raw string using literal bracket syntax
 (`"filter[user_id]=U123"`) is still accepted and parsed. Any other string shape
 (a bare term like `"Vana"`, `"field=value"`, `"amount>100"`, or JSON encoded as a
 string) is **rejected with a typed `invalid_filter` error** — it is never
@@ -172,62 +178,14 @@ is still served a bounded page, and — like `query_records` — now receives a 
 `detail.max_limit`) on all three search modes, so the clamp is never silent on any read
 surface.
 
+Use lexical search for exact known terms. Semantic search is approximate
+retrieval; it can surface conceptually related records but is not a replacement
+for exact-term lookup when a user names a literal string.
+
 When a response or typed `ambiguous_connection` error includes both `connection_id` and
 `grant_id`, use `connection_id` as the stable data-source selector. `grant_id` identifies
 the current authorization grant and can change when the owner reconnects or re-authorizes
-the client. Persist `subscription_id` for event-subscription management; do not persist
-`grant_id` as a reconnect-stable source identifier.
-
-### Side-effectful tools (event-subscription management)
-
-These tools manage outbound event subscriptions on the configured PDPP instance via the
-existing `/v1/event-subscriptions[...]` REST surface. They use the same scoped client bearer
-the read tools use — no new credential path. Each tool is annotated honestly so an MCP
-harness can prompt before invoking:
-
-| Tool | RS endpoint | `destructiveHint` | `idempotentHint` |
-| --- | --- | --- | --- |
-| `create_event_subscription` | `POST /v1/event-subscriptions` | false | false |
-| `update_event_subscription` | `PATCH /v1/event-subscriptions/{id}` | false | false |
-| `send_test_event` | `POST /v1/event-subscriptions/{id}/test-event` | false | false |
-| `delete_event_subscription` | `DELETE /v1/event-subscriptions/{id}` | **true** | true |
-
-Receiver constraints:
-
-- The callback URL must be an HTTPS endpoint reachable from the configured PDPP instance
-  (`http://localhost` is accepted only for development; max 2048 bytes).
-- Deliveries are signed per [Standard Webhooks](https://www.standardwebhooks.com): headers
-  `webhook-id`, `webhook-timestamp`, `webhook-signature: v1,<base64>`. The per-subscription
-  secret is returned exactly once on create (and again on `rotate_secret`).
-- Envelope is [CloudEvents 1.0](https://cloudevents.io/) JSON structured mode
-  (`application/cloudevents+json; charset=utf-8`). Record bodies are **never** pushed —
-  clients pull changes by passing `data.changes_since` to `query_records`.
-- Authoritative wire shape (event types, signing profile, retry schedule, verification
-  handshake) is advertised at `capabilities.client_event_subscriptions` on the RS
-  protected-resource metadata: `GET /.well-known/oauth-protected-resource`. The
-  read-only `discover_event_subscription_capabilities` tool fetches that
-  advertisement so an MCP client never has to leave the adapter to plan a
-  subscription call.
-- Use event subscriptions when a long-lived receiver needs low-latency change
-  notifications; prefer polling via `query_records` with `changes_since` for
-  one-shot reads, short-lived clients, or environments where a reachable HTTPS
-  callback is impractical.
-
-The MCP adapter does not host a callback receiver. Your application is responsible for
-running a reachable HTTPS endpoint that handles `pdpp.subscription.verify` (echo the
-challenge), `pdpp.subscription.test`, `pdpp.records.changed`, and `pdpp.grant.revoked`
-envelopes.
-
-For operators verifying delivery against a fresh deployment, the repository ships a
-local test receiver at `scripts/event-subscription-test-receiver.mjs` that completes
-the verification handshake and prints incoming envelopes. The companion operator
-guide at [`docs/operator/event-subscriptions.md`](../../docs/operator/event-subscriptions.md)
-covers the receiver, the operator console surface at `/dashboard/event-subscriptions`,
-and the operator disable affordance.
-
-Owner credentials are still refused. The event-subscription tools do not widen the
-adapter's credential surface; they reuse the existing scoped client bearer, and every
-authorization check happens server-side on the RS as before.
+the client. Do not persist `grant_id` as a reconnect-stable source identifier.
 
 ## Hosted Streamable HTTP helper
 
@@ -244,7 +202,7 @@ const response = await handleStreamableHttpRequest(request, {
 ```
 
 The helper creates a fresh server and Streamable HTTP transport per request with MCP
-session ids disabled.
+session ids disabled. `/mcp` serves the profile-free normal read surface.
 
 ## Errors
 

@@ -190,6 +190,158 @@ test('schema fan-out understands the canonical { data: { connectors: [{ streams 
   assert.equal(out.body.data.granted_connections.length, 1);
 });
 
+test('schema scoped to connection_id calls only that child and strips the package selector', async () => {
+  const calls = [];
+  const fetch = makeRouter(async (req) => {
+    calls.push({ token: req.token, path: req.path, query: req.query.toString() });
+    if (req.token === 'tok_B') {
+      return jsonResponse(200, {
+        data: {
+          streams: [{ name: 'messages' }],
+          granted_connections: [{ connection_id: 'slack_main' }],
+        },
+      });
+    }
+    return jsonResponse(500, { error: 'wrong_child' });
+  });
+
+  const rs = createPackageRsClient({ providerUrl: PROVIDER, members: [memberA(), memberB()], fetch });
+  const out = await rs.getJson('/v1/schema', { query: { stream: 'messages', connection_id: 'slack_main' } });
+
+  assert.equal(out.ok, true);
+  assert.equal(out.body.data.streams.length, 1);
+  assert.equal(out.body.data.streams[0].name, 'messages');
+  assert.equal(out.body.data.streams[0].source.connection_id, 'slack_main');
+  assert.deepEqual(calls, [{ token: 'tok_B', path: '/v1/schema', query: 'stream=messages' }]);
+});
+
+test('schema with unknown connection_id returns not_found without fanout', async () => {
+  let called = 0;
+  const fetch = makeRouter(async () => {
+    called += 1;
+    return jsonResponse(500, {});
+  });
+  const rs = createPackageRsClient({ providerUrl: PROVIDER, members: [memberA(), memberB()], fetch });
+  const out = await rs.getJson('/v1/schema', { query: { connection_id: 'unknown' } });
+  assert.equal(out.ok, false);
+  assert.equal(out.status, 404);
+  assert.equal(out.error.code, 'not_found');
+  assert.equal(called, 0, 'unknown connection_id is rejected before touching child grants');
+});
+
+test('schema detail=full rejects shared stream names before package full-schema fanout', async () => {
+  const calls = [];
+  const fetch = makeRouter(async (req) => {
+    calls.push({ token: req.token, query: req.query.toString() });
+    if (req.query.get('view') !== 'compact') {
+      return jsonResponse(500, { error: 'full_schema_should_not_be_called' });
+    }
+    if (req.token === 'tok_A') {
+      return jsonResponse(200, {
+        data: {
+          object: 'schema',
+          connectors: [
+            {
+              connector_id: 'github',
+              streams: [{ name: 'messages', granted_connections: [{ connection_id: 'gh_main' }] }],
+            },
+          ],
+        },
+      });
+    }
+    if (req.token === 'tok_B') {
+      return jsonResponse(200, {
+        data: {
+          object: 'schema',
+          connectors: [
+            {
+              connector_id: 'slack',
+              streams: [{ name: 'messages', granted_connections: [{ connection_id: 'slack_main' }] }],
+            },
+          ],
+        },
+      });
+    }
+    return jsonResponse(500, {});
+  });
+
+  const rs = createPackageRsClient({ providerUrl: PROVIDER, members: [memberA(), memberB()], fetch });
+  const out = await rs.getJson('/v1/schema', { query: { stream: 'messages', detail: 'full' } });
+
+  assert.equal(out.ok, false);
+  assert.equal(out.status, 409);
+  assert.equal(out.error.code, 'ambiguous_schema_detail');
+  assert.equal(out.error.retry_with, 'connection_id');
+  assert.deepEqual(
+    out.error.available_connections.map((entry) => entry.connection_id).sort(),
+    ['gh_main', 'slack_main'],
+  );
+  assert.deepEqual(
+    calls.map((call) => call.query).sort(),
+    ['stream=messages&view=compact', 'stream=messages&view=compact'],
+    'package client should only perform compact preflight before returning ambiguity',
+  );
+});
+
+test('schema detail=full with a single matching package source routes to that child only', async () => {
+  const calls = [];
+  const fetch = makeRouter(async (req) => {
+    calls.push({ token: req.token, query: req.query.toString() });
+    if (req.token === 'tok_A') {
+      return jsonResponse(200, {
+        data: {
+          object: 'schema',
+          connectors: [
+            {
+              connector_id: 'github',
+              streams: [],
+            },
+          ],
+        },
+      });
+    }
+    if (req.token === 'tok_B' && req.query.get('view') === 'compact') {
+      return jsonResponse(200, {
+        data: {
+          object: 'schema',
+          connectors: [
+            {
+              connector_id: 'slack',
+              streams: [{ name: 'messages', granted_connections: [{ connection_id: 'slack_main' }] }],
+            },
+          ],
+        },
+      });
+    }
+    if (req.token === 'tok_B') {
+      return jsonResponse(200, {
+        data: {
+          object: 'schema',
+          connectors: [
+            {
+              connector_id: 'slack',
+              streams: [{ name: 'messages', field_capabilities: { id: { schema: { type: 'string' } } } }],
+            },
+          ],
+        },
+      });
+    }
+    return jsonResponse(500, {});
+  });
+
+  const rs = createPackageRsClient({ providerUrl: PROVIDER, members: [memberA(), memberB()], fetch });
+  const out = await rs.getJson('/v1/schema', { query: { stream: 'messages', detail: 'full' } });
+
+  assert.equal(out.ok, true);
+  assert.equal(out.body.data.connectors.length, 1);
+  assert.equal(out.body.data.connectors[0].connector_id, 'slack');
+  assert.deepEqual(calls, [
+    { token: 'tok_A', query: 'stream=messages&view=compact' },
+    { token: 'tok_B', query: 'stream=messages&view=compact' },
+    { token: 'tok_B', query: 'stream=messages&detail=full' },
+  ]);
+});
+
 test('protected-resource metadata is a server-global passthrough, not a source-required read', async () => {
   const calls = [];
   const fetch = makeRouter(async (req) => {
@@ -278,6 +430,46 @@ test('search fan-out merges hits across children', async () => {
   assert.equal(out.ok, true);
   assert.equal(out.body.data.results.length, 3);
   for (const hit of out.body.data.results) assert.ok(hit.source);
+});
+
+test('search fan-out applies limit globally and exposes source mix', async () => {
+  const fetch = makeRouter(async (req) => {
+    if (req.token === 'tok_A') {
+      return jsonResponse(200, {
+        data: {
+          results: [
+            { id: 'repo:1', stream: 'repos', title: 'Repo One' },
+            { id: 'repo:2', stream: 'repos', title: 'Repo Two' },
+          ],
+        },
+      });
+    }
+    if (req.token === 'tok_B') {
+      return jsonResponse(200, {
+        data: {
+          results: [
+            { id: 'msg:1', stream: 'messages', title: 'Msg One' },
+            { id: 'msg:2', stream: 'messages', title: 'Msg Two' },
+          ],
+        },
+      });
+    }
+    return jsonResponse(500, {});
+  });
+  const rs = createPackageRsClient({ providerUrl: PROVIDER, members: [memberA(), memberB()], fetch });
+  const out = await rs.getJson('/v1/search', { query: { q: 'one', limit: 3 } });
+
+  assert.equal(out.ok, true);
+  assert.equal(out.body.data.results.length, 3, 'limit must apply to merged fan-in result, not per child');
+  assert.equal(out.body.has_more, true, 'truncated merged fan-in result must advertise has_more');
+  assert.deepEqual(
+    out.body.data.results.map((hit) => hit.connection_id),
+    ['gh_main', 'gh_main', 'slack_main'],
+  );
+  assert.deepEqual(out.body.meta.package.source_mix, [
+    { connection_id: 'gh_main', connector_key: 'github', count: 2 },
+    { connection_id: 'slack_main', connector_key: 'slack', count: 1 },
+  ]);
 });
 
 test('search fan-out merges canonical list-envelope data arrays across children', async () => {
@@ -406,7 +598,6 @@ test('query_records without selector returns ambiguous_connection 409 with candi
   const calls = [];
   const fetch = makeRouter(async (req) => {
     calls.push({ path: req.path, token: req.token });
-    if (req.path === '/v1/streams') return jsonResponse(200, { data: [{ name: 'repos' }] });
     return jsonResponse(500, {});
   });
   const rs = createPackageRsClient({ providerUrl: PROVIDER, members: [memberA(), memberB()], fetch });
@@ -415,7 +606,8 @@ test('query_records without selector returns ambiguous_connection 409 with candi
   assert.equal(out.status, 409);
   assert.equal(out.error.code, 'ambiguous_connection');
   assert.equal(out.error.available_connections.length, 2);
-  assert.deepEqual(calls.map((call) => call.path), ['/v1/streams', '/v1/streams']);
+  assert.equal(out.error.available_connection_count, 2);
+  assert.deepEqual(calls, [], 'ambiguity is computed from package membership without probing child grants');
 });
 
 test('query_records with connection_id routes to one child only', async () => {
@@ -433,16 +625,9 @@ test('query_records with connection_id routes to one child only', async () => {
   assert.equal(bCalled, 0);
 });
 
-test('query_records ambiguity marks invalid child grants unavailable instead of advertising them as normal candidates', async () => {
+test('query_records ambiguity is fast and does not probe child health', async () => {
   const fetch = makeRouter(async (req) => {
-    if (req.path === '/v1/streams') {
-      if (req.token === 'tok_A') return jsonResponse(200, { data: [{ name: 'repos' }] });
-      if (req.token === 'tok_B') {
-        return jsonResponse(403, {
-          error: { type: 'grant_invalid', code: 'grant_invalid', message: 'Grant is no longer usable' },
-        });
-      }
-    }
+    assert.fail(`ambiguous read should not touch child grant ${req.token} ${req.path}`);
     return jsonResponse(500, {});
   });
   const rs = createPackageRsClient({ providerUrl: PROVIDER, members: [memberA(), memberB()], fetch });
@@ -451,9 +636,8 @@ test('query_records ambiguity marks invalid child grants unavailable instead of 
   assert.equal(out.ok, false);
   assert.equal(out.status, 409);
   assert.equal(out.error.code, 'ambiguous_connection');
-  assert.deepEqual(out.error.available_connections.map((entry) => entry.connection_id), ['gh_main']);
-  assert.deepEqual(out.error.unavailable_connections.map((entry) => entry.connection_id), ['slack_main']);
-  assert.equal(out.error.unavailable_connections[0].error.code, 'grant_invalid');
+  assert.deepEqual(out.error.available_connections.map((entry) => entry.connection_id), ['gh_main', 'slack_main']);
+  assert.equal(out.error.unavailable_connections, undefined);
 });
 
 test('query_records with selected invalid child preserves the child grant_invalid response', async () => {
@@ -498,7 +682,7 @@ test('fetch_blob (getRaw) requires selector and never returns multi-source defau
   const out = await rs.getRaw('/v1/blobs/blob-xyz');
   assert.equal(out.ok, false);
   assert.equal(out.status, 409);
-  assert.deepEqual(calls.map((call) => call.path), ['/v1/streams', '/v1/streams']);
+  assert.deepEqual(calls, [], 'blob ambiguity is computed without child health probes');
 });
 
 test('create_event_subscription with multi-source package requires connection_id', async () => {
@@ -511,7 +695,7 @@ test('create_event_subscription with multi-source package requires connection_id
   const out = await rs.postJson('/v1/event-subscriptions', { body: { callback_url: 'https://x/y' } });
   assert.equal(out.ok, false);
   assert.equal(out.status, 409);
-  assert.deepEqual(calls.map((call) => call.path), ['/v1/streams', '/v1/streams']);
+  assert.deepEqual(calls, [], 'event-sub ambiguity is computed without child health probes');
 });
 
 test('create_event_subscription with single-source package infers the child', async () => {
@@ -607,7 +791,7 @@ test('unknown event subscription returns adapter not_found without touching reco
 
 test('ambiguous_connection error envelope includes grant_id and connector_key (not connector_id)', async () => {
   const fetch = makeRouter(async (req) => {
-    if (req.path === '/v1/streams') return jsonResponse(200, { data: [{ name: 'repos' }] });
+    assert.fail(`ambiguous read should not touch child grant ${req.token} ${req.path}`);
     return jsonResponse(500, {});
   });
   const rs = createPackageRsClient({ providerUrl: PROVIDER, members: [memberA(), memberB()], fetch });
@@ -627,6 +811,30 @@ test('ambiguous_connection error envelope includes grant_id and connector_key (n
   assert.equal(conns[1].grant_id, 'grant_B');
   assert.equal(conns[1].connector_key, 'slack');
   assert.equal(conns[1].connection_id, 'slack_main');
+});
+
+test('ambiguous_connection caps large packages and points callers at schema for the full index', async () => {
+  const fetch = makeRouter(async (req) => {
+    assert.fail(`ambiguous read should not touch child grant ${req.token} ${req.path}`);
+    return jsonResponse(500, {});
+  });
+  const members = Array.from({ length: 25 }, (_, index) => ({
+    grant_id: `grant_${index}`,
+    token: `tok_${index}`,
+    source: { kind: 'connector', id: index % 2 === 0 ? 'slack' : 'gmail' },
+    connection_id: `conn_${index}`,
+  }));
+  const rs = createPackageRsClient({ providerUrl: PROVIDER, members, fetch });
+  const out = await rs.getJson('/v1/streams/messages/records', { query: { limit: 10 } });
+
+  assert.equal(out.ok, false);
+  assert.equal(out.status, 409);
+  assert.equal(out.error.code, 'ambiguous_connection');
+  assert.equal(out.error.available_connections.length, 12);
+  assert.equal(out.error.available_connection_count, 25);
+  assert.equal(out.error.available_connections_truncated, true);
+  assert.equal(out.error.available_connections_omitted, 13);
+  assert.match(out.error.discovery_hint, /schema/);
 });
 
 test('not_found error envelope includes grant_id and connector_key for event subscription create', async () => {
@@ -649,7 +857,7 @@ test('not_found error envelope includes grant_id and connector_key for event sub
 
 test('create_event_subscription ambiguous envelope carries connector_key and grant_id', async () => {
   const fetch = makeRouter(async (req) => {
-    if (req.path === '/v1/streams') return jsonResponse(200, { data: [{ name: 'repos' }] });
+    assert.fail(`ambiguous event-sub write should not touch child grant ${req.token} ${req.path}`);
     return jsonResponse(500, {});
   });
   const rs = createPackageRsClient({ providerUrl: PROVIDER, members: [memberA(), memberB()], fetch });

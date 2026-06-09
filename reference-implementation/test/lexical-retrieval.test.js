@@ -334,6 +334,7 @@ test('happy-path search returns list envelope with search_result entries (owner 
     assert.equal(hit.stream, 'posts');
     assert.equal(hit.connector_id, connectorA);
     assert.ok(typeof hit.emitted_at === 'string' && hit.emitted_at.length > 0);
+    assert.equal(hit.authored_at, '2026-04-01T00:00:00Z');
     // Owner-mode record_url MUST include the canonical ?connector_id= query param
     assert.ok(hit.record_url.startsWith('/v1/streams/posts/records/p1?connector_id='));
     assert.ok(hit.record_url.includes(encodeURIComponent(connectorA)));

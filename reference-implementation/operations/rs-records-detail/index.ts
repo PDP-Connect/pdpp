@@ -31,6 +31,11 @@
  *   - response writing.
  */
 
+import {
+  normalizeProjectionFields,
+  projectRecordEnvelope,
+} from "../read-projection.ts";
+
 export interface RecordDetailSourceDescriptor {
   kind: "connector" | "provider_native";
   id: string;
@@ -70,6 +75,7 @@ export interface RecordDetailGrant {
 export interface RecordDetailExpandOptions {
   expand?: string | string[] | null;
   expand_limit?: string | number | null;
+  fields?: string | string[] | null;
 }
 
 export interface RecordDetailDependencies {
@@ -192,7 +198,10 @@ export async function executeRecordDetail(
     );
   }
 
-  const record = dependencies.decorateRecord(rawRecord);
+  const record = projectRecordEnvelope(
+    dependencies.decorateRecord(rawRecord),
+    normalizeProjectionFields(expandOptions.fields),
+  );
 
   return {
     record,

@@ -35,6 +35,8 @@ function recordingFetch() {
       'view',
       'expand',
       'expand_limit',
+      'sort',
+      'count',
       'changes_since',
       'connection_id',
       'connector_instance_id',
@@ -128,7 +130,7 @@ async function connectClient(fakeFetch) {
   return { client, server };
 }
 
-test('5.1 query_records exposes canonical read args (fields, expand, expand_limit, filter, sort, cursor, limit, count)', async () => {
+test('5.1 query_records exposes canonical read args (fields, expand, expand_limit, filter, sort, cursor, changes_since, limit, count)', async () => {
   const { fetch } = recordingFetch();
   const { client, server } = await connectClient(fetch);
 
@@ -142,10 +144,10 @@ test('5.1 query_records exposes canonical read args (fields, expand, expand_limi
     'filter',
     'sort',
     'cursor',
+    'changes_since',
     'limit',
     'count',
     'connection_id',
-    'connector_instance_id',
   ];
   for (const name of expected) {
     assert.ok(
@@ -163,7 +165,7 @@ test('5.1 description points callers to /v1/schema as the capability source', as
   const { client, server } = await connectClient(fetch);
 
   const tools = await client.listTools();
-  for (const name of ['schema', 'list_streams', 'query_records', 'search']) {
+  for (const name of ['schema', 'query_records', 'search']) {
     const tool = tools.tools.find((t) => t.name === name);
     assert.match(
       tool.description,
@@ -184,13 +186,10 @@ test('5.1 descriptions prefer connection_id and connector_key source identity', 
   const byName = Object.fromEntries(tools.tools.map((tool) => [tool.name, tool]));
   for (const name of [
     'schema',
-    'list_streams',
     'query_records',
     'aggregate',
     'search',
     'fetch',
-    'fetch_blob',
-    'create_event_subscription',
   ]) {
     assert.match(
       byName[name].description,
@@ -211,14 +210,29 @@ test('5.1 descriptions prefer connection_id and connector_key source identity', 
 
   const queryInput = byName.query_records.inputSchema.properties;
   assert.match(
+    queryInput.changes_since.description,
+    /beginning/,
+    'changes_since description must teach the cold-start sentinel',
+  );
+  assert.match(
+    queryInput.changes_since.description,
+    /next_changes_since/,
+    'changes_since description must teach the opaque follow-up bookmark',
+  );
+  assert.match(
+    queryInput.changes_since.description,
+    /Do not pass an ISO timestamp/,
+    'changes_since must explicitly warn that timestamp input is invalid',
+  );
+  assert.match(
     queryInput.connection_id.description,
     /available_connections.*connector_key.*connection_id/s,
     'connection_id schema guidance must point clients from typed errors to connector_key-tagged candidates',
   );
-  assert.match(
-    queryInput.connector_instance_id.description,
-    /Deprecated.*connection_id/s,
-    'connector_instance_id schema guidance must clearly demote the legacy alias',
+  assert.equal(
+    queryInput.connector_instance_id,
+    undefined,
+    'MCP query_records must not advertise the deprecated connector_instance_id alias',
   );
 
   await client.close();
@@ -230,7 +244,7 @@ test('5.2 every read tool declares an outputSchema for structuredContent', async
   const { client, server } = await connectClient(fetch);
 
   const tools = await client.listTools();
-  for (const name of ['schema', 'list_streams', 'query_records', 'search', 'fetch', 'fetch_blob']) {
+  for (const name of ['schema', 'query_records', 'search', 'fetch']) {
     const tool = tools.tools.find((t) => t.name === name);
     assert.ok(tool.outputSchema, `${name} must declare an outputSchema`);
     assert.equal(tool.outputSchema.type, 'object', `${name}.outputSchema must be an object schema`);
@@ -284,17 +298,11 @@ test('5.4 MCP forwards canonical args verbatim — `sort` reaches RS rather than
   const { fetch, calls } = recordingFetch();
   const { client, server } = await connectClient(fetch);
 
-  // `sort` is a canonical primitive (sign-prefix) advertised by /v1/schema.
-  // The reference runtime does not implement it yet; the mock RS rejects
-  // unknown params with a typed unsupported_query error. The test proves
-  // MCP forwards the parameter rather than silently dropping it client-side.
   const result = await client.callTool({
     name: 'query_records',
     arguments: { stream: 'orders', sort: '-emitted_at' },
   });
-  assert.equal(result.isError, true);
-  assert.equal(result.structuredContent.error.code, 'unsupported_query');
-  // And it reached the RS — proof the MCP layer did not strip it.
+  assert.equal(result.isError, undefined);
   const recordCalls = calls.filter((c) => c.url.includes('/v1/streams/orders/records'));
   assert.equal(recordCalls.length, 1, 'MCP must forward sort to RS, not short-circuit');
   const url = new URL(recordCalls[0].url);
@@ -304,7 +312,7 @@ test('5.4 MCP forwards canonical args verbatim — `sort` reaches RS rather than
   await server.close();
 });
 
-test('5.4 MCP forwards `count` verbatim and surfaces typed RS rejection', async () => {
+test('5.4 MCP forwards `count` verbatim without expecting stale RS rejection', async () => {
   const { fetch, calls } = recordingFetch();
   const { client, server } = await connectClient(fetch);
 
@@ -312,8 +320,7 @@ test('5.4 MCP forwards `count` verbatim and surfaces typed RS rejection', async 
     name: 'query_records',
     arguments: { stream: 'orders', count: 'estimated' },
   });
-  assert.equal(result.isError, true);
-  assert.equal(result.structuredContent.error.code, 'unsupported_query');
+  assert.equal(result.isError, undefined);
   const recordCalls = calls.filter((c) => c.url.includes('/v1/streams/orders/records'));
   const url = new URL(recordCalls[0].url);
   assert.equal(url.searchParams.get('count'), 'estimated');

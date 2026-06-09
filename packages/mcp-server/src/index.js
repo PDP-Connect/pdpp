@@ -1,5 +1,9 @@
 import { CredentialError, loadScopedCredential } from './credentials.js';
-import { DEFAULT_SERVER_NAME, DEFAULT_SERVER_VERSION, startStdioServer } from './server.js';
+import {
+  DEFAULT_SERVER_NAME,
+  DEFAULT_SERVER_VERSION,
+  startStdioServer,
+} from './server.js';
 
 const HELP = `pdpp-mcp-server — local stdio MCP adapter over a PDPP resource server
 
@@ -11,8 +15,8 @@ Environment:
   PDPP_CACHE_ROOT        Default for --cache-root (defaults to .pdpp)
   PDPP_MCP_SERVER_NAME   Default for --server-name
 
-The adapter uses a grant-scoped client token for PDPP read tools and event-subscription
-management. It refuses owner credentials and exits non-zero if no scoped grant token is
+The adapter uses a grant-scoped client token for the profile-free normal PDPP read
+surface. It refuses owner credentials and exits non-zero if no scoped grant token is
 cached for the provider. Run \`pdpp connect <provider-url>\` first.
 
 stdout is reserved for MCP protocol messages. Diagnostics go to stderr.
@@ -107,9 +111,8 @@ export function parseOptions(argv, env) {
 
   if (env.PDPP_OWNER_TOKEN || env.PDPP_OWNER_SESSION_COOKIE) {
     // Refuse to operate when an owner credential is in the environment even though
-    // we never consult it. Event-subscription writes still use scoped client grants;
-    // exposing the owner-mode self-export surface through MCP is the footgun the
-    // design forbids.
+    // we never consult it. Exposing the owner-mode self-export surface through MCP
+    // is the footgun the design forbids.
     throw new OptionParseError(
       'Refusing to start: owner credentials (PDPP_OWNER_TOKEN / PDPP_OWNER_SESSION_COOKIE) are present in the environment. Unset them before running the MCP adapter.',
       77
@@ -132,6 +135,7 @@ export {
   startStdioServer,
   DEFAULT_SERVER_NAME,
   DEFAULT_SERVER_VERSION,
+  PDPP_MCP_TOOL_NAMES,
 } from './server.js';
 export { RsClient } from './rs-client.js';
 export { buildTools, buildStreamResourceTemplate, InvalidResourceUriError } from './tools.js';

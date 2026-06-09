@@ -46,17 +46,17 @@ Before issuing any outbound HTTP request, the AS SHALL reject `client_id` values
 When an external `client_id` URL passes pre-fetch validation, the AS SHALL fetch the CIMD document with all of the following constraints:
 
 - Timeout: abort after 5 seconds.
-- Size cap: abort and reject if the response body exceeds 64 KB.
+- Size cap: abort and reject if the response body exceeds 5 KB.
 - Redirects: do not automatically follow HTTP redirects.
 - Cache: store a successfully fetched document for between 60 seconds and 24 hours, keyed on the exact `client_id` URL.
 
 #### Scenario: Fetch succeeds within limits
-- **WHEN** the CIMD document is fetched and the body is ≤64 KB within 5 seconds
+- **WHEN** the CIMD document is fetched and the body is ≤5 KB within 5 seconds
 - **THEN** the AS SHALL parse, validate, and cache the document
 - **AND** it SHALL use the document to populate the consent surface
 
 #### Scenario: Fetch exceeds size cap
-- **WHEN** the response body exceeds 64 KB
+- **WHEN** the response body exceeds 5 KB
 - **THEN** the AS SHALL abort the fetch and return a recoverable authorization error
 - **AND** it SHALL log the failure at WARN
 - **AND** it SHALL NOT issue an authorization code, grant, or token

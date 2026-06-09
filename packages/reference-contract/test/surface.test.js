@@ -129,6 +129,53 @@ test('listRecords response validator accepts runtime warning parameters', () => 
   assert.deepEqual(result, { ok: true, skipped: false });
 });
 
+test('registerDynamicClient response omits unset optional URI metadata', () => {
+  const minimal = validateResponse('registerDynamicClient', {
+    status: 201,
+    body: {
+      client_id: 'client_test',
+      client_id_issued_at: 1780963200,
+      token_endpoint_auth_method: 'none',
+      client_name: null,
+      redirect_uris: ['http://localhost:1455/callback'],
+      grant_types: ['authorization_code'],
+      response_types: ['code'],
+    },
+  });
+  assert.deepEqual(minimal, { ok: true, skipped: false });
+
+  const withUri = validateResponse('registerDynamicClient', {
+    status: 201,
+    body: {
+      client_id: 'client_test',
+      client_id_issued_at: 1780963200,
+      token_endpoint_auth_method: 'none',
+      client_name: 'Claude Code',
+      redirect_uris: ['http://localhost:1455/callback'],
+      grant_types: ['authorization_code'],
+      response_types: ['code'],
+      client_uri: 'https://claude.ai',
+      policy_uri: 'https://claude.ai/legal/privacy',
+    },
+  });
+  assert.deepEqual(withUri, { ok: true, skipped: false });
+
+  const withNull = validateResponse('registerDynamicClient', {
+    status: 201,
+    body: {
+      client_id: 'client_test',
+      client_id_issued_at: 1780963200,
+      token_endpoint_auth_method: 'none',
+      client_name: null,
+      redirect_uris: ['http://localhost:1455/callback'],
+      grant_types: ['authorization_code'],
+      response_types: ['code'],
+      client_uri: null,
+    },
+  });
+  assert.equal(withNull.ok, false);
+});
+
 test('OpenAPI and docs generation include the auth/control routes alongside records', () => {
   const publicDocument = generateOpenApi({ includeReference: false });
   const fullDocument = generateOpenApi({ includeReference: true });

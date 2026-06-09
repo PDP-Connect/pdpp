@@ -28,10 +28,13 @@ const PACKAGE_ROUTES_FILE = fileURLToPath(new URL("packages/operator-ui/src/comp
 const DEPLOYMENT_LIVE_MODE_RE = /active === "deployment" && mode === "live"/;
 const DEPLOYMENT_SUBNAV_RE = /DeploymentSubnav/;
 const DEPLOYMENT_ROUTE_RE = /routes\.section\.deployment\b/;
+const CONNECT_ROUTE_RE = /routes\.section\.connect\b/;
 const DEPLOYMENT_TOKENS_ROUTE_RE = /routes\.section\.deploymentTokens/;
 const OWNER_TOKENS_LABEL_RE = /Owner tokens/;
 const DEPLOYMENT_TOKENS_SYMBOL_RE = /deploymentTokens\b/;
 const DEPLOYMENT_TOKENS_PATH_RE = /deployment\/tokens/;
+const CONNECT_SYMBOL_RE = /connect\b/;
+const CONNECT_PATH_RE = /\/connect/;
 const MOBILE_DRAWER_PROVIDER_IMPORT_RE =
   /import \{[\s\S]*MobileDrawerProvider[\s\S]*\} from "@pdpp\/operator-ui\/components\/mobile-drawer"/;
 const MOBILE_DRAWER_PROVIDER_WRAP_RE =
@@ -50,6 +53,11 @@ test("DeploymentSubnav links to the deployment overview", async () => {
   assert.match(src, DEPLOYMENT_ROUTE_RE);
 });
 
+test("DeploymentSubnav links to the connect setup page", async () => {
+  const src = await readFile(SHELL_FILE, "utf8");
+  assert.match(src, CONNECT_ROUTE_RE);
+});
+
 test("DeploymentSubnav links to the owner-tokens page via routes.section.deploymentTokens", async () => {
   const src = await readFile(SHELL_FILE, "utf8");
   assert.match(src, DEPLOYMENT_TOKENS_ROUTE_RE);
@@ -64,6 +72,12 @@ test("routes.ts exposes a deploymentTokens section pointing to /deployment/token
   const src = await readFile(PACKAGE_ROUTES_FILE, "utf8");
   assert.match(src, DEPLOYMENT_TOKENS_SYMBOL_RE);
   assert.match(src, DEPLOYMENT_TOKENS_PATH_RE);
+});
+
+test("routes.ts exposes a connect section pointing to /connect", async () => {
+  const src = await readFile(PACKAGE_ROUTES_FILE, "utf8");
+  assert.match(src, CONNECT_SYMBOL_RE);
+  assert.match(src, CONNECT_PATH_RE);
 });
 
 test("shell wraps the topbar trigger and drawer in the same MobileDrawerProvider", async () => {

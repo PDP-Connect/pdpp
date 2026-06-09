@@ -20,14 +20,25 @@ The reference SHALL present local MCP client setup as a standards-based OAuth fl
 - **THEN** the UI SHALL label that path as owner-level or API-level automation
 - **AND** it SHALL distinguish that path from grant-scoped MCP client access
 
-### Requirement: The operator dashboard SHALL surface CIMD identity management for local MCP clients
+### Requirement: The operator dashboard SHALL provide a low-cognitive-tax Connect Agents entrypoint
 
-The operator dashboard SHALL provide a "Client Identities" panel where the operator can create, inspect, and revoke PDPP-hosted CIMD documents for local MCP clients (Claude Code, Codex, and custom clients). For each client identity, the dashboard SHALL present copy-paste setup commands.
+The operator dashboard SHALL provide a single "Connect Agents" page or panel for recommended agent entrypoints. The page SHALL make hosted MCP OAuth the primary path, SHALL manage PDPP-hosted CIMD documents for local MCP clients (Claude Code, Codex, and custom clients) inside that flow, and SHALL keep PDPP CLI, agent skill / `llms.txt`, local stdio MCP adapter, and owner-agent/API credential paths concise and secondary. The page SHALL NOT present owner/control-plane bearer-token setup as the normal path for MCP clients.
 
 #### Scenario: Operator creates a client identity
 - **WHEN** the operator creates a new client identity in the dashboard
 - **THEN** the operator SHALL receive a stable `https://<pdpp-host>/oauth/client-metadata/<uuid>` URL
 - **AND** the dashboard SHALL immediately render copy-paste setup commands for that identity
+
+#### Scenario: Operator opens Connect Agents
+- **WHEN** the operator opens the Connect Agents page or panel
+- **THEN** the page SHALL show one recommended hosted MCP OAuth setup path by default
+- **AND** it SHALL summarize that the flow opens browser approval and stores a grant-scoped token
+- **AND** it SHALL NOT require the operator to read multiple protocol explanations before copying the recommended command
+
+#### Scenario: Operator needs a non-MCP entrypoint
+- **WHEN** the operator chooses CLI, agent skill / `llms.txt`, local stdio adapter, or owner-agent/API credentials
+- **THEN** the page SHALL reveal only the selected secondary path
+- **AND** it SHALL label owner-agent/API credentials as owner-level or API-level automation, distinct from grant-scoped MCP client setup
 
 #### Scenario: Dashboard renders Claude Code setup commands
 - **WHEN** the operator views a client identity in the dashboard

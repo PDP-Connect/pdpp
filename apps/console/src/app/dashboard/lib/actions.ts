@@ -99,6 +99,15 @@ function buildNavigationCommands(basePath: string): DashboardCommand[] {
 function buildLiveOnlyNavigationCommands(basePath: string): DashboardCommand[] {
   return [
     {
+      id: "nav-connect",
+      title: "Connect",
+      description: "Copy MCP setup commands for ChatGPT, Claude, Claude Code, Codex, and local agents.",
+      href: `${basePath}/connect`,
+      keywords: ["connect", "mcp", "claude", "codex", "chatgpt", "agent", "setup"],
+      kind: "jump",
+      section: "Navigate",
+    },
+    {
       id: "nav-device-exporters",
       title: "Device exporters",
       description: "Manage device-bound exporters for this PDPP instance.",

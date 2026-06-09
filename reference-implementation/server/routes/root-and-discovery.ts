@@ -107,6 +107,7 @@ export function mountAsRoot(app: AppLike, ctx: MountAsRootContext): void {
 
 export interface MountAsAuthorizationServerMetadataContext {
   buildAuthorizationServerMetadata(input: AsAuthorizationServerMetadataBuilderInput): unknown;
+  cimdEnabled?: boolean;
   dynamicClientRegistrationEnabled: boolean;
   publicClientMetadataForAuthorizationServer(clients: unknown[]): readonly AsAuthorizationServerPublicClient[];
   rejectUntrustedMetadataHost(
@@ -139,6 +140,7 @@ export function mountAsAuthorizationServerMetadata(app: AppLike, ctx: MountAsAut
         {
           issuer,
           dynamicClientRegistrationEnabled: ctx.dynamicClientRegistrationEnabled,
+          cimdEnabled: ctx.cimdEnabled === true,
           preRegisteredPublicClients: ctx.publicClientMetadataForAuthorizationServer(
             ctx.resolvePreRegisteredPublicClients()
           ),

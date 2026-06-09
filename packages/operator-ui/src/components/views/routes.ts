@@ -34,6 +34,7 @@ export interface Routes {
     grants: string;
     runs: string;
     traces: string;
+    connect: string;
     deployment: string;
     deploymentTokens: string;
     deviceExporters: string;
@@ -57,6 +58,7 @@ function makeRoutes(basePath: string, opts: { overview?: string } = {}): Routes 
       grants: `${basePath}/grants`,
       runs: `${basePath}/runs`,
       traces: `${basePath}/traces`,
+      connect: `${basePath}/connect`,
       deployment: `${basePath}/deployment`,
       deploymentTokens: `${basePath}/deployment/tokens`,
       deviceExporters: `${basePath}/device-exporters`,

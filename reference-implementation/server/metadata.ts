@@ -352,6 +352,8 @@ export interface ProtectedResourceAgentDiscovery {
   mcp?: {
     endpoint: string;
     no_owner_token: true;
+    setup_intent: "grant_scoped_read";
+    tool_surface: "profile_free_normal_read";
     transport: "streamable_http";
   };
   recommended_flow: "pdpp connect";
@@ -1241,6 +1243,7 @@ export interface AuthorizationServerMetadataInput {
   authorizationDetailsTypesSupported?: readonly string[] | null;
   authorizationEndpoint?: string | null;
   codeChallengeMethodsSupported?: readonly string[] | null;
+  cimdEnabled?: boolean | null;
   deviceAuthorizationEndpoint?: string | null;
   grantTypesSupported?: readonly string[] | null;
   introspectionEndpoint: string;
@@ -1265,6 +1268,7 @@ export interface AuthorizationServerMetadata {
   agent_connect_endpoint?: string;
   authorization_endpoint?: string;
   code_challenge_methods_supported?: readonly string[];
+  client_id_metadata_document_supported?: true;
   device_authorization_endpoint?: string;
   grant_types_supported?: readonly string[];
   introspection_endpoint: string;
@@ -1291,6 +1295,7 @@ export function buildAuthorizationServerMetadata({
   authorizationDetailsTypesSupported,
   authorizationEndpoint,
   codeChallengeMethodsSupported,
+  cimdEnabled,
   tokenEndpoint,
   tokenEndpointAuthMethodsSupported,
   deviceAuthorizationEndpoint,
@@ -1314,6 +1319,9 @@ export function buildAuthorizationServerMetadata({
 
   if (registrationModesSupported?.length) {
     metadata.pdpp_registration_modes_supported = registrationModesSupported;
+  }
+  if (cimdEnabled) {
+    metadata.client_id_metadata_document_supported = true;
   }
 
   if (preRegisteredPublicClients?.length) {

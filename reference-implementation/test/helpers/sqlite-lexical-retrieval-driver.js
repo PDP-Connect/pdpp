@@ -113,7 +113,7 @@ export function createSqliteLexicalRetrievalDriver() {
         const sql = `
           SELECT
             record_key                        AS record_key,
-            snippet(lexical_search_index, 5, '', '', '…', 16) AS snippet_text,
+            snippet(lexical_search_index, 5, '<mark>', '</mark>', '…', 16) AS snippet_text,
             bm25(lexical_search_index)        AS score
           FROM lexical_search_index
           WHERE connector_instance_id = ?

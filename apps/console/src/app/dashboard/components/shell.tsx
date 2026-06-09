@@ -23,6 +23,7 @@ export type DashboardSection =
   | "runs"
   | "records"
   | "schedules"
+  | "connect"
   | "deployment"
   | "device-exporters"
   | "event-subscriptions";
@@ -55,9 +56,10 @@ function buildNav(routes: Routes, mode: ShellMode): NavItem[] {
     { href: routes.section.grants, label: "Grants", match: (a) => a === "grants" },
     { href: routes.section.runs, label: "Runs", match: (a) => a === "runs" },
     { href: routes.section.schedules, label: "Schedules", match: (a) => a === "schedules" },
-    { href: routes.section.deployment, label: "Deployment", match: (a) => a === "deployment" },
   ];
   if (mode === "live") {
+    nav.push({ href: routes.section.connect, label: "Connect", match: (a) => a === "connect" });
+    nav.push({ href: routes.section.deployment, label: "Deployment", match: (a) => a === "deployment" });
     nav.push({
       href: routes.section.deviceExporters,
       label: "Device exporters",
@@ -184,6 +186,7 @@ function DeploymentSubnav({ routes }: { routes: Routes }) {
   // ordinary MCP clients. Never render this subnav in mock-owner mode.
   const items = [
     { href: routes.section.deployment, label: "Deployment overview" },
+    { href: routes.section.connect, label: "Connect AI app" },
     { href: routes.section.deploymentTokens, label: "Owner tokens" },
   ];
   return <SidebarSubnav items={items} label="Deployment" />;

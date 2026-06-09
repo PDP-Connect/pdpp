@@ -26,9 +26,8 @@ export default async function DeploymentPage() {
   let unreachable = false;
   // The operator console renders against the running deployment, so the
   // provider URL is the deployment's own public origin. Auto-populating it
-  // into the `pdpp connect <provider-url>` command keeps the surface
-  // correct-by-construction — operators can copy/paste without inventing
-  // the URL.
+  // into the connect card keeps the MCP URL correct-by-construction —
+  // operators can copy/paste without inventing the URL.
   const providerUrl = await getReferencePublicOrigin();
   try {
     report = await getDeploymentDiagnostics();
@@ -69,7 +68,7 @@ export default async function DeploymentPage() {
             Tokens
           </Link>
         }
-        afterDiagnostics={<ConnectAgentCard mode="live" providerUrl={providerUrl} />}
+        afterDiagnostics={<ConnectAgentCard connectHref="/dashboard/connect" mode="live" providerUrl={providerUrl} />}
         beforeDiagnostics={<DeploymentReadinessPanel inputs={extractReadinessInputs(report)} />}
         breadcrumbs={[{ href: "/dashboard", label: "Dashboard" }, { label: "Deployment" }]}
         description="Operator diagnostics for the reference retrieval surfaces. Read-only. Secret environment values are redacted before reaching this page."

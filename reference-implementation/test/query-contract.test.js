@@ -1522,6 +1522,26 @@ test('records are sorted by (cursor_field, primary_key) and cursor tokens are lo
   });
 });
 
+test('records list invalid_sort returns a request-error envelope', async () => {
+  await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const connectorId = spotifyManifest.connector_id;
+    await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, [
+      { id: 'sort_a', name: 'A', source_updated_at: '2026-01-01T00:00:00Z' },
+    ]);
+    const url = `${rsUrl}/v1/streams/top_artists/records`
+      + `?connector_id=${encodeURIComponent(connectorId)}`
+      + '&sort=name';
+    const { status, body } = await fetchJson(url, {
+      headers: { 'Authorization': `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 400);
+    assert.equal(body.error.type, 'invalid_request_error');
+    assert.equal(body.error.code, 'invalid_sort');
+    assert.equal(body.error.param, 'sort');
+  });
+});
+
 test('exact filter on declared scalar field works', async () => {
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
     const ownerToken = await issueOwnerToken(asUrl);
@@ -1645,6 +1665,7 @@ test('single-record fetch honors declared expand and expand_limit', async () => 
       { headers: { Authorization: `Bearer ${approved.token}` } },
     );
     assert.equal(status, 200);
+    assert.equal(body.connector_key, 'spotify', 'record detail carries canonical source connector identity');
     assert.ok(body.expanded?.recently_played, 'expanded relation should be present on record detail');
     assert.equal(body.expanded.recently_played.object, 'list');
     assert.equal(body.expanded.recently_played.has_more, true);

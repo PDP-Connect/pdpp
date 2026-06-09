@@ -38,6 +38,7 @@ export interface ConnectorSchemaItem {
   stream_count: number;
   streams: Array<{ object: "stream_metadata"; name: string; [extra: string]: unknown }>;
   connector_id?: string;
+  connector_key?: string;
   [extra: string]: unknown;
 }
 

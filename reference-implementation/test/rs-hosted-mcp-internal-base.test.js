@@ -6,9 +6,8 @@
 // Spec: openspec/changes/route-hosted-mcp-adapter-self-calls-internally/
 //
 // Background (F1): `handleHostedMcp` built the child RsClient fetch base from
-// `resolvePublicUrl(...)` (the public origin). A server-internal PATCH
-// self-call therefore hairpinned through the external edge that 405s PATCH,
-// so package-token `update_event_subscription` returned a typed `http_405`.
+// `resolvePublicUrl(...)` (the public origin). Server-internal self-calls could
+// therefore hairpin through an external edge with a narrower method policy.
 // The fix passes the EXPLICITLY-configured internal base (`opts.rsInternalUrl`
 // or the operator's `PDPP_RS_URL`, plumbed by `startServer` — NOT the bare
 // `referenceTopology` default `http://localhost:7663`, which is intentionally
@@ -171,8 +170,7 @@ test('F1 wiring fallback: with no internal base configured, child self-calls fal
 test('F1 wiring (single-grant): client-token self-calls use the internal base; advertised stays public', async () => {
   const seen = await driveHandler({ internalResource: INTERNAL_BASE, makeRequest: makeClientRequest });
   // The single-bearer RsClient's fetch base is the INTERNAL base (the
-  // single-grant extension — parity with the package path), so a client-token
-  // PATCH update_event_subscription avoids the public-edge 405 too.
+  // single-grant extension — parity with the package path).
   assert.equal(seen.singleGrantProviderUrl, INTERNAL_BASE, 'single-grant RsClient fetch base must be the internal RS base');
   // Advertised providerUrl on the MCP server stays the PUBLIC origin.
   assert.equal(seen.advertisedProviderUrl, PUBLIC_RESOURCE, 'advertised providerUrl must remain the public origin (single-grant)');

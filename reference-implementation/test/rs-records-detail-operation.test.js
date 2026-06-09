@@ -124,6 +124,32 @@ test('rs.records.get applies decorateRecord to the returned record', async () =>
   assert.equal(result.record.decorated, true);
 });
 
+test('rs.records.get applies request projection after lower driver returns full payload', async () => {
+  const result = await executeRecordDetail(
+    {
+      actor: ownerActor,
+      streamName: 'pay_statements',
+      recordId: 'rec_1',
+      expandOptions: { fields: ['id'] },
+    },
+    makeDeps({
+      getRecord: () =>
+        Promise.resolve({
+          object: 'record',
+          id: 'rec_1',
+          data: {
+            id: 'rec_1',
+            channel_id: 'C1',
+            ts: '123.456',
+            text: 'unrequested',
+          },
+        }),
+    }),
+  );
+
+  assert.deepEqual(result.record.data, { id: 'rec_1' });
+});
+
 test('rs.records.get forwards expand options to the dependency', async () => {
   let observed = null;
   await executeRecordDetail(

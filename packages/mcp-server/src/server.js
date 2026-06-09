@@ -2,7 +2,11 @@ import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mc
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 
-import { buildStreamResourceTemplate, buildTools } from './tools.js';
+import {
+  buildStreamResourceTemplate,
+  buildTools,
+  PDPP_MCP_TOOL_NAMES,
+} from './tools.js';
 import { RsClient } from './rs-client.js';
 
 export const DEFAULT_SERVER_NAME = 'pdpp-mcp-server';
@@ -13,17 +17,16 @@ export const DEFAULT_SERVER_VERSION = '0.0.0';
 // Cross-tool details that would otherwise repeat across tool descriptions live
 // here; tool descriptions stay concise and routing-specific.
 export const PDPP_MCP_INSTRUCTIONS =
-  'PDPP tools are grant-scoped. Start with `list_streams`, then `schema(stream)`. Use `connection_id` from schema/list results or `available_connections` errors to disambiguate sources. Filters must be typed objects, not bracket strings. Page and narrow with `limit`, `cursor`, and `fields`; prefer `aggregate` or `search` when you do not need full records. ' +
+  'PDPP tools are grant-scoped. Start with `schema`, then call `schema(stream)` after choosing a stream; add `connection_id` when a stream name appears under multiple sources or before full schema. Use `connection_id` from schema results or `available_connections` errors to disambiguate sources. Filters must be typed objects, not bracket strings. Page and narrow with `limit`, `cursor`, and `fields`; prefer `aggregate` or lexical `search` for exact terms. ' +
   'The configured bearer limits every result; do not use owner or control-plane tokens for normal MCP access. Schema advertises valid fields, filter operators, expand relations, sort/count support, connection identities, and connector keys. Persist `connection_id`, not `grant_id`, across reconnects. ' +
-  'Call `discover_event_subscription_capabilities` before any event-subscription write to learn supported event types, signing profile, retry schedule, and callback-URL rules. ' +
-  'Both `content[]` and `structuredContent` are model-visible; `content[]` is a concise summary and `structuredContent.data` is the full canonical envelope.';
+  '`content[]` is the reliable model-visible guide and includes next cursors/bookmarks when present; `structuredContent` is a host-dependent machine envelope, not the only place to find next-step handles.';
 
 /**
  * Build an MCP server wired to a PDPP resource server through the supplied scoped token.
  *
- * The server registers PDPP read tools, event-subscription management tools, and one
- * resource template. It does not auto-connect to a transport — callers pass the
- * transport explicitly so tests can use the in-memory pair and CLI use can pass
+ * The server registers the profile-free normal PDPP read surface plus one resource
+ * template. It does not auto-connect to a transport — callers pass the transport
+ * explicitly so tests can use the in-memory pair and CLI use can pass
  * StdioServerTransport.
  */
 export function createPdppMcpServer({
@@ -43,7 +46,9 @@ export function createPdppMcpServer({
   if (Array.isArray(serverIcons) && serverIcons.length > 0) {
     serverInfo.icons = serverIcons;
   }
-  const server = new McpServer(serverInfo, { instructions: PDPP_MCP_INSTRUCTIONS });
+  const server = new McpServer(serverInfo, {
+    instructions: PDPP_MCP_INSTRUCTIONS,
+  });
 
   const tools = buildTools({ rs, providerUrl });
   for (const tool of tools) {
@@ -151,3 +156,7 @@ function toolHandlerError(error) {
     },
   };
 }
+
+export {
+  PDPP_MCP_TOOL_NAMES,
+} from './tools.js';

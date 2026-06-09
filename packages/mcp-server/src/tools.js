@@ -7,15 +7,34 @@ const READ_ONLY_ANNOTATIONS = {
   openWorldHint: false,
 };
 
-// Mirror of the REST public read query-param vocabulary. Forwarded verbatim
-// to the RS; the MCP layer never silently drops a member. `sort` and `count`
-// are canonical public read primitives advertised by `GET /v1/schema`; the
-// reference RS does not implement them yet and will return a typed
-// `unsupported_query` (400) error when they are forwarded. That is the
-// honest mirror posture defined by
-//   openspec/changes/canonicalize-public-read-contract
-// (5.1 MCP input schemas mirror canonical args; 5.4 MCP does not silently
-// drop unsupported arguments that REST would reject).
+export const PDPP_MCP_TOOL_NAMES = Object.freeze([
+  'schema',
+  'query_records',
+  'aggregate',
+  'search',
+  'fetch',
+]);
+
+function selectNormalTools(tools) {
+  const expectedNames = PDPP_MCP_TOOL_NAMES;
+  const expected = new Set(expectedNames);
+  const selected = tools.filter((tool) => expected.has(tool.name));
+  const selectedNames = new Set(selected.map((tool) => tool.name));
+  const missing = expectedNames.filter((name) => !selectedNames.has(name));
+  if (missing.length > 0) {
+    throw new Error(`MCP normal surface is missing expected tools: ${missing.join(', ')}`);
+  }
+  const unexpected = tools.map((tool) => tool.name).filter((name) => !expected.has(name));
+  if (unexpected.length > 0) {
+    throw new Error(`MCP normal surface has unexpected tools: ${unexpected.join(', ')}`);
+  }
+  return selected;
+}
+
+// MCP-exposed subset of the REST public read query-param vocabulary. These
+// keys are forwarded to the RS; the MCP layer never silently drops a member.
+// `sort` and `count` are canonical public read primitives advertised by
+// `GET /v1/schema` and implemented by the reference runtime where declared.
 const SUPPORTED_QUERY_KEYS = new Set([
   'limit',
   'cursor',
@@ -33,10 +52,6 @@ const SUPPORTED_QUERY_KEYS = new Set([
   // or rewrites a connection_id. See:
   //   openspec/changes/expose-connection-identity-on-public-read
   'connection_id',
-  // Deprecated wire alias for `connection_id`. Forwarded unchanged so a
-  // pre-migration client can still address a specific connection while
-  // downstream consumers adopt the canonical field.
-  'connector_instance_id',
 ]);
 
 // Mirror of the REST aggregate query-param vocabulary
@@ -54,14 +69,10 @@ const SUPPORTED_AGGREGATE_QUERY_KEYS = new Set([
   'limit',
   'filter',
   'connection_id',
-  'connector_instance_id',
 ]);
 
 const CONNECTION_ID_DESCRIPTION =
-  'Optional. Scope this call to one connection. Omit to fan in across all granted connections. Obtain from `list_streams`, `schema`, or the `available_connections` field in a typed 409 error — each entry includes `connector_key` and `connection_id`. Persist `connection_id` (not `grant_id`) across reconnects.';
-
-const CONNECTOR_INSTANCE_ID_DESCRIPTION =
-  'Deprecated wire alias for `connection_id`. Accepted only for pre-migration compatibility — new clients SHOULD pass `connection_id` instead and ignore this field on the response.';
+  'Optional. Scope this call to one connection. Omit to fan in across all granted connections. Obtain from `schema` or the `available_connections` field in a typed 409 error — each entry includes `connector_key` and `connection_id`. Persist `connection_id` (not `grant_id`) across reconnects.';
 
 const LIMIT_DESCRIPTION =
   'Records per page. Omit for the default page of 25; the maximum is 100 (the spec-core §8 contract). Values above 100 are rejected here rather than silently clamped, so the page size you request is always the page size you get. Page forward with the returned `cursor` instead of asking for a larger page.';
@@ -85,15 +96,16 @@ const EXPAND_LIMIT_DESCRIPTION =
   'Typed per-relation cap for has-many expansion, keyed by relation name. Pass an object such as `{ "messages": 3 }`; the adapter encodes it into the RS `expand_limit[relation]=N` query shape. The RS clamps to the per-relation `max_limit` advertised by `GET /v1/schema`.';
 
 const ORDER_DESCRIPTION =
-  "Page order for the cursor-based pagination primitive: `asc` or `desc`. This is the reference runtime's spelling; the canonical `sort=-field` sign-prefix vocabulary is advertised by `GET /v1/schema` but not yet implemented by the runtime — forwarding `sort` will currently return a typed `unsupported_query` 400.";
+  'Legacy page order for cursor-based pagination: `asc` or `desc`. Prefer canonical `sort` when `/v1/schema` advertises sortable fields; `order` remains accepted for clients that have not migrated.';
 
 const SORT_DESCRIPTION =
-  'Canonical sign-prefix sort spec advertised by `GET /v1/schema` (e.g. `sort=-emitted_at,name`). The reference runtime does not yet implement `sort` and will reject it with a typed `unsupported_query` 400; use `order=asc|desc` until `/v1/schema` advertises sortable fields. Forwarded verbatim so MCP does not silently drop a parameter REST would reject.';
+  'Canonical sign-prefix sort spec advertised by `GET /v1/schema` (e.g. `sort=-emitted_at`). The reference runtime supports the advertised cursor field; unsupported fields, conflicting directions, or sort/order disagreement are rejected with typed errors rather than treated as no-ops.';
 
 const COUNT_DESCRIPTION =
-  'Canonical opt-in count grade (`none`, `estimated`, `exact`) advertised by `GET /v1/schema`. The reference runtime does not yet implement counts and will reject with a typed `unsupported_query` 400 if forwarded; consult `/v1/schema` for count support. Forwarded verbatim so MCP does not silently drop a parameter REST would reject.';
+  'Canonical opt-in count grade (`none`, `estimated`, `exact`). Omit or use `none` for no count. `exact` returns `meta.count.kind="exact"` when supported; `estimated` may be upgraded to an exact count. Counts are page-independent and may be more expensive than the page itself.';
 
-const EMPTY_TOOL_INPUT_SCHEMA = z.object({}).strict();
+const CHANGES_SINCE_DESCRIPTION =
+  'Projection-safe incremental-sync bookmark. Use `beginning` for the initial changes feed, then pass the opaque `next_changes_since` value returned in the prior response. Do not pass an ISO timestamp; malformed bookmarks are rejected as `invalid_cursor`.';
 
 // Supported range operators, mirroring the RS (`record-filters.js`
 // SUPPORTED_RANGE_OPERATORS) and the published query contract
@@ -226,11 +238,6 @@ function applyExpandLimitToQuery(query, expandLimit) {
 
 const ConnectionIdInputShape = {
   connection_id: z.string().min(1).describe(CONNECTION_ID_DESCRIPTION).optional(),
-  connector_instance_id: z
-    .string()
-    .min(1)
-    .describe(CONNECTOR_INSTANCE_ID_DESCRIPTION)
-    .optional(),
 };
 
 // Canonical envelope summary referenced from tool descriptions. Kept terse to
@@ -266,12 +273,11 @@ const SEARCH_OUTPUT_SCHEMA_SHAPE = {
       }).passthrough(),
     )
     .describe(
-      'ChatGPT-compatible flattened search results. Each entry carries `id` (default `stream:record_id`), `title`, `url`, and available source handles such as `connection_id`. Use `data` for the full canonical envelope.',
+      'ChatGPT-compatible flattened search results. Each entry carries `id` (default `stream:record_id`), `title`, `url`, and available source handles such as `connection_id`. Use `data` for compact envelope metadata.',
     ),
 };
 
 const FETCH_OUTPUT_SCHEMA_SHAPE = {
-  ...READ_OUTPUT_SCHEMA_SHAPE,
   id: z.string(),
   title: z.string(),
   text: z.string(),
@@ -279,98 +285,40 @@ const FETCH_OUTPUT_SCHEMA_SHAPE = {
   metadata: z.record(z.string(), z.unknown()),
 };
 
-const BLOB_OUTPUT_SCHEMA_SHAPE = {
-  provider_url: z.string(),
-  request_id: z.string().nullable(),
-  bytes_base64: z.string(),
-  mime_type: z.string(),
-  size: z.number().int().nonnegative(),
-};
-
-// Event-subscription envelope is more permissive than READ_OUTPUT_SCHEMA_SHAPE
-// because (a) DELETE returns 204 with no body (data: null) and (b) the projected
-// subscription row is a plain object, not a list envelope. The MCP wrapper
-// validates the wrapper, not the RS body.
-const EVENT_SUB_OUTPUT_SCHEMA_SHAPE = {
-  data: z.unknown().describe('RS response body. `null` for 204 (delete).'),
-  provider_url: z.string(),
-  request_id: z.string().nullable(),
-  http_status: z.number().int(),
-};
-
-// Discovery tool returns the event-subscription capability block from
-// `/.well-known/oauth-protected-resource` plus a derived `supported` boolean
-// so an MCP client can branch on availability without re-reading the
-// advertisement.
-const EVENT_SUB_DISCOVERY_OUTPUT_SCHEMA_SHAPE = {
-  supported: z
-    .boolean()
-    .describe('`true` when the protected-resource metadata advertises `capabilities.client_event_subscriptions.supported === true`.'),
-  capability: z
-    .unknown()
-    .describe('The full `capabilities.client_event_subscriptions` block from the RS advertisement, or `null` when unsupported.'),
-  data: z.unknown().describe('Full protected-resource metadata body. Source of truth for issuer, supported scopes, and other capabilities.'),
-  provider_url: z.string(),
-  request_id: z.string().nullable(),
-  http_status: z.number().int(),
-};
-
-const SUBSCRIPTION_DISCOVERY_GUIDANCE =
-  ' Use event subscriptions when you need low-latency notification of changes from a long-lived receiver; prefer polling via `query_records` with `changes_since` for one-shot reads or short-lived clients. Receivers must be HTTPS endpoints reachable from the configured PDPP instance (http://localhost is permitted only in development). Events are signed per Standard Webhooks (`webhook-id`, `webhook-timestamp`, `webhook-signature: v1,<base64>`) using the per-subscription secret returned at create. Envelope is CloudEvents 1.0 JSON structured mode (`application/cloudevents+json`); record bodies are never pushed — events carry IDs and a `data.changes_since` cursor that clients pull via `query_records` with `changes_since=<data.changes_since>`.';
-
-const SUBSCRIPTION_TOOL_POINTER =
-  ' Prefer polling via `query_records` with `changes_since` for one-shot reads. Callback receivers must be HTTPS endpoints (http://localhost is accepted in development). Call `discover_event_subscription_capabilities` first; it reads `capabilities.client_event_subscriptions` for supported event types, signing profile, retry schedule, callback URL rules, and the change-cursor delivery contract.';
-
-const SUBSCRIPTION_ID_DESCRIPTION =
-  'Subscription identifier returned by `create_event_subscription` or `list_event_subscriptions` (prefix `sub_`).';
-
-const CALLBACK_URL_DESCRIPTION =
-  'HTTPS receiver URL. `http://localhost` is accepted by the RS for development; everything else must be https. Max 2048 bytes.';
-
-const FILTERS_DESCRIPTION =
-  'Optional narrowing of the subscription scope. Streams listed in `filters.streams` must all be inside the bearer\'s grant; the RS rejects unauthorized stream names with a typed `invalid_request` error.';
-
-const SUBSCRIPTION_WRITE_ANNOTATIONS = {
-  readOnlyHint: false,
-  destructiveHint: false,
-  idempotentHint: false,
-  openWorldHint: false,
-};
-
-const SUBSCRIPTION_READ_ANNOTATIONS = {
-  readOnlyHint: true,
-  destructiveHint: false,
-  idempotentHint: true,
-  openWorldHint: false,
-};
-
-const SUBSCRIPTION_DELETE_ANNOTATIONS = {
-  readOnlyHint: false,
-  destructiveHint: true,
-  idempotentHint: true,
-  openWorldHint: false,
-};
-
 const DISCOVERY_STREAM_SUMMARY_LIMIT = 50;
 const DISCOVERY_FIELD_SUMMARY_LIMIT = 16;
 const DISCOVERY_CONNECTION_SUMMARY_LIMIT = 8;
+const FIELD_CAPABILITY_FLAG_LEGEND = {
+  t: 'declared type',
+  eq: 'exact filter supported',
+  r: 'range filter operators',
+  lex: 'lexical search field',
+  sem: 'semantic search field',
+  a: 'aggregation capabilities',
+  'g=false': 'field is not granted',
+};
 
 // The `schema` tool's default `structuredContent.data` is a COMPACT projection
 // of the RS `/v1/schema` document, not the verbatim body. A real owner's
 // grant-scoped schema can exceed 2 MB once every connector advertises
 // per-field JSON Schema, so returning it verbatim as the default agent-facing
 // payload blows the context budget. The compact projection keeps the discovery
-// path `list_streams -> schema(stream) -> query_records` cheap by dropping the
-// heavy per-field JSON Schema blobs while preserving the capability flags,
-// connection identity, and connector metadata an agent needs to build a query.
-// Exhaustive JSON remains available via `detail: "full"`. See:
+// path `schema -> schema(stream) -> schema(stream, connection_id) -> query_records`
+// cheap by dropping the heavy per-field JSON Schema blobs while preserving the
+// capability flags, connection identity, and connector metadata an agent needs
+// to build a query.
+// Exhaustive JSON remains available for one source via
+// `schema(stream, connection_id, detail: "full")`. See:
 //   openspec/changes/expose-connection-identity-on-public-read/tasks.md (§7
 //   MCP discovery/schema token-efficiency target).
 const SCHEMA_DETAIL_DESCRIPTION =
-  'Response detail grade for `structuredContent.data`. `compact` (default) returns a token-efficient projection: per-stream field names with capability flags, expandable relation names, connection identities, and connector metadata, with the heavy per-field JSON Schema blobs dropped. `full` returns the exhaustive verbatim `GET /v1/schema` body — opt in only when you need raw JSON Schema for a field. The concise `content[]` text summary is identical for both grades.';
+  'Response detail grade for `structuredContent.data`. `compact` (default) returns a token-efficient projection: per-stream field names with capability flags, expandable relation names, connection identities, and connector metadata, with the heavy per-field JSON Schema blobs dropped. `full` returns deduped exhaustive schema for one source, preserving raw per-field JSON Schema while removing duplicate top-level stream arrays; it requires `stream`, and `connection_id` when that stream name is shared. The concise `content[]` text summary is identical for both grades.';
 
 const SCHEMA_STREAM_DESCRIPTION =
-  'Optional stream name (as returned by `list_streams`) to scope the schema document to a single stream. Omit to describe every granted stream. Scope to one stream for the cheapest middle step of the `list_streams -> schema(stream) -> query_records` discovery path.';
+  'Optional stream name from the compact `schema` stream list. Omit to describe every granted stream. Stream names are not globally unique; pair with `connection_id` when you need one configured source.';
+
+const SCHEMA_CONNECTION_ID_DESCRIPTION =
+  'Optional. Scope schema detail to one configured connection when a stream name is shared by multiple connectors or connections. Obtain from schema results or typed ambiguity errors. This is source identity, not a profile selector.';
 
 /**
  * Resolve the `schema` tool `detail` grade defensively. Absent → the compact
@@ -389,22 +337,24 @@ function resolveSchemaDetail(value) {
  * interpolated into instructions to the model.
  */
 export function buildTools({ rs, providerUrl }) {
-  return [
+  const tools = [
     {
       name: 'schema',
       title: 'Get PDPP schema',
       description:
-        'Return the grant-scoped PDPP schema document from `GET /v1/schema`. This is the canonical capability source: streams, canonical connector-type metadata (`connector_key`), per-field filter operators (`field_capabilities`), expandable relations (`expand_capabilities`), projection support, search modes, pagination support, count support, and granted connection identities (`connection_id`, `display_name`). Defaults to a compact, token-efficient projection (`detail: "compact"`) so the `list_streams -> schema(stream) -> query_records` discovery path stays cheap; pass `detail: "full"` only when you need the exhaustive raw JSON Schema for a field, and pass `stream` to scope to one stream. Call this to discover what filter, sort, expand, fields, count, or connection-disambiguation arguments are valid before issuing other tools. Read-only.',
+        'Return the grant-scoped PDPP schema document from `GET /v1/schema`. This is the canonical capability source: streams, canonical connector-type metadata (`connector_key`), per-field filter operators (`field_capabilities`), expandable relations (`expand_capabilities`), projection support, search modes, pagination support, count support, and granted connection identities (`connection_id`, `display_name`). Defaults to a compact, token-efficient projection (`detail: "compact"`) so the `schema -> schema(stream) -> schema(stream, connection_id) -> query_records` discovery path stays cheap. Stream names are not globally unique; add `connection_id` to narrow a shared stream to one configured source. `detail: "full"` is allowed only with `stream` and returns deduped exhaustive schema for matching stream rows, preserving raw per-field JSON Schema without duplicate stream arrays. Call this before issuing other tools to discover valid filter, sort, expand, fields, count, aggregate, stream, and connection-disambiguation arguments. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({
           detail: z.enum(['compact', 'full']).optional().describe(SCHEMA_DETAIL_DESCRIPTION),
           stream: z.string().min(1).optional().describe(SCHEMA_STREAM_DESCRIPTION),
+          connection_id: z.string().min(1).optional().describe(SCHEMA_CONNECTION_ID_DESCRIPTION),
         })
         .strict(),
       outputSchema: z.object(READ_OUTPUT_SCHEMA_SHAPE),
       handler: async (args) => {
         const stream = args?.stream ? requireSafeName(args.stream, 'stream') : null;
+        const connectionId = args?.connection_id ? requireSafeName(args.connection_id, 'connection_id') : null;
         // `detail` is normally constrained by the Zod enum to `compact|full`,
         // so a direct MCP call can only land here with `'compact'`, `'full'`,
         // or `undefined` (→ compact default). Resolve it defensively rather
@@ -414,50 +364,41 @@ export function buildTools({ rs, providerUrl }) {
         const detail = resolveSchemaDetail(args?.detail);
         if (detail === 'compact') {
           const compactResponse = await rs.getJson('/v1/schema', {
-            query: { view: 'compact', ...(stream ? { stream } : {}) },
+            query: { view: 'compact', ...(stream ? { stream } : {}), ...(connectionId ? { connection_id: connectionId } : {}) },
           });
           if (compactResponse.ok) {
             return toSchemaToolResult(compactResponse, providerUrl, {
               detail,
               stream,
+              connectionId,
               alreadyCompact: isCompactSchemaBody(compactResponse.body),
             });
           }
           if (!shouldFallbackFromCompactSchemaRequest(compactResponse)) {
-            return toSchemaToolResult(compactResponse, providerUrl, { detail, stream });
+            return toSchemaToolResult(compactResponse, providerUrl, { detail, stream, connectionId });
           }
         }
-        const response = await rs.getJson('/v1/schema');
-        return toSchemaToolResult(response, providerUrl, { detail, stream });
-      },
-    },
-    {
-      name: 'list_streams',
-      title: 'List PDPP streams',
-      description:
-        'List streams the configured scoped grant can read via `GET /v1/streams`. Multi-connection deployments emit one entry per `(stream, connection_id)`; package-source metadata uses canonical `connector_key` for connector type and each entry carries `connection_id` plus `display_name` when available. Pass `connection_id` to restrict to a single connection. ' +
-        CANONICAL_SCHEMA_HINT +
-        ' Read-only.',
-      annotations: READ_ONLY_ANNOTATIONS,
-      inputSchema: z.object(ConnectionIdInputShape).strict(),
-      outputSchema: z.object(READ_OUTPUT_SCHEMA_SHAPE),
-      handler: async (args) => {
-        const query = pickQuery(args, SUPPORTED_QUERY_KEYS);
-        const response = await rs.getJson('/v1/streams', { query });
-        return toToolResult(response, providerUrl, 'PDPP streams');
+        const response = await rs.getJson('/v1/schema', {
+          query: {
+            ...(detail === 'full' ? { detail: 'full' } : {}),
+            ...(stream ? { stream } : {}),
+            ...(connectionId ? { connection_id: connectionId } : {}),
+          },
+        });
+        return toSchemaToolResult(response, providerUrl, { detail, stream, connectionId });
       },
     },
     {
       name: 'query_records',
       title: 'Query PDPP records',
       description:
-        'Query records in a stream via `GET /v1/streams/{stream}/records`. Default returns at most 25 records; `limit` is capped at 100 (enforced at input — a REST client that sends `limit>100` gets `limit_clamped` in `meta.warnings[]`). Page forward with `cursor`; narrow with `fields`. `structuredContent.data` carries the full canonical envelope; `content[]` previews up to the first 5 records. Forwards all args verbatim. ' +
+        'Query records in a stream via `GET /v1/streams/{stream}/records`. Default returns at most 25 records; `limit` is capped at 100 (enforced at input — a REST client that sends `limit>100` gets `limit_clamped` in `meta.warnings[]`). Page forward with `cursor`; narrow with `fields`. `structuredContent.data` carries the machine envelope; with `fields`, record payloads are narrowed to those fields plus required operational handles. `content[]` previews up to the first 5 records. Forwards all args verbatim. ' +
         CANONICAL_SCHEMA_HINT +
         ' Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({
-          stream: z.string().min(1).describe('Stream name as returned by `list_streams`.'),
+          stream: z.string().min(1).describe('Stream name advertised by `schema`.'),
           limit: z.number().int().positive().max(100).optional().describe(LIMIT_DESCRIPTION),
           cursor: z.string().optional(),
           order: z.string().optional().describe(ORDER_DESCRIPTION),
@@ -471,7 +412,7 @@ export function buildTools({ rs, providerUrl }) {
             .record(z.string(), z.number().int().positive())
             .optional()
             .describe(EXPAND_LIMIT_DESCRIPTION),
-          changes_since: z.string().optional(),
+          changes_since: z.string().optional().describe(CHANGES_SINCE_DESCRIPTION),
           ...ConnectionIdInputShape,
         })
         .strict(),
@@ -485,7 +426,9 @@ export function buildTools({ rs, providerUrl }) {
         const response = await rs.getJson(`/v1/streams/${encodeURIComponent(stream)}/records`, {
           query,
         });
-        return toToolResult(response, providerUrl, `records from stream "${stream}"`, { previewRecords: true });
+        return toToolResult(response, providerUrl, `records from stream "${stream}"`, {
+          previewRecords: true,
+        });
       },
     },
     {
@@ -498,7 +441,7 @@ export function buildTools({ rs, providerUrl }) {
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({
-          stream: z.string().min(1).describe('Stream name as returned by `list_streams`.'),
+          stream: z.string().min(1).describe('Stream name advertised by `schema`.'),
           metric: z
             .enum(['count', 'sum', 'min', 'max', 'count_distinct'])
             .describe('Aggregation metric. `field` is required for sum, min, max, and count_distinct.'),
@@ -551,7 +494,7 @@ export function buildTools({ rs, providerUrl }) {
       name: 'search',
       title: 'Search PDPP records',
       description:
-        'Search records via `GET /v1/search` (lexical), `/v1/search/semantic`, or `/v1/search/hybrid` per `mode`. Returns the RS envelope plus ChatGPT-compatible flattened `results`. Hits carry `connection_id` and `connector_key`. Pass `connection_id` to scope, omit to fan in. Page default is 25 hits; `limit` is capped at 100 (enforced at input). Page forward with `cursor` (lexical/semantic; hybrid does not page). Per-mode capability support is advertised by `GET /v1/schema`. Read-only.',
+        'Search records via `GET /v1/search` (lexical), `/v1/search/semantic`, or `/v1/search/hybrid` per `mode`. Use lexical for exact known terms; semantic is approximate retrieval for conceptual matches. `structuredContent.results` carries the flattened page; `structuredContent.data` carries compact envelope metadata, not a duplicate hit array. Hits carry `connection_id` and `connector_key`. Pass `connection_id` to scope, omit to fan in. Page default is 25 hits; `limit` is capped at 100 (enforced at input, and fan-in packages apply it globally). Page forward with `cursor` (lexical/semantic; hybrid does not page). Per-mode capability support is advertised by `GET /v1/schema`. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({
@@ -574,19 +517,18 @@ export function buildTools({ rs, providerUrl }) {
             limit: args.limit,
             cursor: args.cursor,
             connection_id: args.connection_id,
-            connector_instance_id: args.connector_instance_id,
           },
           args.filter,
         );
         const response = await rs.getJson(path, { query });
-        return toSearchToolResult(response, providerUrl);
+        return toSearchToolResult(response, providerUrl, { limit: args?.limit });
       },
     },
     {
       name: 'fetch',
       title: 'Fetch PDPP search result',
       description:
-        'Fetch a single ChatGPT-compatible document by a result id from `search`. Id format: `stream:record_id` → `GET /v1/streams/{stream}/records/{record_id}`. Result carries `connection_id` and `connector_key`. On `ambiguous_connection` (409), pick a `connection_id` from `available_connections` in the error and retry. Read-only.',
+        'Fetch a single OpenAI-compatible document by a result id from `search`. Id format: `stream:record_id` → `GET /v1/streams/{stream}/records/{record_id}`. Returns document fields only (`id`, `title`, `text`, `url`, `metadata`); use `query_records` for canonical PDPP record envelopes. Use `fields` to project the source record before rendering document text/metadata; operational source handles (`id`, stream, `connection_id`, `connector_key`) remain available in `metadata`. On `ambiguous_connection` (409), pick a `connection_id` from `available_connections` in the error and retry. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({
@@ -611,182 +553,9 @@ export function buildTools({ rs, providerUrl }) {
         return toFetchToolResult(response, providerUrl, args.id);
       },
     },
-    {
-      name: 'discover_event_subscription_capabilities',
-      title: 'Discover event subscription capabilities',
-      description:
-        'Return the reference implementation\'s event-subscription advertisement by fetching `GET /.well-known/oauth-protected-resource` and extracting `capabilities.client_event_subscriptions`. Use this before calling `create_event_subscription` to learn supported event types (e.g. `pdpp.records.changed`, `pdpp.grant.revoked`), signing profile, retry schedule, verification handshake, callback-URL byte limit, and the hint cursor location. This endpoint is unauthenticated by design (RFC 9728). If the deployment does not advertise event subscriptions, the tool surfaces the absence as `supported: false`.' +
-        SUBSCRIPTION_DISCOVERY_GUIDANCE +
-        ' Read-only.',
-      annotations: SUBSCRIPTION_READ_ANNOTATIONS,
-      inputSchema: EMPTY_TOOL_INPUT_SCHEMA,
-      outputSchema: z.object(EVENT_SUB_DISCOVERY_OUTPUT_SCHEMA_SHAPE),
-      handler: async () => {
-        const response = await rs.getJson('/.well-known/oauth-protected-resource');
-        return toEventSubDiscoveryResult(response, providerUrl);
-      },
-    },
-    {
-      name: 'create_event_subscription',
-      title: 'Create event subscription',
-      description:
-        'Create an outbound event subscription via `POST /v1/event-subscriptions`. Returns the `whsec_`-prefixed delivery secret exactly once — store it on the receiver immediately. Pass `connection_id` when the grant covers multiple sources; on ambiguous calls the RS returns `available_connections` entries with `connector_key` and `connection_id`.' +
-        SUBSCRIPTION_TOOL_POINTER,
-      annotations: SUBSCRIPTION_WRITE_ANNOTATIONS,
-      inputSchema: z
-        .object({
-          callback_url: z.string().min(1).describe(CALLBACK_URL_DESCRIPTION),
-          connection_id: z.string().min(1).optional().describe(CONNECTION_ID_DESCRIPTION),
-          filters: z
-            .object({
-              streams: z.array(z.string()).optional(),
-            })
-            .strict()
-            .optional()
-            .describe(FILTERS_DESCRIPTION),
-        })
-        .strict(),
-      outputSchema: z.object(EVENT_SUB_OUTPUT_SCHEMA_SHAPE),
-      handler: async (args) => {
-        const body = { callback_url: args.callback_url };
-        if (args.filters) body.filters = args.filters;
-        if (args.connection_id) body.connection_id = args.connection_id;
-        const response = await rs.postJson('/v1/event-subscriptions', { body });
-        return toEventSubToolResult(response, providerUrl, 'create_event_subscription');
-      },
-    },
-    {
-      name: 'list_event_subscriptions',
-      title: 'List event subscriptions',
-      description:
-        'List event subscriptions for the configured bearer via `GET /v1/event-subscriptions`. Returns `subscription_id`, `status`, `callback_url`, and grant scope. Secret is not returned on list. Read-only.' +
-        SUBSCRIPTION_TOOL_POINTER,
-      annotations: SUBSCRIPTION_READ_ANNOTATIONS,
-      inputSchema: EMPTY_TOOL_INPUT_SCHEMA,
-      outputSchema: z.object(EVENT_SUB_OUTPUT_SCHEMA_SHAPE),
-      handler: async () => {
-        const response = await rs.getJson('/v1/event-subscriptions');
-        return toEventSubToolResult(response, providerUrl, 'list_event_subscriptions');
-      },
-    },
-    {
-      name: 'get_event_subscription',
-      title: 'Get event subscription',
-      description:
-        'Fetch a single subscription via `GET /v1/event-subscriptions/:id`. Returns 404 if not owned by this bearer or already deleted. Read-only.' +
-        SUBSCRIPTION_TOOL_POINTER,
-      annotations: SUBSCRIPTION_READ_ANNOTATIONS,
-      inputSchema: z
-        .object({
-          subscription_id: z.string().min(1).describe(SUBSCRIPTION_ID_DESCRIPTION),
-        })
-        .strict(),
-      outputSchema: z.object(EVENT_SUB_OUTPUT_SCHEMA_SHAPE),
-      handler: async (args) => {
-        const id = requireSafeName(args.subscription_id, 'subscription_id');
-        const response = await rs.getJson(`/v1/event-subscriptions/${encodeURIComponent(id)}`);
-        return toEventSubToolResult(response, providerUrl, `get_event_subscription:${id}`);
-      },
-    },
-    {
-      name: 'update_event_subscription',
-      title: 'Update event subscription',
-      description:
-        'Update a subscription via `PATCH /v1/event-subscriptions/:id`. `enabled: false` disables; `enabled: true` re-enables from disabled state; `rotate_secret: true` mints a new `whsec_` secret (returned once). Grant-revoked subscriptions return `grant_revoked` (409). NOT idempotent when `rotate_secret: true`.' +
-        SUBSCRIPTION_TOOL_POINTER,
-      annotations: SUBSCRIPTION_WRITE_ANNOTATIONS,
-      inputSchema: z
-        .object({
-          subscription_id: z.string().min(1).describe(SUBSCRIPTION_ID_DESCRIPTION),
-          enabled: z.boolean().optional(),
-          rotate_secret: z.boolean().optional(),
-        })
-        .strict(),
-      outputSchema: z.object(EVENT_SUB_OUTPUT_SCHEMA_SHAPE),
-      handler: async (args) => {
-        const id = requireSafeName(args.subscription_id, 'subscription_id');
-        const body = {};
-        if (typeof args.enabled === 'boolean') body.enabled = args.enabled;
-        if (args.rotate_secret === true) body.rotate_secret = true;
-        const response = await rs.patchJson(`/v1/event-subscriptions/${encodeURIComponent(id)}`, {
-          body,
-        });
-        return toEventSubToolResult(response, providerUrl, `update_event_subscription:${id}`);
-      },
-    },
-    {
-      name: 'delete_event_subscription',
-      title: 'Delete event subscription',
-      description:
-        'Delete a subscription via `DELETE /v1/event-subscriptions/:id`. Marks the subscription `deleted` and drops queued deliveries. Subsequent reads return 404. Destructive: there is no undelete.' +
-        SUBSCRIPTION_TOOL_POINTER,
-      annotations: SUBSCRIPTION_DELETE_ANNOTATIONS,
-      inputSchema: z
-        .object({
-          subscription_id: z.string().min(1).describe(SUBSCRIPTION_ID_DESCRIPTION),
-        })
-        .strict(),
-      outputSchema: z.object(EVENT_SUB_OUTPUT_SCHEMA_SHAPE),
-      handler: async (args) => {
-        const id = requireSafeName(args.subscription_id, 'subscription_id');
-        const response = await rs.deleteJson(`/v1/event-subscriptions/${encodeURIComponent(id)}`);
-        return toEventSubToolResult(response, providerUrl, `delete_event_subscription:${id}`);
-      },
-    },
-    {
-      name: 'send_test_event',
-      title: 'Send subscription test event',
-      description:
-        'Enqueue a `pdpp.subscription.test` event via `POST /v1/event-subscriptions/:id/test-event`. Returns a new `event_id`; delivery happens out-of-band. Subscription must be `active` or `pending_verification`. Each call is NOT a no-op.' +
-        SUBSCRIPTION_TOOL_POINTER,
-      annotations: SUBSCRIPTION_WRITE_ANNOTATIONS,
-      inputSchema: z
-        .object({
-          subscription_id: z.string().min(1).describe(SUBSCRIPTION_ID_DESCRIPTION),
-        })
-        .strict(),
-      outputSchema: z.object(EVENT_SUB_OUTPUT_SCHEMA_SHAPE),
-      handler: async (args) => {
-        const id = requireSafeName(args.subscription_id, 'subscription_id');
-        const response = await rs.postJson(
-          `/v1/event-subscriptions/${encodeURIComponent(id)}/test-event`,
-          { body: {} }
-        );
-        return toEventSubToolResult(response, providerUrl, `send_test_event:${id}`);
-      },
-    },
-    {
-      name: 'fetch_blob',
-      title: 'Fetch PDPP blob',
-      description:
-        'Fetch a blob via `GET /v1/blobs/{blob_id}`. Returns base64 bytes, mime type, and source `connector_key`. On `ambiguous_connection` (409), pick a `connection_id` from `available_connections` in the error and retry. Read-only.',
-      annotations: READ_ONLY_ANNOTATIONS,
-      inputSchema: z
-        .object({
-          blob_id: z
-            .string()
-            .min(1)
-            .describe('Blob identifier returned by a previous `query_records` or `search` call.'),
-          range: z
-            .string()
-            .regex(/^bytes=\d+-\d*$/, { message: 'range must look like bytes=0-1023' })
-            .optional(),
-          ...ConnectionIdInputShape,
-        })
-        .strict(),
-      outputSchema: z.object(BLOB_OUTPUT_SCHEMA_SHAPE),
-      handler: async (args) => {
-        const blobId = requireSafeName(args.blob_id, 'blob_id');
-        const headers = args.range ? { Range: args.range } : undefined;
-        const query = pickQuery(args, SUPPORTED_QUERY_KEYS);
-        const response = await rs.getRaw(`/v1/blobs/${encodeURIComponent(blobId)}`, {
-          headers,
-          query,
-        });
-        return toBlobToolResult(response, providerUrl);
-      },
-    },
   ];
+
+  return selectNormalTools(tools);
 }
 
 function searchPathForMode(mode) {
@@ -899,14 +668,15 @@ function pickQuery(args, supportedKeys) {
 //   a concise summary only and not a second divergent JSON contract).
 function toToolResult(response, providerUrl, label = 'response', options = {}) {
   if (response.ok) {
+    const body = response.body;
     return {
       content: [
         {
           type: 'text',
-          text: summarizeBody(response.body, label, options),
+          text: summarizeBody(body, label, options),
         },
       ],
-      structuredContent: { data: response.body, provider_url: providerUrl, request_id: response.requestId },
+      structuredContent: { data: body, provider_url: providerUrl, request_id: response.requestId },
     };
   }
   return errorToolResult(response, providerUrl);
@@ -915,23 +685,29 @@ function toToolResult(response, providerUrl, label = 'response', options = {}) {
 // Build the `schema` tool result. The text summary is always the compact,
 // parseable discovery line. The `structuredContent.data` payload is a compact
 // projection by default and the verbatim RS body only when `detail === "full"`.
-// When `stream` is supplied, both the summary and the structured payload are
-// scoped to that single stream so an agent can fetch one stream's capabilities
+// When `stream`/`connection_id` are supplied, both the summary and the
+// structured payload are scoped so an agent can fetch one source's capabilities
 // without pulling the whole document.
-function toSchemaToolResult(response, providerUrl, { detail = 'compact', stream = null, alreadyCompact = false } = {}) {
+function toSchemaToolResult(response, providerUrl, { detail = 'compact', stream = null, connectionId = null, alreadyCompact = false } = {}) {
   if (!response.ok) {
     return errorToolResult(response, providerUrl);
   }
-  const scopedBody = stream && !alreadyCompact ? scopeSchemaBodyToStream(response.body, stream) : response.body;
-  const data = detail === 'full' || alreadyCompact ? scopedBody : compactSchemaDocument(scopedBody);
+  const data = detail === 'full'
+    ? dedupeFullSchemaDocument(response.body)
+    : compactSchemaDocument(response.body, { includeFieldDetail: Boolean(stream) });
+  const schemaDocument = unwrapSchemaBody(data);
   return {
     content: [
       {
         type: 'text',
-        text: summarizeSchemaDiscovery(data, 'PDPP schema'),
+        text: summarizeSchemaDiscovery(
+          schemaDocument,
+          'PDPP schema',
+          { includeFieldDetail: Boolean(stream), ...(connectionId ? { connectionId } : {}) },
+        ),
       },
     ],
-    structuredContent: { data, provider_url: providerUrl, request_id: response.requestId },
+    structuredContent: { data: schemaDocument, provider_url: providerUrl, request_id: response.requestId },
   };
 }
 
@@ -945,52 +721,16 @@ function shouldFallbackFromCompactSchemaRequest(response) {
   return response.status === 400 && ['bad_request', 'invalid_request', 'unsupported_query'].includes(code);
 }
 
-// Narrow a schema document to a single stream, preserving the envelope shape
-// (top-level `data` wrapper and `connectors[]` grouping) so downstream
-// compaction and the discovery summary see the same structure they would for
-// the full document. Connectors that contribute no matching stream are dropped.
-function scopeSchemaBodyToStream(body, streamNameTarget) {
-  const wrapped =
-    body && typeof body === 'object' && body.data && typeof body.data === 'object' && !Array.isArray(body.data);
-  const schema = unwrapSchemaBody(body);
-  const connectors = extractSchemaConnectors(schema);
-  let scopedSchema;
-  if (connectors.length > 0) {
-    const scopedConnectors = connectors
-      .map((connector) => {
-        const streams = Array.isArray(connector.streams) ? connector.streams : [];
-        const matching = streams.filter((entry) => streamName(entry) === streamNameTarget);
-        if (matching.length === 0) return null;
-        return { ...connector, streams: matching, stream_count: matching.length };
-      })
-      .filter(Boolean);
-    scopedSchema = {
-      ...schema,
-      connectors: scopedConnectors,
-      connector_count: scopedConnectors.length,
-      stream_count: scopedConnectors.reduce(
-        (total, connector) => total + (Array.isArray(connector.streams) ? connector.streams.length : 0),
-        0,
-      ),
-    };
-  } else {
-    const streams = Array.isArray(schema?.streams) ? schema.streams : [];
-    const matching = streams.filter((entry) => streamName(entry) === streamNameTarget);
-    scopedSchema = { ...schema, streams: matching, stream_count: matching.length };
-  }
-  return wrapped ? { ...body, data: scopedSchema } : scopedSchema;
-}
-
 // Compact projection of the schema document. Drops the heavy per-field JSON
 // Schema (`field_capabilities.*.schema`) and any other verbose nested blobs,
 // keeping the field name, declared type, grant flag, and usable capability
 // flags an agent needs to build filter/sort/expand/fields/count arguments.
-// Connection identity (`connection_id`, `connector_instance_id`,
-// `display_name`) and canonical connector metadata (`connector_key`) are
-// preserved verbatim. The envelope shape (top-level `data` wrapper,
+// Connection identity (`connection_id`, `display_name`) and canonical connector
+// metadata (`connector_key`) are preserved. Deprecated REST aliases are omitted
+// from this default MCP projection. The envelope shape (top-level `data` wrapper,
 // `connectors[]` grouping) is preserved so the payload is structurally a
 // schema document, just lighter.
-function compactSchemaDocument(body) {
+function compactSchemaDocument(body, { includeFieldDetail = false } = {}) {
   const wrapped =
     body && typeof body === 'object' && body.data && typeof body.data === 'object' && !Array.isArray(body.data);
   const schema = unwrapSchemaBody(body);
@@ -1002,23 +742,14 @@ function compactSchemaDocument(body) {
   if (connectors.length > 0) {
     compactSchema = {
       ...stripSchemaStreamArrays(schema),
-      connectors: connectors.map((connector) => compactSchemaConnector(connector)),
+      field_capability_legend: FIELD_CAPABILITY_FLAG_LEGEND,
+      connectors: connectors.map((connector) => compactSchemaConnector(connector, { includeFieldDetail })),
     };
-    // The hosted-MCP package fanout (server/package-rs-client.js
-    // `mergeSchemaEnvelopes`) deliberately augments the canonical
-    // `connectors[]` envelope with a flattened, source-tagged top-level
-    // `streams[]` so MCP consumers get one source-attributed stream list
-    // without walking `connectors[]`. The single-source `/v1/schema` shape
-    // has no top-level `streams[]`, so stripping it there is correct — but
-    // when the fanout provided one, preserve a compacted copy (each entry's
-    // `source` tag is already whitelisted by `compactSchemaStream`).
-    if (Array.isArray(schema.streams)) {
-      compactSchema.streams = schema.streams.map((entry) => compactSchemaStream(entry));
-    }
   } else if (Array.isArray(schema.streams)) {
     compactSchema = {
       ...schema,
-      streams: schema.streams.map((entry) => compactSchemaStream(entry)),
+      field_capability_legend: FIELD_CAPABILITY_FLAG_LEGEND,
+      streams: schema.streams.map((entry) => compactSchemaStream(entry, { includeFieldDetail })),
     };
   } else {
     compactSchema = schema;
@@ -1027,12 +758,23 @@ function compactSchemaDocument(body) {
   return wrapped ? { ...body, data: compactSchema } : compactSchema;
 }
 
+function dedupeFullSchemaDocument(body) {
+  const wrapped =
+    body && typeof body === 'object' && body.data && typeof body.data === 'object' && !Array.isArray(body.data);
+  const schema = unwrapSchemaBody(body);
+  if (!schema || typeof schema !== 'object') return body;
+  const connectors = extractSchemaConnectors(schema);
+  if (connectors.length === 0) return body;
+  const deduped = stripSchemaStreamArrays(schema);
+  return wrapped ? { ...body, data: deduped } : deduped;
+}
+
 function stripSchemaStreamArrays(schema) {
   const { streams: _streams, ...rest } = schema;
   return rest;
 }
 
-function compactSchemaConnector(connector) {
+function compactSchemaConnector(connector, { includeFieldDetail = false } = {}) {
   if (!connector || typeof connector !== 'object') return connector;
   const streams = Array.isArray(connector.streams) ? connector.streams : [];
   const { shared, sharedKey } = pickSharedGrantedConnections(streams);
@@ -1040,7 +782,7 @@ function compactSchemaConnector(connector) {
   return {
     ...connector,
     ...(shared ? { granted_connections: shared } : {}),
-    streams: streams.map((entry) => compactSchemaStream(entry, { hasShared, sharedKey })),
+    streams: streams.map((entry) => compactSchemaStream(entry, { hasShared, sharedKey, includeFieldDetail })),
   };
 }
 
@@ -1048,7 +790,7 @@ function compactSchemaConnector(connector) {
 // identity/metadata fields pass through verbatim; `field_capabilities` and
 // `expand_capabilities` are compacted; everything else is dropped to keep the
 // payload bounded.
-function compactSchemaStream(entry, { hasShared = false, sharedKey = '' } = {}) {
+function compactSchemaStream(entry, { hasShared = false, sharedKey = '', includeFieldDetail = false } = {}) {
   if (!entry || typeof entry !== 'object') return entry;
   const out = {};
   const passthrough = [
@@ -1061,7 +803,6 @@ function compactSchemaStream(entry, { hasShared = false, sharedKey = '' } = {}) 
     'display_name',
     'connection_display_name',
     'connection_id',
-    'connector_instance_id',
     'record_count',
     'granted',
     'primary_key',
@@ -1072,17 +813,18 @@ function compactSchemaStream(entry, { hasShared = false, sharedKey = '' } = {}) 
     if (entry[key] !== undefined) out[key] = entry[key];
   }
   if (entry.granted_connections !== undefined) {
+    const compactGrantedConnections = compactSchemaGrantedConnections(entry.granted_connections);
     const streamKey = Array.isArray(entry.granted_connections)
       ? grantedConnectionsKey(entry.granted_connections)
       : null;
     if (!hasShared || streamKey === null || streamKey !== sharedKey) {
-      out.granted_connections = entry.granted_connections;
+      out.granted_connections = compactGrantedConnections;
     }
   }
-  if (entry.field_capabilities !== undefined) {
+  if (includeFieldDetail && entry.field_capabilities !== undefined) {
     out.field_capabilities = compactFieldCapabilities(entry.field_capabilities);
   }
-  if (entry.expand_capabilities !== undefined) {
+  if (includeFieldDetail && entry.expand_capabilities !== undefined) {
     out.expand_capabilities = compactExpandCapabilities(entry.expand_capabilities);
   }
   return out;
@@ -1141,11 +883,19 @@ function grantedConnectionsKey(value) {
     if (!entry || typeof entry !== 'object') return JSON.stringify(entry);
     const id = typeof entry.connection_id === 'string' ? entry.connection_id : '';
     const label = typeof entry.display_name === 'string' ? entry.display_name : '';
-    const alias = typeof entry.connector_instance_id === 'string' ? entry.connector_instance_id : '';
-    return JSON.stringify([id, label, alias]);
+    return JSON.stringify([id, label]);
   });
   entries.sort();
   return entries.join('\n');
+}
+
+function compactSchemaGrantedConnections(value) {
+  if (!Array.isArray(value)) return value;
+  return value.map((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+    const { connector_instance_id: _deprecatedAlias, ...rest } = entry;
+    return rest;
+  });
 }
 
 function pickSharedGrantedConnections(streams) {
@@ -1158,7 +908,7 @@ function pickSharedGrantedConnections(streams) {
     if (existing) {
       existing.count += 1;
     } else {
-      byKey.set(key, { value: stream.granted_connections, count: 1 });
+      byKey.set(key, { value: compactSchemaGrantedConnections(stream.granted_connections), count: 1 });
     }
   }
   let bestKey = '';
@@ -1172,20 +922,26 @@ function pickSharedGrantedConnections(streams) {
   return { shared: best ? best.value : null, sharedKey: best ? bestKey : '' };
 }
 
-function toSearchToolResult(response, providerUrl) {
+function toSearchToolResult(response, providerUrl, options = {}) {
   if (!response.ok) {
     return errorToolResult(response, providerUrl);
   }
-  const results = normalizeSearchResults(response.body);
+  const allResults = normalizeSearchResults(response.body);
+  const limit = requestedSearchLimit(options.limit);
+  const results = allResults.slice(0, limit);
+  const summaryBody = allResults.length > results.length
+    ? { ...response.body, has_more: true }
+    : response.body;
+  const data = compactSearchEnvelope(summaryBody, { resultCount: results.length });
   return {
     content: [
       {
         type: 'text',
-        text: summarizeSearch(response.body, results),
+        text: summarizeSearch(summaryBody, results),
       },
     ],
     structuredContent: {
-      data: response.body,
+      data,
       results,
       provider_url: providerUrl,
       request_id: response.requestId,
@@ -1198,19 +954,15 @@ function toFetchToolResult(response, providerUrl, requestedId) {
     return errorToolResult(response, providerUrl);
   }
   const document = normalizeFetchedDocument(response.body, requestedId, providerUrl);
+  const text = JSON.stringify(document);
   return {
     content: [
       {
         type: 'text',
-        text: summarizeFetchedDocument(document),
+        text,
       },
     ],
-    structuredContent: {
-      ...document,
-      data: response.body,
-      provider_url: providerUrl,
-      request_id: response.requestId,
-    },
+    structuredContent: document,
   };
 }
 
@@ -1244,8 +996,10 @@ function summarizeAggregate(body, stream) {
 
   const groups = Array.isArray(agg.groups) ? agg.groups : null;
   if (groups) {
+    const timeZone = firstString(agg.effective_time_zone, agg.time_zone);
+    const timeZoneSuffix = agg.group_by_time && timeZone ? ` time_zone=${formatScalar(timeZone)}` : '';
     const dimension = agg.group_by_time
-      ? `group_by_time=${formatScalar(agg.group_by_time)} granularity=${formatScalar(agg.granularity)}`
+      ? `group_by_time=${formatScalar(agg.group_by_time)} granularity=${formatScalar(agg.granularity)}${timeZoneSuffix}`
       : `group_by=${formatScalar(agg.group_by)}`;
     if (groups.length === 0) {
       return `${head} ${dimension}: 0 group(s). See structuredContent.data for the canonical envelope.`;
@@ -1321,16 +1075,17 @@ const RECORD_PREVIEW_CHAR_LIMIT = 1792;
 const RECORD_PREVIEW_FOOTER_RESERVE = 96;
 const RECORD_PREVIEW_MIN_RECORD_CHARS = 24;
 const RECORD_PREVIEW_TRUNCATED_MARKER =
-  'record_preview_truncated=true; canonical envelope remains in structuredContent.data';
+  'record_preview_truncated=true; machine envelope in structuredContent.data';
 
 function summarizeRecordEnvelope(body, label) {
   const records = extractRecordRows(body);
-  const hasMore = body && typeof body === 'object' && body.has_more === true ? ' has_more=true.' : '';
+  const hasMore = envelopeField(body, 'has_more') === true ? ' has_more=true.' : '';
+  const handles = formatRecordEnvelopeHandles(body);
   if (records.length === 0) {
-    return `${label}: 0 record(s).`;
+    return `${label}: 0 record(s).${handles}`;
   }
   const shown = Math.min(records.length, RECORD_PREVIEW_LIMIT);
-  const lines = [`${label}: ${records.length} record(s).${hasMore} Showing up to ${shown}:`];
+  const lines = [`${label}: ${records.length} record(s).${hasMore}${handles} Showing up to ${shown}:`];
   const contentCeiling = RECORD_PREVIEW_CHAR_LIMIT - RECORD_PREVIEW_FOOTER_RESERVE;
   let used = lines[0].length;
   let truncated = false;
@@ -1348,9 +1103,20 @@ function summarizeRecordEnvelope(body, label) {
   if (truncated) {
     lines.push(RECORD_PREVIEW_TRUNCATED_MARKER);
   } else if (records.length > RECORD_PREVIEW_LIMIT) {
-    lines.push(`more_records=${records.length - RECORD_PREVIEW_LIMIT}; canonical envelope remains in structuredContent.data`);
+    lines.push(`more_records=${records.length - RECORD_PREVIEW_LIMIT}; machine envelope in structuredContent.data`);
   }
   return lines.join('\n');
+}
+
+function formatRecordEnvelopeHandles(body) {
+  const parts = [];
+  const nextCursor = envelopeStringField(body, 'next_cursor');
+  const nextChangesSince = envelopeStringField(body, 'next_changes_since');
+  if (nextCursor) parts.push(`next_cursor=${formatScalar(nextCursor)}`);
+  if (nextChangesSince) parts.push(`next_changes_since=${formatScalar(nextChangesSince)}`);
+  const count = envelopeCount(body);
+  if (count) parts.push(`count=${count}`);
+  return parts.length > 0 ? ` ${parts.join(' ')}.` : '';
 }
 
 function extractRecordRows(body) {
@@ -1382,12 +1148,12 @@ function summarizeStreamsDiscovery(body, label) {
 // When the package-level schema spans many streams, the per-field flag segment
 // (`fields=...`) per stream dominates the text summary and pushes it into tens
 // of KB — the same token-budget problem the structured compaction solves. Field
-// flags are emitted in the text only when the document is scoped to a single
-// stream (the `schema(stream)` discovery middle step). For multi-stream package
+// flags are emitted in the text only when the document is scoped to a stream
+// (the `schema(stream, connection_id?)` discovery middle step). For multi-stream package
 // summaries the text lists streams + connection + connector_key and points the
-// agent at `schema(stream)` for per-field capability flags. Callers can force
-// inclusion via `includeFieldDetail`.
-function summarizeSchemaDiscovery(body, label, { includeFieldDetail } = {}) {
+// agent at `schema(stream, connection_id?)` for per-field capability flags.
+// Callers can force inclusion via `includeFieldDetail`.
+function summarizeSchemaDiscovery(body, label, { includeFieldDetail, connectionId } = {}) {
   const schema = unwrapSchemaBody(body);
   const streamRefs = extractSchemaStreamRefs(schema);
   const connectorCount = extractSchemaConnectors(schema).length || numberValue(schema?.connector_count) || 0;
@@ -1404,6 +1170,11 @@ function summarizeSchemaDiscovery(body, label, { includeFieldDetail } = {}) {
   }
 
   const withFields = includeFieldDetail ?? streamRefs.length <= 1;
+  const indexLines = streamRefs.length > DISCOVERY_STREAM_SUMMARY_LIMIT
+    ? formatSchemaStreamIndex(streamRefs)
+    : [];
+  const legendLines = withFields ? [formatFieldCapabilityLegend()] : [];
+  const scopedLines = connectionId ? [`schema_scope connection_id=${formatScalar(connectionId)}`] : [];
   const lines = streamRefs
     .slice(0, DISCOVERY_STREAM_SUMMARY_LIMIT)
     .map(({ stream, connector }) => formatSchemaStreamSummary(stream, connector, { includeFieldDetail: withFields }));
@@ -1412,8 +1183,36 @@ function summarizeSchemaDiscovery(body, label, { includeFieldDetail } = {}) {
   }
   const hint = withFields
     ? ''
-    : '\ncall schema(stream) for per-field capability flags (filter/sort/expand/fields/count/aggregate)';
-  return `${label}: connectors=${connectorCount} streams=${streamRefs.length}\n${lines.join('\n')}${hint}`;
+    : '\ncall schema(stream, connection_id?) for per-field capability flags (filter/sort/expand/fields/count/aggregate)';
+  return `${label}: connectors=${connectorCount} streams=${streamRefs.length}\n${[
+    ...legendLines,
+    ...scopedLines,
+    ...indexLines,
+    ...lines,
+  ].join('\n')}${hint}`;
+}
+
+function formatFieldCapabilityLegend() {
+  return 'field_capability_legend t=declared_type eq=exact_filter r=range_filter_ops lex=lexical_search sem=semantic_search a=aggregation_caps g=false=not_granted';
+}
+
+function formatSchemaStreamIndex(streamRefs) {
+  const byConnector = new Map();
+  for (const { stream, connector } of streamRefs) {
+    const connectorKey = connectorKeyFor(stream, connector) || 'unknown';
+    const name = streamName(stream);
+    if (!name) continue;
+    if (!byConnector.has(connectorKey)) {
+      byConnector.set(connectorKey, []);
+    }
+    const names = byConnector.get(connectorKey);
+    if (!names.includes(name)) {
+      names.push(name);
+    }
+  }
+  return [...byConnector.entries()].map(([connectorKey, names]) =>
+    `stream_index connector_key=${formatScalar(connectorKey)} stream_count=${names.length} streams=${names.map(formatInlineValue).join('|')}`,
+  );
 }
 
 function extractListRows(body) {
@@ -1509,6 +1308,10 @@ function formatSchemaStreamSummary(stream, connector, { includeFieldDetail = tru
   ];
   if (includeFieldDetail) {
     parts.push(`fields=${formatFieldCapabilities(stream?.field_capabilities)}`);
+    const aggregations = formatAggregationCapabilities(stream?.field_capabilities);
+    if (aggregations !== 'none') {
+      parts.push(`aggregations=${aggregations}`);
+    }
   }
   return parts.join(' ');
 }
@@ -1658,12 +1461,62 @@ function addRangeCapabilityFlag(flags, capability) {
 
 function addAggregationCapabilityFlags(flags, aggregation) {
   if (!aggregation || typeof aggregation !== 'object') return;
-  const usable = Object.entries(aggregation)
+  const usable = orderedAggregationKinds(Object.entries(aggregation)
     .filter(([, capability]) => capability && typeof capability === 'object' && capability.usable === true)
-    .map(([name]) => name);
+    .map(([name]) => name));
   if (usable.length > 0) {
     flags.push(`a=${formatInlineValue(usable.join('|'))}`);
   }
+}
+
+const AGGREGATION_SUMMARY_KINDS = ['count_distinct', 'group_by', 'group_by_time', 'sum', 'min', 'max'];
+const AGGREGATION_FIELD_SUMMARY_LIMIT = 12;
+
+function formatAggregationCapabilities(fieldCapabilities) {
+  const entries = fieldCapabilityEntries(fieldCapabilities);
+  if (entries.length === 0) return 'none';
+  const byKind = new Map(AGGREGATION_SUMMARY_KINDS.map((kind) => [kind, []]));
+  for (const [field, capabilities] of entries) {
+    for (const kind of aggregationKindsForField(capabilities)) {
+      if (byKind.has(kind)) {
+        byKind.get(kind).push(formatFieldName(field));
+      }
+    }
+  }
+  const parts = [];
+  for (const kind of AGGREGATION_SUMMARY_KINDS) {
+    const fields = byKind.get(kind) || [];
+    if (fields.length === 0) continue;
+    const shown = fields.slice(0, AGGREGATION_FIELD_SUMMARY_LIMIT);
+    const more = fields.length > AGGREGATION_FIELD_SUMMARY_LIMIT ? `|more:${fields.length - AGGREGATION_FIELD_SUMMARY_LIMIT}` : '';
+    parts.push(`${kind}=${shown.join('|')}${more}`);
+  }
+  return parts.length > 0 ? parts.join(';') : 'none';
+}
+
+function aggregationKindsForField(capabilities) {
+  if (typeof capabilities === 'string') return aggregationKindsFromFlags(capabilities);
+  if (!capabilities || typeof capabilities !== 'object') return [];
+  if (typeof capabilities.flags === 'string') return aggregationKindsFromFlags(capabilities.flags);
+  const aggregation = objectValue(capabilities.aggregation);
+  if (!aggregation) return [];
+  return orderedAggregationKinds(Object.entries(aggregation)
+    .filter(([, capability]) => capability && typeof capability === 'object' && capability.usable === true)
+    .map(([kind]) => kind));
+}
+
+function aggregationKindsFromFlags(flags) {
+  const match = /(?:^|,)a=([^,]+)/.exec(flags);
+  if (!match) return [];
+  return orderedAggregationKinds(match[1].split('|').map((part) => part.trim()).filter(Boolean));
+}
+
+function orderedAggregationKinds(kinds) {
+  const seen = new Set(kinds);
+  return [
+    ...AGGREGATION_SUMMARY_KINDS.filter((kind) => seen.has(kind)),
+    ...kinds.filter((kind) => !AGGREGATION_SUMMARY_KINDS.includes(kind)),
+  ];
 }
 
 function reasonSuffix(reason) {
@@ -1720,24 +1573,39 @@ function truncateText(value, limit) {
   return `${value.slice(0, safeLimit - 1)}…`;
 }
 
-function normalizeWhitespace(value) {
-  if (typeof value !== 'string') return '';
-  return value.replace(/\s+/g, ' ').trim();
-}
-
 const SEARCH_TEXT_PREVIEW_LIMIT = 3;
 const SEARCH_TEXT_SNIPPET_CHAR_LIMIT = 140;
 const SEARCH_RESULT_SNIPPET_CHAR_LIMIT = 320;
-const FETCH_TEXT_PREVIEW_CHAR_LIMIT = 420;
 
 function summarizeSearch(body, results) {
-  const hasMore = body && body.has_more === true ? ' has_more=true.' : '';
+  const hasMore = envelopeField(body, 'has_more') === true ? ' has_more=true.' : '';
+  const nextCursor = envelopeStringField(body, 'next_cursor');
+  const cursorText = nextCursor ? ` next_cursor=${formatScalar(nextCursor)}.` : '';
+  const sourceMixText = formatSearchSourceMix(body);
   const previews = results.slice(0, SEARCH_TEXT_PREVIEW_LIMIT).map(formatSearchPreviewLine);
   const previewText = previews.length > 0 ? ` Top results:\n${previews.join('\n')}` : '';
   const fetchHint = previews.length > 0
     ? '\nFetch a hit with `fetch` using the shown id; include connection_id when shown.'
     : '';
-  return `search: ${results.length} hit(s).${hasMore}${previewText}${fetchHint} Canonical envelope: structuredContent.data; flattened results: structuredContent.results.`;
+  return `search: ${results.length} hit(s).${hasMore}${cursorText}${sourceMixText}${previewText}${fetchHint} Search envelope metadata: structuredContent.data; flattened results: structuredContent.results.`;
+}
+
+function formatSearchSourceMix(body) {
+  const sourceMix = body?.meta?.package?.source_mix;
+  if (!Array.isArray(sourceMix) || sourceMix.length === 0) return '';
+  const rendered = sourceMix
+    .slice(0, 8)
+    .map((entry) => {
+      const parts = [
+        `connection_id:${formatInlineValue(entry?.connection_id)}`,
+        `connector_key:${formatInlineValue(entry?.connector_key)}`,
+        `count:${formatInlineValue(entry?.count)}`,
+      ];
+      if (entry?.display_name) parts.push(`display_name:${formatInlineValue(entry.display_name)}`);
+      return `{${parts.join(',')}}`;
+    });
+  if (sourceMix.length > 8) rendered.push(`more:${sourceMix.length - 8}`);
+  return ` source_mix=${rendered.join('|')}.`;
 }
 
 function formatSearchPreviewLine(result, index) {
@@ -1751,43 +1619,30 @@ function formatSearchPreviewLine(result, index) {
   return parts.join(' ');
 }
 
-function summarizeFetchedDocument(document) {
-  const metadata = objectValue(document.metadata) || {};
-  const data = objectValue(metadata.data) || {};
-  const source = objectValue(metadata.source) || objectValue(data.source) || {};
-  const parts = [
-    `fetched id=${formatInlineValue(document.id)}`,
-    `title=${formatScalar(truncateText(document.title || document.id, 100))}`,
-  ];
-  if (document.url) parts.push(`url=${formatScalar(truncateText(document.url, 160))}`);
-
-  const stream = firstString(metadata.stream, metadata.stream_name, data.stream, data.stream_name);
-  const connectionId = firstString(
-    metadata.connection_id,
-    metadata.connector_instance_id,
-    data.connection_id,
-    data.connector_instance_id,
-    source.connection_id,
-  );
-  const connectorKey = firstString(
-    metadata.connector_key,
-    metadata.connector_id,
-    data.connector_key,
-    data.connector_id,
-    source.connector_key,
-    source.connector_id,
-  );
-  const displayName = firstString(metadata.display_name, data.display_name, source.display_name);
-  if (stream) parts.push(`stream=${formatInlineValue(truncateText(stream, 80))}`);
-  if (connectionId) parts.push(`connection_id=${formatInlineValue(truncateText(connectionId, 80))}`);
-  if (connectorKey) parts.push(`connector_key=${formatInlineValue(truncateText(connectorKey, 80))}`);
-  if (displayName) parts.push(`display_name=${formatScalar(truncateText(displayName, 100))}`);
-
-  const preview = normalizeWhitespace(document.text);
-  if (preview) {
-    parts.push(`text_preview=${formatScalar(truncateText(preview, FETCH_TEXT_PREVIEW_CHAR_LIMIT))}`);
+function envelopeField(body, field) {
+  if (!body || typeof body !== 'object') return undefined;
+  if (Object.prototype.hasOwnProperty.call(body, field)) return body[field];
+  if (body.data && typeof body.data === 'object' && !Array.isArray(body.data)) {
+    return body.data[field];
   }
-  return `${parts.join(' ')}. Full document text: structuredContent.text; canonical record: structuredContent.data.`;
+  return undefined;
+}
+
+function envelopeStringField(body, field) {
+  const value = envelopeField(body, field);
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function envelopeCount(body) {
+  const meta = objectValue(envelopeField(body, 'meta'));
+  const count = objectValue(meta?.count);
+  if (!count) return null;
+  const kind = firstString(count.kind, count.type);
+  const value = count.value ?? count.count ?? count.total;
+  if (kind && value !== undefined && value !== null) return `${formatInlineValue(kind)}:${formatInlineValue(value)}`;
+  if (kind) return formatInlineValue(kind);
+  if (value !== undefined && value !== null) return formatInlineValue(value);
+  return null;
 }
 
 function normalizeSearchResults(body) {
@@ -1803,7 +1658,7 @@ function normalizeSearchResults(body) {
     const snippet = snippetForSearchHit(hit);
     const normalized = {
       id,
-      title: titleForRecord(hit, id),
+      title: titleForSearchHit(hit, id, { stream, recordKey, connectionId, displayName, connectorKey }),
       url: urlForRecord(hit, id),
     };
     if (stream) normalized.stream = stream;
@@ -1824,6 +1679,59 @@ function searchCandidatesFromBody(body) {
   if (body.data && typeof body.data === 'object' && Array.isArray(body.data.results)) return body.data.results;
   if (body.data && typeof body.data === 'object' && Array.isArray(body.data.data)) return body.data.data;
   return [];
+}
+
+function requestedSearchLimit(value) {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+    return Math.min(value, 100);
+  }
+  return 25;
+}
+
+function compactSearchEnvelope(body, { resultCount } = {}) {
+  if (!body || typeof body !== 'object') return body;
+  if (Array.isArray(body)) {
+    return { object: 'list', results_ref: 'structuredContent.results', result_count: resultCount ?? body.length };
+  }
+  const out = { ...body };
+  if (Array.isArray(out.results)) {
+    out.result_count = resultCount ?? out.results.length;
+    delete out.results;
+    out.results_ref = 'structuredContent.results';
+  }
+  if (Array.isArray(out.hits)) {
+    out.result_count = resultCount ?? out.hits.length;
+    delete out.hits;
+    out.results_ref = 'structuredContent.results';
+  }
+  if (Array.isArray(out.data)) {
+    out.result_count = resultCount ?? out.data.length;
+    delete out.data;
+    out.results_ref = 'structuredContent.results';
+  } else if (out.data && typeof out.data === 'object') {
+    out.data = compactSearchEnvelopeDataObject(out.data, { resultCount });
+  }
+  return out;
+}
+
+function compactSearchEnvelopeDataObject(data, { resultCount } = {}) {
+  const out = { ...data };
+  if (Array.isArray(out.results)) {
+    out.result_count = resultCount ?? out.results.length;
+    delete out.results;
+    out.results_ref = 'structuredContent.results';
+  }
+  if (Array.isArray(out.hits)) {
+    out.result_count = resultCount ?? out.hits.length;
+    delete out.hits;
+    out.results_ref = 'structuredContent.results';
+  }
+  if (Array.isArray(out.data)) {
+    out.result_count = resultCount ?? out.data.length;
+    delete out.data;
+    out.results_ref = 'structuredContent.results';
+  }
+  return out;
 }
 
 function resultIdForHit(hit, index) {
@@ -1890,7 +1798,7 @@ function normalizeFetchedDocument(record, requestedId, providerUrl) {
 
 function titleForFetchedRecord(record, payload, fallbackId) {
   const payloadTitle = payload ? titleForRecord(payload, '') : '';
-  return payloadTitle || titleForRecord(record, fallbackId);
+  return payloadTitle || titleForRecord(record, '') || titleFromSourceIdentity(record, payload, fallbackId);
 }
 
 function titleForRecord(record, fallbackId) {
@@ -1898,9 +1806,83 @@ function titleForRecord(record, fallbackId) {
     stringValue(record?.title) ||
     stringValue(record?.name) ||
     stringValue(record?.subject) ||
-    stringValue(record?.snippet?.text) ||
     stringValue(record?.summary) ||
     fallbackId
+  );
+}
+
+function titleForSearchHit(record, fallbackId, source = {}) {
+  const explicit = titleForRecord(record, '');
+  if (explicit) return explicit;
+  const timestamp = titleTimestampForRecord(record);
+  const label = source.displayName || source.connectorKey || source.connectionId;
+  const parts = [label, source.stream, timestamp].filter(Boolean);
+  return parts.length > 0 ? parts.join(' / ') : fallbackId;
+}
+
+function titleFromSourceIdentity(record, payload, fallbackId) {
+  const source = objectValue(record?.source) || objectValue(payload?.source) || {};
+  const label = firstString(
+    record?.display_name,
+    payload?.display_name,
+    record?.connector_key,
+    payload?.connector_key,
+    record?.connector_id,
+    payload?.connector_id,
+    source.display_name,
+    source.connector_key,
+    source.connector_id,
+    source.connection_id,
+  );
+  const stream = firstString(record?.stream, record?.stream_name, payload?.stream, payload?.stream_name, source.stream);
+  const timestamp = titleTimestampForRecord(payload) || titleTimestampForRecord(record);
+  const parts = [label, stream, timestamp].filter(Boolean);
+  return parts.length > 0 ? parts.join(' / ') : fallbackId;
+}
+
+function titleTimestampForRecord(record) {
+  const nested = [
+    objectValue(record?.data),
+    objectValue(record?.record),
+    objectValue(record?.metadata),
+    objectValue(record?.source),
+  ].filter(Boolean);
+  const authored = firstString(
+    record?.sent_at,
+    record?.sentAt,
+    record?.authored_at,
+    record?.authoredAt,
+    record?.created_at,
+    record?.createdAt,
+    record?.source_created_at,
+    record?.sourceCreatedAt,
+    record?.occurred_at,
+    record?.occurredAt,
+    record?.updated_at,
+    record?.updatedAt,
+    ...nested.flatMap((value) => [
+      value.sent_at,
+      value.sentAt,
+      value.authored_at,
+      value.authoredAt,
+      value.created_at,
+      value.createdAt,
+      value.source_created_at,
+      value.sourceCreatedAt,
+      value.occurred_at,
+      value.occurredAt,
+      value.updated_at,
+      value.updatedAt,
+    ]),
+  );
+  if (authored) return authored;
+  return firstString(
+    record?.emitted_at,
+    record?.emittedAt,
+    ...nested.flatMap((value) => [
+      value.emitted_at,
+      value.emittedAt,
+    ]),
   );
 }
 
@@ -1910,19 +1892,18 @@ function textForFetchedRecord(record, payload) {
   return fallbackTextForRecord(payload || record);
 }
 
-// Hard ceiling on the JSON-stringify fallback for `fetch`'s `text` field.
-// A real declared text-like field (`text`/`content`/`body`/`summary`) is the
+// Hard ceiling on the JSON-stringify fallback for `fetch`'s `text` field. A
+// real declared text-like field (`text`/`content`/`body`/`summary`) is the
 // document text ChatGPT consumes and is returned verbatim and unbounded — that
 // is the contract. The fallback below only fires when a record declares NONE of
-// those fields; without a cap it pretty-prints the entire record into `text`,
-// duplicating the canonical record already present verbatim in
-// `structuredContent.data` (measured at tens of KB and unbounded for fat
-// records). Bounding only the fallback keeps `fetch.text` a readable, honest
-// excerpt and points the agent at the full record in `structuredContent.data`;
-// no declared text is ever truncated and no field an agent needs is dropped.
+// those fields; without a cap it pretty-prints an arbitrary structured record
+// into `text`, turning document fetch into a second record-read path. Bounding
+// only the fallback keeps `fetch` document-shaped while pointing agents to the
+// structured read tools for canonical records; no declared text is ever
+// truncated and no field an agent needs is dropped.
 const FETCH_TEXT_FALLBACK_CHAR_LIMIT = 1024;
 const FETCH_TEXT_FALLBACK_POINTER =
-  '… [record has no text/content/body/summary field; full record in structuredContent.data]';
+  '… [record has no text/content/body/summary field; use query_records or fetch(fields) for structured records]';
 
 function textForRecord(record) {
   const declared = declaredTextForRecord(record);
@@ -1990,126 +1971,73 @@ function metadataForRecord(record, omitted) {
   if (!record || typeof record !== 'object') {
     return {};
   }
-  const metadata = record.metadata && typeof record.metadata === 'object' ? { ...record.metadata } : {};
+  const metadata = {};
+  if (record.metadata && typeof record.metadata === 'object' && !Array.isArray(record.metadata)) {
+    for (const [key, value] of Object.entries(record.metadata)) {
+      if (isDocumentMetadataValue(value)) metadata[key] = value;
+    }
+  }
+  const payload = objectValue(record.data);
+  if (payload) {
+    for (const key of [
+      'stream',
+      'stream_name',
+      'streamName',
+      'connection_id',
+      'connector_key',
+      'connector_id',
+      'display_name',
+    ]) {
+      if (metadata[key] === undefined && payload[key] !== undefined) {
+        metadata[key] = payload[key];
+      }
+    }
+  }
   for (const [key, value] of Object.entries(record)) {
-    if (['metadata', 'text', 'content', 'body'].includes(key)) continue;
-    if (Object.values(omitted).includes(value)) continue;
+    if (['metadata', 'data', 'text', 'content', 'body'].includes(key)) continue;
+    if (isOmittedDocumentField(key, value, omitted)) continue;
+    if (!FETCH_METADATA_RECORD_KEYS.has(key)) continue;
+    if (!isDocumentMetadataValue(value)) continue;
     metadata[key] = value;
   }
   return metadata;
 }
 
+function isOmittedDocumentField(key, value, omitted) {
+  if (['id', 'record_id', 'recordId'].includes(key)) return value === omitted.id;
+  if (key === 'title') return value === omitted.title;
+  if (['url', 'record_url', 'recordUrl', 'href', 'source_url', 'sourceUrl'].includes(key)) return value === omitted.url;
+  return false;
+}
+
+const FETCH_METADATA_RECORD_KEYS = new Set([
+  'object',
+  'id',
+  'record_id',
+  'recordId',
+  'stream',
+  'stream_name',
+  'streamName',
+  'connection_id',
+  'connector_key',
+  'connector_id',
+  'display_name',
+  'emitted_at',
+  'emittedAt',
+  'sent_at',
+  'sentAt',
+  'created_at',
+  'createdAt',
+  'updated_at',
+  'updatedAt',
+]);
+
+function isDocumentMetadataValue(value) {
+  return value === null || ['string', 'number', 'boolean'].includes(typeof value);
+}
+
 function stringValue(value) {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
-}
-
-function toEventSubToolResult(response, providerUrl, label) {
-  if (!response.ok) {
-    return errorToolResult(response, providerUrl);
-  }
-  return {
-    content: [
-      {
-        type: 'text',
-        text: summarizeEventSubBody(response, label),
-      },
-    ],
-    structuredContent: {
-      data: response.body,
-      provider_url: providerUrl,
-      request_id: response.requestId,
-      http_status: response.status,
-    },
-  };
-}
-
-function toEventSubDiscoveryResult(response, providerUrl) {
-  if (!response.ok) {
-    return errorToolResult(response, providerUrl);
-  }
-  const body = response.body && typeof response.body === 'object' ? response.body : {};
-  const capabilities = body.capabilities && typeof body.capabilities === 'object' ? body.capabilities : {};
-  const advertised = capabilities.client_event_subscriptions ?? null;
-  const supported = !!(advertised && typeof advertised === 'object' && advertised.supported === true);
-  const summary = supported
-    ? `event subscriptions supported: endpoint=${advertised?.endpoint ?? 'unknown'} stability=${advertised?.stability ?? 'unknown'}. See structuredContent.capability for event types, signing profile, and retry schedule.`
-    : 'event subscriptions NOT advertised by this PDPP instance. Call `query_records` with `changes_since` to poll instead. See structuredContent.data for the full protected-resource metadata.';
-  return {
-    content: [
-      {
-        type: 'text',
-        text: summary,
-      },
-    ],
-    structuredContent: {
-      supported,
-      capability: advertised,
-      data: response.body,
-      provider_url: providerUrl,
-      request_id: response.requestId,
-      http_status: response.status,
-    },
-  };
-}
-
-// The one-time delivery secret can arrive at the top level (create) or, on
-// rotate, alongside a nested `subscription` projection (PATCH). Either way the
-// RS returns it exactly once and never again on read, so the MCP text MUST
-// carry the literal value: chat agents that cannot inspect `structuredContent`
-// have no other way to capture it. The structured envelope remains canonical.
-function summarizeEventSubBody(response, label) {
-  if (response.status === 204) {
-    return `${label}: 204 No Content. Subscription removed; subsequent reads will return 404.`;
-  }
-  const body = response.body;
-  if (body && typeof body === 'object') {
-    const subscription = body.subscription && typeof body.subscription === 'object' ? body.subscription : null;
-    const subscriptionId = firstString(body.subscription_id, subscription?.subscription_id);
-    const status = firstString(body.status, subscription?.status);
-    const oneTimeSecret = typeof body.secret === 'string' ? body.secret : null;
-    if (subscriptionId || oneTimeSecret) {
-      const parts = [];
-      if (subscriptionId) parts.push(`subscription_id=${subscriptionId}`);
-      if (status) parts.push(`status=${status}`);
-      const head = parts.length > 0 ? `${label}: ${parts.join(' ')}.` : `${label}:`;
-      if (oneTimeSecret) {
-        // Compact, unmistakable line an agent can read and relay verbatim. The
-        // secret is returned once — the receiver must store it now to verify
-        // future signatures.
-        return `${head} one_time_secret=${oneTimeSecret} (returned once — store it on the receiver now to verify delivery signatures; not retrievable later). See structuredContent.data for the full body.`;
-      }
-      return `${head} See structuredContent.data for the full body.`;
-    }
-    if (typeof body.event_id === 'string') {
-      return `${label}: enqueued event_id=${body.event_id}. Delivery occurs out-of-band; check your callback receiver.`;
-    }
-    if (Array.isArray(body.data)) {
-      return `${label}: ${body.data.length} subscription(s). See structuredContent.data for the canonical envelope.`;
-    }
-  }
-  return `${label}: HTTP ${response.status}. See structuredContent.data for the response body.`;
-}
-
-function toBlobToolResult(response, providerUrl) {
-  if (response.ok) {
-    const base64 = Buffer.isBuffer(response.body) ? response.body.toString('base64') : '';
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Fetched ${response.body.length} bytes (${response.contentType || 'application/octet-stream'}).`,
-        },
-      ],
-      structuredContent: {
-        provider_url: providerUrl,
-        request_id: response.requestId,
-        bytes_base64: base64,
-        mime_type: response.contentType || 'application/octet-stream',
-        size: response.body.length,
-      },
-    };
-  }
-  return errorToolResult(response, providerUrl);
 }
 
 function errorToolResult(response, providerUrl) {
@@ -2139,11 +2067,8 @@ export const __internal = {
   requireSafeName,
   pickQuery,
   toToolResult,
-  toBlobToolResult,
   toSearchToolResult,
   toFetchToolResult,
-  toEventSubToolResult,
-  toEventSubDiscoveryResult,
   resolveStreamName,
   resolveSchemaDetail,
 };

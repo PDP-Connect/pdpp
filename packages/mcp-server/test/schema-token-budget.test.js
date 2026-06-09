@@ -7,15 +7,30 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { createPdppMcpServer } from '../src/server.js';
 
-const { projectSchemaCompactView } = await import(
+const { projectSchemaCompactView, projectSchemaStreamScope, schemaSourceOptions } = await import(
   '../../../reference-implementation/operations/rs-schema-get/compact-view.ts'
 );
+
+function mcpCompactSchemaExpected(schema, opts) {
+  return stripDeprecatedConnectorInstanceAlias(projectSchemaCompactView(schema, opts));
+}
+
+function stripDeprecatedConnectorInstanceAlias(value) {
+  if (Array.isArray(value)) return value.map(stripDeprecatedConnectorInstanceAlias);
+  if (!value || typeof value !== 'object') return value;
+  const out = {};
+  for (const [key, nested] of Object.entries(value)) {
+    if (key === 'connector_instance_id') continue;
+    out[key] = stripDeprecatedConnectorInstanceAlias(nested);
+  }
+  return out;
+}
 
 // Token-efficiency acceptance checks for the `schema` MCP tool.
 //
 // Owned by openspec/changes/expose-connection-identity-on-public-read/tasks.md
 // (§7 MCP discovery/schema token-efficiency target):
-//   "make `list_streams -> compact schema(stream) -> query_records` the default
+//   "make `schema -> compact schema(stream) -> query_records` the default
 //    agent path; keep package-level `schema` responses compact enough for
 //    chat-agent context, make exhaustive JSON opt-in via explicit
 //    detail/per-stream/per-field controls, and add enforceable byte/token-budget
@@ -25,8 +40,8 @@ const { projectSchemaCompactView } = await import(
 // These tests build a representative large grant-scoped schema (many streams,
 // many fields, each carrying a verbose per-field JSON Schema blob) and assert
 // the DEFAULT MCP `schema` response stays under a documented byte budget, that
-// per-stream scope is usable and compact, that `detail: "full"` still returns
-// the exhaustive body, and that connection identity survives compaction.
+// per-stream scope is usable and compact, that `detail: "full"` is constrained
+// to a single stream, and that connection identity survives compaction.
 
 // Documented byte budgets for the MCP `schema` tool result. These are the
 // regression guards: if a future change re-introduces verbatim-by-default or
@@ -100,7 +115,9 @@ function makeLargeSchemaFetch({ connectorCount = 4, streamsPerConnector = 6, fie
   const fetch = async (urlInput) => {
     const url = new URL(urlInput.toString());
     if (url.pathname === '/v1/schema') {
-      return new Response(JSON.stringify(SCHEMA), {
+      const canonicalError = canonicalFullSchemaErrorForQuery(SCHEMA, url);
+      if (canonicalError) return canonicalError;
+      return new Response(JSON.stringify(schemaBodyForQuery(SCHEMA, url)), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
@@ -112,6 +129,54 @@ function makeLargeSchemaFetch({ connectorCount = 4, streamsPerConnector = 6, fie
   };
 
   return { fetch, schemaBody: SCHEMA };
+}
+
+function schemaBodyForQuery(schemaBody, url) {
+  const stream = url.searchParams.get('stream');
+  const connectionId = url.searchParams.get('connection_id');
+  const opts = { stream, connectionId };
+  if (url.searchParams.get('view') === 'compact') {
+    return { data: projectSchemaCompactView(schemaBody.data, opts) };
+  }
+  return { data: projectSchemaStreamScope(schemaBody.data, opts) };
+}
+
+function canonicalFullSchemaErrorForQuery(schemaBody, url) {
+  if (url.searchParams.get('detail') !== 'full') return null;
+  const stream = url.searchParams.get('stream');
+  const connectionId = url.searchParams.get('connection_id');
+  if (!stream) {
+    return new Response(
+      JSON.stringify({
+        error: {
+          type: 'invalid_request',
+          code: 'invalid_request',
+          param: 'detail',
+          message: 'schema detail "full" requires `stream`',
+        },
+      }),
+      { status: 400, headers: { 'content-type': 'application/json' } },
+    );
+  }
+  if (!connectionId) {
+    const available = schemaSourceOptions(schemaBody.data, { stream });
+    if (available.length > 1) {
+      return new Response(
+        JSON.stringify({
+          error: {
+            type: 'ambiguous_schema_detail',
+            code: 'ambiguous_schema_detail',
+            param: 'connection_id',
+            retry_with: 'connection_id',
+            available_connections: available,
+            message: `schema detail "full" for stream "${stream}" matches ${available.length} sources; retry with connection_id to fetch one source's exhaustive schema.`,
+          },
+        }),
+        { status: 409, headers: { 'content-type': 'application/json' } },
+      );
+    }
+  }
+  return null;
 }
 
 async function connectClient(fakeFetch) {
@@ -168,21 +233,28 @@ test('default schema response stays under the documented package byte budget', a
   await server.close();
 });
 
-test('default schema drops per-field JSON Schema blobs but keeps capability flags and connection identity', async () => {
+test('default schema is an index: drops field capability detail but keeps connection identity', async () => {
   const { fetch } = makeLargeSchemaFetch();
   const { client, server } = await connectClient(fetch);
 
   const result = await client.callTool({ name: 'schema', arguments: {} });
-  const connector = result.structuredContent.data.data.connectors[0];
+  const connector = result.structuredContent.data.connectors[0];
   const stream = connector.streams[0];
-  const field = stream.field_capabilities.field_0;
 
-  // Compact grade: each field is a terse flag string, not the verbose object.
-  assert.equal(typeof field, 'string', 'compact schema field must be a terse flag string');
-  assert.doesNotMatch(field, /description/, 'compact schema must drop per-field JSON Schema blob');
-  assert.match(field, /t=string/, 'compact flag string must keep declared field type');
-  assert.doesNotMatch(field, /granted=true/, 'compact flag string must omit the default positive grant flag');
-  assert.match(field, /(^|,)eq(,|$)/, 'compact flag string must keep usable capability flags');
+  assert.equal(
+    stream.field_capabilities,
+    undefined,
+    'global compact schema must not carry per-field capability detail',
+  );
+  assert.deepEqual(result.structuredContent.data.field_capability_legend, {
+    t: 'declared type',
+    eq: 'exact filter supported',
+    r: 'range filter operators',
+    lex: 'lexical search field',
+    sem: 'semantic search field',
+    a: 'aggregation capabilities',
+    'g=false': 'field is not granted',
+  });
   assert.deepEqual(
     connector.granted_connections,
     [{ connection_id: 'conn_0', display_name: 'Connection 0' }],
@@ -192,10 +264,63 @@ test('default schema drops per-field JSON Schema blobs but keeps capability flag
   assert.equal(stream.connection_id, 'conn_0', 'compact schema must keep connection_id');
   assert.equal(
     stream.connector_instance_id,
-    'conn_0',
-    'compact schema must keep deprecated connector_instance_id alias',
+    undefined,
+    'compact schema must omit deprecated connector_instance_id alias',
   );
-  assert.equal(result.structuredContent.data.data.detail, 'compact');
+  assert.equal(result.structuredContent.data.detail, 'compact');
+
+  await client.close();
+  await server.close();
+});
+
+test('MCP compact schema drops duplicate top-level streams when connectors are present', async () => {
+  const { schemaBody } = makeLargeSchemaFetch({ connectorCount: 2, streamsPerConnector: 2, fieldsPerStream: 2 });
+  schemaBody.data.streams = schemaBody.data.connectors.flatMap((connector) =>
+    connector.streams.map((stream) => ({ ...stream, source: { connector_key: connector.connector_key } })),
+  );
+  const { client, server } = await connectClient(async (urlInput) => {
+    const url = new URL(urlInput.toString());
+    if (url.pathname === '/v1/schema') {
+      return new Response(JSON.stringify(schemaBody), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify({ error: { type: 'not_found', code: 'not_found' } }), {
+      status: 404,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+
+  const result = await client.callTool({ name: 'schema', arguments: {} });
+  assert.equal(result.isError, undefined);
+  assert.equal(result.structuredContent.data.data, undefined, 'schema MCP data must be the schema document, not a nested REST data envelope');
+  assert.equal(
+    result.structuredContent.data.streams,
+    undefined,
+    'MCP compact schema must not duplicate the same stream list at data.streams and connectors[].streams',
+  );
+  assert.ok(Array.isArray(result.structuredContent.data.connectors[0].streams));
+
+  await client.close();
+  await server.close();
+});
+
+test('global schema text indexes every stream name even when detailed rows are capped', async () => {
+  const { fetch } = makeLargeSchemaFetch({ connectorCount: 4, streamsPerConnector: 20 });
+  const { client, server } = await connectClient(fetch);
+
+  const result = await client.callTool({ name: 'schema', arguments: {} });
+  const text = result.content[0].text;
+
+  assert.match(text, /stream_index connector_key="connector-3"/);
+  assert.match(text, /stream_count=20 streams=stream_3_0\|stream_3_1/);
+  assert.match(text, /stream_3_19/, 'a stream hidden beyond the detailed row cap must still be model-visible');
+  assert.match(text, /more_streams=30/, 'detailed stream rows remain bounded');
+  assert.ok(
+    Buffer.byteLength(text, 'utf8') < 18_000,
+    `indexed global schema text should stay bounded (got ${Buffer.byteLength(text, 'utf8')} bytes)`,
+  );
 
   await client.close();
   await server.close();
@@ -231,28 +356,37 @@ test('default schema requests the REST compact view when the RS supports it', as
     ['/v1/schema?view=compact&stream=stream_1_2'],
     'compact MCP schema must delegate to the REST compact projection instead of fetching the full body first',
   );
+  assert.deepEqual(result.structuredContent.data.field_capability_legend, {
+    t: 'declared type',
+    eq: 'exact filter supported',
+    r: 'range filter operators',
+    lex: 'lexical search field',
+    sem: 'semantic search field',
+    a: 'aggregation capabilities',
+    'g=false': 'field is not granted',
+  });
+  const { field_capability_legend: _legend, ...actualWithoutLegend } = result.structuredContent.data;
   assert.deepEqual(
-    result.structuredContent.data.data,
-    projectSchemaCompactView(schemaBody.data, { stream: 'stream_1_2' }),
-    'MCP compact output must preserve the REST compact projection verbatim',
+    actualWithoutLegend,
+    mcpCompactSchemaExpected(schemaBody.data, { stream: 'stream_1_2' }),
+    'MCP compact output must match the REST compact projection minus deprecated MCP aliases, plus its self-documenting legend',
   );
 
   await client.close();
   await server.close();
 });
 
-test('legacy full-schema fallback matches the REST compact projection semantics', async () => {
+test('legacy full-schema fallback still renders the global MCP index projection', async () => {
   const { fetch, schemaBody } = makeLargeSchemaFetch();
   const { client, server } = await connectClient(fetch);
 
   const result = await client.callTool({ name: 'schema', arguments: {} });
   assert.equal(result.isError, undefined);
 
-  assert.deepEqual(
-    result.structuredContent.data.data,
-    projectSchemaCompactView(schemaBody.data),
-    'MCP local fallback must stay in parity with the REST compact projection',
-  );
+  const expected = mcpCompactSchemaExpected(schemaBody.data);
+  assert.equal(result.structuredContent.data.connectors.length, expected.connectors.length);
+  assert.equal(result.structuredContent.data.connectors[0].streams[0].field_capabilities, undefined);
+  assert.equal(result.structuredContent.data.detail, 'compact');
 
   await client.close();
   await server.close();
@@ -272,13 +406,87 @@ test('per-stream schema is usable and compact (the discovery middle step)', asyn
   );
 
   // Exactly one connector with exactly the one requested stream survives.
-  const connectors = result.structuredContent.data.data.connectors;
+  const connectors = result.structuredContent.data.connectors;
   assert.equal(connectors.length, 1, 'per-stream scope must keep only the contributing connector');
   assert.equal(connectors[0].streams.length, 1, 'per-stream scope must keep only the requested stream');
   assert.equal(connectors[0].streams[0].name, 'stream_1_2');
-  assert.equal(result.structuredContent.data.data.stream_count, 1);
+  assert.equal(result.structuredContent.data.stream_count, 1);
   // Still usable: capability flags survive on the scoped stream.
   assert.match(connectors[0].streams[0].field_capabilities.field_0, /t=string/);
+
+  await client.close();
+  await server.close();
+});
+
+test('stream-scoped schema text includes field detail across connectors sharing one stream name', async () => {
+  const { fetch, schemaBody } = makeLargeSchemaFetch({ connectorCount: 2, streamsPerConnector: 1, fieldsPerStream: 4 });
+  for (const connector of schemaBody.data.connectors) {
+    connector.streams[0].name = 'messages';
+  }
+  const { client, server } = await connectClient(fetch);
+
+  const result = await client.callTool({ name: 'schema', arguments: { stream: 'messages' } });
+  const text = result.content[0].text;
+
+  assert.match(text, /stream name="messages" connector_key="connector-0".*fields=/s);
+  assert.match(text, /stream name="messages" connector_key="connector-1".*fields=/s);
+  assert.match(text, /field_0\[t=string,eq,lex,sem,a=count_distinct\]/);
+  assert.match(text, /aggregations=count_distinct=field_0\|field_1\|field_2\|field_3/);
+
+  await client.close();
+  await server.close();
+});
+
+test('shared-stream detail=full requires connection_id instead of returning a multi-source schema dump', async () => {
+  const { fetch, schemaBody } = makeLargeSchemaFetch({ connectorCount: 2, streamsPerConnector: 1, fieldsPerStream: 4 });
+  for (const connector of schemaBody.data.connectors) {
+    connector.streams[0].name = 'messages';
+  }
+  const { client, server } = await connectClient(fetch);
+
+  const result = await client.callTool({
+    name: 'schema',
+    arguments: { stream: 'messages', detail: 'full' },
+  });
+
+  assert.equal(result.isError, true, 'ambiguous full schema must be rejected before sending a broad payload');
+  assert.equal(result.structuredContent.error.code, 'ambiguous_schema_detail');
+  assert.equal(result.structuredContent.error.retry_with, 'connection_id');
+  assert.equal(result.structuredContent.error.available_connections.length, 2);
+  assert.match(result.content[0].text, /connection_id/);
+
+  await client.close();
+  await server.close();
+});
+
+test('shared-stream detail=full with connection_id returns one source only', async () => {
+  const { fetch, schemaBody } = makeLargeSchemaFetch({ connectorCount: 2, streamsPerConnector: 1, fieldsPerStream: 4 });
+  for (const connector of schemaBody.data.connectors) {
+    connector.streams[0].name = 'messages';
+  }
+  schemaBody.data.streams = schemaBody.data.connectors.flatMap((connector) =>
+    connector.streams.map((stream) => ({ ...stream, source: { connector_key: connector.connector_key } })),
+  );
+  const { client, server } = await connectClient(fetch);
+
+  const result = await client.callTool({
+    name: 'schema',
+    arguments: { stream: 'messages', connection_id: 'conn_1', detail: 'full' },
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.equal(result.structuredContent.data.data, undefined, 'detail=full must not carry a second nested schema envelope');
+  const connectors = result.structuredContent.data.connectors;
+  assert.equal(connectors.length, 1);
+  assert.equal(
+    result.structuredContent.data.streams,
+    undefined,
+    'detail=full must not duplicate the selected stream in both data.streams and data.connectors[].streams',
+  );
+  assert.equal(connectors[0].connector_key, 'connector-1');
+  assert.equal(connectors[0].streams.length, 1);
+  assert.equal(connectors[0].streams[0].name, 'messages');
+  assert.ok(connectors[0].streams[0].field_capabilities.field_0.schema, 'detail=full keeps raw JSON Schema');
 
   await client.close();
   await server.close();
@@ -294,7 +502,7 @@ test('per-stream + detail=full returns the exhaustive single-stream JSON Schema'
   });
   assert.equal(result.isError, undefined);
 
-  const stream = result.structuredContent.data.data.connectors[0].streams[0];
+  const stream = result.structuredContent.data.connectors[0].streams[0];
   assert.ok(stream.field_capabilities.field_0.schema, 'detail=full must retain per-field JSON Schema');
   assert.equal(
     stream.field_capabilities.field_0.schema.description.length,
@@ -306,13 +514,15 @@ test('per-stream + detail=full returns the exhaustive single-stream JSON Schema'
   await server.close();
 });
 
-test('detail=full returns the exhaustive verbatim body matching the RS payload', async () => {
-  const { fetch, schemaBody } = makeLargeSchemaFetch();
+test('global detail=full forwards to canonical RS rejection instead of MCP-local preflight', async () => {
+  const { fetch } = makeLargeSchemaFetch();
   const { client, server } = await connectClient(fetch);
 
   const result = await client.callTool({ name: 'schema', arguments: { detail: 'full' } });
-  assert.equal(result.isError, undefined);
-  assert.deepEqual(result.structuredContent.data, schemaBody, 'detail=full must return the verbatim RS body');
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent.error.code, 'invalid_request');
+  assert.equal(result.structuredContent.error.param, 'detail');
+  assert.match(result.content[0].text, /requires `stream`/);
 
   await client.close();
   await server.close();
@@ -328,14 +538,16 @@ test('schema tool description teaches the compact discovery path', async () => {
   assert.match(schemaTool.description, /compact/i, 'description must mention the compact default');
   assert.match(
     schemaTool.description,
-    /list_streams\s*->\s*schema\(stream\)\s*->\s*query_records/,
-    'description must teach the list_streams -> schema(stream) -> query_records path',
+    /schema\s*->\s*schema\(stream\)\s*->\s*schema\(stream,\s*connection_id\)\s*->\s*query_records/,
+    'description must teach the scoped schema discovery path',
   );
   assert.match(schemaTool.description, /detail: "full"/, 'description must document the full opt-in');
+  assert.match(schemaTool.description, /allowed only with `stream`/, 'description must prevent global full schema calls');
 
-  // The detail/stream inputs are advertised so an agent can opt in.
+  // The detail/stream/connection inputs are advertised so an agent can opt in.
   assert.ok(schemaTool.inputSchema.properties.detail, 'schema must expose a detail input');
   assert.ok(schemaTool.inputSchema.properties.stream, 'schema must expose a stream input');
+  assert.ok(schemaTool.inputSchema.properties.connection_id, 'schema must expose a connection_id input');
   assert.deepEqual(
     schemaTool.inputSchema.properties.detail.enum,
     ['compact', 'full'],
@@ -384,7 +596,7 @@ test('query_records description documents the bounded default page and readable 
   assert.match(
     queryTool.description,
     /structuredContent\.data/,
-    'description must point at the canonical full page in structuredContent.data',
+    'description must point at the machine envelope in structuredContent.data',
   );
 
   await client.close();

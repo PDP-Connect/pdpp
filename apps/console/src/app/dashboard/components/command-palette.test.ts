@@ -108,6 +108,13 @@ test("Deployment nav command is present in live mode", () => {
   assert.equal(deployment.href, "/dashboard/deployment");
 });
 
+test("Connect nav command is present in live mode", () => {
+  const all = listDashboardCommands({ basePath: "/dashboard", mode: "live" });
+  const connect = all.find((c) => c.id === "nav-connect");
+  assert.ok(connect, "nav-connect must exist in live mode");
+  assert.equal(connect.href, "/dashboard/connect");
+});
+
 // mock-owner / sandbox mode
 
 test("quick-owner-token is absent in mock-owner mode", () => {
@@ -136,6 +143,12 @@ test("Event subscriptions is absent in mock-owner mode", () => {
   const all = listDashboardCommands({ basePath: "/sandbox", mode: "mock-owner" });
   const eventSubs = all.find((c) => c.id === "nav-event-subscriptions");
   assert.equal(eventSubs, undefined, "nav-event-subscriptions must not appear in mock-owner mode");
+});
+
+test("Connect setup is absent in mock-owner mode", () => {
+  const all = listDashboardCommands({ basePath: "/sandbox", mode: "mock-owner" });
+  const connect = all.find((c) => c.id === "nav-connect");
+  assert.equal(connect, undefined, "nav-connect must not appear in mock-owner mode");
 });
 
 test("sandbox commands use /sandbox/ base path", () => {

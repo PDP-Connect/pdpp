@@ -16,9 +16,14 @@ function makeFakeRs() {
   const STREAMS = { streams: [{ name: 'orders' }, { name: 'emails' }] };
   const ORDERS = {
     records: [{ id: 'o1', amount: 12 }, { id: 'o2', amount: 99 }],
-    next_cursor: null,
+    has_more: true,
+    next_cursor: 'cursor_orders_page_2',
+    next_changes_since: 'changes_orders_next',
+    meta: { count: { kind: 'exact', value: 42 } },
   };
   const SEARCH = {
+    has_more: true,
+    next_cursor: 'search_cursor_page_2',
     hits: [
       {
         stream: 'orders',
@@ -60,6 +65,16 @@ function makeFakeRs() {
     connector_instance_id: 'conn_chatgpt',
     display_name: 'ChatGPT - everyone@appears.blue',
   };
+  const SLACK_MESSAGE_M1 = {
+    id: 'm1',
+    stream: 'messages',
+    text: 'A Slack message without an explicit title.',
+    sent_at: '2026-04-20T14:23:13.467Z',
+    emitted_at: '2026-06-09T00:00:00.000Z',
+    connection_id: 'conn_slack',
+    connector_key: 'slack',
+    display_name: 'Vana Slack',
+  };
   const STREAM_META = { name: 'orders', record_count: 2 };
   const BLOB = Buffer.from([10, 20, 30, 40, 50]);
 
@@ -78,7 +93,20 @@ function makeFakeRs() {
     }
 
     if (url.pathname === '/v1/schema') {
-      return jsonResponse(SCHEMA);
+      if (url.searchParams.get('detail') === 'full' && !url.searchParams.get('stream')) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              type: 'invalid_request',
+              code: 'invalid_request',
+              param: 'detail',
+              message: 'schema detail "full" requires `stream`',
+            },
+          }),
+          { status: 400, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return jsonResponse(schemaBodyForQuery(SCHEMA, url));
     }
     if (url.pathname === '/v1/streams') {
       return jsonResponse(STREAMS);
@@ -97,6 +125,9 @@ function makeFakeRs() {
     if (url.pathname === '/v1/streams/conversations/records/c1') {
       return jsonResponse(CONVERSATION_C1);
     }
+    if (url.pathname === '/v1/streams/messages/records/m1') {
+      return jsonResponse(SLACK_MESSAGE_M1);
+    }
     if (url.pathname === '/v1/streams/missing/records') {
       return new Response(
         JSON.stringify({
@@ -106,6 +137,38 @@ function makeFakeRs() {
       );
     }
     if (url.pathname === '/v1/search') {
+      if (url.searchParams.get('q') === 'untitled') {
+        return jsonResponse({
+          hits: [
+            {
+              stream: 'messages',
+              id: 'm1',
+              sent_at: '2026-04-20T14:23:13.467Z',
+              emitted_at: '2026-06-09T00:00:00.000Z',
+              connection_id: 'conn_slack',
+              connector_key: 'slack',
+              display_name: 'Vana Slack',
+              snippet: { text: 'A Slack message without an explicit title.' },
+            },
+          ],
+        });
+      }
+      if (url.searchParams.get('q') === 'nested-untitled') {
+        return jsonResponse({
+          hits: [
+            {
+              stream: 'messages',
+              id: 'm2',
+              data: { sent_at: '2026-04-08T16:57:06.018Z' },
+              emitted_at: '2026-04-20T14:23:13.467Z',
+              connection_id: 'conn_slack',
+              connector_key: 'slack',
+              display_name: 'Vana Slack',
+              snippet: { text: 'A nested Slack message without an explicit title.' },
+            },
+          ],
+        });
+      }
       return jsonResponse({ ...SEARCH, _echo: { q: url.searchParams.get('q') } });
     }
     if (url.pathname === '/v1/blobs/blob-1') {
@@ -174,6 +237,7 @@ function makeDiscoveryFakeRs() {
                   rangeOps: ['gte', 'lt'],
                   aggregations: ['group_by_time'],
                 }),
+                sender: fieldCapability({ type: 'string', exact: true, aggregations: ['count_distinct', 'group_by'] }),
                 title: fieldCapability({ type: 'text', lexical: true, semantic: true }),
               },
               expand_capabilities: [],
@@ -218,7 +282,7 @@ function makeDiscoveryFakeRs() {
   const fetch = async (urlInput) => {
     const url = new URL(urlInput.toString());
     if (url.pathname === '/v1/schema') {
-      return jsonResponse(SCHEMA);
+      return jsonResponse(schemaBodyForQuery(SCHEMA, url));
     }
     if (url.pathname === '/v1/streams') {
       return jsonResponse(STREAMS);
@@ -238,6 +302,25 @@ function jsonResponse(body, init = {}) {
     headers: { 'content-type': 'application/json' },
     ...init,
   });
+}
+
+function schemaBodyForQuery(schema, url) {
+  const streamName = url.searchParams.get('stream');
+  if (!streamName) return schema;
+  if (Array.isArray(schema.streams)) {
+    const streams = schema.streams.filter((entry) => schemaStreamName(entry) === streamName);
+    return { ...schema, streams, stream_count: streams.length };
+  }
+  if (schema.data && typeof schema.data === 'object' && Array.isArray(schema.data.streams)) {
+    const streams = schema.data.streams.filter((entry) => schemaStreamName(entry) === streamName);
+    return { ...schema, data: { ...schema.data, streams, stream_count: streams.length } };
+  }
+  return schema;
+}
+
+function schemaStreamName(entry) {
+  if (typeof entry === 'string') return entry;
+  return entry?.name ?? entry?.stream ?? entry?.stream_name ?? null;
 }
 
 async function connectClient(fakeFetch) {
@@ -261,107 +344,103 @@ test('lists the expected tools and annotates read-only tools as read-only', asyn
   const names = tools.tools.map((tool) => tool.name).sort();
   assert.deepEqual(names, [
     'aggregate',
-    'create_event_subscription',
-    'delete_event_subscription',
-    'discover_event_subscription_capabilities',
     'fetch',
-    'fetch_blob',
-    'get_event_subscription',
-    'list_event_subscriptions',
-    'list_streams',
     'query_records',
     'schema',
     'search',
-    'send_test_event',
-    'update_event_subscription',
   ]);
 
   const READ_ONLY = new Set([
     'aggregate',
     'schema',
-    'list_streams',
     'query_records',
     'search',
     'fetch',
-    'fetch_blob',
-    'list_event_subscriptions',
-    'get_event_subscription',
-    'discover_event_subscription_capabilities',
   ]);
   for (const tool of tools.tools) {
-    if (READ_ONLY.has(tool.name)) {
-      assert.equal(tool.annotations?.readOnlyHint, true, `${tool.name} must be readOnlyHint=true`);
-      assert.equal(tool.annotations?.destructiveHint, false);
-    } else {
-      assert.equal(tool.annotations?.readOnlyHint, false, `${tool.name} must be readOnlyHint=false`);
-      assert.equal(tool.annotations?.openWorldHint, false, `${tool.name} must be openWorldHint=false`);
-    }
+    assert.ok(READ_ONLY.has(tool.name), `${tool.name} must be part of the read-only normal surface`);
+    assert.equal(tool.annotations?.readOnlyHint, true, `${tool.name} must be readOnlyHint=true`);
+    assert.equal(tool.annotations?.destructiveHint, false);
+    assert.equal(tool.annotations?.idempotentHint, true);
+    assert.equal(tool.annotations?.openWorldHint, false);
   }
 
   await client.close();
   await server.close();
 });
 
-test('schema tool returns RS schema verbatim under the scoped token with detail=full', async () => {
+test('schema detail=full requires stream to avoid global schema blowups', async () => {
   const { fetch, calls } = makeFakeRs();
   const { client, server } = await connectClient(fetch);
 
   const result = await client.callTool({ name: 'schema', arguments: { detail: 'full' } });
-  assert.equal(result.isError, undefined);
-  assert.deepEqual(result.structuredContent.data, { version: '1', streams: ['orders', 'emails'] });
-  const schemaCall = calls.find((call) => call.url.endsWith('/v1/schema'));
-  assert.ok(schemaCall, 'must hit /v1/schema');
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent.error.code, 'invalid_request');
+  assert.equal(result.structuredContent.error.param, 'detail');
+  assert.equal(
+    calls.filter((call) => new URL(call.url).pathname === '/v1/schema').length,
+    1,
+    'global full rejection is canonical RS behavior, not MCP-local preflight',
+  );
+
+  const scoped = await client.callTool({ name: 'schema', arguments: { stream: 'orders', detail: 'full' } });
+  assert.equal(scoped.isError, undefined);
+  assert.deepEqual(scoped.structuredContent.data, { version: '1', streams: ['orders'], stream_count: 1 });
+  const schemaCall = calls.find((call) => new URL(call.url).pathname === '/v1/schema');
+  assert.ok(schemaCall, 'scoped full must hit /v1/schema');
   assert.equal(schemaCall.auth, 'Bearer scoped-token');
+  const schemaCalls = calls
+    .filter((call) => new URL(call.url).pathname === '/v1/schema')
+    .map((call) => new URL(call.url));
+  assert.equal(schemaCalls.length, 2, 'global full and scoped full should each forward once to RS');
+  assert.equal(schemaCalls[1].searchParams.has('view'), false, 'full fetch must not request compact view');
+  assert.equal(schemaCalls[1].searchParams.get('detail'), 'full');
+  assert.equal(schemaCalls[1].searchParams.get('stream'), 'orders', 'scoped full must ask the RS for the selected stream');
 
   await client.close();
   await server.close();
 });
 
 test('discovery tools include parseable stream and schema facts in text content', async () => {
-  const { fetch, streamsBody } = makeDiscoveryFakeRs();
+  const { fetch } = makeDiscoveryFakeRs();
   const { client, server } = await connectClient(fetch);
 
   const schemaResult = await client.callTool({ name: 'schema', arguments: {} });
   assert.equal(schemaResult.isError, undefined);
-  // Default detail is compact: each field collapses to a terse capability flag
-  // string (type, grant, usable filter/search/aggregation flags) — the raw
-  // per-field JSON Schema and verbose {declared,usable} sub-objects are dropped.
-  // Connection identity and connector metadata survive.
-  const compactConnector = schemaResult.structuredContent.data.data.connectors[0];
+  // Default detail is compact index-only: stream/source identity survives, but
+  // per-field capability detail waits for schema(stream).
+  const compactConnector = schemaResult.structuredContent.data.connectors[0];
   const compactStream = compactConnector.streams[0];
-  assert.equal(typeof compactStream.field_capabilities.id, 'string', 'compact schema field is a terse flag string');
-  assert.match(compactStream.field_capabilities.id, /t=string/, 'compact flag string keeps declared field type');
-  assert.match(compactStream.field_capabilities.id, /(^|,)eq(,|$)/, 'compact flag string keeps usable capability flags');
-  assert.match(
-    compactStream.field_capabilities.created_at,
-    /r=gte\|lt/,
-    'compact flag string keeps usable range operators',
-  );
+  assert.equal(compactStream.field_capabilities, undefined, 'global schema is an index, not field detail');
   assert.deepEqual(
     compactConnector.granted_connections,
     [{ connection_id: 'conn_work', display_name: 'Work Claude' }],
     'compact schema must preserve shared connection identity at connector level',
   );
   assert.equal(compactStream.granted_connections, undefined, 'compact schema must not repeat shared connection identity per stream');
-  assert.equal(schemaResult.structuredContent.data.data.detail, 'compact');
+  assert.equal(schemaResult.structuredContent.data.detail, 'compact');
   const schemaText = schemaResult.content[0].text;
   assert.match(schemaText, /PDPP schema: connectors=1 streams=1/);
   assert.match(schemaText, /stream name="conversations"/);
   assert.match(schemaText, /connector_key="claude-code"/);
   assert.match(schemaText, /display_name="Claude Code"/);
   assert.match(schemaText, /connections=\{connection_id:conn_work,display_name:Work_Claude\}/);
-  assert.match(schemaText, /id\[t=string,eq\]/);
-  assert.match(schemaText, /created_at\[t=timestamp,r=gte\|lt,a=group_by_time\]/);
-  assert.doesNotMatch(schemaText, /See structuredContent\.data/);
+  assert.match(schemaText, /call schema\(stream, connection_id\?\) for per-field capability flags/);
+  assert.doesNotMatch(schemaText, /id\[t=string,eq\]/);
 
-  const streamsResult = await client.callTool({ name: 'list_streams', arguments: {} });
-  assert.equal(streamsResult.isError, undefined);
-  assert.deepEqual(streamsResult.structuredContent.data, streamsBody);
-  const streamsText = streamsResult.content[0].text;
-  assert.match(streamsText, /PDPP streams: 2 stream\(s\)/);
-  assert.match(streamsText, /stream name="conversations" connection_id="conn_work" connector_key="claude-code" display_name="Work Claude" record_count=12/);
-  assert.match(streamsText, /stream name="messages" connection_id="conn_personal" connector_key="claude-code" display_name="Personal Claude" record_count=5/);
-  assert.doesNotMatch(streamsText, /See structuredContent\.data/);
+  const scopedSchema = await client.callTool({ name: 'schema', arguments: { stream: 'conversations' } });
+  const scopedStream = scopedSchema.structuredContent.data.connectors[0].streams[0];
+  assert.equal(typeof scopedStream.field_capabilities.id, 'string', 'scoped schema field is a terse flag string');
+  assert.match(scopedStream.field_capabilities.id, /t=string/, 'scoped flag string keeps declared field type');
+  assert.match(scopedStream.field_capabilities.id, /(^|,)eq(,|$)/, 'scoped flag string keeps usable capability flags');
+  assert.match(scopedStream.field_capabilities.created_at, /r=gte\|lt/, 'scoped flag string keeps usable range operators');
+  const scopedText = scopedSchema.content[0].text;
+  assert.match(scopedText, /field_capability_legend/);
+  assert.match(scopedText, /id\[t=string,eq\]/);
+  assert.match(scopedText, /created_at\[t=timestamp,r=gte\|lt,a=group_by_time\]/);
+  assert.match(scopedText, /sender\[t=string,eq,a=count_distinct\|group_by\]/);
+  assert.match(scopedText, /aggregations=count_distinct=sender;group_by=sender;group_by_time=created_at/);
+  assert.doesNotMatch(schemaText, /See structuredContent\.data/);
 
   await client.close();
   await server.close();
@@ -382,6 +461,10 @@ test('query_records forwards supported query params', async () => {
     { id: 'o2', amount: 99 },
   ]);
   assert.match(result.content[0].text, /records from stream "orders": 2 record\(s\)/);
+  assert.match(result.content[0].text, /has_more=true/);
+  assert.match(result.content[0].text, /next_cursor="cursor_orders_page_2"/);
+  assert.match(result.content[0].text, /next_changes_since="changes_orders_next"/);
+  assert.match(result.content[0].text, /count=exact:42/);
   assert.match(result.content[0].text, /record\[0\] \{"id":"o1","amount":12\}/);
   assert.match(result.content[0].text, /record\[1\] \{"id":"o2","amount":99\}/);
   const call = calls.find((entry) => entry.url.includes('/v1/streams/orders/records'));
@@ -478,7 +561,9 @@ test('search tool forwards q and returns hits', async () => {
 
   assert.equal(result.isError, undefined);
   assert.equal(result.structuredContent.data._echo.q, 'pasta');
-  assert.equal(result.structuredContent.data.hits[0].id, 'o2');
+  assert.equal(result.structuredContent.data.results_ref, 'structuredContent.results');
+  assert.equal(result.structuredContent.data.result_count, 1);
+  assert.equal(result.structuredContent.data.hits, undefined);
   assert.deepEqual(result.structuredContent.results, [
     {
       id: 'orders:o2',
@@ -493,10 +578,45 @@ test('search tool forwards q and returns hits', async () => {
   ]);
   // Prose content is a concise, agent-visible preview, not a JSON dump.
   assert.match(result.content[0].text, /search: 1 hit/i);
+  assert.match(result.content[0].text, /has_more=true/);
+  assert.match(result.content[0].text, /next_cursor="search_cursor_page_2"/);
   assert.match(result.content[0].text, /id=orders:o2/);
   assert.match(result.content[0].text, /connection_id=conn_orders/);
   assert.match(result.content[0].text, /Pasta order/);
   assert.match(result.content[0].text, /structuredContent/);
+
+  await client.close();
+  await server.close();
+});
+
+test('search fallback title uses authored timestamp before emitted_at', async () => {
+  const { fetch } = makeFakeRs();
+  const { client, server } = await connectClient(fetch);
+
+  const result = await client.callTool({
+    name: 'search',
+    arguments: { q: 'untitled' },
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.equal(result.structuredContent.results[0].title, 'Vana Slack / messages / 2026-04-20T14:23:13.467Z');
+  assert.equal(result.structuredContent.results[0].connector_key, 'slack');
+
+  await client.close();
+  await server.close();
+});
+
+test('search fallback title uses nested authored timestamp before top-level emitted_at', async () => {
+  const { fetch } = makeFakeRs();
+  const { client, server } = await connectClient(fetch);
+
+  const result = await client.callTool({
+    name: 'search',
+    arguments: { q: 'nested-untitled' },
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.equal(result.structuredContent.results[0].title, 'Vana Slack / messages / 2026-04-08T16:57:06.018Z');
 
   await client.close();
   await server.close();
@@ -517,18 +637,18 @@ test('fetch tool returns ChatGPT-compatible document shape', async () => {
   assert.equal(result.structuredContent.text, 'Pasta order for $99.');
   assert.equal(result.structuredContent.url, 'https://merchant.test/o2');
   assert.deepEqual(result.structuredContent.metadata.amount, 99);
-  assert.match(result.content[0].text, /fetched id=orders:o2/);
-  assert.match(result.content[0].text, /title="Order o2"/);
-  assert.match(result.content[0].text, /connection_id=conn_orders/);
-  assert.match(result.content[0].text, /display_name="Merchant orders"/);
-  assert.match(result.content[0].text, /text_preview="Pasta order for \$99\."/);
+  assert.equal(result.structuredContent.data, undefined);
+  const mirrored = JSON.parse(result.content[0].text);
+  assert.deepEqual(mirrored, result.structuredContent);
+  assert.equal(mirrored.metadata.connection_id, 'conn_orders');
+  assert.equal(mirrored.metadata.display_name, 'Merchant orders');
   assert.ok(calls.some((entry) => entry.url.endsWith('/v1/streams/orders/records/o2')));
 
   await client.close();
   await server.close();
 });
 
-test('fetch text channel is self-sufficient for canonical wrapped records', async () => {
+test('fetch content text mirrors document JSON for hosts that hide structured output', async () => {
   const { fetch } = makeFakeRs();
   const { client, server } = await connectClient(fetch);
 
@@ -547,14 +667,29 @@ test('fetch text channel is self-sufficient for canonical wrapped records', asyn
   assert.equal(result.structuredContent.url, 'https://chatgpt.test/c/c1');
 
   // This is the model-visible path for clients that hide structuredContent.
-  const text = result.content[0].text;
-  assert.match(text, /fetched id=conversations:c1/);
-  assert.match(text, /title="Redactable developer ODCs"/);
-  assert.match(text, /connection_id=conn_chatgpt/);
-  assert.match(text, /connector_key=chatgpt/);
-  assert.match(text, /display_name="ChatGPT - everyone@appears.blue"/);
-  assert.match(text, /text_preview="Jeremy and I had a call with Redactable yesterday/);
-  assert.doesNotMatch(text, /^fetched .* See structuredContent/m);
+  const text = JSON.parse(result.content[0].text);
+  assert.deepEqual(text, result.structuredContent);
+  assert.equal(text.metadata.connection_id, 'conn_chatgpt');
+  assert.equal(text.metadata.connector_key, 'chatgpt');
+  assert.equal(text.metadata.display_name, 'ChatGPT - everyone@appears.blue');
+  assert.match(text.text, /Jeremy and I had a call with Redactable yesterday/);
+
+  await client.close();
+  await server.close();
+});
+
+test('fetch fallback title uses source identity and authored timestamp', async () => {
+  const { fetch } = makeFakeRs();
+  const { client, server } = await connectClient(fetch);
+
+  const result = await client.callTool({
+    name: 'fetch',
+    arguments: { id: 'messages:m1', connection_id: 'conn_slack' },
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.equal(result.structuredContent.title, 'Vana Slack / messages / 2026-04-20T14:23:13.467Z');
+  assert.equal(result.structuredContent.metadata.connector_key, 'slack');
 
   await client.close();
   await server.close();
@@ -579,12 +714,12 @@ test('search to fetch journey is executable from model-visible text alone', asyn
     name: 'fetch',
     arguments: { id, connection_id: connectionId },
   });
-  const fetchText = fetchResult.content[0].text;
+  const fetchText = JSON.parse(fetchResult.content[0].text);
 
-  assert.match(fetchText, /fetched id=orders:o2/);
-  assert.match(fetchText, /title="Order o2"/);
-  assert.match(fetchText, /connection_id=conn_orders/);
-  assert.match(fetchText, /text_preview="Pasta order for \$99\."/);
+  assert.equal(fetchText.id, 'orders:o2');
+  assert.equal(fetchText.title, 'Order o2');
+  assert.equal(fetchText.metadata.connection_id, 'conn_orders');
+  assert.equal(fetchText.text, 'Pasta order for $99.');
 
   await client.close();
   await server.close();
@@ -622,41 +757,6 @@ test('fetch tool rejects path-traversal result ids before hitting RS', async () 
   assert.equal(result.isError, true);
   assert.match(result.structuredContent.error.message, /invalid characters/);
   assert.equal(calls.some((entry) => entry.url.includes('/v1/streams/orders/records')), false);
-
-  await client.close();
-  await server.close();
-});
-
-test('fetch_blob returns base64 payload with mime type', async () => {
-  const { fetch } = makeFakeRs();
-  const { client, server } = await connectClient(fetch);
-
-  const result = await client.callTool({
-    name: 'fetch_blob',
-    arguments: { blob_id: 'blob-1' },
-  });
-
-  assert.equal(result.isError, undefined);
-  assert.equal(result.structuredContent.mime_type, 'image/png');
-  assert.equal(result.structuredContent.size, 5);
-  const bytes = Buffer.from(result.structuredContent.bytes_base64, 'base64');
-  assert.deepEqual([...bytes], [10, 20, 30, 40, 50]);
-
-  await client.close();
-  await server.close();
-});
-
-test('fetch_blob rejects path-traversal blob_id', async () => {
-  const { fetch } = makeFakeRs();
-  const { client, server } = await connectClient(fetch);
-
-  const result = await client.callTool({
-    name: 'fetch_blob',
-    arguments: { blob_id: '../../etc/passwd' },
-  });
-
-  assert.equal(result.isError, true);
-  assert.match(result.structuredContent.error.message, /invalid characters/);
 
   await client.close();
   await server.close();
@@ -725,9 +825,18 @@ test('tool output never contains the bearer token', async () => {
   const { fetch } = makeFakeRs();
   const { client, server } = await connectClient(fetch);
 
-  const tools = ['schema', 'list_streams'];
+  const tools = ['schema', 'query_records', 'aggregate', 'search', 'fetch'];
   for (const name of tools) {
-    const args = name === 'query_records' ? { stream: 'orders' } : {};
+    const args =
+      name === 'query_records'
+        ? { stream: 'orders' }
+        : name === 'aggregate'
+          ? { stream: 'orders', metric: 'count' }
+          : name === 'search'
+            ? { q: 'orders' }
+            : name === 'fetch'
+              ? { id: 'orders:o1' }
+              : {};
     const result = await client.callTool({ name, arguments: args });
     const serialized = JSON.stringify(result);
     assert.ok(!serialized.includes('scoped-token'), `${name} result must not echo bearer token`);
@@ -771,14 +880,17 @@ test('Streamable HTTP helper handles initialize and tools/list statelessly', asy
     fetch
   );
   assert.equal(tools.status, 200);
+  assert.equal(tools.headers.get('x-pdpp-mcp-profile'), null);
   const listed = await tools.json();
+  const names = listed.result.tools.map((tool) => tool.name).sort();
+  assert.deepEqual(names, ['aggregate', 'fetch', 'query_records', 'schema', 'search']);
   assert.ok(listed.result.tools.some((tool) => tool.name === 'fetch'));
   assert.ok(listed.result.tools.some((tool) => tool.name === 'search'));
 });
 
-async function postMcpJson(message, fakeFetch) {
+async function postMcpJson(message, fakeFetch, path = '/mcp') {
   return await handleStreamableHttpRequest(
-    new Request('https://provider.test/mcp', {
+    new Request(`https://provider.test${path}`, {
       method: 'POST',
       headers: {
         accept: 'application/json, text/event-stream',

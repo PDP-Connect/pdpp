@@ -70,13 +70,16 @@ storage. This avoids both an outbound self-fetch and a special SSRF bypass.
 
 ### Cap fetched document size and timeout
 
-Decision: abort the CIMD fetch if the response body exceeds 64 KB or the fetch
-takes longer than 5 seconds. Parse only the first 64 KB if a streaming decode is
+Decision: abort the CIMD fetch if the response body exceeds 5 KB or the fetch
+takes longer than 5 seconds. Parse only the first 5 KB if a streaming decode is
 used. Do not automatically follow HTTP redirects. Return an authorization error
 to the caller if any fetch, status, timeout, size, or validation check fails
 (CIMD §4.3, §6.6).
 
-Rationale: an oversized or slow response is a resource-exhaustion vector.
+Rationale: an oversized or slow response is a resource-exhaustion vector. The
+5 KB cap follows CIMD-01's recommended maximum for client metadata documents;
+local MCP client documents should remain tiny JSON metadata, not a general
+payload channel.
 
 ### Cache fetched documents
 
@@ -151,10 +154,34 @@ only: shared-secret methods are rejected, `client_secret` fields are forbidden,
 and `private_key_jwt` is deferred until the token endpoint implements that
 client-authentication method.
 
-### Dashboard command templates
+### Connect Agents setup page
 
-Decision: the operator dashboard shows copy-paste setup commands for each
-operator-created client identity. Templates:
+Decision: the operator dashboard exposes a single low-cognitive-tax "Connect
+Agents" page or panel for recommended agent entrypoints. The page defaults to
+hosted MCP OAuth setup, shows one client-specific command at a time, and keeps
+advanced paths collapsed. It manages operator-created client identities as part
+of that flow rather than presenting a separate OAuth administration surface.
+
+Rationale: agent setup already carries cognitive tax from OAuth, client
+identity, grant scope, local callbacks, CLI caches, and owner-token boundaries.
+The reference should make the recommended path obvious and avoid turning setup
+into a docs portal or a multi-layer component maze.
+
+The page should present entrypoints in this order:
+
+1. Hosted MCP OAuth (recommended): one MCP URL or command, browser approval, and
+   grant-scoped token storage by the client.
+2. PDPP CLI: terminal workflow for scoped grant setup, status, and
+   troubleshooting.
+3. Agent skill / `llms.txt`: discovery material for agents that should learn
+   the workflow without guessing endpoints.
+4. Local stdio MCP adapter: secondary path when a local scoped grant token is
+   already available.
+5. Owner-agent/API credentials: advanced/headless path, explicitly labeled as
+   owner-level or API-level automation and not normal MCP setup.
+
+For each operator-created client identity, the page shows copy-paste setup
+commands. Templates:
 
 Claude Code (default OAuth discovery):
 ```
@@ -191,7 +218,7 @@ authorize flow.
 ## Risks / Trade-offs
 
 - Outbound fetch on the authorize hot path: mitigated by caching (60 s – 24 h),
-  5 s timeout, and 64 KB cap. A blocking fetch on cache miss adds latency; this
+  5 s timeout, and 5 KB cap. A blocking fetch on cache miss adds latency; this
   is acceptable given infrequent first-connects.
 - CIMD is an early Internet-Draft (expires 2026-09-03): field names in AS
   metadata may change. Mitigation: the PDPP-specific vocabulary

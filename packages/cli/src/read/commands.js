@@ -7,7 +7,7 @@ const COMMANDS = new Set(['schema', 'streams', 'query-records', 'fetch', 'search
 
 export function readHelp(binName = 'pdpp') {
   return `Grant-scoped reads (uses pdpp connect/token cache, never owner credentials):
-  ${binName} read schema <provider-url> [--cache-root <dir>] [--format json|table]
+  ${binName} read schema <provider-url> [--view compact] [--stream <name>] [--connection-id <cin>] [--cache-root <dir>] [--format json|table]
   ${binName} read streams <provider-url> [--connection-id <cin>] [--cache-root <dir>] [--format json|table]
   ${binName} read query-records <provider-url> <stream> [--connection-id <cin>] [--limit <n>] [--cursor <cursor>] [--fields a,b] [--sort <spec>] [--count none|estimated|exact] [--filter-json <json>] [--format json|jsonl|table]
   ${binName} read fetch <provider-url> <stream> <record-id> [--connection-id <cin>] [--fields a,b] [--format json|table]
@@ -56,7 +56,10 @@ export function buildReadRequest(command, positionals, flags, providerUrl) {
   if (!origin) throw new PdppUsageError(`Invalid provider URL: ${providerUrl}`);
 
   if (command === 'schema') {
-    return { method: 'GET', url: buildUrl(origin, '/v1/schema', pickQuery(flags, ['connector-id'])) };
+    return {
+      method: 'GET',
+      url: buildUrl(origin, '/v1/schema', pickQuery(flags, ['connector-id', 'connection-id', 'stream', 'view'])),
+    };
   }
 
   if (command === 'streams') {

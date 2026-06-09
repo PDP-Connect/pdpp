@@ -265,9 +265,9 @@ export function mountRsHostedMcp(app: AppLike, ctx: MountRsHostedMcpContext): vo
       res.setHeader("x-pdpp-grant-package-member-count", String(access.members.length));
     } else {
       // Standalone (`client`-token) path: build the single-bearer RsClient
-      // against the internal base so its self-calls (incl. PATCH
-      // update_event_subscription) avoid the public-edge hairpin too — parity
-      // with the package path's child clients. The advertised `providerUrl`
+      // against the internal base so its self-calls avoid the public-edge
+      // hairpin too — parity with the package path's child clients. The
+      // advertised `providerUrl`
       // stays the public `resource` (display/provenance only; all fetches go
       // through the injected rsClient). When no internal base is configured,
       // internalBase === resource, so this is a no-op vs prior behavior.

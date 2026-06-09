@@ -1660,6 +1660,52 @@ function hasGrantRecordConstraints(streamGrant) {
   );
 }
 
+function needsCandidateRecordScan(streamGrant, compiledFilters) {
+  return !!(compiledFilters?.length || hasGrantRecordConstraints(streamGrant));
+}
+
+function allowedCandidateRecordKeysFromRows(rows, { streamGrant, manifestStream, compiledFilters }) {
+  const allowed = [];
+  for (const row of rows) {
+    let data;
+    try {
+      data = row.record_json ? JSON.parse(row.record_json) : null;
+    } catch {
+      continue;
+    }
+    if (!passesGrantRecordConstraints(data, row.record_key, streamGrant, manifestStream)) continue;
+    if (!passesRequestFilters(data, compiledFilters)) continue;
+    allowed.push(row.record_key);
+  }
+  return allowed;
+}
+
+async function buildPostgresCandidateRecordKeys({ connectorId, connectorInstanceId, streamName, streamGrant, manifestStream, compiledFilters }) {
+  if (!needsCandidateRecordScan(streamGrant, compiledFilters)) return null;
+
+  const where = connectorInstanceId
+    ? ['connector_instance_id = $1', 'stream = $2', 'deleted = FALSE']
+    : ['connector_id = $1', 'stream = $2', 'deleted = FALSE'];
+  const binds = [connectorInstanceId || connectorId, streamName];
+  if (Array.isArray(streamGrant?.resources) && streamGrant.resources.length > 0) {
+    const placeholders = streamGrant.resources.map((_, index) => `$${binds.length + index + 1}`);
+    where.push(`record_key IN (${placeholders.join(', ')})`);
+    binds.push(...streamGrant.resources);
+  }
+
+  // REVIEWED-DYNAMIC: candidate-key scan includes a variable resources IN
+  // clause and optional JS-side grant/filter predicates, so the SQL shape is
+  // grant-dependent and cannot be a static registry artifact.
+  const rows = (await postgresQuery(
+    `SELECT record_key, record_json::text AS record_json
+     FROM records
+     WHERE ${where.join(' AND ')}`,
+    binds,
+  )).rows;
+
+  return allowedCandidateRecordKeysFromRows(rows, { streamGrant, manifestStream, compiledFilters });
+}
+
 function buildCandidateRecordKeys({ connectorId, connectorInstanceId, streamName, streamGrant, manifestStream, compiledFilters }) {
   const needsRecordScan = compiledFilters?.length || hasGrantRecordConstraints(streamGrant);
   if (!needsRecordScan) return null;
@@ -1682,19 +1728,7 @@ function buildCandidateRecordKeys({ connectorId, connectorInstanceId, streamName
     WHERE ${where.join(' AND ')}
   `, binds);
 
-  const allowed = [];
-  for (const row of rows) {
-    let data;
-    try {
-      data = row.record_json ? JSON.parse(row.record_json) : null;
-    } catch {
-      continue;
-    }
-    if (!passesGrantRecordConstraints(data, row.record_key, streamGrant, manifestStream)) continue;
-    if (!passesRequestFilters(data, compiledFilters)) continue;
-    allowed.push(row.record_key);
-  }
-  return allowed;
+  return allowedCandidateRecordKeysFromRows(rows, { streamGrant, manifestStream, compiledFilters });
 }
 
 export function buildSemanticSearchPlanForGrant({ manifest, grant, streamsFilter, compiledFilter = null, connectorId = null, connectorInstanceId = null }) {
@@ -1724,7 +1758,8 @@ export function buildSemanticSearchPlanForGrant({ manifest, grant, streamsFilter
       : declared.slice();
     if (searchable.length === 0) continue;
     const filters = compiledFilter?.streamName === mStream.name ? compiledFilter.filters : [];
-    const candidateRecordKeys = connectorId
+    const shouldScanCandidates = needsCandidateRecordScan(streamGrant, filters);
+    const candidateRecordKeys = connectorId && shouldScanCandidates && !isPostgresStorageBackend()
       ? buildCandidateRecordKeys({
         connectorId,
         connectorInstanceId,
@@ -1734,6 +1769,9 @@ export function buildSemanticSearchPlanForGrant({ manifest, grant, streamsFilter
         compiledFilters: filters,
       })
       : null;
+    const postgresCandidateFilter = connectorId && shouldScanCandidates && isPostgresStorageBackend()
+      ? { streamGrant, manifestStream: mStream, compiledFilters: filters }
+      : null;
 
     plan.push({
       streamName: mStream.name,
@@ -1741,6 +1779,7 @@ export function buildSemanticSearchPlanForGrant({ manifest, grant, streamsFilter
       scopeKeys: searchable.map((f) => encodeScopeKey(mStream.name, f)),
       ...(connectorInstanceId ? { connectorInstanceId } : {}),
       ...(candidateRecordKeys ? { candidateRecordKeys } : {}),
+      ...(postgresCandidateFilter ? { postgresCandidateFilter } : {}),
     });
   }
   return plan;
@@ -2044,13 +2083,23 @@ async function buildSemanticSnapshot({ q, perConnectorPlans, isOwner }) {
       for (const entry of planEntries) {
         if (entry.scopeKeys.length === 0) continue;
         if (isPostgresStorageBackend()) {
+          const recordKeys = Array.isArray(entry.candidateRecordKeys)
+            ? entry.candidateRecordKeys
+            : entry.postgresCandidateFilter
+              ? await buildPostgresCandidateRecordKeys({
+                connectorId,
+                connectorInstanceId: entry.connectorInstanceId,
+                streamName: entry.streamName,
+                ...entry.postgresCandidateFilter,
+              })
+              : null;
           entryHits.push(...await postgresSemanticSearch({
             connectorId,
             connectorInstanceId: entry.connectorInstanceId,
             scopeKeys: entry.scopeKeys,
             queryVector,
             limit: PER_CONNECTOR_LIMIT,
-            recordKeys: entry.candidateRecordKeys,
+            recordKeys,
           }));
         } else {
           entryHits.push(...await index.queryPerConnector({
@@ -2157,12 +2206,14 @@ async function hydrateSemanticSearchResult({ hit }) {
       );
 
   const emittedAt = recordRow?.emitted_at ?? null;
+  let authoredAt = null;
   let snippet = null;
   if (recordRow?.record_json) {
     try {
       const data = typeof recordRow.record_json === 'string'
         ? JSON.parse(recordRow.record_json)
         : recordRow.record_json;
+      authoredAt = authoredTimestampFromRecordData(data);
       const value = data?.[hit.topField];
       if (typeof value === 'string' && value.length > 0) {
         snippet = { field: hit.topField, text: pickVerbatimExcerpt(value) };
@@ -2171,7 +2222,16 @@ async function hydrateSemanticSearchResult({ hit }) {
       // Corrupt record_json — skip snippet rather than fabricate.
     }
   }
-  return { emittedAt, snippet };
+  return { emittedAt, authoredAt, snippet };
+}
+
+function authoredTimestampFromRecordData(data) {
+  if (!data || typeof data !== 'object') return null;
+  for (const key of ['sent_at', 'sentAt', 'authored_at', 'authoredAt', 'created_at', 'createdAt', 'source_created_at', 'sourceCreatedAt', 'occurred_at', 'occurredAt', 'updated_at', 'updatedAt']) {
+    const value = data[key];
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return null;
 }
 
 /**

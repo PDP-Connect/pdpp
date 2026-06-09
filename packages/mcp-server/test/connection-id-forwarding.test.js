@@ -6,10 +6,10 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { createPdppMcpServer } from '../src/server.js';
 
-// Asserts the local @pdpp/mcp-server forwards `connection_id` (and the
-// deprecated `connector_instance_id` alias) verbatim to the RS so multi-
-// connection callers can disambiguate without an extra round trip. Owned
-// by openspec/changes/expose-connection-identity-on-public-read.
+// Asserts the local @pdpp/mcp-server forwards canonical `connection_id` to the
+// RS so multi-connection callers can disambiguate without an extra round trip.
+// The deprecated REST alias `connector_instance_id` is intentionally not part
+// of the SLVP MCP input surface.
 
 function makeRecordingFetch() {
   const calls = [];
@@ -35,6 +35,29 @@ function makeRecordingFetch() {
             connector_instance_id: 'cin_bbb',
           },
         ],
+      });
+    }
+    if (url.pathname === '/v1/schema') {
+      return jsonResponse({
+        data: {
+          object: 'schema',
+          connectors: [
+            {
+              object: 'connector',
+              connector_key: 'amazon',
+              streams: [
+                {
+                  object: 'stream_metadata',
+                  name: 'orders',
+                  connection_id: url.searchParams.get('connection_id') ?? 'cin_aaa',
+                  field_capabilities: {
+                    id: { type: 'string', exact_filter: { declared: true, usable: true } },
+                  },
+                },
+              ],
+            },
+          ],
+        },
       });
     }
     if (url.pathname === '/v1/streams/orders/records') {
@@ -132,31 +155,6 @@ function findCall(calls, predicate) {
   return new URL(call.url);
 }
 
-test('list_streams forwards connection_id and exposes it as a tool input', async () => {
-  const { fetch, calls } = makeRecordingFetch();
-  const { client, server } = await connectClient(fetch);
-
-  const tools = await client.listTools();
-  const listStreams = tools.tools.find((tool) => tool.name === 'list_streams');
-  assert.ok(listStreams.inputSchema.properties.connection_id, 'list_streams must declare connection_id');
-  assert.ok(
-    listStreams.inputSchema.properties.connector_instance_id,
-    'list_streams must declare connector_instance_id alias',
-  );
-  assert.match(
-    listStreams.description,
-    /connection_id/,
-    'list_streams description must advertise connection_id',
-  );
-
-  await client.callTool({ name: 'list_streams', arguments: { connection_id: 'cin_aaa' } });
-  const url = findCall(calls, (u) => u.pathname === '/v1/streams');
-  assert.equal(url.searchParams.get('connection_id'), 'cin_aaa');
-
-  await client.close();
-  await server.close();
-});
-
 test('query_records forwards connection_id', async () => {
   const { fetch, calls } = makeRecordingFetch();
   const { client, server } = await connectClient(fetch);
@@ -172,22 +170,6 @@ test('query_records forwards connection_id', async () => {
   await server.close();
 });
 
-test('query_records forwards the deprecated connector_instance_id alias verbatim', async () => {
-  const { fetch, calls } = makeRecordingFetch();
-  const { client, server } = await connectClient(fetch);
-
-  await client.callTool({
-    name: 'query_records',
-    arguments: { stream: 'orders', connector_instance_id: 'cin_aaa' },
-  });
-  const url = findCall(calls, (u) => u.pathname === '/v1/streams/orders/records');
-  assert.equal(url.searchParams.get('connector_instance_id'), 'cin_aaa');
-  assert.equal(url.searchParams.get('connection_id'), null);
-
-  await client.close();
-  await server.close();
-});
-
 test('search forwards connection_id', async () => {
   const { fetch, calls } = makeRecordingFetch();
   const { client, server } = await connectClient(fetch);
@@ -197,6 +179,23 @@ test('search forwards connection_id', async () => {
     arguments: { q: 'pasta', connection_id: 'cin_bbb' },
   });
   const url = findCall(calls, (u) => u.pathname === '/v1/search');
+  assert.equal(url.searchParams.get('connection_id'), 'cin_bbb');
+
+  await client.close();
+  await server.close();
+});
+
+test('schema forwards connection_id for scoped stream discovery', async () => {
+  const { fetch, calls } = makeRecordingFetch();
+  const { client, server } = await connectClient(fetch);
+
+  await client.callTool({
+    name: 'schema',
+    arguments: { stream: 'orders', connection_id: 'cin_bbb' },
+  });
+  const url = findCall(calls, (u) => u.pathname === '/v1/schema');
+  assert.equal(url.searchParams.get('view'), 'compact');
+  assert.equal(url.searchParams.get('stream'), 'orders');
   assert.equal(url.searchParams.get('connection_id'), 'cin_bbb');
 
   await client.close();
@@ -239,38 +238,11 @@ test('fetch surfaces ambiguous_connection envelope and accepts retry with connec
   await server.close();
 });
 
-test('fetch_blob surfaces ambiguous_connection envelope and forwards connection_id', async () => {
-  const { fetch, calls } = makeRecordingFetch();
-  const { client, server } = await connectClient(fetch);
-
-  const ambiguous = await client.callTool({ name: 'fetch_blob', arguments: { blob_id: 'blob-1' } });
-  assert.equal(ambiguous.isError, true);
-  assert.equal(ambiguous.structuredContent.error.code, 'ambiguous_connection');
-  assert.equal(
-    ambiguous.structuredContent.error.retry_with.field,
-    'connection_id',
-  );
-
-  const ok = await client.callTool({
-    name: 'fetch_blob',
-    arguments: { blob_id: 'blob-1', connection_id: 'cin_aaa' },
-  });
-  assert.equal(ok.isError, undefined);
-  const url = findCall(
-    calls.filter((c) => c.url.includes('/v1/blobs/blob-1')),
-    (u) => u.searchParams.get('connection_id') === 'cin_aaa',
-  );
-  assert.equal(url.searchParams.get('connection_id'), 'cin_aaa');
-
-  await client.close();
-  await server.close();
-});
-
-test('every tool input schema declares optional connection_id and connector_instance_id', async () => {
+test('every normal read tool input schema declares optional connection_id and no deprecated alias', async () => {
   const { fetch } = makeRecordingFetch();
   const { client, server } = await connectClient(fetch);
 
-  const expected = ['list_streams', 'query_records', 'search', 'fetch', 'fetch_blob'];
+  const expected = ['schema', 'query_records', 'aggregate', 'search', 'fetch'];
   const tools = await client.listTools();
   for (const toolName of expected) {
     const tool = tools.tools.find((t) => t.name === toolName);
@@ -279,9 +251,10 @@ test('every tool input schema declares optional connection_id and connector_inst
       tool.inputSchema.properties.connection_id,
       `${toolName} input must declare connection_id`,
     );
-    assert.ok(
+    assert.equal(
       tool.inputSchema.properties.connector_instance_id,
-      `${toolName} input must declare connector_instance_id alias`,
+      undefined,
+      `${toolName} input must not declare deprecated connector_instance_id alias`,
     );
     const required = tool.inputSchema.required ?? [];
     assert.ok(

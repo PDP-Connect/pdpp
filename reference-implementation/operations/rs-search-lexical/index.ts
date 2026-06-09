@@ -173,6 +173,7 @@ export interface SearchLexicalSnapshotResult {
   stream: string;
   recordKey: string;
   emittedAt: string;
+  authoredAt?: string | null;
   matchedFields: string[];
   snippet?: { field: string; text: string } | null;
   score?: number;
@@ -396,6 +397,7 @@ export interface SearchLexicalResultItem {
   display_name?: string;
   record_url: string;
   emitted_at: string;
+  authored_at?: string;
   matched_fields: string[];
   snippet?: { field: string; text: string };
   score?: { kind: "bm25"; value: number; order: "lower_is_better" };
@@ -707,6 +709,9 @@ function buildResultItem(
     emitted_at: hit.emittedAt,
     matched_fields: hit.matchedFields,
   };
+  if (typeof hit.authoredAt === "string" && hit.authoredAt.length > 0) {
+    item.authored_at = hit.authoredAt;
+  }
   if (typeof hit.connectorInstanceId === "string" && hit.connectorInstanceId.length > 0) {
     item.connection_id = hit.connectorInstanceId;
     item.connector_instance_id = hit.connectorInstanceId;

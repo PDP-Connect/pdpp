@@ -216,6 +216,7 @@ export interface SearchSemanticSnapshot {
 
 export interface SearchSemanticHydratedResult {
   emittedAt: string | null;
+  authoredAt?: string | null;
   /**
    * Verbatim contiguous substring of the matched field's stored value.
    * Adapters MUST NOT paraphrase, summarize, or model-generate snippet text.
@@ -424,6 +425,7 @@ export interface SearchSemanticResultItem {
   display_name?: string;
   record_url: string;
   emitted_at: string | null;
+  authored_at?: string;
   matched_fields: string[];
   /**
    * v1: every hit emits `retrieval_mode: "semantic"`. `lexical_blending` is
@@ -769,6 +771,9 @@ async function buildResultItem(
     matched_fields: hit.matchedFields,
     retrieval_mode: "semantic",
   };
+  if (typeof hydrated.authoredAt === "string" && hydrated.authoredAt.length > 0) {
+    item.authored_at = hydrated.authoredAt;
+  }
   if (typeof hit.connectorInstanceId === "string" && hit.connectorInstanceId.length > 0) {
     item.connection_id = hit.connectorInstanceId;
     item.connector_instance_id = hit.connectorInstanceId;

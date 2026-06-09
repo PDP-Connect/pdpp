@@ -1,6 +1,11 @@
 # ChatGPT hosted-MCP canonical-key proof packet
 
-Status: reference/operator runbook. Not PDPP Core or Collection Profile protocol.
+Status: historical reference/operator runbook. Not PDPP Core or Collection
+Profile protocol. This packet predates the profile-free normal `/mcp` read
+surface; current normal MCP setup intentionally exposes only `schema`,
+`query_records`, `aggregate`, `search`, and `fetch`. Use this packet only for a
+future explicit event-management/admin surface or for reading historical
+ChatGPT event-subscription evidence.
 
 This is the exact owner-run proof for the **ChatGPT half** of
 `canonicalize-connector-keys` task 5.2. It exists so the final ChatGPT live proof
@@ -388,8 +393,9 @@ Using the PDPP MCP connector, do the following and report exact tool-visible
 evidence as short facts (no secrets, no full record bodies):
 
 1. List your PDPP tools. Report the count and names. Confirm query_records exposes
-   a connection_id input, schema exposes detail and stream inputs, and all seven
-   subscription-related tools are present (create/list/get/update/delete +
+   a connection_id input and schema exposes detail, stream, and connection_id
+   inputs. If you are intentionally testing an explicit event-management surface,
+   confirm the subscription-related tools are present (create/list/get/update/delete +
    send_test + discover capabilities).
 2. Call list_streams and schema. Confirm stream names, field capabilities,
    connector_key, and connection_id are readable in the tool text (not only in

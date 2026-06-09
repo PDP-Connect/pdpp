@@ -1672,6 +1672,111 @@ export async function getRegisteredClient(clientId) {
   return mapRegisteredClientRow(row || null);
 }
 
+// ─── CIMD document store ─────────────────────────────────────────────────────
+
+export async function createCimdDocument({ clientName, redirectUris, logoUri } = {}) {
+  const { randomBytes: rb } = await import('node:crypto');
+  const documentId = `cimd_${rb(12).toString('hex')}`;
+  const now = nowIso();
+  const redirectUrisJson = JSON.stringify(Array.isArray(redirectUris) ? redirectUris : []);
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      `INSERT INTO cimd_client_documents(document_id, client_name, redirect_uris, logo_uri, created_at, updated_at)
+       VALUES($1, $2, $3::jsonb, $4, $5, $6)`,
+      [documentId, clientName || null, redirectUrisJson, logoUri || null, now, now],
+    );
+  } else {
+    exec(
+      'INSERT INTO cimd_client_documents(document_id, client_name, redirect_uris, logo_uri, created_at, updated_at) VALUES(?,?,?,?,?,?)',
+      [documentId, clientName || null, redirectUrisJson, logoUri || null, now, now],
+    );
+  }
+  return documentId;
+}
+
+export async function getCimdDocument(documentId) {
+  if (!documentId) return null;
+  let row;
+  if (isPostgresStorageBackend()) {
+    row = await pgOne(
+      `SELECT document_id, client_name, redirect_uris::text AS redirect_uris, logo_uri, created_at, updated_at
+       FROM cimd_client_documents WHERE document_id = $1`,
+      [documentId],
+    );
+  } else {
+    row = getOne(
+      'SELECT document_id, client_name, redirect_uris, logo_uri, created_at, updated_at FROM cimd_client_documents WHERE document_id = ?',
+      [documentId],
+    );
+  }
+  if (!row) return null;
+  return {
+    document_id: row.document_id,
+    client_name: row.client_name || null,
+    redirect_uris: (() => { try { return JSON.parse(row.redirect_uris); } catch { return []; } })(),
+    logo_uri: row.logo_uri || null,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+export async function listCimdDocuments() {
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery(
+      'SELECT document_id, client_name, redirect_uris::text AS redirect_uris, logo_uri, created_at, updated_at FROM cimd_client_documents ORDER BY created_at DESC',
+    );
+    return result.rows.map((row) => ({
+      document_id: row.document_id,
+      client_name: row.client_name || null,
+      redirect_uris: (() => { try { return JSON.parse(row.redirect_uris); } catch { return []; } })(),
+      logo_uri: row.logo_uri || null,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    }));
+  }
+  const rows = allowUnboundedReadAcknowledged(
+    'SELECT document_id, client_name, redirect_uris, logo_uri, created_at, updated_at FROM cimd_client_documents ORDER BY created_at DESC',
+    [],
+  );
+  return rows.map((row) => ({
+    document_id: row.document_id,
+    client_name: row.client_name || null,
+    redirect_uris: (() => { try { return JSON.parse(row.redirect_uris); } catch { return []; } })(),
+    logo_uri: row.logo_uri || null,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  }));
+}
+
+export async function deleteCimdDocument(documentId) {
+  const { invalidateCimdCache } = await import('./cimd.js');
+  if (isPostgresStorageBackend()) {
+    const result = await pgExec(
+      'DELETE FROM cimd_client_documents WHERE document_id = $1',
+      [documentId],
+    );
+    if ((result.changes ?? 0) === 0) {
+      const err = new Error(`CIMD document not found: ${documentId}`);
+      err.code = 'not_found';
+      throw err;
+    }
+  } else {
+    const existing = getOne(
+      'SELECT document_id FROM cimd_client_documents WHERE document_id = ?',
+      [documentId],
+    );
+    if (!existing) {
+      const err = new Error(`CIMD document not found: ${documentId}`);
+      err.code = 'not_found';
+      throw err;
+    }
+    exec('DELETE FROM cimd_client_documents WHERE document_id = ?', [documentId]);
+  }
+  // Invalidate any cached CIMD fetch for this document's URL (best-effort).
+  // We don't know the full URL here, so callers that do should call invalidateCimdCache directly.
+  invalidateCimdCache(documentId);
+}
+
 async function bindDynamicClientToApprovingOwner(registeredClient, subjectId) {
   if (!(registeredClient?.client_id && subjectId)) {
     return registeredClient;
@@ -1983,10 +2088,10 @@ export async function registerDynamicClient(input = {}, extraMetadata = {}) {
     grant_types: registered.metadata.grant_types || undefined,
     response_types: registered.metadata.response_types || undefined,
     application_type: registered.metadata.application_type || undefined,
-    client_uri: registered.metadata.client_uri || null,
-    logo_uri: registered.metadata.logo_uri || null,
-    policy_uri: registered.metadata.policy_uri || null,
-    tos_uri: registered.metadata.tos_uri || null,
+    client_uri: registered.metadata.client_uri || undefined,
+    logo_uri: registered.metadata.logo_uri || undefined,
+    policy_uri: registered.metadata.policy_uri || undefined,
+    tos_uri: registered.metadata.tos_uri || undefined,
   };
 }
 
@@ -2758,6 +2863,62 @@ export async function getManifestForStorageBinding(storageBinding, opts = {}) {
 }
 
 /**
+ * Resolve a CIMD client_id to a synthetic registered-client shape.
+ * Handles same-origin (local) lookup and external fetch with SSRF guards.
+ * Throws with err.code = 'cimd_fetch_failed' or 'invalid_request' on failure.
+ */
+async function resolveCimdClientForGrant(clientId, opts = {}) {
+  const {
+    isCimdClientId,
+    validateCimdUrl,
+    fetchCimdDocument,
+    buildCimdRegisteredClient,
+  } = await import('./cimd.js');
+
+  if (!isCimdClientId(clientId)) return null;
+
+  // Validate URL structure before any fetch
+  validateCimdUrl(clientId);
+
+  // Same-origin check: if client_id matches our issuer + /oauth/client-metadata/:id,
+  // resolve from local storage instead of a network self-fetch.
+  const issuerBase = opts.issuerBase || process.env.AS_PUBLIC_URL || null;
+  if (issuerBase) {
+    try {
+      const issuerUrl = new URL(issuerBase);
+      const clientUrl = new URL(clientId);
+      if (
+        clientUrl.origin === issuerUrl.origin
+        && clientUrl.pathname.startsWith('/oauth/client-metadata/')
+      ) {
+        const docId = clientUrl.pathname.replace('/oauth/client-metadata/', '').replace(/^\//, '');
+        const localDoc = await getCimdDocument(docId);
+        if (!localDoc) {
+          const err = new Error(`CIMD local document not found for ${clientId}`);
+          err.code = 'invalid_client';
+          throw err;
+        }
+        const doc = {
+          client_id: clientId,
+          client_name: localDoc.client_name,
+          redirect_uris: localDoc.redirect_uris,
+          logo_uri: localDoc.logo_uri,
+          token_endpoint_auth_method: 'none',
+        };
+        return buildCimdRegisteredClient(clientId, doc);
+      }
+    } catch (err) {
+      if (err.code === 'invalid_client' || err.code === 'invalid_request') throw err;
+      // URL parse failure — fall through to external fetch
+    }
+  }
+
+  // External fetch with SSRF guards, timeout, size cap
+  const { doc } = await fetchCimdDocument(clientId);
+  return buildCimdRegisteredClient(clientId, doc);
+}
+
+/**
  * Persist a pending grant-approval request and expose it as a PAR-backed consent request.
  * Returns the staged request URI plus the consent URL for the primary request/approval flow.
  */
@@ -2773,7 +2934,15 @@ export async function initiateGrant(input, opts = {}) {
   const sourceBinding = getRequestSourceBinding(normalized);
 
   try {
-    const registeredClient = await getRegisteredClient(normalized.client.client_id);
+    let registeredClient = await getRegisteredClient(normalized.client.client_id);
+    if (!registeredClient) {
+      // CIMD path: https:// URL client_ids are resolved via Client ID Metadata Document.
+      const clientId = normalized.client.client_id;
+      const { isCimdClientId } = await import('./cimd.js');
+      if (isCimdClientId(clientId)) {
+        registeredClient = await resolveCimdClientForGrant(clientId, opts);
+      }
+    }
     if (!registeredClient) {
       const err = new Error(`Unknown client_id: ${normalized.client.client_id}`);
       err.code = 'invalid_client';

@@ -196,6 +196,8 @@ test('composed mode env drives browser-facing metadata when explicit public urls
       mcp: {
         transport: 'streamable_http',
         endpoint: 'http://localhost:3200/mcp',
+        setup_intent: 'grant_scoped_read',
+        tool_surface: 'profile_free_normal_read',
         no_owner_token: true,
       },
       llms_txt: 'http://localhost:3200/llms.txt',

@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import 'tsx';
 
 import { handleStreamableHttpRequest } from '../src/server.js';
+
+const { projectSchemaCompactView, projectSchemaStreamScope, schemaSourceOptions } = await import(
+  '../../../reference-implementation/operations/rs-schema-get/compact-view.ts'
+);
 
 // Hosted-transport parity for the `schema` MCP tool token budget.
 //
@@ -11,7 +16,8 @@ import { handleStreamableHttpRequest } from '../src/server.js';
 // `tmp/workstreams/ri-mcp-schema-token-efficiency-closeout-v1-report.md`:
 //
 //   "Hosted MCP gateway parity is out-of-repo ... If the hosted gateway
-//    re-serializes verbatim, an agent there could still see ~1.4 MB."
+//    re-serializes global schema verbatim, an agent there could still see
+//    ~1.4 MB."
 //
 // The hosted ChatGPT/Claude *registration* is external, but the bytes those
 // gateways forward are produced in-repo by `handleStreamableHttpRequest`, which
@@ -24,7 +30,7 @@ import { handleStreamableHttpRequest } from '../src/server.js';
 // These tests drive `tools/call schema` (default and `detail: "full"`) through
 // the hosted transport and measure the on-wire payload. They are the in-repo
 // proof that the hosted gateway path serves the compact default and keeps the
-// `detail: "full"` escape hatch opt-in only.
+// `detail: "full"` escape hatch scoped instead of grant-wide.
 
 // Mirror the budgets asserted over the in-memory transport. The hosted wire
 // frames the same `structuredContent`, so the same regression guard applies.
@@ -97,7 +103,9 @@ function makeLargeSchemaFetch({ connectorCount = 4, streamsPerConnector = 6, fie
       );
     }
     if (url.pathname === '/v1/schema') {
-      return new Response(JSON.stringify(SCHEMA), {
+      const canonicalError = canonicalFullSchemaErrorForQuery(SCHEMA, url);
+      if (canonicalError) return canonicalError;
+      return new Response(JSON.stringify(schemaBodyForQuery(SCHEMA, url)), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
@@ -109,6 +117,54 @@ function makeLargeSchemaFetch({ connectorCount = 4, streamsPerConnector = 6, fie
   };
 
   return { fetch, schemaBody: SCHEMA };
+}
+
+function schemaBodyForQuery(schemaBody, url) {
+  const stream = url.searchParams.get('stream');
+  const connectionId = url.searchParams.get('connection_id');
+  const opts = { stream, connectionId };
+  if (url.searchParams.get('view') === 'compact') {
+    return { data: projectSchemaCompactView(schemaBody.data, opts) };
+  }
+  return { data: projectSchemaStreamScope(schemaBody.data, opts) };
+}
+
+function canonicalFullSchemaErrorForQuery(schemaBody, url) {
+  if (url.searchParams.get('detail') !== 'full') return null;
+  const stream = url.searchParams.get('stream');
+  const connectionId = url.searchParams.get('connection_id');
+  if (!stream) {
+    return new Response(
+      JSON.stringify({
+        error: {
+          type: 'invalid_request',
+          code: 'invalid_request',
+          param: 'detail',
+          message: 'schema detail "full" requires `stream`',
+        },
+      }),
+      { status: 400, headers: { 'content-type': 'application/json' } },
+    );
+  }
+  if (!connectionId) {
+    const available = schemaSourceOptions(schemaBody.data, { stream });
+    if (available.length > 1) {
+      return new Response(
+        JSON.stringify({
+          error: {
+            type: 'ambiguous_schema_detail',
+            code: 'ambiguous_schema_detail',
+            param: 'connection_id',
+            retry_with: 'connection_id',
+            available_connections: available,
+            message: `schema detail "full" for stream "${stream}" matches ${available.length} sources; retry with connection_id to fetch one source's exhaustive schema.`,
+          },
+        }),
+        { status: 409, headers: { 'content-type': 'application/json' } },
+      );
+    }
+  }
+  return null;
 }
 
 async function postMcpJson(message, fakeFetch) {
@@ -202,38 +258,26 @@ test('hosted Streamable HTTP schema tool/call serves the compact default under t
     `hosted default schema must be far smaller than verbatim (got ${structuredBytes} vs verbatim ${verbatimBytes})`,
   );
 
-  // The compact grade survives the wire: fields are terse flag strings, the raw
-  // JSON Schema blob is dropped, and connection identity is preserved.
-  const stream = result.structuredContent.data.data.connectors[0].streams[0];
-  assert.equal(typeof stream.field_capabilities.field_0, 'string', 'hosted compact field must be a flag string');
-  assert.doesNotMatch(
-    stream.field_capabilities.field_0,
-    /description/,
-    'hosted compact schema must drop the per-field JSON Schema blob',
+  // The compact grade survives the wire as an index: field capability detail is
+  // absent by default, and connection identity is preserved.
+  const stream = result.structuredContent.data.connectors[0].streams[0];
+  assert.equal(
+    stream.field_capabilities,
+    undefined,
+    'hosted global compact schema must not include per-field capability detail',
   );
   assert.equal(stream.connection_id, 'conn_0', 'hosted compact schema must keep connection_id');
-  assert.equal(result.structuredContent.data.data.detail, 'compact', 'hosted default must report detail=compact');
+  assert.equal(result.structuredContent.data.detail, 'compact', 'hosted default must report detail=compact');
 });
 
-test('hosted Streamable HTTP schema detail=full is opt-in and returns the verbatim body over the wire', async () => {
-  const { fetch, schemaBody } = makeLargeSchemaFetch();
+test('hosted Streamable HTTP forwards global schema detail=full to canonical RS rejection', async () => {
+  const { fetch } = makeLargeSchemaFetch();
 
   const result = await callSchemaTool({ detail: 'full' }, fetch);
-  assert.equal(result.isError, undefined, 'hosted full schema call must not be an error result');
-
-  // The escape hatch must return the exhaustive body byte-for-byte, proving the
-  // hosted path can still serve the full JSON Schema when explicitly requested.
-  assert.deepEqual(
-    result.structuredContent.data,
-    schemaBody,
-    'hosted detail=full must return the verbatim RS body over the wire',
-  );
-
-  const fullBytes = Buffer.byteLength(JSON.stringify(result.structuredContent), 'utf8');
-  assert.ok(
-    fullBytes > PACKAGE_SCHEMA_STRUCTURED_BYTE_BUDGET,
-    `hosted detail=full must exceed the compact budget (escape hatch is genuinely exhaustive; got ${fullBytes})`,
-  );
+  assert.equal(result.isError, true, 'hosted global full schema call must be an error result');
+  assert.equal(result.structuredContent.error.code, 'invalid_request');
+  assert.equal(result.structuredContent.error.param, 'detail');
+  assert.match(result.content[0].text, /requires `stream`/);
 });
 
 test('hosted Streamable HTTP per-stream schema scopes the document over the wire', async () => {
@@ -242,8 +286,13 @@ test('hosted Streamable HTTP per-stream schema scopes the document over the wire
   const result = await callSchemaTool({ stream: 'stream_1_2' }, fetch);
   assert.equal(result.isError, undefined, 'hosted per-stream schema call must not be an error result');
 
-  const connectors = result.structuredContent.data.data.connectors;
+  const connectors = result.structuredContent.data.connectors;
   assert.equal(connectors.length, 1, 'hosted per-stream scope must keep only the contributing connector');
   assert.equal(connectors[0].streams.length, 1, 'hosted per-stream scope must keep only the requested stream');
   assert.equal(connectors[0].streams[0].name, 'stream_1_2');
+  assert.equal(
+    typeof connectors[0].streams[0].field_capabilities.field_0,
+    'string',
+    'hosted stream-scoped compact schema must keep field capability flags',
+  );
 });

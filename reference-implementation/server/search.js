@@ -936,6 +936,50 @@ function hasGrantRecordConstraints(streamGrant) {
   );
 }
 
+function needsCandidateRecordScan(streamGrant, compiledFilters) {
+  return !!(compiledFilters?.length || hasGrantRecordConstraints(streamGrant));
+}
+
+function allowedCandidateRecordKeysFromRows(rows, { streamGrant, manifestStream, compiledFilters }) {
+  const allowed = [];
+  for (const row of rows) {
+    let data;
+    try {
+      data = row.record_json ? JSON.parse(row.record_json) : null;
+    } catch {
+      continue;
+    }
+    if (!passesGrantRecordConstraints(data, row.record_key, streamGrant, manifestStream)) continue;
+    if (!passesRequestFilters(data, compiledFilters)) continue;
+    allowed.push(row.record_key);
+  }
+  return allowed;
+}
+
+async function buildPostgresCandidateRecordKeys({ connectorInstanceId, streamName, streamGrant, manifestStream, compiledFilters }) {
+  if (!needsCandidateRecordScan(streamGrant, compiledFilters)) return null;
+
+  const where = ['connector_instance_id = $1', 'stream = $2', 'deleted = FALSE'];
+  const binds = [connectorInstanceId, streamName];
+  if (Array.isArray(streamGrant?.resources) && streamGrant.resources.length > 0) {
+    const placeholders = streamGrant.resources.map((_, index) => `$${binds.length + index + 1}`);
+    where.push(`record_key IN (${placeholders.join(', ')})`);
+    binds.push(...streamGrant.resources);
+  }
+
+  // REVIEWED-DYNAMIC: candidate-key scan includes a variable resources IN
+  // clause and optional JS-side grant/filter predicates, so the SQL shape is
+  // grant-dependent and cannot be a static registry artifact.
+  const rows = (await postgresQuery(
+    `SELECT record_key, record_json::text AS record_json
+     FROM records
+     WHERE ${where.join(' AND ')}`,
+    binds,
+  )).rows;
+
+  return allowedCandidateRecordKeysFromRows(rows, { streamGrant, manifestStream, compiledFilters });
+}
+
 function buildCandidateRecordKeys({ connectorInstanceId, streamName, streamGrant, manifestStream, compiledFilters }) {
   const needsRecordScan = compiledFilters?.length || hasGrantRecordConstraints(streamGrant);
   if (!needsRecordScan) return null;
@@ -956,19 +1000,7 @@ function buildCandidateRecordKeys({ connectorInstanceId, streamName, streamGrant
     WHERE ${where.join(' AND ')}
   `, binds);
 
-  const allowed = [];
-  for (const row of rows) {
-    let data;
-    try {
-      data = row.record_json ? JSON.parse(row.record_json) : null;
-    } catch {
-      continue;
-    }
-    if (!passesGrantRecordConstraints(data, row.record_key, streamGrant, manifestStream)) continue;
-    if (!passesRequestFilters(data, compiledFilters)) continue;
-    allowed.push(row.record_key);
-  }
-  return allowed;
+  return allowedCandidateRecordKeysFromRows(rows, { streamGrant, manifestStream, compiledFilters });
 }
 
 export function buildSearchPlanForGrant({ manifest, grant, streamsFilter, compiledFilter = null, connectorId = null, connectorInstanceId = null }) {
@@ -1002,7 +1034,8 @@ export function buildSearchPlanForGrant({ manifest, grant, streamsFilter, compil
     if (searchable.length === 0) continue;
 
     const filters = compiledFilter?.streamName === mStream.name ? compiledFilter.filters : [];
-    const candidateRecordKeys = resolvedConnectorInstanceId
+    const shouldScanCandidates = needsCandidateRecordScan(streamGrant, filters);
+    const candidateRecordKeys = resolvedConnectorInstanceId && shouldScanCandidates && !isPostgresStorageBackend()
       ? buildCandidateRecordKeys({
         connectorInstanceId: resolvedConnectorInstanceId,
         streamName: mStream.name,
@@ -1011,12 +1044,16 @@ export function buildSearchPlanForGrant({ manifest, grant, streamsFilter, compil
         compiledFilters: filters,
       })
       : null;
+    const postgresCandidateFilter = resolvedConnectorInstanceId && shouldScanCandidates && isPostgresStorageBackend()
+      ? { streamGrant, manifestStream: mStream, compiledFilters: filters }
+      : null;
 
     plan.push({
       streamName: mStream.name,
       ...(resolvedConnectorInstanceId ? { connectorInstanceId: resolvedConnectorInstanceId } : {}),
       searchableFields: searchable,
       ...(candidateRecordKeys ? { candidateRecordKeys } : {}),
+      ...(postgresCandidateFilter ? { postgresCandidateFilter } : {}),
     });
   }
   return plan;
@@ -1109,7 +1146,16 @@ async function runFtsQueryForConnector({ connectorId, connectorInstanceId, planE
   if (isPostgresStorageBackend()) {
     const collapsed = new Map();
     for (const entry of planEntries) {
-      if (Array.isArray(entry.candidateRecordKeys) && entry.candidateRecordKeys.length === 0) continue;
+      const candidateRecordKeys = Array.isArray(entry.candidateRecordKeys)
+        ? entry.candidateRecordKeys
+        : entry.postgresCandidateFilter
+          ? await buildPostgresCandidateRecordKeys({
+            connectorInstanceId: resolvedConnectorInstanceId,
+            streamName: entry.streamName,
+            ...entry.postgresCandidateFilter,
+          })
+          : null;
+      if (Array.isArray(candidateRecordKeys) && candidateRecordKeys.length === 0) continue;
       const rows = await postgresLexicalSearch({
         connectorId,
         connectorInstanceId: resolvedConnectorInstanceId,
@@ -1117,11 +1163,12 @@ async function runFtsQueryForConnector({ connectorId, connectorInstanceId, planE
         searchableFields: entry.searchableFields,
         q,
         limit: 200,
+        recordKeys: candidateRecordKeys,
       });
       for (const row of rows) {
         if (
-          Array.isArray(entry.candidateRecordKeys)
-          && !entry.candidateRecordKeys.includes(row.record_key)
+          Array.isArray(candidateRecordKeys)
+          && !candidateRecordKeys.includes(row.record_key)
         ) {
           continue;
         }
@@ -1145,6 +1192,7 @@ async function runFtsQueryForConnector({ connectorId, connectorInstanceId, planE
             stream: entry.streamName,
             recordKey: row.record_key,
             emittedAt: row.emitted_at,
+            authoredAt: authoredTimestampFromRecordJson(row.record_json),
             matchedFields: [row.field],
             ...(allowsSnippets && row.snippet_text
               ? { snippet: { field: row.field, text: row.snippet_text } }
@@ -1176,7 +1224,7 @@ async function runFtsQueryForConnector({ connectorId, connectorInstanceId, planE
       // (negative-leaning). The public score exposes that implementation-
       // relative ordering honestly rather than normalizing it.
       const snippetExpr = allowsSnippets
-        ? `snippet(lexical_search_index, 5, '', '', '…', 16)`
+        ? `snippet(lexical_search_index, 5, '<mark>', '</mark>', '…', 16)`
         : `NULL`;
       const recordKeyConstraint = Array.isArray(entry.candidateRecordKeys)
         ? `AND r.record_key IN (${entry.candidateRecordKeys.map(() => '?').join(',')})`
@@ -1189,6 +1237,7 @@ async function runFtsQueryForConnector({ connectorId, connectorInstanceId, planE
           ${snippetExpr}                          AS snippet_text,
           bm25(lexical_search_index)              AS score,
           r.emitted_at                            AS emitted_at,
+          r.record_json                           AS record_json,
           r.deleted                               AS deleted
         FROM lexical_search_index lsi
         JOIN records r
@@ -1231,6 +1280,7 @@ async function runFtsQueryForConnector({ connectorId, connectorInstanceId, planE
             stream: entry.streamName,
             recordKey: row.record_key,
             emittedAt: row.emitted_at,
+            authoredAt: authoredTimestampFromRecordJson(row.record_json),
             matchedFields: [field],
             ...(allowsSnippets && row.snippet_text
               ? { snippet: { field, text: row.snippet_text } }
@@ -1245,6 +1295,24 @@ async function runFtsQueryForConnector({ connectorId, connectorInstanceId, planE
   // Intra-connector relevance order
   const hits = Array.from(collapsed.values()).sort((a, b) => a.score - b.score);
   return hits;
+}
+
+function authoredTimestampFromRecordJson(recordJson) {
+  if (!recordJson) return null;
+  let data = recordJson;
+  if (typeof recordJson === 'string') {
+    try {
+      data = JSON.parse(recordJson);
+    } catch {
+      return null;
+    }
+  }
+  if (!data || typeof data !== 'object') return null;
+  for (const key of ['sent_at', 'sentAt', 'authored_at', 'authoredAt', 'created_at', 'createdAt', 'source_created_at', 'sourceCreatedAt', 'occurred_at', 'occurredAt', 'updated_at', 'updatedAt']) {
+    const value = data[key];
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return null;
 }
 
 function buildFtsUserTextQuery(q) {

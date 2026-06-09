@@ -43,15 +43,19 @@ URLs, and hardens the resulting outbound-fetch path against SSRF.
 
 ### New Capabilities
 
-- `reference-implementation-architecture`: CIMD consumption at the authorization
-  endpoint; CIMD document service at `/oauth/client-metadata/:id`.
+- None.
 
 ### Modified Capabilities
 
-- `reference-implementation-architecture`: AS discovery advertisement extended
-  with `client_id_metadata_document` registration mode.
+- `reference-implementation-architecture`: CIMD consumption at the authorization
+  endpoint; CIMD document service at `/oauth/client-metadata/:id`; AS discovery
+  advertisement extended with `client_id_metadata_document` registration mode.
 - `reference-agent-access-workflow`: local MCP client setup commands updated to
   reflect PDPP-managed CIMD identity as the preferred path.
+
+### Removed Capabilities
+
+- None.
 
 ## Impact
 

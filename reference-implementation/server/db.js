@@ -641,6 +641,18 @@ CREATE TABLE IF NOT EXISTS oauth_clients (
 CREATE INDEX IF NOT EXISTS idx_oauth_clients_registration_mode
   ON oauth_clients(registration_mode, created_at);
 
+-- Operator-managed CIMD documents. Each row is a stable
+-- /oauth/client-metadata/:id document that local MCP clients (Claude Code,
+-- Codex) use as their client_id. Public-client only; no secrets stored here.
+CREATE TABLE IF NOT EXISTS cimd_client_documents (
+  document_id    TEXT PRIMARY KEY,
+  client_name    TEXT,
+  redirect_uris  TEXT NOT NULL DEFAULT '[]',
+  logo_uri       TEXT,
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
   id                    TEXT PRIMARY KEY,
   device_code           TEXT NOT NULL UNIQUE,
@@ -3184,6 +3196,18 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
   // for pre-existing DBs).
   raw.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_consents_approval_id ON pending_consents(approval_id) WHERE approval_id IS NOT NULL`);
   raw.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_owner_device_auth_approval_id ON owner_device_auth(approval_id) WHERE approval_id IS NOT NULL`);
+  // cimd_client_documents: added for CIMD operator-managed document service.
+  // CREATE TABLE IF NOT EXISTS in the base schema handles fresh DBs; this
+  // exec ensures the table exists for pre-existing DBs that lack it.
+  raw.exec(`
+CREATE TABLE IF NOT EXISTS cimd_client_documents (
+  document_id    TEXT PRIMARY KEY,
+  client_name    TEXT,
+  redirect_uris  TEXT NOT NULL DEFAULT '[]',
+  logo_uri       TEXT,
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL
+)`);
   db = withCachedPrepare(raw);
   // Stamp the chosen vector-index backend onto the wrapped db so
   // search-semantic.js can select without re-probing. The Proxy's

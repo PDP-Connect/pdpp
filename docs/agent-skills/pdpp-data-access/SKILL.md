@@ -133,6 +133,16 @@ See `references/query-cookbook.md`. Quick map:
 
 Default to filtered queries over full-table scans. If `/v1/schema` declares a filter or `expand[]` that answers the task, prefer it.
 
+The same canonical read loop is available through the CLI when shell commands
+are easier than hand-writing HTTP. Use the compact schema first, then narrow by
+stream and `connection_id` before requesting full detail or records:
+
+```bash
+pdpp read schema "$RS_URL" --view compact
+pdpp read schema "$RS_URL" --view compact --stream messages --connection-id cin_...
+pdpp read query-records "$RS_URL" messages --connection-id cin_... --limit 10 --fields id,sent_at,text
+```
+
 ### 8. Optional: MCP adapter over the same scoped token
 
 If your harness supports the [Model Context Protocol](https://modelcontextprotocol.io/),
@@ -154,34 +164,34 @@ credentials, scopes, or wire contracts.
 ```
 
 Run `pdpp connect <provider-url>` first so a scoped client token is cached. The
-adapter exposes `schema`, `list_streams`, `query_records`, `search`, `fetch_blob`,
-and event subscription tools (`discover_event_subscription_capabilities`,
-`create_event_subscription`, `list_event_subscriptions`, `get_event_subscription`,
-`update_event_subscription`, `delete_event_subscription`, `send_test_event`).
-All tools are backed by the RS endpoints described in §7 and §9.
+normal MCP surface exposes exactly `schema`, `query_records`, `aggregate`,
+`search`, and `fetch`. These tools are backed by the RS endpoints described in
+§7.
 
 Constraints (these mirror the hard rules above):
 
-- **stdio only.** Hosted/Streamable HTTP is intentionally out of scope; a separate
-  OpenSpec change is required to add it.
+- **Same surface for hosted and stdio.** Hosted `/mcp` and the local stdio
+  adapter both expose the profile-free normal read surface.
 - **No owner credentials.** The adapter refuses `PDPP_OWNER_TOKEN` and other
   owner bearer tokens.
 - **No grant issuance.** If the cache is empty or the token is invalid, the
   adapter surfaces an MCP error directing the operator to run `pdpp connect`.
 - **No new query semantics.** Unknown query arguments are rejected rather than
   silently dropped.
-- **No record body push.** Event payloads carry a `changes_since` cursor; fetch
-  record bodies via §7 query tools after receiving the event.
+- **No event-management tools.** Event subscriptions are managed outside normal
+  MCP setup; use raw HTTP or operator surfaces when a task truly needs push
+  delivery.
 
-The MCP adapter is a convenience for MCP-aware harnesses; the raw-HTTP path in
-this skill remains the canonical interface and the source of truth for query
-shapes. If `@pdpp/mcp-server` is not yet published to npm, consume it from the
-in-repo workspace package or use the raw-HTTP path.
+The MCP adapter is a convenience for MCP-aware harnesses. Raw HTTP remains the
+canonical wire contract, and `pdpp read` is the CLI adapter over that same
+contract. MCP should be chosen for host ergonomics, not because it has stronger
+read semantics. If `@pdpp/mcp-server` is not yet published to npm, consume it
+from the in-repo workspace package or use raw HTTP / `pdpp read`.
 
 **Stale hosted-MCP tool surface.** External MCP hosts (ChatGPT, Claude, etc.)
-cache the tool surface at registration time. If you see fewer tools than this
-skill describes — for example, `schema` is missing the `detail` or `stream`
-inputs, or event-subscription tools are absent — the client is holding a stale
+cache the tool surface at registration time. If the tool list is not exactly
+`schema`, `query_records`, `aggregate`, `search`, and `fetch`, or `schema` is
+missing the `detail` or `stream` inputs, the client is holding a stale
 registration. This is an external host cache reality, not a PDPP bug. The
 reference server publishes the current tool surface on every connection via the
 MCP `initialize` `serverVersion`, but it cannot force an external host to
@@ -204,9 +214,11 @@ the brackets for you:
 A literal bracket string (`"filter[user_id]=U123"`) is still accepted, but any
 other string (a bare term, `field=value`, `field>value`, or JSON-as-string) is
 rejected with a typed `invalid_filter` error rather than silently ignored. Use
-the cheap `list_streams -> schema(stream) -> query_records` discovery path
-(`schema` defaults to a compact projection) to learn which fields and operators a
-stream declares before filtering.
+the cheap `schema -> schema(stream) -> schema(stream, connection_id) ->
+query_records` discovery path (`schema` defaults to a compact projection) to
+learn which fields and operators a stream declares before filtering. Stream
+names are not globally unique; add `connection_id` when `schema(stream)` shows
+more than one matching source.
 
 ### 9. Event subscriptions (push delivery)
 
@@ -215,11 +227,12 @@ calls your callback URL when data changes — rather than polling. Subscriptions
 are built on top of the same scoped client grant and require no additional
 authorization step.
 
-**Before creating a subscription**, call `discover_event_subscription_capabilities`
-(MCP) or `GET /.well-known/oauth-protected-resource` (raw HTTP) to confirm the
+**Before creating a subscription**, read
+`GET /.well-known/oauth-protected-resource` over raw HTTP to confirm the
 deployment supports subscriptions and to learn supported event types, signing
 profile, retry schedule, and callback-URL constraints. This endpoint is
-unauthenticated.
+unauthenticated. Event-subscription management is not exposed through the normal
+MCP tool surface.
 
 **Supported event types** (from capabilities advertisement):
 - `pdpp.records.changed` — records in at least one subscribed stream changed; payload carries a `changes_since` cursor
@@ -241,18 +254,17 @@ cursor from the event payload with the §7 query tools to fetch changed records.
 | `disabled_revoked` | Underlying grant was revoked | No |
 | `deleted` | Soft-deleted | No |
 
-**Creating a subscription (MCP):**
+**Creating a subscription (raw HTTP):**
 
 ```text
-1. discover_event_subscription_capabilities   → confirm supported: true
-2. create_event_subscription(callback_url, filters?)
+1. GET /.well-known/oauth-protected-resource
+     → confirm capabilities.client_event_subscriptions.supported: true
+2. POST /v1/event-subscriptions with callback_url and optional filters
      → returns subscription_id + whsec_ secret (returned ONCE; store it)
 3. Your callback receives pdpp.subscription.verify; respond 200
      → status transitions pending_verification → active
-4. send_test_event(subscription_id) to verify end-to-end delivery
+4. POST /v1/event-subscriptions/{subscription_id}/test-event to verify delivery
 ```
-
-**Creating a subscription (raw HTTP):**
 
 ```bash
 # 1. Discover
@@ -280,7 +292,8 @@ webhook-signature: v1,<base64-hmac-sha256>
 Compute `HMAC-SHA256(key=base64_decode(secret_without_prefix), msg="<webhook-id>.<webhook-timestamp>.<raw-body>")`.
 Reject events where the timestamp is more than 5 minutes old.
 
-**Secret rotation:** call `update_event_subscription(subscription_id, rotate_secret: true)`.
+**Secret rotation:** call `PATCH /v1/event-subscriptions/{subscription_id}` with
+`{"rotate_secret":true}`.
 This is NOT idempotent — each call mints a new secret. Immediately capture and
 update your callback handler.
 
@@ -291,7 +304,7 @@ subscriptions — that is a client responsibility.
 **Hard rules for subscriptions:**
 
 - Capture the `whsec_` secret at creation time. If you lose it, rotate via
-  `update_event_subscription`.
+  `PATCH /v1/event-subscriptions/{subscription_id}`.
 - Do not store the secret in prompts, logs, commits, or PR descriptions.
 - Do not rely on event payloads for record bodies. Always fetch via §7.
 - If you receive `pdpp.grant.revoked`, the subscription cannot be re-enabled.
