@@ -1,4 +1,4 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: Hosted MCP Authorization Challenges SHALL Use A Stable Resource Identity
 
