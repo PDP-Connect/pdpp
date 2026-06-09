@@ -1,11 +1,22 @@
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { Callout, PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
-import { buttonVariants } from "@/components/ui/button.tsx";
-import { DashboardShell } from "../components/shell.tsx";
-import { getReferencePublicOrigin } from "../lib/owner-token.ts";
+import { Button, buttonVariants } from "@/components/ui/button.tsx";
+import { Input } from "@/components/ui/input.tsx";
+import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
+import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
+import { type CimdClientDocument, listCimdClientDocuments } from "../lib/ref-client.ts";
+import { createCimdClientIdentityAction, deleteCimdClientIdentityAction } from "./actions.ts";
 
 export const dynamic = "force-dynamic";
+
+const TRAILING_SLASH_RE = /\/+$/;
+
+interface PageParams {
+  client_identity?: string;
+  error?: string;
+  notice?: string;
+}
 
 interface SetupEntry {
   body: string;
@@ -15,7 +26,7 @@ interface SetupEntry {
 }
 
 function trimTrailingSlash(value: string): string {
-  return value.replace(/\/+$/, "");
+  return value.replace(TRAILING_SLASH_RE, "");
 }
 
 function buildConnectTargets(origin: string) {
@@ -27,6 +38,13 @@ function buildConnectTargets(origin: string) {
     codexCommand: `codex mcp add pdpp --url ${mcpUrl}`,
     mcpUrl,
     pdppCliCommand: `npx -y @pdpp/cli@beta connect ${base}`,
+  };
+}
+
+function buildCimdCommands(mcpUrl: string, clientId: string) {
+  return {
+    claudeCodeCimdCommand: `claude mcp add --transport http --client-id ${clientId} pdpp ${mcpUrl}`,
+    codexCimdCommand: `codex mcp add pdpp --url ${mcpUrl} --oauth-resource ${mcpUrl} --oauth-client-id ${clientId}`,
   };
 }
 
@@ -47,9 +65,180 @@ function CopyRow({ body, label, title, value }: SetupEntry) {
   );
 }
 
-export default async function ConnectPage() {
-  const origin = await getReferencePublicOrigin();
+function InlineNotice({ kind, message }: { kind: "error" | "notice"; message: string }) {
+  const tone =
+    kind === "error"
+      ? "border-destructive/30 bg-destructive/5 text-destructive"
+      : "border-border/80 bg-muted/30 text-muted-foreground";
+  return <div className={`pdpp-caption rounded-md border px-4 py-2.5 ${tone}`}>{message}</div>;
+}
+
+function noticeText(code?: string): string | null {
+  if (code === "client_identity_created") {
+    return "Client identity created. Copy the explicit command for the MCP client you are configuring.";
+  }
+  if (code === "client_identity_deleted") {
+    return "Client identity revoked. Its metadata URL is gone and issued access was revoked server-side.";
+  }
+  return null;
+}
+
+function ClientIdentityForm() {
+  return (
+    <form
+      action={createCimdClientIdentityAction}
+      className="grid gap-3 rounded-md border border-border/80 bg-muted/20 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_auto] lg:items-end"
+    >
+      <label className="grid gap-1" htmlFor="cimd-client-name">
+        <span className="pdpp-eyebrow">Client name</span>
+        <Input defaultValue="Claude Code" id="cimd-client-name" name="client_name" />
+      </label>
+      <label className="grid gap-1" htmlFor="cimd-redirect-uri">
+        <span className="pdpp-eyebrow">Redirect URI</span>
+        <Input
+          defaultValue="http://localhost:1455/callback"
+          id="cimd-redirect-uri"
+          name="redirect_uri"
+          placeholder="http://localhost:<port>/callback"
+        />
+      </label>
+      <Button size="sm" type="submit" variant="outline">
+        Create identity
+      </Button>
+    </form>
+  );
+}
+
+function ClientIdentityList({
+  identities,
+  selectedId,
+}: {
+  identities: CimdClientDocument[];
+  selectedId: string | null;
+}) {
+  if (!identities.length) {
+    return (
+      <p className="pdpp-caption rounded-md border border-border/80 border-dashed p-4 text-muted-foreground">
+        No stable client identities yet. Create one when a local MCP client supports an explicit URL-shaped{" "}
+        <code className="font-mono">client_id</code>.
+      </p>
+    );
+  }
+  return (
+    <ul className="divide-y divide-border/70 rounded-md border border-border/80">
+      {identities.map((identity) => {
+        const selected = identity.document_id === selectedId;
+        return (
+          <li
+            className={`grid gap-3 p-4 lg:grid-cols-[minmax(0,1fr)_auto] ${selected ? "bg-muted/30" : ""}`}
+            key={identity.document_id}
+          >
+            <div className="min-w-0">
+              <div className="pdpp-body font-medium">{identity.client_name ?? "Custom MCP client"}</div>
+              <div className="pdpp-caption mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground">
+                <code className="max-w-full overflow-x-auto font-mono text-xs">{identity.client_id}</code>
+                <span aria-hidden>·</span>
+                <span>{identity.redirect_uris[0] ?? "no redirect URI"}</span>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Link
+                className={buttonVariants({ variant: selected ? "secondary" : "outline", size: "sm" })}
+                href={`/dashboard/connect?client_identity=${encodeURIComponent(identity.document_id)}`}
+              >
+                {selected ? "Selected" : "Use"}
+              </Link>
+              <form action={deleteCimdClientIdentityAction}>
+                <input name="document_id" type="hidden" value={identity.document_id} />
+                <Button size="sm" type="submit" variant="destructive">
+                  Revoke
+                </Button>
+              </form>
+            </div>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function SelectedIdentityCommands({
+  mcpUrl,
+  selected,
+  targets,
+}: {
+  mcpUrl: string;
+  selected: CimdClientDocument | null;
+  targets: ReturnType<typeof buildConnectTargets>;
+}) {
+  if (!selected) {
+    return null;
+  }
+  const cimd = buildCimdCommands(mcpUrl, selected.client_id);
+  const entries: SetupEntry[] = [
+    {
+      title: "Claude Code",
+      body: "Default discovery; use this unless the client asks for an explicit client_id.",
+      label: "Claude Code default command",
+      value: targets.claudeCodeCommand,
+    },
+    {
+      title: "Claude Code + CIMD",
+      body: "Pins this local client to the selected stable metadata URL.",
+      label: "Claude Code CIMD command",
+      value: cimd.claudeCodeCimdCommand,
+    },
+    {
+      title: "Codex",
+      body: "Default discovery for the hosted MCP endpoint.",
+      label: "Codex default command",
+      value: targets.codexCommand,
+    },
+    {
+      title: "Codex + CIMD",
+      body: "Pins Codex to the selected stable metadata URL.",
+      label: "Codex CIMD command",
+      value: cimd.codexCimdCommand,
+    },
+  ];
+  return (
+    <div className="mt-5">
+      <div className="mb-2">
+        <p className="pdpp-eyebrow">Selected identity</p>
+        <p className="pdpp-caption text-muted-foreground">
+          {selected.client_name ?? "Custom MCP client"} · <code className="font-mono">{selected.document_id}</code>
+        </p>
+      </div>
+      <ul className="divide-y divide-border/70 border-border/70 border-y">
+        {entries.map((entry) => (
+          <CopyRow key={entry.title} {...entry} />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default async function ConnectPage({ searchParams }: { searchParams: Promise<PageParams> }) {
+  const params = await searchParams;
+  let origin: string;
+  let identities: CimdClientDocument[] = [];
+  try {
+    origin = await getReferencePublicOrigin();
+    identities = (await listCimdClientDocuments()).data;
+  } catch (err) {
+    if (err instanceof ReferenceServerUnreachableError) {
+      return (
+        <DashboardShell active="connect">
+          <ServerUnreachable />
+        </DashboardShell>
+      );
+    }
+    throw err;
+  }
   const targets = buildConnectTargets(origin);
+  const selected =
+    identities.find((identity) => identity.document_id === params.client_identity) ?? identities[0] ?? null;
+  const notice = noticeText(params.notice);
   const primaryEntries: SetupEntry[] = [
     {
       title: "MCP URL",
@@ -98,12 +287,28 @@ export default async function ConnectPage() {
         title="Connect an AI app"
       />
 
+      <div className="mb-5 grid gap-2">
+        {params.error ? <InlineNotice kind="error" message={params.error} /> : null}
+        {notice ? <InlineNotice kind="notice" message={notice} /> : null}
+      </div>
+
       <Section title="Start here">
         <ul className="divide-y divide-border/70 border-border/70 border-y">
           {primaryEntries.map((entry) => (
             <CopyRow key={entry.title} {...entry} />
           ))}
         </ul>
+      </Section>
+
+      <Section
+        description="Create one only when a local client needs an explicit URL-shaped client_id. The redirect URI must match the client callback exactly."
+        title="Stable local client identity"
+      >
+        <div className="grid gap-4">
+          <ClientIdentityForm />
+          <ClientIdentityList identities={identities} selectedId={selected?.document_id ?? null} />
+        </div>
+        <SelectedIdentityCommands mcpUrl={targets.mcpUrl} selected={selected} targets={targets} />
       </Section>
 
       <Section

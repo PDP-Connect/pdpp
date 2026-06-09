@@ -990,7 +990,12 @@ test('PDPP CLI smoke', async (t) => {
       assert.deepEqual(result.json.token_endpoint_auth_methods_supported, ['none']);
       assert.ok(result.json.pdpp_provider_connect_capabilities.includes('owner_self_export'));
       assert.ok(result.json.pdpp_provider_connect_capabilities.includes('third_party_client_connect'));
-      assert.deepEqual(result.json.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+      assert.deepEqual(result.json.pdpp_registration_modes_supported, [
+        'dynamic',
+        'pre_registered_public',
+        'client_id_metadata_document',
+      ]);
+      assert.equal(result.json.client_id_metadata_document_supported, true);
       assert.equal(result.stderr, '');
     });
   });

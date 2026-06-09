@@ -43,6 +43,8 @@ import type { PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 interface RouteRequest {
   readonly body?: Record<string, unknown>;
+  get(name: string): string | undefined;
+  readonly protocol: string;
 }
 
 interface RouteResponse {
@@ -143,6 +145,7 @@ export interface MountAsTokenContext {
    * this adapter does not import `server/auth.js` directly.
    */
   exchangeOAuthAuthorizationCode(args: {
+    baseUrl: string;
     code: unknown;
     clientId: unknown;
     redirectUri: unknown;
@@ -166,6 +169,8 @@ export interface MountAsTokenContext {
     grant_package_id?: string | null;
   }>;
   oauthError: PdppErrorFn;
+  /** Resolves the full base URL for the running AS given the inbound request. */
+  resolveBaseUrl(req: RouteRequest): string;
   setReferenceTraceId(res: unknown, traceId: string): void;
 }
 
@@ -177,12 +182,14 @@ function buildGrantIdPayload(token: {
 }
 
 async function handleAuthCodeExchange(
+  req: RouteRequest,
   body: Record<string, unknown>,
   res: RouteResponse,
   ctx: MountAsTokenContext
 ): Promise<unknown> {
   try {
     const token = await ctx.exchangeOAuthAuthorizationCode({
+      baseUrl: ctx.resolveBaseUrl(req),
       code: body.code,
       clientId: body.client_id,
       redirectUri: body.redirect_uri,
@@ -234,7 +241,7 @@ export function mountAsToken(app: AppLike, ctx: MountAsTokenContext): void {
   const handler: RouteHandler = async (req, res) => {
     const body = req.body;
     if (body?.grant_type === "authorization_code") {
-      return handleAuthCodeExchange(body, res, ctx);
+      return handleAuthCodeExchange(req, body, res, ctx);
     }
     if (body?.grant_type === "refresh_token") {
       return handleRefreshTokenExchange(body, res, ctx);

@@ -119,3 +119,101 @@ test('fetchCimdDocument blocks forbidden DNS resolutions before issuing HTTP', a
   );
   assert.equal(called, false);
 });
+
+test('fetchCimdDocument aborts slow metadata fetches', async () => {
+  const clientId = 'https://client.example/oauth/client-timeout.json';
+  await assert.rejects(
+    () =>
+      fetchCimdDocument(clientId, {
+        dnsLookupImpl: publicDns,
+        timeoutMs: 1,
+        fetchImpl: async (_url, init) =>
+          new Promise((_resolve, reject) => {
+            init.signal.addEventListener('abort', () => reject(new Error('aborted by test timeout')));
+          }),
+      }),
+    /CIMD fetch failed.*aborted by test timeout/,
+  );
+});
+
+test('fetchCimdDocument rejects redirects, malformed JSON, client_id mismatch, and unsupported auth', async () => {
+  await assert.rejects(
+    () =>
+      fetchCimdDocument('https://client.example/oauth/client-redirect.json', {
+        dnsLookupImpl: publicDns,
+        fetchImpl: async () => new Response('', { status: 303, headers: { Location: 'https://client.example/next' } }),
+      }),
+    /rejected redirect/,
+  );
+
+  await assert.rejects(
+    () =>
+      fetchCimdDocument('https://client.example/oauth/client-malformed.json', {
+        dnsLookupImpl: publicDns,
+        fetchImpl: async () => new Response('{not json', { status: 200 }),
+      }),
+    /not valid JSON/,
+  );
+
+  await assert.rejects(
+    () =>
+      fetchCimdDocument('https://client.example/oauth/client-mismatch.json', {
+        dnsLookupImpl: publicDns,
+        fetchImpl: async () =>
+          jsonResponse({
+            client_id: 'https://client.example/oauth/other.json',
+            redirect_uris: ['https://client.example/callback'],
+            token_endpoint_auth_method: 'none',
+          }),
+      }),
+    /client_id mismatch/,
+  );
+
+  await assert.rejects(
+    () =>
+      fetchCimdDocument('https://client.example/oauth/client-secret.json', {
+        dnsLookupImpl: publicDns,
+        fetchImpl: async () =>
+          jsonResponse({
+            client_id: 'https://client.example/oauth/client-secret.json',
+            redirect_uris: ['https://client.example/callback'],
+            token_endpoint_auth_method: 'client_secret_basic',
+          }),
+      }),
+    /unsupported token_endpoint_auth_method/,
+  );
+});
+
+test('fetchCimdDocument reports security-relevant metadata changes after cache expiry', async () => {
+  const clientId = 'https://client.example/oauth/client-security-change.json';
+  let body = {
+    client_id: clientId,
+    client_name: 'Codex',
+    redirect_uris: ['https://client.example/callback'],
+    token_endpoint_auth_method: 'none',
+  };
+  const changes = [];
+  const fetchImpl = async () => jsonResponse(body, { headers: { 'Cache-Control': 'max-age=0' } });
+
+  const first = await fetchCimdDocument(clientId, { dnsLookupImpl: publicDns, fetchImpl, nowMs: 0 });
+  assert.equal(first.securityRelevantMetadataChanged, false);
+
+  body = {
+    ...body,
+    redirect_uris: ['https://client.example/callback-v2'],
+  };
+  const second = await fetchCimdDocument(clientId, {
+    dnsLookupImpl: publicDns,
+    fetchImpl,
+    nowMs: 60_001,
+    onSecurityRelevantMetadataChange: (event) => {
+      changes.push(event);
+    },
+  });
+
+  assert.equal(second.securityRelevantMetadataChanged, true);
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].clientId, clientId);
+  assert.deepEqual(changes[0].previousDoc.redirect_uris, ['https://client.example/callback']);
+  assert.deepEqual(changes[0].nextDoc.redirect_uris, ['https://client.example/callback-v2']);
+});

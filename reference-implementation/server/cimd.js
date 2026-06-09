@@ -21,6 +21,7 @@ const SECURITY_RELEVANT_FIELDS = ['redirect_uris', 'token_endpoint_auth_method',
 
 // In-memory cache: clientId → { doc, expiresAt, securityHash }
 const cimdCache = new Map();
+const textEncoder = new TextEncoder();
 
 function rawPathFromUrlString(value) {
   const match = String(value).match(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*([^?#]*)/i);
@@ -116,9 +117,12 @@ export function isForbiddenIp(ip) {
   const normalized = ip.toLowerCase().replace(/^\[|\]$/g, '');
   if (normalized === '::1') return true;                 // loopback
   if (normalized === '::') return true;
-  if (normalized.startsWith('fe80:')) return true;      // link-local fe80::/10
-  if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true; // ULA fc00::/7
-  if (normalized.startsWith('ff')) return true;         // multicast ff00::/8
+  const firstHextet = Number.parseInt(normalized.split(':', 1)[0] || '0', 16);
+  if (Number.isFinite(firstHextet)) {
+    if ((firstHextet & 0xffc0) === 0xfe80) return true; // link-local fe80::/10
+    if ((firstHextet & 0xfe00) === 0xfc00) return true; // ULA fc00::/7
+    if ((firstHextet & 0xff00) === 0xff00) return true; // multicast ff00::/8
+  }
   return false;
 }
 
@@ -183,15 +187,30 @@ function parseCacheControlMaxAge(headers) {
  * Returns { doc, securityHash, fromCache }.
  * Throws with err.code = 'cimd_fetch_failed' on any fetch/parse/validation failure.
  */
-export async function fetchCimdDocument(clientId, { fetchImpl = globalThis.fetch, dnsLookupImpl = dnsLookup } = {}) {
-  const now = Date.now();
+export async function fetchCimdDocument(
+  clientId,
+  {
+    fetchImpl = globalThis.fetch,
+    dnsLookupImpl = dnsLookup,
+    onSecurityRelevantMetadataChange = null,
+    nowMs = Date.now(),
+    timeoutMs = CIMD_FETCH_TIMEOUT_MS,
+  } = {},
+) {
+  const now = nowMs;
   const cached = cimdCache.get(clientId);
   if (cached && cached.expiresAt > now) {
-    return { doc: cached.doc, securityHash: cached.securityHash, fromCache: true };
+    return {
+      doc: cached.doc,
+      securityHash: cached.securityHash,
+      fromCache: true,
+      securityRelevantMetadataChanged: false,
+    };
   }
+  const previousCached = cached || null;
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), CIMD_FETCH_TIMEOUT_MS);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   let response;
   try {
@@ -235,7 +254,7 @@ export async function fetchCimdDocument(clientId, { fetchImpl = globalThis.fetch
     clearTimeout(timeoutId);
   }
 
-  if (response.status === 301 || response.status === 302 || response.status === 307 || response.status === 308) {
+  if (response.status >= 300 && response.status < 400) {
     const err = new Error(`CIMD fetch rejected redirect for ${clientId}`);
     err.code = 'cimd_fetch_failed';
     err.hostname = (() => { try { return new URL(clientId).hostname; } catch { return clientId; } })();
@@ -268,9 +287,10 @@ export async function fetchCimdDocument(clientId, { fetchImpl = globalThis.fetch
       }
       body += decoder.decode(value, { stream: true });
     }
+    body += decoder.decode();
   } else {
     body = await response.text();
-    if (body.length > CIMD_MAX_BODY_BYTES) {
+    if (textEncoder.encode(body).byteLength > CIMD_MAX_BODY_BYTES) {
       const err = new Error(`CIMD document exceeds 5 KB size limit for ${clientId}`);
       err.code = 'cimd_fetch_failed';
       err.hostname = (() => { try { return new URL(clientId).hostname; } catch { return clientId; } })();
@@ -323,6 +343,22 @@ export async function fetchCimdDocument(clientId, { fetchImpl = globalThis.fetch
   validateCimdRedirectUris(doc, clientId);
 
   const securityHash = computeSecurityHash(doc);
+  const securityRelevantMetadataChanged = Boolean(
+    previousCached && previousCached.securityHash !== securityHash,
+  );
+
+  if (securityRelevantMetadataChanged) {
+    cimdCache.delete(clientId);
+    if (typeof onSecurityRelevantMetadataChange === 'function') {
+      await onSecurityRelevantMetadataChange({
+        clientId,
+        previousDoc: previousCached.doc,
+        nextDoc: doc,
+        previousSecurityHash: previousCached.securityHash,
+        nextSecurityHash: securityHash,
+      });
+    }
+  }
 
   // Determine TTL from cache headers, bounded by [min, max]
   const headerMaxAge = parseCacheControlMaxAge(response.headers);
@@ -330,9 +366,9 @@ export async function fetchCimdDocument(clientId, { fetchImpl = globalThis.fetch
     ? Math.min(Math.max(headerMaxAge, CIMD_CACHE_MIN_TTL_MS), CIMD_CACHE_MAX_TTL_MS)
     : CIMD_CACHE_MIN_TTL_MS;
 
-  cimdCache.set(clientId, { doc, securityHash, expiresAt: Date.now() + ttl });
+  cimdCache.set(clientId, { doc, securityHash, expiresAt: nowMs + ttl });
 
-  return { doc, securityHash, fromCache: false };
+  return { doc, securityHash, fromCache: false, securityRelevantMetadataChanged };
 }
 
 /**

@@ -44,7 +44,24 @@ interface RouteResponse {
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
+  delete(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
   get(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+}
+
+export interface RefCimdDocument {
+  readonly client_name: string | null;
+  readonly created_at: string;
+  readonly document_id: string;
+  readonly logo_uri: string | null;
+  readonly redirect_uris: readonly string[];
+  readonly updated_at: string;
+}
+
+export interface CreateRefCimdDocumentInput {
+  readonly clientName: string | null;
+  readonly logoUri: string | null;
+  readonly redirectUris: readonly string[];
 }
 
 export interface MountRefAdminContext {
@@ -55,6 +72,13 @@ export interface MountRefAdminContext {
   // Subject resolution — mirrors `getOwnerSubjectId` closure in index.js.
   readonly getOwnerSubjectId: (req: RouteRequest) => string;
   readonly handleError: (res: unknown, err: unknown) => void;
+  readonly createCimdDocument: (input: CreateRefCimdDocumentInput) => Promise<string>;
+  readonly deleteCimdDocument: (
+    documentId: string,
+    opts: { clientId: string; requestId?: string | null; traceId?: string | null }
+  ) => Promise<void>;
+  readonly getCimdDocument: (documentId: string) => Promise<RefCimdDocument | null>;
+  readonly listCimdDocuments: () => Promise<readonly RefCimdDocument[]>;
   readonly listOwnerIssuedClients: (subjectId: string) => Promise<readonly RefClientsListClient[]>;
   // Substrate capabilities — injected by host so the adapter never touches
   // the store handles or process.env directly.
@@ -62,9 +86,113 @@ export interface MountRefAdminContext {
   readonly listSchedules: () => Promise<unknown[]>;
   readonly pdppError: PdppErrorFn;
   readonly requireOwnerSession: MiddlewareHandler;
+  readonly resolveBaseUrl: (req: RouteRequest) => string;
   // Query-string helpers — mirrors `resolveSingleConnectorIdQueryValue` in index.js.
   readonly resolveSingleConnectorIdQueryValue: (raw: unknown) => string | null;
   readonly searchSpine: (query: string) => Promise<RefSpineSearchResult> | RefSpineSearchResult;
+}
+
+function buildClientMetadataUrl(baseUrl: string, documentId: string): string {
+  return `${baseUrl.replace(/\/+$/, "")}/oauth/client-metadata/${encodeURIComponent(documentId)}`;
+}
+
+function asBodyObject(body: unknown): Record<string, unknown> {
+  return body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
+}
+
+function readOptionalString(body: Record<string, unknown>, ...names: string[]): string | null {
+  for (const name of names) {
+    const value = body[name];
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed) {
+        return trimmed;
+      }
+    }
+  }
+  return null;
+}
+
+function isLoopbackRedirect(url: URL): boolean {
+  if (url.protocol !== "http:") {
+    return false;
+  }
+  const host = url.hostname.toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1";
+}
+
+function validateRedirectUri(uri: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(uri);
+  } catch {
+    throw Object.assign(new Error(`Invalid redirect_uri: ${uri}`), { code: "invalid_redirect_uri" });
+  }
+  if (parsed.protocol !== "https:" && !isLoopbackRedirect(parsed)) {
+    throw Object.assign(
+      new Error("redirect_uris must use https, or http loopback for local MCP clients"),
+      { code: "invalid_redirect_uri" }
+    );
+  }
+  return parsed.toString();
+}
+
+function readRedirectUris(body: Record<string, unknown>): readonly string[] {
+  const raw = body.redirect_uris ?? body.redirectUris;
+  const values =
+    Array.isArray(raw) ? raw : typeof raw === "string" && raw.trim() ? raw.split(/\s*,\s*/) : [];
+  const redirectUris = values
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .map((value) => validateRedirectUri(value.trim()));
+  return [...new Set(redirectUris)];
+}
+
+function parseCreateCimdDocumentInput(body: unknown): CreateRefCimdDocumentInput {
+  const obj = asBodyObject(body);
+  if (typeof obj.client_secret === "string" && obj.client_secret.trim()) {
+    throw Object.assign(new Error("client_secret is not supported for PDPP-hosted CIMD documents"), {
+      code: "invalid_client_metadata",
+    });
+  }
+  const authMethod = readOptionalString(obj, "token_endpoint_auth_method", "tokenEndpointAuthMethod");
+  if (authMethod && authMethod !== "none") {
+    throw Object.assign(new Error("Only token_endpoint_auth_method=none is supported"), {
+      code: "invalid_client_metadata",
+    });
+  }
+  const redirectUris = readRedirectUris(obj);
+  if (redirectUris.length === 0) {
+    throw Object.assign(new Error("At least one redirect_uri is required"), {
+      code: "invalid_redirect_uri",
+    });
+  }
+  const logoUri = readOptionalString(obj, "logo_uri", "logoUri");
+  if (logoUri) {
+    try {
+      new URL(logoUri);
+    } catch {
+      throw Object.assign(new Error("logo_uri must be a valid URL"), { code: "invalid_client_metadata" });
+    }
+  }
+  return {
+    clientName: readOptionalString(obj, "client_name", "clientName") ?? "Custom MCP client",
+    logoUri,
+    redirectUris,
+  };
+}
+
+function projectCimdDocument(doc: RefCimdDocument, baseUrl: string) {
+  return {
+    object: "cimd_client_metadata_document",
+    document_id: doc.document_id,
+    client_id: buildClientMetadataUrl(baseUrl, doc.document_id),
+    client_name: doc.client_name,
+    redirect_uris: doc.redirect_uris,
+    logo_uri: doc.logo_uri,
+    token_endpoint_auth_method: "none",
+    created_at: doc.created_at,
+    updated_at: doc.updated_at,
+  };
 }
 
 // GET /_ref/search
@@ -211,4 +339,73 @@ export function mountRefClients(app: AppLike, ctx: MountRefAdminContext): void {
       ctx.handleError(res, err);
     }
   });
+}
+
+// GET/POST/DELETE /_ref/cimd-client-documents
+//
+// Operator-managed client identity documents for local MCP clients. This is a
+// reference-only management surface; the public document is served from
+// `GET /oauth/client-metadata/:id`.
+export function mountRefCimdClientDocuments(app: AppLike, ctx: MountRefAdminContext): void {
+  app.get("/_ref/cimd-client-documents", ctx.requireOwnerSession, async (req: RouteRequest, res: RouteResponse) => {
+    try {
+      const baseUrl = ctx.resolveBaseUrl(req);
+      const docs = await ctx.listCimdDocuments();
+      res.json({
+        object: "list",
+        data: docs.map((doc) => projectCimdDocument(doc, baseUrl)),
+        has_more: false,
+      });
+    } catch (err) {
+      ctx.handleError(res, err);
+    }
+  });
+
+  app.post("/_ref/cimd-client-documents", ctx.requireOwnerSession, async (req: RouteRequest, res: RouteResponse) => {
+    try {
+      const input = parseCreateCimdDocumentInput(req.body);
+      const documentId = await ctx.createCimdDocument(input);
+      const doc = await ctx.getCimdDocument(documentId);
+      if (!doc) {
+        throw new Error(`CIMD document was not readable after creation: ${documentId}`);
+      }
+      res.status(201).json(projectCimdDocument(doc, ctx.resolveBaseUrl(req)));
+    } catch (err) {
+      const code = (err as { code?: unknown })?.code;
+      if (code === "invalid_redirect_uri" || code === "invalid_client_metadata") {
+        ctx.pdppError(
+          res,
+          400,
+          typeof code === "string" ? code : "invalid_request",
+          err instanceof Error ? err.message : "Invalid CIMD document request"
+        );
+        return;
+      }
+      ctx.handleError(res, err);
+    }
+  });
+
+  app.delete(
+    "/_ref/cimd-client-documents/:documentId",
+    ctx.requireOwnerSession,
+    async (req: RouteRequest, res: RouteResponse) => {
+      const documentId = decodeURIComponent(req.params.documentId as string);
+      const clientId = buildClientMetadataUrl(ctx.resolveBaseUrl(req), documentId);
+      try {
+        await ctx.deleteCimdDocument(documentId, { clientId });
+        res.json({
+          object: "cimd_client_metadata_document_deletion",
+          document_id: documentId,
+          client_id: clientId,
+          deleted: true,
+        });
+      } catch (err) {
+        if ((err as { code?: unknown })?.code === "not_found") {
+          ctx.pdppError(res, 404, "not_found", err instanceof Error ? err.message : "CIMD document not found");
+          return;
+        }
+        ctx.handleError(res, err);
+      }
+    }
+  );
 }

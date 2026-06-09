@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
-import { parsePendingConsentRequestUri } from '../server/auth.js';
+import { createCimdDocument, parsePendingConsentRequestUri, revokeCimdClientAccessForSecurityMetadataChange } from '../server/auth.js';
 import { getDb } from '../server/db.js';
 import { ingestRecord } from '../server/records.js';
 import { runConnector, loadSyncState } from '../runtime/index.js';
@@ -60,6 +60,19 @@ async function fetchJson(url, opts = {}) {
     body,
     headers: Object.fromEntries(resp.headers.entries()),
   };
+}
+
+async function postMcpJson(rsUrl, token, message) {
+  const resp = await fetch(`${rsUrl}/mcp`, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json, text/event-stream',
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(message),
+  });
+  return { status: resp.status, body: await resp.json() };
 }
 
 async function withHarness(fn) {
@@ -611,6 +624,114 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(rejectedEvent.data?.error?.code, 'grant_invalid');
       assert.match(rejectedEvent.data?.error?.message || '', /Grant is malformed or no longer valid/);
     });
+  });
+
+  await t.test('same-origin CIMD client_id resolves local metadata document and issues a scoped token', async () => {
+    const publicOrigin = 'https://pdpp.example.test';
+    const server = await startServer({
+      quiet: true,
+      asPort: 0,
+      rsPort: 0,
+      dbPath: ':memory:',
+      asPublicUrl: publicOrigin,
+      dynamicClientRegistrationInitialAccessTokens: [TEST_DCR_INITIAL_ACCESS_TOKEN],
+    });
+    const asUrl = `http://localhost:${server.asPort}`;
+    const rsUrl = `http://localhost:${server.rsPort}`;
+    const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
+
+    try {
+      await fetchJson(`${asUrl}/connectors`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(spotifyManifest),
+      });
+      await seedSpotify(rsUrl, spotifyManifest, await issueOwnerToken(asUrl, 'u1'));
+
+      const documentId = await createCimdDocument({
+        clientName: 'Codex',
+        redirectUris: ['http://localhost:1455/callback'],
+      });
+      const clientId = `${publicOrigin}/oauth/client-metadata/${documentId}`;
+      const approved = await approveGrant(asUrl, 'u1', {
+        client_id: clientId,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
+        purpose_code: 'https://pdpp.org/purpose/personalization',
+        purpose_description: 'Read top artists through a CIMD-identified local MCP client.',
+        access_mode: 'single_use',
+        streams: [{ name: 'top_artists', view: 'basic' }],
+      });
+
+      assert.equal(approved.grant.client.client_id, clientId);
+      assert.equal(approved.grant.client.client_display.name, 'Codex');
+      assert.ok(approved.token);
+
+      const clientRecordsResp = await fetch(`${rsUrl}/v1/streams/top_artists/records?limit=1`, {
+        headers: { Authorization: `Bearer ${approved.token}` },
+      });
+      assert.equal(clientRecordsResp.status, 200);
+      const clientRecords = await clientRecordsResp.json();
+      assert.equal(Array.isArray(clientRecords.data), true);
+      assert.equal(clientRecords.data.length, 1);
+
+      const initialize = await postMcpJson(rsUrl, approved.token, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-06-18',
+          capabilities: {},
+          clientInfo: { name: 'cimd-test', version: '0.0.0' },
+        },
+      });
+      assert.equal(initialize.status, 200);
+      assert.equal(initialize.body.result.serverInfo.name, 'pdpp-reference-mcp');
+
+      const tools = await postMcpJson(rsUrl, approved.token, {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/list',
+        params: {},
+      });
+      assert.equal(tools.status, 200);
+      assert.deepEqual(tools.body.result.tools.map((tool) => tool.name).sort(), [
+        'aggregate',
+        'fetch',
+        'query_records',
+        'schema',
+        'search',
+      ]);
+
+      await revokeCimdClientAccessForSecurityMetadataChange({
+        clientId,
+        previousSecurityHash: 'sha256-old',
+        nextSecurityHash: 'sha256-new',
+      });
+      const { body: postChangeIntrospection } = await fetchJson(`${asUrl}/introspect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: approved.token }),
+      });
+      assert.equal(postChangeIntrospection.active, false);
+
+      const badClientId = `${publicOrigin}/oauth/client-metadata/cimd_missing`;
+      const failed = await startGrantRequest(asUrl, {
+        client_id: badClientId,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
+        purpose_code: 'https://pdpp.org/purpose/personalization',
+        purpose_description: 'This request must fail before consent because the CIMD document is missing.',
+        access_mode: 'single_use',
+        streams: [{ name: 'top_artists', view: 'basic' }],
+      });
+      assert.equal(failed.status, 400);
+      assert.equal(failed.body.error, 'invalid_client');
+      const missingClientGrantCount = getDb()
+        .prepare('SELECT COUNT(*) AS count FROM grants WHERE client_id = ?')
+        .get(badClientId).count;
+      assert.equal(missingClientGrantCount, 0);
+    } finally {
+      await closeServer(server);
+    }
   });
 
   await t.test('polyfill malformed grant revocation preserves connector source when only storage binding drifts', async () => {

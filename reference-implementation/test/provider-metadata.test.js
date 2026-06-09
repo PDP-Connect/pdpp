@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 
 import { startServer } from '../server/index.js';
+import { createCimdDocument } from '../server/auth.js';
 import { resolvePublicUrl, resolveSiblingPublicUrl } from '../server/metadata.ts';
 import { PDPP_REFERENCE_REVISION_HEADER } from '../server/reference-revision.js';
 import { createPdppCliCommand, getPdppCliPackageInfo } from '../../packages/cli/src/package-info.js';
@@ -59,6 +60,11 @@ function assertPublicClientAdvertised(metadata, clientId, clientName) {
     client_name: clientName,
     token_endpoint_auth_method: 'none',
   });
+}
+
+function assertCimdRegistrationModes(metadata, baseModes = ['dynamic', 'pre_registered_public']) {
+  assert.deepEqual(metadata.pdpp_registration_modes_supported, [...baseModes, 'client_id_metadata_document']);
+  assert.equal(metadata.client_id_metadata_document_supported, true);
 }
 
 async function fetchJsonResponse(url, opts = {}) {
@@ -584,7 +590,7 @@ test('proxied composed metadata rebases localhost defaults to the forwarded publ
     assert.equal(authorizationServer.status, 200);
     assert.equal(authorizationServer.body.issuer, publicOrigin);
     assert.equal(authorizationServer.body.registration_endpoint, `${publicOrigin}/oauth/register`);
-    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+    assertCimdRegistrationModes(authorizationServer.body);
     assertPublicClientAdvertised(authorizationServer.body, 'pdpp_cli', 'PDPP CLI');
     assert.equal(authorizationServer.body.device_authorization_endpoint, `${publicOrigin}/oauth/device_authorization`);
   } finally {
@@ -618,7 +624,7 @@ test('provider metadata pins explicit public origins despite hostile forwarded h
     assert.equal(authorizationServer.status, 200);
     assert.equal(authorizationServer.body.issuer, asOrigin);
     assert.equal(authorizationServer.body.registration_endpoint, `${asOrigin}/oauth/register`);
-    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+    assertCimdRegistrationModes(authorizationServer.body);
     assertPublicClientAdvertised(authorizationServer.body, 'pdpp_cli', 'PDPP CLI');
 
     const protectedResource = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`, {
@@ -628,6 +634,112 @@ test('provider metadata pins explicit public origins despite hostile forwarded h
     assert.equal(protectedResource.body.resource, rsOrigin);
     assert.deepEqual(protectedResource.body.authorization_servers, [asOrigin]);
     assert.equal(protectedResource.body.pdpp_core_query_base, `${rsOrigin}/v1`);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('operator-created CIMD documents are served as stable client metadata documents', async () => {
+  const publicOrigin = 'https://pdpp.example.test';
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    asPublicUrl: publicOrigin,
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const documentId = await createCimdDocument({
+      clientName: 'Claude Code',
+      redirectUris: ['http://localhost:1455/callback'],
+      logoUri: null,
+    });
+
+    const resp = await fetch(`${asUrl}/oauth/client-metadata/${encodeURIComponent(documentId)}`);
+    assert.equal(resp.status, 200);
+    assert.match(resp.headers.get('content-type') || '', /application\/json/);
+    assert.equal(resp.headers.get('cache-control'), 'max-age=3600');
+    const body = await resp.json();
+    assert.deepEqual(body, {
+      client_id: `${publicOrigin}/oauth/client-metadata/${documentId}`,
+      client_name: 'Claude Code',
+      redirect_uris: ['http://localhost:1455/callback'],
+      token_endpoint_auth_method: 'none',
+      grant_types: ['authorization_code'],
+      response_types: ['code'],
+    });
+    assert.equal(Object.values(body).some((value) => value === null), false);
+
+    const missing = await fetchJson(`${asUrl}/oauth/client-metadata/cimd_missing`);
+    assert.equal(missing.status, 404);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('_ref CIMD document management creates, lists, rejects secrets, and deletes stable identities', async () => {
+  const publicOrigin = 'https://pdpp.example.test';
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    asPublicUrl: publicOrigin,
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const create = await fetchJson(`${asUrl}/_ref/cimd-client-documents`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        client_name: 'Codex',
+        redirect_uris: ['http://localhost:1455/callback'],
+        token_endpoint_auth_method: 'none',
+      }),
+    });
+    assert.equal(create.status, 201);
+    assert.equal(create.body.object, 'cimd_client_metadata_document');
+    assert.equal(create.body.client_name, 'Codex');
+    assert.equal(create.body.client_id, `${publicOrigin}/oauth/client-metadata/${create.body.document_id}`);
+    assert.deepEqual(create.body.redirect_uris, ['http://localhost:1455/callback']);
+    assert.equal(create.body.token_endpoint_auth_method, 'none');
+
+    const list = await fetchJson(`${asUrl}/_ref/cimd-client-documents`);
+    assert.equal(list.status, 200);
+    assert.equal(list.body.object, 'list');
+    assert.equal(list.body.has_more, false);
+    assert.ok(list.body.data.some((doc) => doc.document_id === create.body.document_id));
+
+    const publicDoc = await fetchJson(`${asUrl}/oauth/client-metadata/${encodeURIComponent(create.body.document_id)}`);
+    assert.equal(publicDoc.status, 200);
+    assert.equal(publicDoc.body.client_id, create.body.client_id);
+    assert.equal(Object.values(publicDoc.body).some((value) => value === null), false);
+
+    const secret = await fetchJson(`${asUrl}/_ref/cimd-client-documents`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        client_name: 'Secret client',
+        redirect_uris: ['https://client.example/callback'],
+        token_endpoint_auth_method: 'client_secret_basic',
+        client_secret: 'not-allowed',
+      }),
+    });
+    assert.equal(secret.status, 400);
+    assert.equal(secret.body.error.code, 'invalid_client_metadata');
+
+    const deleted = await fetchJson(`${asUrl}/_ref/cimd-client-documents/${encodeURIComponent(create.body.document_id)}`, {
+      method: 'DELETE',
+    });
+    assert.equal(deleted.status, 200);
+    assert.equal(deleted.body.deleted, true);
+    assert.equal(deleted.body.client_id, create.body.client_id);
+
+    const missing = await fetchJson(`${asUrl}/oauth/client-metadata/${encodeURIComponent(create.body.document_id)}`);
+    assert.equal(missing.status, 404);
   } finally {
     await closeServer(server);
   }
@@ -657,7 +769,7 @@ test('operator-supplied DCR token remains advertised for public metadata', async
     assert.equal(authorizationServer.status, 200);
     assert.equal(authorizationServer.body.issuer, publicOrigin);
     assert.equal(authorizationServer.body.registration_endpoint, `${publicOrigin}/oauth/register`);
-    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+    assertCimdRegistrationModes(authorizationServer.body);
     assertPublicClientAdvertised(authorizationServer.body, 'pdpp_cli', 'PDPP CLI');
 
     const registerPublic = await fetch(`${asUrl}/oauth/register`, {
@@ -827,7 +939,7 @@ test('provider metadata routes expose current honest capability set', async () =
     assert.deepEqual(authorizationServer.body.response_types_supported, ['code']);
     assert.deepEqual(authorizationServer.body.code_challenge_methods_supported, ['S256']);
     assert.deepEqual(authorizationServer.body.pdpp_provider_connect_capabilities, ['owner_self_export', 'cli_device_connect', 'third_party_client_connect']);
-    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+    assertCimdRegistrationModes(authorizationServer.body);
     assertPublicClientAdvertised(authorizationServer.body, 'pdpp_cli', 'PDPP CLI');
     assert.deepEqual(authorizationServer.body.pdpp_authorization_details_types_supported, ['https://pdpp.org/data-access']);
     assert.equal(authorizationServer.body.token_endpoint, `${asUrl}/oauth/token`);
@@ -981,7 +1093,7 @@ test('provider metadata advertises public registration when initial access token
     const authorizationServer = await fetchJson(`${asUrl}/.well-known/oauth-authorization-server`);
     assert.equal(authorizationServer.status, 200);
     assert.equal(authorizationServer.body.registration_endpoint, `${asUrl}/oauth/register`);
-    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+    assertCimdRegistrationModes(authorizationServer.body);
     assertPublicClientAdvertised(authorizationServer.body, 'pdpp_cli', 'PDPP CLI');
   } finally {
     await closeServer(server);
@@ -1011,7 +1123,7 @@ test('pre-registered public metadata publishes configured client identifiers', a
     const authorizationServer = await fetchJson(`${asUrl}/.well-known/oauth-authorization-server`);
     assert.equal(authorizationServer.status, 200);
     assert.equal(authorizationServer.body.registration_endpoint, `${asUrl}/oauth/register`);
-    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+    assertCimdRegistrationModes(authorizationServer.body);
     assert.deepEqual(authorizationServer.body.pdpp_pre_registered_public_clients, [
       {
         client_id: 'agent_demo',
@@ -1032,7 +1144,7 @@ test('default local reference startup advertises public self-registration', asyn
     const authorizationServer = await fetchJson(`${asUrl}/.well-known/oauth-authorization-server`);
     assert.equal(authorizationServer.status, 200);
     assert.equal(authorizationServer.body.registration_endpoint, `${asUrl}/oauth/register`);
-    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+    assertCimdRegistrationModes(authorizationServer.body);
     assertPublicClientAdvertised(authorizationServer.body, 'pdpp_cli', 'PDPP CLI');
 
     // No bearer token is required for public-client identity registration; a
@@ -1086,7 +1198,7 @@ test('public forwarded host advertises self-registration and rejects bogus beare
     });
     assert.equal(authorizationServer.status, 200);
     assert.equal(authorizationServer.body.registration_endpoint, `https://${publicHost}/oauth/register`);
-    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
+    assertCimdRegistrationModes(authorizationServer.body);
 
     const registerPublic = await fetch(`${asUrl}/oauth/register`, {
       method: 'POST',
@@ -1181,7 +1293,7 @@ test('explicit PDPP_ENABLE_DYNAMIC_CLIENT_REGISTRATION=0 env still disables regi
     const authorizationServer = await fetchJson(`${asUrl}/.well-known/oauth-authorization-server`);
     assert.equal(authorizationServer.status, 200);
     assert.equal('registration_endpoint' in authorizationServer.body, false);
-    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['pre_registered_public']);
+    assertCimdRegistrationModes(authorizationServer.body, ['pre_registered_public']);
   } finally {
     await closeServer(server);
     if (previous === undefined) {
@@ -1225,7 +1337,7 @@ test('provider metadata omits registration endpoint when dynamic registration is
     const authorizationServer = await fetchJson(`${asUrl}/.well-known/oauth-authorization-server`);
     assert.equal(authorizationServer.status, 200);
     assert.equal('registration_endpoint' in authorizationServer.body, false);
-    assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['pre_registered_public']);
+    assertCimdRegistrationModes(authorizationServer.body, ['pre_registered_public']);
   } finally {
     await closeServer(server);
   }

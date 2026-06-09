@@ -377,9 +377,10 @@ const AuthorizationServerMetadataSchema = {
     },
     pdpp_registration_modes_supported: {
       type: "array",
-      items: { type: "string", enum: ["dynamic", "pre_registered_public"] },
+      items: { type: "string", enum: ["dynamic", "pre_registered_public", "client_id_metadata_document"] },
       minItems: 1,
     },
+    client_id_metadata_document_supported: { const: true },
     pdpp_pre_registered_public_clients: {
       type: "array",
       items: PreRegisteredPublicClientSchema,

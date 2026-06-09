@@ -14,6 +14,7 @@ interface RouteRequest {
   readonly hostname: string;
   readonly protocol: string;
   readonly headers: Record<string, string | string[] | undefined>;
+  get(name: string): string | undefined;
 }
 
 interface RouteResponse {

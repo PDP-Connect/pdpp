@@ -1180,6 +1180,52 @@ export async function listOwnerIssuedClients(): Promise<ListResponse<OwnerIssued
   return (await refFetch("/_ref/clients", { owner: "true" })) as ListResponse<OwnerIssuedClient>;
 }
 
+export interface CimdClientDocument {
+  client_id: string;
+  client_name: string | null;
+  created_at: string;
+  document_id: string;
+  logo_uri: string | null;
+  object: "cimd_client_metadata_document";
+  redirect_uris: string[];
+  token_endpoint_auth_method: "none";
+  updated_at: string;
+}
+
+export interface CreateCimdClientDocumentInput {
+  clientName?: string | null;
+  logoUri?: string | null;
+  redirectUris: string[];
+}
+
+export async function listCimdClientDocuments(): Promise<ListResponse<CimdClientDocument>> {
+  return (await refFetch("/_ref/cimd-client-documents")) as ListResponse<CimdClientDocument>;
+}
+
+export async function createCimdClientDocument(input: CreateCimdClientDocumentInput): Promise<CimdClientDocument> {
+  return (await refFetch("/_ref/cimd-client-documents", undefined, {
+    body: JSON.stringify(input),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  })) as CimdClientDocument;
+}
+
+export async function deleteCimdClientDocument(documentId: string): Promise<{
+  client_id: string;
+  deleted: true;
+  document_id: string;
+  object: "cimd_client_metadata_document_deletion";
+}> {
+  return (await refFetch(`/_ref/cimd-client-documents/${encodeURIComponent(documentId)}`, undefined, {
+    method: "DELETE",
+  })) as {
+    client_id: string;
+    deleted: true;
+    document_id: string;
+    object: "cimd_client_metadata_document_deletion";
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Client event subscriptions — operator oversight surface
 //

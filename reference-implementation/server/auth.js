@@ -12,7 +12,7 @@ import {
   BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP,
   BATCH_CONSENT_STAGED_ENTRY_WARNING_THRESHOLD,
 } from '@pdpp/reference-contract';
-import { runWithSqliteBusyRetry } from './db.js';
+import { getDb, runWithSqliteBusyRetry } from './db.js';
 import {
   allowUnboundedReadAcknowledged,
   exec,
@@ -1686,10 +1686,9 @@ export async function createCimdDocument({ clientName, redirectUris, logoUri } =
       [documentId, clientName || null, redirectUrisJson, logoUri || null, now, now],
     );
   } else {
-    exec(
+    getDb().prepare(
       'INSERT INTO cimd_client_documents(document_id, client_name, redirect_uris, logo_uri, created_at, updated_at) VALUES(?,?,?,?,?,?)',
-      [documentId, clientName || null, redirectUrisJson, logoUri || null, now, now],
-    );
+    ).run(documentId, clientName || null, redirectUrisJson, logoUri || null, now, now);
   }
   return documentId;
 }
@@ -1704,10 +1703,9 @@ export async function getCimdDocument(documentId) {
       [documentId],
     );
   } else {
-    row = getOne(
+    row = getDb().prepare(
       'SELECT document_id, client_name, redirect_uris, logo_uri, created_at, updated_at FROM cimd_client_documents WHERE document_id = ?',
-      [documentId],
-    );
+    ).get(documentId);
   }
   if (!row) return null;
   return {
@@ -1734,10 +1732,9 @@ export async function listCimdDocuments() {
       updated_at: row.updated_at,
     }));
   }
-  const rows = allowUnboundedReadAcknowledged(
+  const rows = getDb().prepare(
     'SELECT document_id, client_name, redirect_uris, logo_uri, created_at, updated_at FROM cimd_client_documents ORDER BY created_at DESC',
-    [],
-  );
+  ).all();
   return rows.map((row) => ({
     document_id: row.document_id,
     client_name: row.client_name || null,
@@ -1748,8 +1745,22 @@ export async function listCimdDocuments() {
   }));
 }
 
-export async function deleteCimdDocument(documentId) {
+export async function deleteCimdDocument(documentId, { clientId = null, requestId = null, traceId = null } = {}) {
   const { invalidateCimdCache } = await import('./cimd.js');
+  const existingDocument = await getCimdDocument(documentId);
+  if (!existingDocument) {
+    const err = new Error(`CIMD document not found: ${documentId}`);
+    err.code = 'not_found';
+    throw err;
+  }
+  let revokeResult = null;
+  if (clientId) {
+    revokeResult = await revokeClientAccessArtifacts(clientId, {
+      requestId,
+      traceId,
+      subscriptionDisableReason: 'client_deleted',
+    });
+  }
   if (isPostgresStorageBackend()) {
     const result = await pgExec(
       'DELETE FROM cimd_client_documents WHERE document_id = $1',
@@ -1761,20 +1772,34 @@ export async function deleteCimdDocument(documentId) {
       throw err;
     }
   } else {
-    const existing = getOne(
-      'SELECT document_id FROM cimd_client_documents WHERE document_id = ?',
-      [documentId],
-    );
-    if (!existing) {
-      const err = new Error(`CIMD document not found: ${documentId}`);
-      err.code = 'not_found';
-      throw err;
-    }
-    exec('DELETE FROM cimd_client_documents WHERE document_id = ?', [documentId]);
+    getDb().prepare('DELETE FROM cimd_client_documents WHERE document_id = ?').run(documentId);
   }
-  // Invalidate any cached CIMD fetch for this document's URL (best-effort).
-  // We don't know the full URL here, so callers that do should call invalidateCimdCache directly.
-  invalidateCimdCache(documentId);
+  if (clientId) {
+    invalidateCimdCache(clientId);
+    await emitSpineEvent({
+      event_type: 'client.deleted',
+      trace_id: traceId || undefined,
+      scenario_id: undefined,
+      request_id: requestId || undefined,
+      actor_type: 'authorization_server',
+      actor_id: 'pdpp_as',
+      object_type: 'client',
+      object_id: clientId,
+      status: 'succeeded',
+      client_id: clientId,
+      data: {
+        registration_mode: 'client_id_metadata_document',
+        document_id: documentId,
+        revoked_grant_count: revokeResult?.revokedGrantIds.length ?? 0,
+        revoked_package_count: revokeResult?.revokedPackageIds.length ?? 0,
+        revoked_owner_token_count: revokeResult?.revokedOwnerTokenCount ?? 0,
+        disabled_subscription_count: revokeResult?.disabledSubscriptionCount ?? 0,
+      },
+    });
+  } else {
+    // Best effort for callers that only know the document id.
+    invalidateCimdCache(documentId);
+  }
 }
 
 async function bindDynamicClientToApprovingOwner(registeredClient, subjectId) {
@@ -1859,43 +1884,10 @@ export async function listOwnerIssuedClients(subjectId) {
   }).filter(Boolean);
 }
 
-/**
- * RFC 7592 client deletion, owner-session-gated by the route.
- * - Refuses non-dynamic clients (protects pre-registered seeds).
- * - Refuses if the acting subject doesn't match the registered
- *   `metadata.issuer_subject_id` (stops cross-operator deletes).
- * - Cascade-revokes every active grant and hosted-MCP grant package tied to
- *   the client via the existing revoke codepaths so spine events fire.
- * - Idempotent on subsequent calls (returns `not_found`).
- *
- * Returns revoked grant/package/token counts on success. Throws an error
- * with a `code` of `not_found` | `forbidden` otherwise.
- */
-export async function deleteRegisteredClient(clientId, { actingSubjectId, requestId, traceId } = {}) {
-  if (!clientId) {
-    const err = new Error('client_id is required');
-    err.code = 'invalid_request';
-    throw err;
-  }
-
-  const client = await getRegisteredClient(clientId);
-  if (!client) {
-    const err = new Error(`Unknown client_id: ${clientId}`);
-    err.code = 'not_found';
-    throw err;
-  }
-  if (client.registration_mode !== 'dynamic') {
-    const err = new Error('Pre-registered clients cannot be deleted via the registration management API');
-    err.code = 'forbidden';
-    throw err;
-  }
-  const ownerSubject = client.metadata.issuer_subject_id || null;
-  if (!ownerSubject || ownerSubject !== actingSubjectId) {
-    const err = new Error('Caller is not the operator who registered this client');
-    err.code = 'forbidden';
-    throw err;
-  }
-
+async function revokeClientAccessArtifacts(
+  clientId,
+  { requestId, traceId, subscriptionDisableReason = 'client_deleted' } = {},
+) {
   // Package refresh tokens are package-bound, not child-grant-bound. Capture
   // active packages before child grants are revoked so client deletion cannot
   // leave refreshable hosted-MCP packages behind.
@@ -1969,7 +1961,57 @@ export async function deleteRegisteredClient(clientId, { actingSubjectId, reques
     ? await pgExec("UPDATE tokens SET revoked = TRUE WHERE client_id = $1 AND revoked = FALSE", [clientId])
     : exec(referenceQueries.authTokensRevokeByClientId, [clientId]);
   const revokedOwnerTokenCount = tokenRevoke?.changes ?? 0;
-  const disabledSubscriptionCount = await disableClientEventSubscriptionsForDeletedClient(clientId);
+  const disabledSubscriptionCount = await disableClientEventSubscriptionsForDeletedClient(
+    clientId,
+    subscriptionDisableReason,
+  );
+
+  return { revokedGrantIds, revokedPackageIds, revokedOwnerTokenCount, disabledSubscriptionCount };
+}
+
+/**
+ * RFC 7592 client deletion, owner-session-gated by the route.
+ * - Refuses non-dynamic clients (protects pre-registered seeds).
+ * - Refuses if the acting subject doesn't match the registered
+ *   `metadata.issuer_subject_id` (stops cross-operator deletes).
+ * - Cascade-revokes every active grant and hosted-MCP grant package tied to
+ *   the client via the existing revoke codepaths so spine events fire.
+ * - Idempotent on subsequent calls (returns `not_found`).
+ *
+ * Returns revoked grant/package/token counts on success. Throws an error
+ * with a `code` of `not_found` | `forbidden` otherwise.
+ */
+export async function deleteRegisteredClient(clientId, { actingSubjectId, requestId, traceId } = {}) {
+  if (!clientId) {
+    const err = new Error('client_id is required');
+    err.code = 'invalid_request';
+    throw err;
+  }
+
+  const client = await getRegisteredClient(clientId);
+  if (!client) {
+    const err = new Error(`Unknown client_id: ${clientId}`);
+    err.code = 'not_found';
+    throw err;
+  }
+  if (client.registration_mode !== 'dynamic') {
+    const err = new Error('Pre-registered clients cannot be deleted via the registration management API');
+    err.code = 'forbidden';
+    throw err;
+  }
+  const ownerSubject = client.metadata.issuer_subject_id || null;
+  if (!ownerSubject || ownerSubject !== actingSubjectId) {
+    const err = new Error('Caller is not the operator who registered this client');
+    err.code = 'forbidden';
+    throw err;
+  }
+
+  const {
+    revokedGrantIds,
+    revokedPackageIds,
+    revokedOwnerTokenCount,
+    disabledSubscriptionCount,
+  } = await revokeClientAccessArtifacts(clientId, { requestId, traceId });
 
   if (isPostgresStorageBackend()) {
     await pgExec("DELETE FROM oauth_clients WHERE client_id = $1", [clientId]);
@@ -2002,7 +2044,7 @@ export async function deleteRegisteredClient(clientId, { actingSubjectId, reques
   return { revokedGrantIds, revokedPackageIds, revokedOwnerTokenCount, disabledSubscriptionCount };
 }
 
-async function disableClientEventSubscriptionsForDeletedClient(clientId) {
+async function disableClientEventSubscriptionsForDeletedClient(clientId, disabledReason = 'client_deleted') {
   const disabledAt = nowIso();
   if (isPostgresStorageBackend()) {
     const rows = (
@@ -2029,9 +2071,9 @@ async function disableClientEventSubscriptionsForDeletedClient(clientId) {
             SET status = 'disabled_revoked',
                 updated_at = $1,
                 disabled_at = $1,
-                disabled_reason = 'client_deleted'
-          WHERE subscription_id = $2`,
-        [disabledAt, row.subscription_id],
+                disabled_reason = $2
+          WHERE subscription_id = $3`,
+        [disabledAt, disabledReason, row.subscription_id],
       );
       affected += 1;
     }
@@ -2049,7 +2091,7 @@ async function disableClientEventSubscriptionsForDeletedClient(clientId) {
       'disabled_revoked',
       disabledAt,
       disabledAt,
-      'client_deleted',
+      disabledReason,
       row.subscription_id,
     ]);
     affected += 1;
@@ -2867,6 +2909,41 @@ export async function getManifestForStorageBinding(storageBinding, opts = {}) {
  * Handles same-origin (local) lookup and external fetch with SSRF guards.
  * Throws with err.code = 'cimd_fetch_failed' or 'invalid_request' on failure.
  */
+export async function revokeCimdClientAccessForSecurityMetadataChange(
+  { clientId, previousSecurityHash = null, nextSecurityHash = null },
+  opts = {},
+) {
+  const requestId = opts.requestId || opts.request_id || null;
+  const traceId = opts.traceId || opts.trace_id || null;
+  const revokeResult = await revokeClientAccessArtifacts(clientId, {
+    requestId,
+    traceId,
+    subscriptionDisableReason: 'client_metadata_changed',
+  });
+  await emitSpineEvent({
+    event_type: 'client.metadata_changed',
+    trace_id: traceId || undefined,
+    scenario_id: opts.scenarioId || opts.scenario_id || undefined,
+    request_id: requestId || undefined,
+    actor_type: 'authorization_server',
+    actor_id: 'pdpp_as',
+    object_type: 'client',
+    object_id: clientId,
+    status: 'succeeded',
+    client_id: clientId,
+    data: {
+      registration_mode: 'client_id_metadata_document',
+      reason: 'security_relevant_metadata_changed',
+      previous_security_hash: previousSecurityHash,
+      next_security_hash: nextSecurityHash,
+      revoked_grant_count: revokeResult.revokedGrantIds.length,
+      revoked_package_count: revokeResult.revokedPackageIds.length,
+      revoked_owner_token_count: revokeResult.revokedOwnerTokenCount,
+      disabled_subscription_count: revokeResult.disabledSubscriptionCount,
+    },
+  });
+}
+
 async function resolveCimdClientForGrant(clientId, opts = {}) {
   const {
     isCimdClientId,
@@ -2882,7 +2959,7 @@ async function resolveCimdClientForGrant(clientId, opts = {}) {
 
   // Same-origin check: if client_id matches our issuer + /oauth/client-metadata/:id,
   // resolve from local storage instead of a network self-fetch.
-  const issuerBase = opts.issuerBase || process.env.AS_PUBLIC_URL || null;
+  const issuerBase = opts.issuerBase || opts.baseUrl || process.env.AS_PUBLIC_URL || null;
   if (issuerBase) {
     try {
       const issuerUrl = new URL(issuerBase);
@@ -2914,8 +2991,21 @@ async function resolveCimdClientForGrant(clientId, opts = {}) {
   }
 
   // External fetch with SSRF guards, timeout, size cap
-  const { doc } = await fetchCimdDocument(clientId);
+  const { doc } = await fetchCimdDocument(clientId, {
+    onSecurityRelevantMetadataChange: (event) =>
+      revokeCimdClientAccessForSecurityMetadataChange(event, opts),
+  });
   return buildCimdRegisteredClient(clientId, doc);
+}
+
+export async function resolveOAuthClient(clientId, opts = {}) {
+  let registeredClient = await getRegisteredClient(clientId);
+  if (registeredClient) return registeredClient;
+  const { isCimdClientId } = await import('./cimd.js');
+  if (isCimdClientId(clientId)) {
+    registeredClient = await resolveCimdClientForGrant(clientId, opts);
+  }
+  return registeredClient;
 }
 
 /**
@@ -2934,15 +3024,7 @@ export async function initiateGrant(input, opts = {}) {
   const sourceBinding = getRequestSourceBinding(normalized);
 
   try {
-    let registeredClient = await getRegisteredClient(normalized.client.client_id);
-    if (!registeredClient) {
-      // CIMD path: https:// URL client_ids are resolved via Client ID Metadata Document.
-      const clientId = normalized.client.client_id;
-      const { isCimdClientId } = await import('./cimd.js');
-      if (isCimdClientId(clientId)) {
-        registeredClient = await resolveCimdClientForGrant(clientId, opts);
-      }
-    }
+    const registeredClient = await resolveOAuthClient(normalized.client.client_id, opts);
     if (!registeredClient) {
       const err = new Error(`Unknown client_id: ${normalized.client.client_id}`);
       err.code = 'invalid_client';
@@ -5169,6 +5251,8 @@ export async function exchangeOAuthAuthorizationCode({
   clientId,
   redirectUri,
   codeVerifier,
+  baseUrl = null,
+  issuerBase = null,
 }) {
   if (!isNonEmptyString(code)) {
     throw buildOAuthAuthorizationCodeError('invalid_request', 'code is required');
@@ -5212,7 +5296,7 @@ export async function exchangeOAuthAuthorizationCode({
     throw buildOAuthAuthorizationCodeError('invalid_grant', 'Authorization code PKCE verification failed');
   }
 
-  const registeredClient = await getRegisteredClient(clientId);
+  const registeredClient = await resolveOAuthClient(clientId, { baseUrl, issuerBase });
   if (!registeredClient) {
     throw buildOAuthAuthorizationCodeError('invalid_client', 'Unknown client_id');
   }

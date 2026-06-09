@@ -44,10 +44,12 @@ import {
   createHostedMcpGrantPackage, getGrantPackageAccess, getGrantPackageForOwner,
   getCumulativeClientAccessForPackage,
   listGrantPackagesForOwner, getGrantPackageIdForGrant,
-  deleteRegisteredClient, exchangeOAuthAuthorizationCode, exchangeOAuthRefreshToken, getRegisteredClient,
+  createCimdDocument, deleteCimdDocument, deleteRegisteredClient, exchangeOAuthAuthorizationCode, exchangeOAuthRefreshToken, getRegisteredClient,
+  getCimdDocument,
   issueOAuthAuthorizationCodeForDeviceCode, issueOAuthAuthorizationCodeForPackageDeviceCode,
-  listOwnerIssuedClients, listRegisteredConnectorIds,
-  registerDynamicClient, requireGrantContractAgainstManifest, requireResolvedPersistedGrantState, seedPreRegisteredClients,
+  listCimdDocuments, listOwnerIssuedClients, listRegisteredConnectorIds,
+  registerDynamicClient, requireGrantContractAgainstManifest, requireResolvedPersistedGrantState, resolveOAuthClient,
+  seedPreRegisteredClients,
   buildPendingConsentRequestUri,
   stageOAuthAuthorizationCodeRequest,
 } from './auth.js';
@@ -338,6 +340,7 @@ import {
 import { mountRefRunCancel } from './routes/run-cancel.ts';
 import {
   mountRefApprovals,
+  mountRefCimdClientDocuments,
   mountRefClients,
   mountRefDeployment,
   mountRefRecordsTimeline,
@@ -424,6 +427,7 @@ import { mountAsConsent } from './routes/as-consent.ts';
 import { mountAsDcr } from './routes/as-dcr.ts';
 import { mountAsPar } from './routes/as-par.ts';
 import { mountAsDeviceUi } from './routes/as-device-ui.ts';
+import { mountClientMetadata } from './routes/client-metadata.ts';
 import { mountRsHostedMcp } from './routes/rs-hosted-mcp.ts';
 import {
   renderPendingConsentNotFoundHtml,
@@ -2709,6 +2713,7 @@ function buildAsApp(opts = {}) {
   // extraction: same mount point, same handler, same envelope.
   mountAsAuthorizationServerMetadata(app, {
     buildAuthorizationServerMetadata,
+    cimdEnabled: opts.cimdEnabled !== false,
     dynamicClientRegistrationEnabled,
     publicClientMetadataForAuthorizationServer,
     rejectUntrustedMetadataHost,
@@ -2719,6 +2724,15 @@ function buildAsApp(opts = {}) {
     resolvePreRegisteredPublicClients: () => resolvePreRegisteredPublicClients(opts),
     resolvePublicUrl,
     trustedMetadataHosts: opts.trustedMetadataHosts,
+  });
+
+  mountClientMetadata(app, {
+    getCimdDocument,
+    explicitIssuer:
+      opts.asIssuer ||
+      opts.asPublicUrl ||
+      (!opts.ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null),
+    resolvePublicUrl,
   });
 
   // DCR register/delete routes — extracted to routes/as-dcr.ts per
@@ -2766,6 +2780,7 @@ function buildAsApp(opts = {}) {
     encodeHostedMcpStreamSelection,
     hostedMcpSourceKey,
   };
+  const explicitAsBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
 
   // GET /oauth/authorize and POST /oauth/authorize/mcp-package extracted to
   // `server/routes/as-authorize.ts` per OpenSpec change
@@ -2784,7 +2799,7 @@ function buildAsApp(opts = {}) {
     consentUi,
     createHostedMcpGrantPackage,
     ensureCsrfToken: (req, res) => ownerAuth.ensureCsrfToken(req, res),
-    getRegisteredClient,
+    getRegisteredClient: (clientId) => resolveOAuthClient(clientId, { baseUrl: explicitAsBaseUrl }),
     ignoreAmbientPublicUrls: !!opts.ignoreAmbientPublicUrls,
     issueOAuthAuthorizationCodeForPackageDeviceCode,
     nativeManifest: resolveNativeManifest(opts),
@@ -2815,6 +2830,10 @@ function buildAsApp(opts = {}) {
     exchangeOAuthAuthorizationCode,
     exchangeOAuthRefreshToken,
     exchangeDeviceCode: (args) => ownerDeviceAuthStore.exchangeDeviceCode(args),
+    resolveBaseUrl: (req) => {
+      const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
+      return resolvePublicUrl(req, explicitBaseUrl);
+    },
     setReferenceTraceId,
     oauthError,
   };
@@ -3008,13 +3027,19 @@ function buildAsApp(opts = {}) {
       },
       { dbPath: opts.dbPath || DB_PATH }
     ),
+    createCimdDocument: (input) => createCimdDocument(input),
+    deleteCimdDocument: (documentId, options) => deleteCimdDocument(documentId, options),
+    getCimdDocument: (documentId) => getCimdDocument(documentId),
+    listCimdDocuments: () => listCimdDocuments(),
     listOwnerIssuedClients: (subjectId) => listOwnerIssuedClients(subjectId),
+    resolveBaseUrl: (req) => resolvePublicUrl(req, explicitAsBaseUrl),
     searchSpine: (query) => searchSpine(query),
     getOwnerSubjectId,
     resolveSingleConnectorIdQueryValue,
   };
   mountRefSearch(app, refAdminContext);
   mountRefApprovals(app, refAdminContext);
+  mountRefCimdClientDocuments(app, refAdminContext);
 
   // Spine detail / timeline routes are mounted via
   // `server/routes/ref-spine-timelines.ts` per OpenSpec change
@@ -3384,7 +3409,6 @@ function buildAsApp(opts = {}) {
   // change `split-reference-server-by-route-family` (§6). Behaviour-preserving:
   // same contract metadata, same auth posture (none — public endpoint),
   // same base-URL resolution, same response envelope, same status codes.
-  const explicitAsBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
   mountAsPar(app, {
     resolveBaseUrl: (req) => resolvePublicUrl(req, explicitAsBaseUrl),
     nativeManifest: resolveNativeManifest(opts),
