@@ -82,8 +82,11 @@ object as JSON text for hosts that hide structured output. It does not return a
 canonical PDPP record envelope under `structuredContent.data`; use
 `query_records` for canonical structured record reads. `fetch(fields)` projects
 the source record before rendering the document so unrequested source-native
-payload fields do not leak into `text` or `metadata`; source handles such as
-stream, `connection_id`, and `connector_key` remain in `metadata`.
+payload fields do not leak into `text` or `metadata`. If that projection omits
+every text-like field (`text`, `content`, `body`, `summary`), the document
+`text` contains compact JSON for the projected record rather than the full
+document body; source handles such as stream, `connection_id`, and
+`connector_key` remain in `metadata`.
 
 The `schema` tool includes concise parseable text with stream
 names, `connection_id`, `connector_key`, display labels, and schema field-capability

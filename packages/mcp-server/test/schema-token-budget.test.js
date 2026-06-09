@@ -603,6 +603,29 @@ test('query_records description documents the bounded default page and readable 
   await server.close();
 });
 
+test('fetch description documents projected text fallback', async () => {
+  const { fetch } = makeLargeSchemaFetch();
+  const { client, server } = await connectClient(fetch);
+
+  const tools = await client.listTools();
+  const fetchTool = tools.tools.find((t) => t.name === 'fetch');
+  assert.ok(fetchTool, 'fetch tool must be exposed');
+
+  assert.match(
+    fetchTool.description,
+    /if the projection excludes every text-like field/i,
+    'description must explain that fetch(fields) can project away the document body',
+  );
+  assert.match(
+    fetchTool.description,
+    /compact JSON for the projected record/i,
+    'description must explain what appears in text when no text-like field remains',
+  );
+
+  await client.close();
+  await server.close();
+});
+
 test('query_records input schema caps `limit` at 100 and rejects an over-max value', async () => {
   // The MCP layer mirrors the spec-core §8 contract (`limit` max 100). Rather
   // than forward `limit=500` and let the RS silently clamp it, the tool's input

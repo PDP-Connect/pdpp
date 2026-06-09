@@ -528,7 +528,7 @@ export function buildTools({ rs, providerUrl }) {
       name: 'fetch',
       title: 'Fetch PDPP search result',
       description:
-        'Fetch a single OpenAI-compatible document by a result id from `search`. Id format: `stream:record_id` → `GET /v1/streams/{stream}/records/{record_id}`. Returns document fields only (`id`, `title`, `text`, `url`, `metadata`); use `query_records` for canonical PDPP record envelopes. Use `fields` to project the source record before rendering document text/metadata; operational source handles (`id`, stream, `connection_id`, `connector_key`) remain available in `metadata`. On `ambiguous_connection` (409), pick a `connection_id` from `available_connections` in the error and retry. Read-only.',
+        'Fetch a single OpenAI-compatible document by a result id from `search`. Id format: `stream:record_id` → `GET /v1/streams/{stream}/records/{record_id}`. Returns document fields only (`id`, `title`, `text`, `url`, `metadata`); use `query_records` for canonical PDPP record envelopes. Use `fields` to project the source record before rendering document text/metadata; if the projection excludes every text-like field (`text`, `content`, `body`, `summary`), `text` contains compact JSON for the projected record rather than the full document body. Operational source handles (`id`, stream, `connection_id`, `connector_key`) remain available in `metadata`. On `ambiguous_connection` (409), pick a `connection_id` from `available_connections` in the error and retry. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({
