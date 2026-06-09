@@ -46,15 +46,14 @@ The MCP adapter SHALL expose grant-scoped MCP tools/resources that map to existi
 - **AND** it SHALL NOT advertise URL-shaped connector ids or `connector_instance_id` as the preferred selector.
 
 ### Requirement: MCP Errors Preserve PDPP Authorization Semantics
-The MCP adapter SHALL preserve resource-server error meaning. Authentication, authorization, invalid cursor, expired cursor, unsupported query, and needs-broader-grant conditions SHALL be surfaced as MCP errors without retrying through broader credentials.
 
-#### Scenario: Resource server returns invalid token
-- **WHEN** the RS returns an authentication error such as `invalid_token`
-- **THEN** the adapter SHALL return a terminal MCP error and SHALL NOT retry with owner credentials or hidden alternate tokens
+The MCP adapter SHALL preserve resource-server error meaning. Authentication, authorization, invalid cursor, expired cursor, unsupported query, and needs-broader-grant conditions SHALL be surfaced as MCP errors without retrying through broader credentials. Hosted MCP package ambiguity metadata SHALL identify only child grants that are usable or SHALL mark unusable children distinctly so clients do not repeatedly select a broken child grant as if it were healthy.
 
-#### Scenario: Resource server rejects an unsupported query
-- **WHEN** the RS returns a 400 error for an unsupported query shape
-- **THEN** the adapter SHALL surface the RS error envelope in the MCP tool result and SHALL NOT silently drop unsupported parameters
+#### Scenario: Package child grant is unusable
+
+- **WHEN** a hosted MCP package contains a child grant that returns a grant authorization error during package read discovery
+- **THEN** the adapter SHALL NOT present that child as a normal usable option in `available_connections`
+- **AND** the adapter SHALL surface an authorization-preserving error that directs the client to reapprove or choose another connection.
 
 ### Requirement: MCP Process Keeps Protocol Output Clean
 The MCP adapter SHALL write only MCP protocol messages to stdout. Logs, diagnostics, setup guidance, and validation failures SHALL go to stderr or structured MCP errors.

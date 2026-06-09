@@ -25,18 +25,14 @@ The reference implementation SHALL provide a documented agent access workflow in
 
 ### Requirement: The CLI SHALL make owner approval link-based and inspectable
 
-The reference CLI SHALL let an agent create a pending grant request and communicate an owner approval URL and/or verification code that the owner can complete in a browser.
+The reference CLI SHALL let an agent create a pending grant request and communicate an owner approval URL and/or verification code that the owner can complete in a browser. After approval, the CLI SHALL also provide grant-scoped read commands that use the cached client credential to call public resource-server read endpoints without owner credentials.
 
-#### Scenario: Approval is needed
-- **WHEN** an agent starts a grant request from a terminal or coding-agent session
-- **THEN** the CLI SHALL display an approval URL and the requested access summary
-- **AND** the CLI MAY open a browser when configured
-- **AND** the agent SHALL be able to relay that URL to the user without receiving the owner credential
+#### Scenario: Approved grant is used for reads
 
-#### Scenario: Approval is denied or expires
-- **WHEN** the owner denies the request or the pending request expires
-- **THEN** the CLI SHALL report a non-secret failure reason
-- **AND** it SHALL NOT write a usable token cache entry
+- **WHEN** an agent has an approved cached client grant
+- **THEN** the CLI SHALL be able to call grant-scoped schema, stream, record, search, and aggregate read endpoints with that grant
+- **AND** it SHALL NOT require an owner token for those reads
+- **AND** it SHALL surface canonical response warnings on stderr.
 
 ### Requirement: Agent grant credentials SHALL be cached locally with least-surprise safety
 
@@ -249,3 +245,4 @@ The operator dashboard SHALL provide a single "Connect Agents" page or panel for
 - **WHEN** the operator deletes a client identity in the dashboard
 - **THEN** the CIMD document SHALL no longer be served at its URL
 - **AND** all grants and tokens issued to that `client_id` SHALL be revoked server-side
+
