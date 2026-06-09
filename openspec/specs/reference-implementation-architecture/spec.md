@@ -3737,25 +3737,49 @@ A connector manifest whose `capabilities.public_listing.status` is `"broken_in_c
 
 ### Requirement: Needs-human-auth manifests SHALL NOT auto-schedule
 
-A connector manifest whose `capabilities.public_listing.status` is `"needs_human_auth"` SHALL NOT declare `capabilities.refresh_policy.background_safe: true` and SHALL NOT declare `capabilities.refresh_policy.recommended_mode: "automatic"`. A manifest that requires human-supplied credentials, OTP confirmation, or a manual browser action cannot honestly run unattended. The reference today models no durable no-human unattended auth capability, so until such a capability is explicitly modeled, `needs_human_auth` is incompatible with automatic background refresh.
+A connector manifest whose `capabilities.public_listing.status` is `"needs_human_auth"` SHALL NOT declare `capabilities.refresh_policy.background_safe: true` or `capabilities.refresh_policy.recommended_mode: "automatic"` unless the manifest also declares `capabilities.refresh_policy.assisted_after_owner_auth: true`. The assisted-after-owner-auth declaration means the connector still needs owner auth bootstrap or repair, but the reference scheduler may start explicitly configured runs after that auth state exists. This exception SHALL NOT make the connector eligible for boot-time auto-enrollment.
 
-#### Scenario: Needs-human-auth manifest with background-safe refresh policy
+#### Scenario: Needs-human-auth manifest with background-safe refresh policy but no assisted auth posture
 
 - **WHEN** a manifest declares
   `capabilities.public_listing.status: "needs_human_auth"`
 - **AND** that same manifest declares
   `capabilities.refresh_policy.background_safe: true`
+- **AND** it does not declare
+  `capabilities.refresh_policy.assisted_after_owner_auth: true`
 - **THEN** the manifest set's honesty test SHALL fail, and the
   reference deployment SHALL treat the manifest as misconfigured.
 
-#### Scenario: Needs-human-auth manifest with automatic recommended mode
+#### Scenario: Needs-human-auth manifest with automatic recommended mode but no assisted auth posture
 
 - **WHEN** a manifest declares
   `capabilities.public_listing.status: "needs_human_auth"`
 - **AND** that same manifest declares
   `capabilities.refresh_policy.recommended_mode: "automatic"`
+- **AND** it does not declare
+  `capabilities.refresh_policy.assisted_after_owner_auth: true`
 - **THEN** the manifest set's honesty test SHALL fail, and the
   reference deployment SHALL treat the manifest as misconfigured.
+
+#### Scenario: Needs-human-auth manifest with assisted-after-owner-auth scheduling
+
+- **WHEN** a manifest declares
+  `capabilities.public_listing.status: "needs_human_auth"`
+- **AND** that same manifest declares
+  `capabilities.refresh_policy.recommended_mode: "automatic"`
+- **AND** that same manifest declares
+  `capabilities.refresh_policy.background_safe: true`
+- **AND** that same manifest declares
+  `capabilities.refresh_policy.assisted_after_owner_auth: true`
+- **THEN** the manifest set's honesty test SHALL pass for this posture
+- **AND** explicit owner schedule creation MAY enable a schedule for a configured connection, subject to the normal schedule interval and runtime readiness gates.
+
+#### Scenario: Assisted scheduled connector is treated as schedulable for freshness health
+
+- **WHEN** a connector with `capabilities.refresh_policy.assisted_after_owner_auth: true` has an enabled schedule
+- **AND** the connection's retained data is stale under `capabilities.refresh_policy.maximum_staleness_seconds`
+- **THEN** the reference health projection SHALL treat that stale freshness as schedulable stale data rather than as manual-refresh-only advisory staleness
+- **AND** any auth-expired or manual-action-needed condition SHALL be surfaced through the existing owner-attention gates before a scheduled run starts.
 
 ### Requirement: The reference auto-enrolls eligible connectors when deployment credentials are present
 The reference implementation SHALL, on server boot, enroll a default enabled
@@ -3783,10 +3807,11 @@ non-empty `capabilities.auth.required` list of environment variable names.
 - **THEN** the reference SHALL NOT alter `enabled`, `interval_seconds`, `jitter_seconds`, or any other field of that row
 - **AND** the reference SHALL NOT re-enable a row the operator had paused
 
-#### Scenario: Manual, paused, background-unsafe, or unproven connectors are never auto-enrolled
-- **WHEN** a registered first-party manifest declares `recommended_mode` of `manual` or `paused`, OR `background_safe: false`, OR `public_listing.status` other than `proven`, OR omits `capabilities.auth.required`
+#### Scenario: Manual, paused, background-unsafe, unproven, or owner-auth assisted connectors are never auto-enrolled
+- **WHEN** a registered first-party manifest declares `recommended_mode` of `manual` or `paused`, OR `background_safe: false`, OR `public_listing.status` other than `proven`, OR `capabilities.refresh_policy.assisted_after_owner_auth: true`, OR omits `capabilities.auth.required`
 - **THEN** the reference SHALL NOT auto-enroll a schedule for that connector even when every env name happens to be present
-- **AND** existing schedule mutation gates (refusing to create or resume an enabled schedule for an ineligible connector) SHALL continue to apply
+- **AND** existing schedule mutation gates SHALL continue to apply for ineligible connectors
+- **AND** a `needs_human_auth` connector with `assisted_after_owner_auth: true` MAY still be scheduled through an explicit owner schedule mutation after the owner configures the connection.
 
 #### Scenario: Operators can opt out of auto-enrollment
 - **WHEN** the reference boots with `PDPP_SKIP_AUTO_SCHEDULE_ENROLLMENT=1` in its environment or with the equivalent constructor option set to `false`

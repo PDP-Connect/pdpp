@@ -10,11 +10,11 @@ First-party polyfill connector manifests MAY declare `capabilities.refresh_polic
 #### Scenario: Connector declares a refresh policy
 - **WHEN** a polyfill manifest includes `capabilities.refresh_policy`
 - **THEN** the policy SHALL identify a recommended mode and an owner-readable rationale
-- **AND** it MAY include recommended interval, minimum interval, maximum staleness, interaction posture, session lifetime, rate-limit sensitivity, bot-detection sensitivity, and background-safety hints
+- **AND** it MAY include recommended interval, minimum interval, maximum staleness, interaction posture, session lifetime, rate-limit sensitivity, bot-detection sensitivity, background-safety hints, and an assisted-after-owner-auth hint
 
 #### Scenario: Connector has high human-interaction friction
 - **WHEN** a connector commonly requires OTP, credentials, or manual browser action
-- **THEN** its refresh policy SHOULD recommend manual or conservative automatic scheduling
+- **THEN** its refresh policy SHOULD recommend manual refresh or conservative automatic scheduling with assisted-after-owner-auth posture
 - **AND** the rationale SHOULD explain the human-attention cost
 
 #### Scenario: Connector has low interaction cost
