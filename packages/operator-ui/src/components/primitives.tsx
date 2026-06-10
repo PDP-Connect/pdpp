@@ -258,9 +258,11 @@ export function MetaPill({ label, value, tone = "neutral" }: { label: string; va
 // nearly flat — base.css steps each tone's fill up and adds a same-hue inset
 // ring so a failure is easy to spot in a scannable list.
 const STATUS_BADGE_TONE_CLASSES: Record<StatusTone, string> = {
+  // bg-success-wash / bg-warning-wash are now Tailwind token utilities (mapped in
+  // each app's @theme inline block) — no more bracket-notation pressure here.
   danger: "bg-destructive/10",
-  success: "bg-[color:var(--success-wash)]",
-  warning: "bg-[color:var(--warning-wash)]",
+  success: "bg-success-wash",
+  warning: "bg-warning-wash",
   neutral: "bg-muted",
 };
 

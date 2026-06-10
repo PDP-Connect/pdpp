@@ -84,6 +84,38 @@
   --verified-wash: oklch(0.52 0.15 150 / 0.1);
   --warning-wash: oklch(0.62 0.15 70 / 0.1);
 
+  /* ─── Status surface tier ───────────────────────────────────────────────────
+     Semantic bg/fg pairs for *surfaces* that carry a status (cards, rows, banners,
+     callouts). Distinct from the badge-foreground tokens above — badges are chips;
+     surfaces are larger fill areas. Each semantic maps to a connection-health sense:
+
+     success   — healthy / active / succeeded (green H152)
+     progress  — syncing / running / in-flight (blue H254, shares primary hue)
+     warning   — attention / stale / owner-action-required (amber H70)
+     danger    — failed / degraded / credential-error (red H27)
+     neutral   — idle / never-run / unknown (achromatic)
+     disabled  — revoked / paused / offline (strongly muted achromatic)
+
+     bg tokens use low-alpha fills (readable on --card and --background alike).
+     fg tokens are readable body text on those fills, not the vivid badge colors. */
+  --status-success-bg: oklch(0.52 0.15 150 / 0.08);
+  --status-success-fg: oklch(0.30 0.12 150);
+
+  --status-progress-bg: oklch(0.580 0.172 253.7 / 0.07);
+  --status-progress-fg: oklch(0.40 0.14 253.7);
+
+  --status-warning-bg: oklch(0.62 0.15 70 / 0.09);
+  --status-warning-fg: oklch(0.38 0.12 70);
+
+  --status-danger-bg: oklch(0.55 0.20 27 / 0.08);
+  --status-danger-fg: oklch(0.38 0.16 27);
+
+  --status-neutral-bg: oklch(0.94 0 0);
+  --status-neutral-fg: oklch(0.42 0 0);
+
+  --status-disabled-bg: oklch(0.96 0 0);
+  --status-disabled-fg: oklch(0.58 0 0);
+
   --human: oklch(0.52 0.09 45);
   --human-wash: oklch(0.52 0.09 45 / 0.07);
 
@@ -186,6 +218,26 @@
   --verified-wash: oklch(0.74 0.16 152 / 0.16);
   --warning-wash: oklch(0.80 0.15 75 / 0.14);
 
+  /* Status surface tier — dark overrides. Higher alpha than light (charcoal
+     absorbs the fill) and lighter fg (near-black background needs more contrast). */
+  --status-success-bg: oklch(0.74 0.16 152 / 0.14);
+  --status-success-fg: oklch(0.82 0.14 152);
+
+  --status-progress-bg: oklch(0.72 0.16 253.7 / 0.13);
+  --status-progress-fg: oklch(0.82 0.14 253.7);
+
+  --status-warning-bg: oklch(0.80 0.15 75 / 0.14);
+  --status-warning-fg: oklch(0.86 0.13 75);
+
+  --status-danger-bg: oklch(0.70 0.18 25 / 0.15);
+  --status-danger-fg: oklch(0.82 0.16 25);
+
+  --status-neutral-bg: oklch(0.24 0.006 260);
+  --status-neutral-fg: oklch(0.72 0.01 260);
+
+  --status-disabled-bg: oklch(0.22 0.005 260);
+  --status-disabled-fg: oklch(0.55 0.008 260);
+
   /* The warm "human" accent as a true sibling of the blue primary: comparable
      chroma magnitude (0.14 vs primary 0.16) so it carries equal visual weight,
      hue held in the terracotta/warm lane (H45) — the SAME hue as light mode,
@@ -258,6 +310,25 @@
     --primary-wash: oklch(0.72 0.16 253.7 / 0.12);
     --verified-wash: oklch(0.74 0.16 152 / 0.16);
     --warning-wash: oklch(0.80 0.15 75 / 0.14);
+
+    /* Status surface tier — dark overrides. */
+    --status-success-bg: oklch(0.74 0.16 152 / 0.14);
+    --status-success-fg: oklch(0.82 0.14 152);
+
+    --status-progress-bg: oklch(0.72 0.16 253.7 / 0.13);
+    --status-progress-fg: oklch(0.82 0.14 253.7);
+
+    --status-warning-bg: oklch(0.80 0.15 75 / 0.14);
+    --status-warning-fg: oklch(0.86 0.13 75);
+
+    --status-danger-bg: oklch(0.70 0.18 25 / 0.15);
+    --status-danger-fg: oklch(0.82 0.16 25);
+
+    --status-neutral-bg: oklch(0.24 0.006 260);
+    --status-neutral-fg: oklch(0.72 0.01 260);
+
+    --status-disabled-bg: oklch(0.22 0.005 260);
+    --status-disabled-fg: oklch(0.55 0.008 260);
 
     /* The warm "human" accent as a true sibling of the blue primary: comparable
        chroma magnitude (0.14 vs primary 0.16), hue held in the terracotta lane
