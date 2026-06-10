@@ -427,3 +427,91 @@ test('controller upsertSchedule throwing increments errors and continues', async
   assert.equal(summary.errors, 1);
   assert.equal(summary.enrolled, 0);
 });
+
+// ─── Store-aware credential gate ────────────────────────────────────────────
+//
+// Incident regression (2026-06-09): credentials migrated env→store left the
+// deployment with NO usable credential env vars (absent or compose-`${VAR:-}`
+// empty strings). Eligibility must treat an active per-connection store row
+// as equivalent to populated env, or env-free deployments silently never
+// enroll their store-backed connectors.
+
+test('a stored credential satisfies eligibility when env vars are absent', async () => {
+  const controller = createFakeController();
+  const m = manifest();
+  const probed = [];
+  const summary = await autoEnrollEligibleSchedules({
+    controller,
+    env: {},
+    hasStoredCredential: async (connectorId) => {
+      probed.push(connectorId);
+      return true;
+    },
+    listConnectors: singleManifestList(m),
+  });
+  assert.equal(summary.enrolled, 1);
+  assert.equal(summary.skipped_env, 0);
+  assert.deepEqual(probed, [m.connector_id]);
+  assert.ok(controller.schedules.get(m.connector_id)?.enabled);
+});
+
+test('a stored credential satisfies eligibility when env vars are empty strings', async () => {
+  const controller = createFakeController();
+  const m = manifest();
+  const summary = await autoEnrollEligibleSchedules({
+    controller,
+    // The recreated-container posture: the var EXISTS but is empty. The env
+    // gate already trims, and the store probe must then satisfy eligibility.
+    env: { WIDGET_TOKEN: '' },
+    hasStoredCredential: async () => true,
+    listConnectors: singleManifestList(m),
+  });
+  assert.equal(summary.enrolled, 1);
+  assert.equal(summary.skipped_env, 0);
+});
+
+test('no env and no stored credential still counts skipped_env', async () => {
+  const controller = createFakeController();
+  const m = manifest();
+  const summary = await autoEnrollEligibleSchedules({
+    controller,
+    env: {},
+    hasStoredCredential: async () => false,
+    listConnectors: singleManifestList(m),
+  });
+  assert.equal(summary.enrolled, 0);
+  assert.equal(summary.skipped_env, 1);
+});
+
+test('the store probe is not consulted when env already satisfies the requirement', async () => {
+  const controller = createFakeController();
+  const m = manifest();
+  let probes = 0;
+  const summary = await autoEnrollEligibleSchedules({
+    controller,
+    env: { WIDGET_TOKEN: 'set' },
+    hasStoredCredential: async () => {
+      probes += 1;
+      return false;
+    },
+    listConnectors: singleManifestList(m),
+  });
+  assert.equal(summary.enrolled, 1);
+  assert.equal(probes, 0, 'env presence short-circuits the store probe');
+});
+
+test('a throwing store probe counts as an error and does not enroll', async () => {
+  const controller = createFakeController();
+  const m = manifest();
+  const summary = await autoEnrollEligibleSchedules({
+    controller,
+    env: {},
+    hasStoredCredential: async () => {
+      throw new Error('store unavailable');
+    },
+    listConnectors: singleManifestList(m),
+  });
+  assert.equal(summary.enrolled, 0);
+  assert.equal(summary.errors, 1);
+  assert.equal(summary.skipped_env, 0);
+});

@@ -51,6 +51,14 @@ export interface AutoEnrollOptions {
    * a key lookup; values are never logged or stored.
    */
   env?: Readonly<Record<string, string | undefined>>;
+  /**
+   * Store-aware credential probe: true when at least one ACTIVE connection of
+   * this connector holds an active credential in the encrypted per-connection
+   * store. Env presence is no longer the only way to prove a connector can
+   * authenticate — an env-free deployment whose credentials live in the store
+   * must still auto-enroll. Only presence is consulted; never secret bytes.
+   */
+  hasStoredCredential?: (connectorId: string) => Promise<boolean>;
   listConnectors: AutoEnrollListConnectors;
   log?: (line: string) => void;
 }
@@ -230,6 +238,36 @@ function allRequiredEnvPresent(
   return true;
 }
 
+/**
+ * Evaluates the auth requirement for one connector. Populated env names (or
+ * aliases) satisfy it; otherwise an active per-connection credential in the
+ * encrypted store does. Env-free deployments whose credentials were migrated
+ * env→store must keep auto-enrolling — and compose `${VAR:-}` mappings leave
+ * EMPTY STRINGS behind, which the env gate already treats as absent, so the
+ * store probe is the only honest signal in that posture. Returns `null` when
+ * satisfied, otherwise the summary counter to increment.
+ */
+async function evaluateAuthRequirementGate(args: {
+  connectorId: string;
+  env: Readonly<Record<string, string | undefined>>;
+  hasStoredCredential: ((connectorId: string) => Promise<boolean>) | undefined;
+  log: (line: string) => void;
+  requirements: readonly string[];
+}): Promise<"errors" | "skipped_env" | null> {
+  if (allRequiredEnvPresent(args.requirements, args.env)) {
+    return null;
+  }
+  if (!args.hasStoredCredential) {
+    return "skipped_env";
+  }
+  try {
+    return (await args.hasStoredCredential(args.connectorId)) ? null : "skipped_env";
+  } catch (err) {
+    args.log(`[auto-enroll] stored-credential probe failed for ${args.connectorId}: ${errorMessage(err)}`);
+    return "errors";
+  }
+}
+
 interface PolicyEligibility {
   readonly eligible: boolean;
   readonly reason?: string;
@@ -275,6 +313,7 @@ export async function autoEnrollEligibleSchedules(opts: AutoEnrollOptions): Prom
     enabled = true,
     env = process.env,
     controller,
+    hasStoredCredential,
     listConnectors,
     log = () => {
       /* default no-op logger */
@@ -315,8 +354,15 @@ export async function autoEnrollEligibleSchedules(opts: AutoEnrollOptions): Prom
       summary.skipped_policy += 1;
       continue;
     }
-    if (!allRequiredEnvPresent(requirements, env)) {
-      summary.skipped_env += 1;
+    const authGateFailure = await evaluateAuthRequirementGate({
+      connectorId,
+      env,
+      hasStoredCredential,
+      log,
+      requirements,
+    });
+    if (authGateFailure) {
+      summary[authGateFailure] += 1;
       continue;
     }
     let existing: ScheduleApi | null;

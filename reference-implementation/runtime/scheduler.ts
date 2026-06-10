@@ -232,6 +232,23 @@ export type GetSourcePressureGapsHandler = (
   connectorInstanceId?: string
 ) => Promise<readonly PendingPressureGap[] | null | undefined> | readonly PendingPressureGap[] | null | undefined;
 
+/**
+ * Resolves the connection-scoped static-secret env fragment for one scheduled
+ * launch. Mirrors the controller's `resolveStaticSecretRunEnv` contract
+ * (controller.ts `CreateControllerOptions`): return the env fragment when the
+ * connection has an active stored credential, `null` when no stored credential
+ * applies (legacy process-env fallback), and THROW (fail closed) when the
+ * connection has a credential that is revoked/deleted or unrecoverable — the
+ * launch is then refused rather than started against a stale or process-global
+ * secret. Without this seam the scheduled path silently depended on
+ * process-global env vars even after the owner migrated credentials into the
+ * encrypted per-connection store.
+ */
+export type ResolveStaticSecretRunEnv = (args: {
+  connectorId: string;
+  connectorInstanceId: string;
+}) => Promise<Record<string, string> | null>;
+
 export interface SchedulerOptions {
   connectors: readonly ConnectorSchedule[];
   getSourcePressureGaps?: GetSourcePressureGapsHandler;
@@ -243,6 +260,7 @@ export interface SchedulerOptions {
   onRunComplete?: RunCompleteHandler;
   readinessChecker?: SchedulerReadinessChecker;
   referenceBaseUrl?: string | null;
+  resolveStaticSecretRunEnv?: ResolveStaticSecretRunEnv | null;
   rsUrl?: string;
   schedulerStore?: Pick<
     SchedulerStore,
@@ -620,6 +638,35 @@ function buildNotReadySkip(connectorId: string, reason: string, connectorInstanc
     startedAt: nowIso(),
     completedAt: nowIso(),
     error: `not_ready: ${reason}`,
+    attempt: 0,
+  };
+}
+
+/**
+ * Fail-closed refusal record: the connection HAS a stored static-secret
+ * credential the resolver could not turn into a run env (revoked, deleted, or
+ * unrecoverable). The launch is refused — no connector child is spawned — so
+ * the run can never fall through to a stale or process-global secret. The
+ * message carries the resolver's typed error text, which never contains
+ * secret bytes (see connector-instance-credential-store fail-closed errors).
+ */
+function buildCredentialResolutionFailure(
+  connectorId: string,
+  message: string,
+  connectorInstanceId?: string
+): RunRecord {
+  return {
+    connectorId,
+    connectorInstanceId: connectorInstanceId ?? null,
+    source: buildScheduledRunSource(connectorId),
+    status: "failed",
+    recordsEmitted: 0,
+    checkpointSummary: null,
+    knownGaps: [],
+    startedAt: nowIso(),
+    completedAt: nowIso(),
+    failureReason: "static_secret_credential_unavailable",
+    error: `static_secret_credential_unavailable: ${message}`,
     attempt: 0,
   };
 }
@@ -1090,6 +1137,14 @@ interface RunConnectorCall {
   referenceBaseUrl?: string | null;
   rsUrl: string;
   state: Record<string, unknown> | null;
+  /**
+   * Connection-scoped static-secret env fragment resolved from the encrypted
+   * credential store before launch. Threaded verbatim to `runConnector`, which
+   * merges it LAST over `process.env` at spawn — so a stored credential always
+   * wins over any (possibly empty-string) process-global secret. `null` means
+   * no stored credential applies and the legacy process-env path is used.
+   */
+  staticSecretEnv?: Record<string, string> | null;
   triggerKind?: RunTriggerKind;
 }
 
@@ -1164,6 +1219,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     isNeedsHuman = () => false,
     hasUnresolvedAttention = () => null,
     getSourcePressureGaps = () => [],
+    resolveStaticSecretRunEnv = null,
   } = opts;
 
   const runtime = buildRuntime();
@@ -1602,6 +1658,27 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       grantAccessMode = "continuous",
     } = schedule;
     const persistState = grantAccessMode !== "single_use";
+
+    // Resolve connection-scoped static-secret credentials BEFORE launching —
+    // parity with the manual path (`controller.ts::runNow`). The encrypted
+    // per-connection credential store is the source of truth for scheduled
+    // runs too: without this seam, scheduled launches silently depended on
+    // process-global env vars, so a connection whose credential lives only in
+    // the store raised `credentials_required` the moment those env vars went
+    // absent or empty. A resolver throw is fail-closed: the connection HAS a
+    // credential we cannot use (revoked/deleted), so refuse the launch rather
+    // than fall through to a possibly stale process-global secret.
+    let staticSecretEnv: Record<string, string> | null = null;
+    if (resolveStaticSecretRunEnv) {
+      try {
+        staticSecretEnv = await resolveStaticSecretRunEnv({ connectorId, connectorInstanceId });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        persistLastRunTime(connectorId, connectorInstanceId, Date.now());
+        return recordAndNotify(buildCredentialResolutionFailure(connectorId, message, connectorInstanceId));
+      }
+    }
+
     const state = narrowState(await getState(connectorId, connectorInstanceId));
     const collectionMode: "full_refresh" | "incremental" = state ? "incremental" : "full_refresh";
     let currentRunId: string | null = null;
@@ -1636,6 +1713,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       persistState,
       referenceBaseUrl,
       rsUrl,
+      staticSecretEnv,
       triggerKind: automationPolicy.trigger_kind,
       automationMode: automationPolicy.automation_mode,
       onInteraction: wrappedInteraction,
