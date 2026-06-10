@@ -249,4 +249,5 @@ test("diskHeadroomRow hint does not suggest deleting data automatically", () => 
       !(errorRow.hint ?? "").toLowerCase().includes("automatically delete"),
     "hint must not suggest automatic data deletion"
   );
+  assert.ok(!(errorRow.hint ?? "").includes("--volumes"), "hint must not recommend deleting Docker volumes");
 });

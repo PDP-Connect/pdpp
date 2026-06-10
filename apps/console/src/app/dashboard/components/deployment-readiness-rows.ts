@@ -240,7 +240,7 @@ export function diskHeadroomRow(inputs: ServerInputs): ReadinessRow {
       check: "Disk headroom",
       status: "error",
       detail: `Only ${formatBytes(free)} free${label}. A restart or image build will very likely fail with "No space left on device".`,
-      hint: "Run `docker system prune --volumes` to reclaim build cache and stopped containers, or remove unneeded data. Do not delete connector data automatically.",
+      hint: "Run `docker builder prune` or `docker system prune` to reclaim build cache and stopped containers. Inspect Docker volumes manually before removing any volume data.",
     };
   }
   if (free < DISK_WARN_BYTES) {

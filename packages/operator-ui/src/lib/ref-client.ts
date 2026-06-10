@@ -431,6 +431,14 @@ export interface DeploymentDiagnostics {
     physical_bytes?: number | null;
     top_relations?: ReadonlyArray<{ name: string; bytes: number }> | null;
   };
+  // Optional so older reference deployments still parse. null means unmeasured;
+  // null byte fields mean the server attempted the probe but could not measure
+  // the filesystem.
+  disk_headroom?: {
+    path: string;
+    free_bytes: number | null;
+    total_bytes: number | null;
+  } | null;
   environment: ReadonlyArray<{
     name: string;
     value: string | null;
@@ -540,7 +548,8 @@ export interface DeploymentDiagnostics {
       | "download_disabled"
       | "vector_index_fallback"
       | "browser_connectors_need_collector"
-      | "collector_protocol_outdated";
+      | "collector_protocol_outdated"
+      | "low_disk_headroom";
     message: string;
   }>;
 }

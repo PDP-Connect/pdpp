@@ -162,7 +162,7 @@ import {
   runSemanticSearch,
   semanticIndexBackfillForManifest,
 } from './search-semantic.js';
-import { collectDeploymentDiagnostics } from './deployment-diagnostics.ts';
+import { collectDeploymentDiagnostics, probeDiskHeadroom } from './deployment-diagnostics.ts';
 import {
   COLLECTOR_PROTOCOL_VERSION,
   SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS,
@@ -2976,6 +2976,7 @@ function buildAsApp(opts = {}) {
         getBackend: () => getSemanticBackend(),
         getDb: () => getDb(),
         getPhysicalFootprint: () => collectPhysicalFootprint(),
+        getDiskHeadroom: () => probeDiskHeadroom(opts.dbPath || DB_PATH),
         computeIndexState: () => computeSemanticIndexState(),
         getBackfillProgress: () => getSemanticIndexBackfillProgress(),
         getLexicalBackfillProgress: () => getLexicalIndexBackfillProgress(),

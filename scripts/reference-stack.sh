@@ -119,8 +119,9 @@ check_disk_headroom() {
   if (( free_bytes < error_bytes )); then
     echo "reference-stack: ERROR: only $(( free_kb / 1024 / 1024 )) GiB free on ${ROOT}." >&2
     echo "reference-stack: A Docker build or stack restart is very likely to fail with 'No space left on device'." >&2
-    echo "reference-stack: Run: docker system prune --volumes" >&2
-    echo "reference-stack: Do NOT delete connector data automatically." >&2
+    echo "reference-stack: Run: docker builder prune" >&2
+    echo "reference-stack: Or run: docker system prune" >&2
+    echo "reference-stack: Inspect Docker volumes manually before removing any volume data." >&2
     exit 1
   fi
 

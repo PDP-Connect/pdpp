@@ -539,8 +539,8 @@ function buildWarnings(
           `Disk headroom on ${input.diskHeadroom?.path ?? "the data filesystem"} is critically low ` +
           `(${formatBytes(freeBytes)} free). A reference restart or Docker build is very likely to fail ` +
           `with "No space left on device". ` +
-          "Run `docker system prune --volumes` (removes stopped containers/unused images/volumes) " +
-          "or free space manually before restarting. Do NOT auto-delete data.",
+          "Run `docker builder prune` or `docker system prune` to reclaim build cache and stopped containers. " +
+          "Inspect Docker volumes manually before removing any volume data.",
       });
     } else if (freeBytes < DISK_WARN_BYTES) {
       warnings.push({

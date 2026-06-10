@@ -119,3 +119,10 @@ transient `?notice=first_sync_started`. No secret, owner cookie, browser cookie,
 or grant-scoped bearer appears in the response or logs.
 
 Progress note: 9.6 now routes the full source setup catalog to `/dashboard/records/add` and keeps `/dashboard/connect` scoped to AI app / agent read-access setup. The Sources first screen shows existing source health, add-another-account support, and repair as distinct facts, while the dedicated Add source page owns the searchable manifest-driven catalog.
+
+Progress note (9.9): deployment headroom now uses the existing diagnostics
+surface rather than a second storage panel. `scripts/reference-stack.sh up`
+preflights disk headroom before build/restart and blocks the critical
+low-space case without deleting data. `/_ref/deployment` now includes a
+`disk_headroom` block sourced from the database filesystem, and the dashboard
+readiness rows render low-headroom warnings with explicit operator action.

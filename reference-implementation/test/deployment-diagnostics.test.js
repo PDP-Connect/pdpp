@@ -516,6 +516,8 @@ test('/_ref/deployment returns a structured report with zero participation by de
     assert.ok(body.semantic.participation);
     assert.ok(Array.isArray(body.environment));
     assert.ok(Array.isArray(body.warnings));
+    assert.ok(body.disk_headroom, 'route wiring must include disk_headroom');
+    assert.equal(body.disk_headroom.path, ':memory:');
 
     // Backend is ready (stub), participation is zero, zero_participation
     // warning is raised.
@@ -744,6 +746,7 @@ test('low_disk_headroom warning fires (critically) when free space is below erro
       !warning.message.toLowerCase().includes('automatically delete'),
     'warning must not suggest automatic data deletion',
   );
+  assert.ok(!warning.message.includes('--volumes'), 'warning must not recommend deleting Docker volumes');
 });
 
 test('disk_headroom block carries path, free_bytes, and total_bytes from input', () => {

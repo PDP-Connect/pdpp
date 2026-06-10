@@ -72,6 +72,7 @@ const WARNING_TITLES: Record<DeploymentDiagnostics["warnings"][number]["code"], 
   vector_index_fallback: "Using blob-flat vector fallback",
   browser_connectors_need_collector: "Browser-backed connectors need a local collector",
   collector_protocol_outdated: "Local collector protocol is outdated",
+  low_disk_headroom: "Disk headroom is low",
 };
 
 function WarningsSection({ warnings }: { warnings: DeploymentDiagnostics["warnings"] }) {
