@@ -7,6 +7,7 @@
 #   2. --write mode: patches a copy of .env.docker.example correctly.
 #   3. Idempotence: a second --write run does not change already-set values.
 #   4. No-overwrite: existing non-empty values are preserved.
+#   5. Backfill: missing variable keys are appended for older .env.docker files.
 #
 # Run: bash scripts/generate-secrets.test.sh
 
@@ -125,6 +126,22 @@ if [[ -n "$vapid_pub" && -n "$vapid_prv" ]]; then
   pass "no-overwrite: VAPID keys filled where previously empty"
 else
   fail "no-overwrite: VAPID keys still empty when they should have been filled"
+fi
+
+# ---- test 5: backfill missing keys in older env files -----------------------
+
+ENV_FILE3="$TMP_DIR/.env.docker.backfill"
+cp "$EXAMPLE" "$ENV_FILE3"
+sed -i '/^PDPP_CREDENTIAL_ENCRYPTION_KEY=/d' "$ENV_FILE3"
+
+(cd "$TMP_DIR" && cp "$ENV_FILE3" .env.docker && bash "$SCRIPT" --write > write-backfill.log && cp .env.docker "$ENV_FILE3")
+
+backfilled_key="$(get_var "$ENV_FILE3" PDPP_CREDENTIAL_ENCRYPTION_KEY)"
+
+if [[ -n "$backfilled_key" ]]; then
+  pass "backfill: PDPP_CREDENTIAL_ENCRYPTION_KEY appended when missing"
+else
+  fail "backfill: PDPP_CREDENTIAL_ENCRYPTION_KEY was not appended"
 fi
 
 # ---- summary ----------------------------------------------------------------

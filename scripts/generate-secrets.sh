@@ -134,7 +134,13 @@ patch_env_file() {
     elif grep -qE "^${var}=" "$target"; then
       printf '  skip  %s (already set)\n' "$var"
     else
-      printf '  skip  %s (key not present in file)\n' "$var"
+      printf '%s=%s\n' "$var" "$val" >> "$target"
+      printf '  add   %s (key was missing)\n' "$var"
+      if [[ "$var" == "PDPP_OWNER_PASSWORD" ]]; then
+        printf '\n  *** Owner password — save this now; it will not be shown again ***\n'
+        printf '  %s=%s\n' "$var" "$val"
+        printf '  *******************************************************************\n\n'
+      fi
     fi
   }
 
