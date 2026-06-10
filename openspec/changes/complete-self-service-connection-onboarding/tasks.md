@@ -75,10 +75,25 @@ Progress note: live proof gates were not flipped in this tranche. Static-secret 
 - [x] 9.2 Stop normal owner UI from advertising unpublished source-card CLI commands, raw setup-planner labels, browser-bound monorepo proof commands, or per-account deployment jargon.
 - [x] 9.3 Make static-secret credential help preserve task continuity by opening provider help in a new tab and keeping the form context.
 - [ ] 9.4 Add an owner-journey acceptance harness that fetches local/live setup surfaces, checks forbidden normal-path strings, and records evidence under `tmp/workstreams/`.
-- [ ] 9.5 Add visible pending/running/failed setup lifecycle projection for static-secret submissions, backed by setup attempt or connection-health state rather than transient redirect notices.
+- [x] 9.5 Add visible pending/running/failed setup lifecycle projection for static-secret submissions, backed by setup attempt or connection-health state rather than transient redirect notices.
 - [x] 9.6 Rebuild Sources/Connections IA so existing working data, add-new-account support, pending setup, and repair/reconnect actions are distinct on the first screen.
 - [ ] 9.7 Productize browser-bound add-account setup as an in-dashboard owner browser flow, absorbing or superseding `add-browser-collector-enrollment-primitive`.
 - [ ] 9.8 Add clean-shell package freshness tests for every command rendered in normal owner UI before re-enabling any source setup CLI previews.
 - [ ] 9.9 Add deployment disk/headroom readiness checks for data-heavy reference restarts.
+
+Progress note (9.5): the reference now exposes a durable owner-session
+setup-status read, `GET /_ref/connections/:connectorInstanceId/setup-status`,
+that resolves a not-yet-ingested static-secret `draft` (as well as an active
+connection) and projects its real instance status, non-secret credential
+metadata, and current/last run into one owner-facing lifecycle view. The
+owner-facing `setup_state` (`awaiting_credential` / `first_sync_running` /
+`first_sync_pending` / `first_sync_failed` / `active` / ...) maps onto the
+canonical `ConnectionHealthState` taxonomy — no parallel onboarding-only enum,
+no new durable table. The in-flight run is linked from the draft through
+`controller_active_runs` (keyed on `connector_instance_id`); a terminal failure
+is read by run id via `getRunTerminalStatus`. Console submit now redirects to a
+durable per-connection status page instead of bouncing back to the form with a
+transient `?notice=first_sync_started`. No secret, owner cookie, browser cookie,
+or grant-scoped bearer appears in the response or logs.
 
 Progress note: 9.6 now routes the full source setup catalog to `/dashboard/records/add` and keeps `/dashboard/connect` scoped to AI app / agent read-access setup. The Sources first screen shows existing source health, add-another-account support, and repair as distinct facts, while the dedicated Add source page owns the searchable manifest-driven catalog.

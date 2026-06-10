@@ -3,13 +3,13 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireDashboardAccess } from "../../../lib/dashboard-access.ts";
+import { runConnectionNow } from "../../../lib/operator-runs.ts";
 import {
   captureStaticSecretCredential,
   createStaticSecretDraftConnection,
   getStaticSecretSetup,
   type StaticSecretSetup,
 } from "../../../lib/ref-client.ts";
-import { runConnectionNow } from "../../../lib/operator-runs.ts";
 
 function asString(value: FormDataEntryValue | null): string {
   return typeof value === "string" ? value.trim() : "";
@@ -18,6 +18,15 @@ function asString(value: FormDataEntryValue | null): string {
 function pageHref(connectorId: string, params: Record<string, string>): string {
   const query = new URLSearchParams(params);
   return `/dashboard/connect/static-secret/${encodeURIComponent(connectorId)}?${query.toString()}`;
+}
+
+// Durable per-connection setup-status surface. After a successful submit the
+// owner lands here — a bookmarkable URL backed by the connection's real
+// draft/active/run state — instead of bouncing back to the form with a
+// transient query-string notice that vanishes on the next navigation.
+function statusHref(connectorId: string, connectionId: string, runId: string | null): string {
+  const base = `/dashboard/connect/static-secret/${encodeURIComponent(connectorId)}/status/${encodeURIComponent(connectionId)}`;
+  return runId ? `${base}?run_id=${encodeURIComponent(runId)}` : base;
 }
 
 function errorMessage(err: unknown): string {
@@ -80,14 +89,17 @@ export async function createStaticSecretConnectionAction(formData: FormData) {
       trace_id?: string;
     };
     revalidatePath("/dashboard/records");
-    target = pageHref(connectorId, {
-      connection_id: draft.connection_id,
-      notice: "first_sync_started",
-      run_id: started.run_id ?? started.trace_id ?? "",
-    });
+    // Land on the durable setup-status surface, not a transient form notice.
+    target = statusHref(connectorId, draft.connection_id, started.run_id ?? null);
   } catch (err) {
-    const suffix = draftConnectionId ? ` Draft connection: ${draftConnectionId}.` : "";
-    target = pageHref(connectorId, { error: `${errorMessage(err)}${suffix}` });
+    // If the draft was created before the failure, the owner can still see and
+    // repair it on its durable status surface; otherwise fall back to the form
+    // with the error. Either way the submitted account is never invisible.
+    if (draftConnectionId) {
+      target = statusHref(connectorId, draftConnectionId, null);
+    } else {
+      target = pageHref(connectorId, { error: errorMessage(err) });
+    }
   }
   redirect(target);
 }

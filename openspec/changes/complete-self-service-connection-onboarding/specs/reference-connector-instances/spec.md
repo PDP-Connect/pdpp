@@ -36,6 +36,28 @@ connection row unless the modality's proof boundary has been satisfied.
 - **AND** it SHALL NOT rely on an invisible draft row or transient redirect
   notice as the only owner-visible state
 
+#### Scenario: Owner reads a durable connection-scoped setup status
+
+- **WHEN** an owner reads the setup status for a static-secret connection by its
+  connection id through an owner-session surface
+- **THEN** the reference SHALL return a connection-scoped setup-status view that
+  resolves a not-yet-ingested draft as well as an active connection
+- **AND** the view SHALL carry the connection id, the connector and account
+  identity when known, a setup lifecycle state projected from the connection
+  health and run state (not a parallel onboarding-only enum), the current or
+  last run id and status when present, and the credential presence metadata
+- **AND** the setup-status view SHALL NOT include the provider secret, owner
+  session cookie, browser session cookie, or any bearer-equivalent credential
+
+#### Scenario: Failed first sync is visible with a non-secret remediation
+
+- **WHEN** the first sync for a static-secret draft connection fails before any
+  records are accepted
+- **THEN** the owner setup-status view SHALL report a failed setup state with an
+  actionable remediation next step
+- **AND** the failure surface SHALL NOT leak the provider secret or any
+  bearer-equivalent credential
+
 #### Scenario: Browser-bound setup remains proof-gated
 
 - **WHEN** a connector requires browser-bound collection but the reference lacks

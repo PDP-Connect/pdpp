@@ -399,6 +399,24 @@ export function createSqliteConnectorInstanceStore() {
       return mapInstance(getOne(referenceQueries.connectorInstancesGetById, [connectorInstanceId]));
     },
 
+    // Non-secret in-flight-run lookup for ONE connection, keyed on
+    // connector_instance_id. `controller_active_runs` holds exactly one row per
+    // connection with a controller-managed run currently in flight (the same
+    // table `deleteConnection` reads to refuse an active-run delete). Returns
+    // `{ runId, connectorId, startedAt }` for the live run or `null` when idle.
+    // This is the persistent link from a static-secret `draft` connection to
+    // its first sync, so the owner setup-status surface can show "first sync
+    // running" without scanning connector-keyed run history. The enumeration is
+    // bounded (one row per registered connector) and read-only.
+    getActiveRun(connectorInstanceId) {
+      const rows = allowUnboundedReadAcknowledged(referenceQueries.controllerListActiveRuns);
+      const row = rows.find((run) => run.connector_instance_id === connectorInstanceId);
+      if (!row) {
+        return null;
+      }
+      return { runId: row.run_id, connectorId: row.connector_id, startedAt: row.started_at };
+    },
+
     getByBinding({ ownerSubjectId, connectorId, sourceKind, sourceBindingKey }) {
       return mapInstance(
         getOne(referenceQueries.connectorInstancesGetByBinding, [
@@ -656,6 +674,21 @@ export function createPostgresConnectorInstanceStore() {
         [connectorInstanceId],
       );
       return mapInstance(result.rows[0]);
+    },
+
+    // Non-secret in-flight-run lookup for ONE connection (see the SQLite arm).
+    // Direct keyed read on the Postgres `controller_active_runs` table.
+    async getActiveRun(connectorInstanceId) {
+      const result = await postgresQuery(
+        `SELECT run_id, connector_id, started_at
+         FROM controller_active_runs WHERE connector_instance_id = $1`,
+        [connectorInstanceId],
+      );
+      const row = result.rows[0];
+      if (!row) {
+        return null;
+      }
+      return { runId: row.run_id, connectorId: row.connector_id, startedAt: row.started_at };
     },
 
     async getByBinding({ ownerSubjectId, connectorId, sourceKind, sourceBindingKey }) {

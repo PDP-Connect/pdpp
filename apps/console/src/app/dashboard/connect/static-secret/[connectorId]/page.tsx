@@ -14,18 +14,15 @@ interface PageParams {
 }
 
 interface PageSearchParams {
-  connection_id?: string;
   error?: string;
-  notice?: string;
-  run_id?: string;
 }
 
-function InlineNotice({ kind, message }: { kind: "error" | "notice"; message: string }) {
-  const tone =
-    kind === "error"
-      ? "border-destructive/30 bg-destructive/5 text-destructive"
-      : "border-border/80 bg-muted/30 text-muted-foreground";
-  return <div className={`pdpp-caption rounded-md border px-4 py-2.5 ${tone}`}>{message}</div>;
+function InlineNotice({ message }: { message: string }) {
+  return (
+    <div className="pdpp-caption rounded-md border border-destructive/30 bg-destructive/5 px-4 py-2.5 text-destructive">
+      {message}
+    </div>
+  );
 }
 
 function firstValue(value: string | string[] | undefined): string | undefined {
@@ -34,31 +31,6 @@ function firstValue(value: string | string[] | undefined): string | undefined {
 
 function inputType(field: StaticSecretSetupField): "email" | "password" | "text" {
   return field.type === "email" || field.type === "password" ? field.type : "text";
-}
-
-function SetupStartedNotice({ params }: { params: PageSearchParams }) {
-  if (params.notice !== "first_sync_started") {
-    return null;
-  }
-  const runHref = params.run_id ? `/dashboard/runs/${encodeURIComponent(params.run_id)}` : null;
-  return (
-    <div className="pdpp-caption rounded-md border border-border/80 bg-muted/30 px-4 py-2.5 text-muted-foreground">
-      <span className="text-foreground">Credential captured and first sync started.</span>{" "}
-      {params.connection_id ? (
-        <>
-          Connection <code className="font-mono">{params.connection_id}</code>.{" "}
-        </>
-      ) : null}
-      {runHref ? (
-        <Link className="underline underline-offset-2 hover:text-foreground" href={runHref}>
-          View sync progress
-        </Link>
-      ) : (
-        "Refresh Sources to check sync progress"
-      )}
-      .
-    </div>
-  );
 }
 
 export default async function StaticSecretConnectPage({
@@ -78,10 +50,7 @@ export default async function StaticSecretConnectPage({
   });
   const resolvedSearchParams = await searchParams;
   const pageParams: PageSearchParams = {
-    connection_id: firstValue(resolvedSearchParams.connection_id),
     error: firstValue(resolvedSearchParams.error),
-    notice: firstValue(resolvedSearchParams.notice),
-    run_id: firstValue(resolvedSearchParams.run_id),
   };
   const readinessBlocked = setup.deployment_readiness.state !== "ready";
 
@@ -99,8 +68,7 @@ export default async function StaticSecretConnectPage({
       />
 
       <div className="mb-5 grid gap-2">
-        {pageParams.error ? <InlineNotice kind="error" message={pageParams.error} /> : null}
-        <SetupStartedNotice params={pageParams} />
+        {pageParams.error ? <InlineNotice message={pageParams.error} /> : null}
       </div>
 
       <Section

@@ -1200,6 +1200,60 @@ export async function captureStaticSecretCredential(input: {
   )) as StaticSecretCredentialCapture;
 }
 
+// Owner-facing static-secret setup lifecycle. Projected from the connection's
+// real status, non-secret credential metadata, and current/last run — never an
+// onboarding-only enum. `setup_state` maps onto the canonical connection-health
+// vocabulary the rest of the dashboard uses.
+export type StaticSecretSetupStateValue =
+  | "active"
+  | "awaiting_credential"
+  | "first_sync_failed"
+  | "first_sync_pending"
+  | "first_sync_running"
+  | "paused"
+  | "revoked"
+  | "unknown";
+
+export interface StaticSecretSetupStatus {
+  account_identity: string | null;
+  connection_id: string;
+  connector_id: string;
+  created_at: string | null;
+  credential: {
+    captured_at: string | null;
+    credential_kind: string | null;
+    present: boolean;
+  };
+  display_name: string | null;
+  health_state: string;
+  last_error: {
+    reason: string;
+    remediation: string;
+  } | null;
+  object: "static_secret_setup_status";
+  pending: boolean;
+  run: {
+    finished_at: string | null;
+    run_id: string | null;
+    started_at: string | null;
+    status: string | null;
+  } | null;
+  running: boolean;
+  setup_state: StaticSecretSetupStateValue;
+  status: string;
+  updated_at: string | null;
+}
+
+export async function getStaticSecretSetupStatus(
+  connectionId: string,
+  runId?: string | null
+): Promise<StaticSecretSetupStatus> {
+  const suffix = runId ? `?run_id=${encodeURIComponent(runId)}` : "";
+  return (await refFetch(
+    `/_ref/connections/${encodeURIComponent(connectionId)}/setup-status${suffix}`
+  )) as StaticSecretSetupStatus;
+}
+
 export async function listDeviceExporters(): Promise<ListResponse<DeviceExporter>> {
   return (await refFetch("/_ref/device-exporters")) as ListResponse<DeviceExporter>;
 }

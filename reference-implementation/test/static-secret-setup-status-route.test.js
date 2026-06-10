@@ -1,0 +1,383 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import test from 'node:test';
+
+import { emitSpineEvent } from '../lib/spine.ts';
+import { getDb } from '../server/db.js';
+import { startServer } from '../server/index.js';
+import { CREDENTIAL_ENCRYPTION_KEY_ENV } from '../server/stores/credential-encryption.js';
+
+// Integration coverage for the owner-session static-secret SETUP-STATUS route —
+// the durable surface that makes an in-flight static-secret setup visible to the
+// owner before its first ingest accepts records, so a submitted Gmail/GitHub
+// account never disappears behind the invisible draft. See
+// complete-self-service-connection-onboarding design Decision 12 / Phase 2.
+
+const OWNER_PASSWORD = 'static-secret-status-owner-password';
+const OWNER_SUBJECT_ID = 'owner_local';
+const TEST_KEY = 'static-secret-status-test-key';
+const SECRET = 'status app password synthetic';
+
+async function closeServer(server) {
+  server.schedulerManager?.stop?.();
+  server.asServer.closeAllConnections();
+  server.rsServer.closeAllConnections();
+  await Promise.allSettled([
+    new Promise((resolve) => server.asServer.close(resolve)),
+    new Promise((resolve) => server.rsServer.close(resolve)),
+  ]);
+}
+
+async function withCredentialKey(value, fn) {
+  const old = process.env[CREDENTIAL_ENCRYPTION_KEY_ENV];
+  if (value === null) {
+    delete process.env[CREDENTIAL_ENCRYPTION_KEY_ENV];
+  } else {
+    process.env[CREDENTIAL_ENCRYPTION_KEY_ENV] = value;
+  }
+  try {
+    return await fn();
+  } finally {
+    if (old === undefined) {
+      delete process.env[CREDENTIAL_ENCRYPTION_KEY_ENV];
+    } else {
+      process.env[CREDENTIAL_ENCRYPTION_KEY_ENV] = old;
+    }
+  }
+}
+
+async function withServer(fn) {
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    ownerAuthPassword: OWNER_PASSWORD,
+    ownerAuthSubjectId: OWNER_SUBJECT_ID,
+    autoEnrollEligibleSchedules: false,
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  try {
+    await fn({ asUrl, rsUrl });
+  } finally {
+    await closeServer(server);
+  }
+}
+
+// Owner-auth-disabled harness for the activation test, which needs an owner
+// BEARER token (device flow) to ingest. With an empty owner password the default
+// owner session is active (so `/_ref/...` cookie routes need no login) and
+// `/device/approve` issues a bearer token without a CSRF-gated owner session.
+// Mirrors static-secret-draft-connection-route.test.js.
+async function withOpenServer(fn) {
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    ownerAuthPassword: '',
+    ownerAuthSubjectId: OWNER_SUBJECT_ID,
+    autoEnrollEligibleSchedules: false,
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  try {
+    await fn({ asUrl, rsUrl });
+  } finally {
+    await closeServer(server);
+  }
+}
+
+function getRawSetCookieList(resp) {
+  if (typeof resp.headers.getSetCookie === 'function') {
+    return resp.headers.getSetCookie();
+  }
+  const single = resp.headers.get('set-cookie');
+  return single ? [single] : [];
+}
+
+function findSetCookiePair(setCookies, name) {
+  for (const header of setCookies) {
+    const firstPair = header.split(';')[0];
+    if (firstPair.startsWith(`${name}=`)) {
+      return firstPair;
+    }
+  }
+  return null;
+}
+
+function extractCsrfFieldValue(html) {
+  const match = html.match(/<input type="hidden" name="_csrf" value="([^"]+)"\s*\/>/);
+  return match ? match[1] : null;
+}
+
+async function login(asUrl) {
+  const getLogin = await fetch(`${asUrl}/owner/login`, {
+    headers: { Accept: 'text/html' },
+    redirect: 'manual',
+  });
+  const csrfCookie = findSetCookiePair(getRawSetCookieList(getLogin), 'pdpp_owner_csrf');
+  const csrfField = extractCsrfFieldValue(await getLogin.text());
+  const resp = await fetch(`${asUrl}/owner/login`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Accept: 'text/html',
+      Cookie: csrfCookie || '',
+    },
+    body: new URLSearchParams({ password: OWNER_PASSWORD, return_to: '/', _csrf: csrfField || '' }).toString(),
+    redirect: 'manual',
+  });
+  const sessionCookie = findSetCookiePair(getRawSetCookieList(resp), 'pdpp_owner_session');
+  assert.ok(sessionCookie, `expected owner session cookie, got status ${resp.status}`);
+  return sessionCookie;
+}
+
+async function fetchJson(url, opts = {}) {
+  const resp = await fetch(url, opts);
+  const text = await resp.text();
+  let body = null;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    body = text;
+  }
+  return { body, resp, status: resp.status, text };
+}
+
+function loadManifest(name) {
+  return JSON.parse(
+    readFileSync(new URL(`../../packages/polyfill-connectors/manifests/${name}.json`, import.meta.url), 'utf8'),
+  );
+}
+
+async function registerConnector(asUrl, name) {
+  const resp = await fetch(`${asUrl}/connectors`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(loadManifest(name)),
+  });
+  assert.equal(resp.status, 201, `register ${name} failed: ${resp.status}`);
+}
+
+async function createDraft(asUrl, cookie, connectorId, setupFields = { account_email: 'owner@example.com' }) {
+  return fetchJson(`${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/draft-connection`, {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ setup_fields: setupFields }),
+  });
+}
+
+async function capture(asUrl, cookie, connectionId) {
+  return fetchJson(`${asUrl}/_ref/connections/${encodeURIComponent(connectionId)}/static-secret-credential`, {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ credential_kind: 'app_password', secret: SECRET }),
+  });
+}
+
+async function getStatus(asUrl, cookie, connectionId, runId = null) {
+  const suffix = runId ? `?run_id=${encodeURIComponent(runId)}` : '';
+  return fetchJson(`${asUrl}/_ref/connections/${encodeURIComponent(connectionId)}/setup-status${suffix}`, {
+    headers: { Accept: 'application/json', Cookie: cookie },
+  });
+}
+
+async function ingest(rsUrl, ownerToken, connectorId, connectionId, stream, records) {
+  const lines = records
+    .map((record) => JSON.stringify({ key: record.id, data: record, emitted_at: record.emitted_at }))
+    .join('\n');
+  const url =
+    `${rsUrl}/v1/ingest/${encodeURIComponent(stream)}` +
+    `?connector_id=${encodeURIComponent(connectorId)}` +
+    `&connector_instance_id=${encodeURIComponent(connectionId)}`;
+  return fetchJson(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${ownerToken}`, 'Content-Type': 'application/x-ndjson' },
+    body: lines,
+  });
+}
+
+async function issueOwnerToken(asUrl, subjectId = OWNER_SUBJECT_ID) {
+  const clientId = 'cli_longview';
+  const { body: device } = await fetchJson(`${asUrl}/oauth/device_authorization`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ client_id: clientId }).toString(),
+  });
+  await fetch(`${asUrl}/device/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ user_code: device.user_code, subject_id: subjectId }).toString(),
+  });
+  const { body: tokenBody } = await fetchJson(`${asUrl}/oauth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+      device_code: device.device_code,
+      client_id: clientId,
+    }).toString(),
+  });
+  return tokenBody.access_token;
+}
+
+// Seed a controller_active_runs row directly: the setup-status route reads this
+// table (keyed on connector_instance_id) to report an in-flight first sync. In a
+// live deployment the controller writes it on run start; the harness has no
+// real collector, so we seed it deterministically.
+function seedActiveRun(connectorInstanceId, connectorId, runId) {
+  getDb()
+    .prepare(
+      `INSERT INTO controller_active_runs(connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at)
+       VALUES(?, ?, ?, 'trc_status', 'default', '2026-06-10T00:00:00.000Z')`,
+    )
+    .run(connectorInstanceId, connectorId, runId);
+}
+
+function clearActiveRun(connectorInstanceId) {
+  getDb().prepare('DELETE FROM controller_active_runs WHERE connector_instance_id = ?').run(connectorInstanceId);
+}
+
+async function emitTerminalRunEvent(connectorId, runId, status) {
+  await emitSpineEvent({
+    event_type: status === 'failed' ? 'run.failed' : 'run.completed',
+    trace_id: 'trc_status_terminal',
+    scenario_id: 'default',
+    actor_type: 'runtime',
+    actor_id: connectorId,
+    object_type: 'run',
+    object_id: runId,
+    status: status === 'failed' ? 'failed' : 'succeeded',
+    run_id: runId,
+    source_kind: 'connector',
+    source_id: connectorId,
+    data: { source: { kind: 'connector', id: connectorId } },
+  });
+}
+
+test('pending static-secret setup is visible before any records are accepted', async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, 'gmail');
+      const cookie = await login(asUrl);
+
+      const created = await createDraft(asUrl, cookie, 'gmail', { account_email: 'pending@example.com' });
+      assert.equal(created.status, 201);
+      const connectionId = created.body.connection_id;
+
+      // Immediately after draft creation (no credential, no run): visible,
+      // pending, awaiting credential, account identity surfaced.
+      const awaiting = await getStatus(asUrl, cookie, connectionId);
+      assert.equal(awaiting.status, 200, awaiting.text);
+      assert.equal(awaiting.body.object, 'static_secret_setup_status');
+      assert.equal(awaiting.body.connection_id, connectionId);
+      assert.equal(awaiting.body.connector_id, 'gmail');
+      assert.equal(awaiting.body.status, 'draft');
+      assert.equal(awaiting.body.setup_state, 'awaiting_credential');
+      assert.equal(awaiting.body.health_state, 'idle');
+      assert.equal(awaiting.body.pending, true);
+      assert.equal(awaiting.body.running, false);
+      assert.equal(awaiting.body.account_identity, 'pending@example.com');
+      assert.equal(awaiting.body.credential.present, false);
+
+      // After capture but before ingest: still pending; first sync pending.
+      const captured = await capture(asUrl, cookie, connectionId);
+      assert.equal(captured.status, 201, captured.text);
+      const afterCapture = await getStatus(asUrl, cookie, connectionId);
+      assert.equal(afterCapture.body.credential.present, true);
+      assert.equal(afterCapture.body.credential.credential_kind, 'app_password');
+      assert.equal(afterCapture.body.setup_state, 'first_sync_pending');
+      assert.equal(afterCapture.body.pending, true);
+
+      // With an in-flight run row: running is visible, run id surfaced.
+      seedActiveRun(connectionId, 'gmail', 'run_status_inflight');
+      const running = await getStatus(asUrl, cookie, connectionId);
+      assert.equal(running.body.setup_state, 'first_sync_running');
+      assert.equal(running.body.running, true);
+      assert.equal(running.body.run.run_id, 'run_status_inflight');
+      assert.equal(running.body.run.status, 'in_progress');
+
+      // No secret ever appears in any status response.
+      assert.ok(!running.text.includes(SECRET), 'status must not echo the secret');
+      assert.ok(!afterCapture.text.includes(SECRET), 'status must not echo the secret');
+      clearActiveRun(connectionId);
+    });
+  });
+});
+
+test('a failed first sync is visible with an actionable error and no secret leak', async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, 'gmail');
+      const cookie = await login(asUrl);
+
+      const created = await createDraft(asUrl, cookie, 'gmail');
+      const connectionId = created.body.connection_id;
+      await capture(asUrl, cookie, connectionId);
+
+      // The run terminated as failed (no active-run row remains). The owner
+      // surface holds the run id; the route resolves its terminal status.
+      const runId = 'run_status_failed';
+      await emitTerminalRunEvent('gmail', runId, 'failed');
+
+      const failed = await getStatus(asUrl, cookie, connectionId, runId);
+      assert.equal(failed.status, 200, failed.text);
+      assert.equal(failed.body.status, 'draft');
+      assert.equal(failed.body.setup_state, 'first_sync_failed');
+      assert.equal(failed.body.health_state, 'needs_attention');
+      assert.equal(failed.body.pending, true);
+      assert.equal(failed.body.running, false);
+      assert.ok(failed.body.last_error, 'failed first sync must carry last_error');
+      assert.equal(typeof failed.body.last_error.reason, 'string');
+      assert.equal(typeof failed.body.last_error.remediation, 'string');
+      assert.ok(failed.body.last_error.remediation.length > 0, 'remediation copy must be present');
+      assert.ok(!failed.text.includes(SECRET), 'failure status must not echo the secret');
+    });
+  });
+});
+
+test('setup status flips to active once first ingest accepts records', async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withOpenServer(async ({ asUrl, rsUrl }) => {
+      await registerConnector(asUrl, 'gmail');
+      const cookie = '';
+      const ownerToken = await issueOwnerToken(asUrl);
+
+      const created = await createDraft(asUrl, cookie, 'gmail');
+      const connectionId = created.body.connection_id;
+      await capture(asUrl, cookie, connectionId);
+
+      // First ingest with records flips the draft to active.
+      const ingested = await ingest(rsUrl, ownerToken, 'gmail', connectionId, 'messages', [
+        { id: 'm1', emitted_at: '2026-06-10T00:00:00.000Z', subject: 'hello' },
+      ]);
+      assert.equal(ingested.status, 200, ingested.text);
+
+      const active = await getStatus(asUrl, cookie, connectionId);
+      assert.equal(active.status, 200, active.text);
+      assert.equal(active.body.status, 'active');
+      assert.equal(active.body.setup_state, 'active');
+      assert.equal(active.body.health_state, 'healthy');
+      assert.equal(active.body.pending, false);
+    });
+  });
+});
+
+test('setup status requires an owner session and 404s an unknown connection', async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, 'gmail');
+      const cookie = await login(asUrl);
+
+      // Unauthenticated read is rejected (no owner session cookie).
+      const anon = await getStatus(asUrl, '', 'cin_does_not_exist');
+      assert.ok(anon.status === 401 || anon.status === 403, `expected auth rejection, got ${anon.status}`);
+
+      // Unknown connection id is a clean 404, not a fabricated status.
+      const missing = await getStatus(asUrl, cookie, 'cin_does_not_exist');
+      assert.equal(missing.status, 404, missing.text);
+    });
+  });
+});

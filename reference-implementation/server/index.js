@@ -391,6 +391,7 @@ import {
 } from './routes/ref-connectors.ts';
 import { mountRefStaticSecretCredentialCapture } from './routes/ref-static-secret-credentials.ts';
 import { mountRefStaticSecretDraftConnection } from './routes/ref-static-secret-draft-connection.ts';
+import { mountRefStaticSecretSetupStatus } from './routes/ref-static-secret-setup-status.ts';
 import {
   createInProcessPendingAuthStore,
   mountRefProviderAuthCallback,
@@ -3362,6 +3363,23 @@ function buildAsApp(opts = {}) {
     emitSpineEvent,
     ensureRequestId,
     setReferenceTraceId,
+  });
+
+  // Owner-visible setup lifecycle for a static-secret connection. Projects the
+  // draft/active instance + non-secret credential metadata + current/last run
+  // into one durable status surface so a submitted account never disappears
+  // behind the invisible draft. Owner-session-only; no secrets in the response.
+  mountRefStaticSecretSetupStatus(app, {
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    handleError,
+    pdppError,
+    canonicalConnectorKey,
+    createRequestConnectorInstanceStore,
+    createRequestConnectorInstanceCredentialStore,
+    resolveRegisteredConnectorManifest,
+    resolveOwnerConnectorNamespace,
+    getOwnerSubjectId,
+    getRunTerminalStatus,
   });
 
   // Provider-authorization lifecycle: initiate + callback routes.
