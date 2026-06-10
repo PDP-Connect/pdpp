@@ -18,6 +18,7 @@ import { listSpineEventsPage } from '../lib/spine.ts';
 import { startServer } from '../server/index.js';
 import { CREDENTIAL_ENCRYPTION_KEY_ENV } from '../server/stores/credential-encryption.js';
 import { createSqliteConnectorInstanceCredentialStore } from '../server/stores/connector-instance-credential-store.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 
 const OWNER_PASSWORD = 'static-secret-probe-owner-password';
 const OWNER_SUBJECT_ID = 'owner_local';
@@ -222,6 +223,23 @@ async function capture(asUrl, cookie, connectionId, secret, credentialKind) {
   });
 }
 
+async function seedActiveStaticSecretConnection({ connectorId, connectorInstanceId, displayName }) {
+  const store = createSqliteConnectorInstanceStore();
+  const now = '2026-06-10T18:00:00.000Z';
+  return store.upsert({
+    connectorInstanceId,
+    ownerSubjectId: OWNER_SUBJECT_ID,
+    connectorId,
+    displayName,
+    status: 'active',
+    sourceKind: 'account',
+    sourceBindingKey: connectorInstanceId,
+    sourceBinding: { account_hint: displayName },
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
 function captureAuditEvents(resp) {
   const traceId = resp.headers.get('PDPP-Reference-Trace-Id');
   assert.ok(traceId?.startsWith('trc_'), 'capture response should carry a trace id');
@@ -253,6 +271,10 @@ test('a rejected probe returns a typed validation error and stores no credential
       const store = createSqliteConnectorInstanceCredentialStore();
       const meta = await store.getMetadata(connectionId);
       assert.equal(meta, null, 'a rejected credential must not be stored');
+      const instanceStore = createSqliteConnectorInstanceStore();
+      const instance = await instanceStore.get(connectionId);
+      assert.equal(instance.status, 'revoked', 'a rejected first-time draft must be retired');
+      assert.ok(instance.revokedAt, 'retired draft should carry revokedAt');
 
       // The probe was given the non-secret mailbox context, never echoed back.
       assert.equal(proberCalls.length, 1);
@@ -330,6 +352,35 @@ test('github: a rejected token is refused and stores nothing', async () => {
       assert.equal(body.error.code, 'static_secret_credential_rejected');
       const store = createSqliteConnectorInstanceCredentialStore();
       assert.equal(await store.getMetadata(connectionId), null, 'a rejected github token must not be stored');
+      const instanceStore = createSqliteConnectorInstanceStore();
+      assert.equal((await instanceStore.get(connectionId)).status, 'revoked', 'a rejected github draft must be retired');
+    });
+  });
+});
+
+test('a rejected rotation probe leaves an active connection active', async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      const gmail = loadManifest('gmail');
+      await registerManifest(asUrl, gmail);
+      const cookie = await login(asUrl);
+      const connectionId = 'cin_active_probe_rotation';
+      await seedActiveStaticSecretConnection({
+        connectorId: gmail.connector_key,
+        connectorInstanceId: connectionId,
+        displayName: 'Gmail - existing@example.com',
+      });
+
+      const { status, body } = await capture(asUrl, cookie, connectionId, BAD_SECRET, 'app_password');
+
+      assert.equal(status, 400);
+      assert.equal(body.error.code, 'static_secret_credential_rejected');
+      const credentialStore = createSqliteConnectorInstanceCredentialStore();
+      assert.equal(await credentialStore.getMetadata(connectionId), null, 'a rejected rotation must not store a credential');
+      const instanceStore = createSqliteConnectorInstanceStore();
+      const instance = await instanceStore.get(connectionId);
+      assert.equal(instance.status, 'active', 'a rejected rotation must not revoke the active connection');
+      assert.equal(instance.revokedAt, null);
     });
   });
 });

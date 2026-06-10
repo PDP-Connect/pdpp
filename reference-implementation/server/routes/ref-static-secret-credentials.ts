@@ -84,6 +84,10 @@ interface ConnectorInstanceRow {
 
 interface ConnectorInstanceStore {
   get(connectorInstanceId: string): Promise<ConnectorInstanceRow | null> | ConnectorInstanceRow | null;
+  updateStatus(
+    connectorInstanceId: string,
+    args: { readonly revokedAt?: string | null; readonly status: string; readonly updatedAt: string }
+  ): Promise<ConnectorInstanceRow | null> | ConnectorInstanceRow | null;
 }
 
 // Non-secret context handed to a probe. The Gmail probe needs the mailbox
@@ -100,10 +104,11 @@ export interface MountRefStaticSecretCredentialsContext {
   // given (matching the existing draft-route fallback).
   canonicalConnectorKey?(value: string | null | undefined): string | null;
   createRequestConnectorInstanceCredentialStore(): ConnectorInstanceCredentialStore;
-  // Read-only connector-instance store, used to recover the draft's non-secret
-  // setup fields for the probe context. Optional: when absent the probe runs
-  // with no setup-field context (fine for connectors whose probe needs none,
-  // e.g. GitHub).
+  // Connector-instance store, used to recover the draft's non-secret setup
+  // fields for the probe context and to retire rejected first-time draft setup
+  // rows. Optional: when absent the probe runs with no setup-field context
+  // (fine for connectors whose probe needs none, e.g. GitHub) and cannot
+  // perform draft cleanup.
   createRequestConnectorInstanceStore?(): ConnectorInstanceStore;
   createTraceContext(input?: { scenarioId?: string }): TraceContext;
   emitSpineEvent(event: Record<string, unknown>): Promise<unknown>;
@@ -254,6 +259,39 @@ function setupFieldsFromBinding(sourceBinding: unknown): Record<string, string> 
     }
   }
   return Object.keys(fields).length > 0 ? fields : null;
+}
+
+function isStaticSecretDraftInstance(instance: ConnectorInstanceRow | null): instance is ConnectorInstanceRow {
+  if (!instance || instance.status !== "draft") {
+    return false;
+  }
+  const binding = instance.sourceBinding;
+  return Boolean(
+    binding &&
+      typeof binding === "object" &&
+      !Array.isArray(binding) &&
+      (binding as { kind?: unknown }).kind === "static_secret_draft"
+  );
+}
+
+async function retireRejectedStaticSecretDraft(
+  ctx: MountRefStaticSecretCredentialsContext,
+  connectorInstanceId: string,
+  now: string
+): Promise<void> {
+  if (typeof ctx.createRequestConnectorInstanceStore !== "function") {
+    return;
+  }
+  const store = ctx.createRequestConnectorInstanceStore();
+  const instance = await store.get(connectorInstanceId);
+  if (!isStaticSecretDraftInstance(instance)) {
+    return;
+  }
+  await store.updateStatus(connectorInstanceId, {
+    status: "revoked",
+    updatedAt: now,
+    revokedAt: now,
+  });
 }
 
 // Resolve the non-secret setup-field context for a connector's probe by reading
@@ -413,9 +451,14 @@ export function mountRefStaticSecretCredentialCapture(app: AppLike, ctx: MountRe
           });
           if (!probeResult.ok) {
             // Validation failed: do NOT store the credential or any of its
-            // metadata. Audit the rejection with the typed code only (no secret,
-            // no raw provider error). The owner sees the provider-named message
-            // and keeps their form context.
+            // metadata. If this was a first-time draft setup, retire the draft
+            // so it cannot become an invisible black-hole row. Active
+            // connections are left untouched so failed rotation attempts never
+            // revoke a working connection. Audit the rejection with the typed
+            // code only (no secret, no raw provider error). The owner sees the
+            // provider-named message and keeps their form context.
+            const now = ctx.now ? ctx.now() : new Date().toISOString();
+            await retireRejectedStaticSecretDraft(ctx, namespace.connectorInstanceId, now);
             await emitCaptureAudit(ctx, req, res, {
               connectionId: namespace.connectorInstanceId,
               connectorId: namespace.connectorId,
