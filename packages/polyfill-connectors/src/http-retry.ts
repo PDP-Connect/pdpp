@@ -19,6 +19,18 @@ export interface HttpRetryKeepRetryingInput<T extends HttpRetryResponse> {
   retryAfterMs: number | null;
 }
 
+/**
+ * A Finagle-style ratio-based retry budget: a token bucket that bounds total
+ * retry *volume* across a run, distinct from the per-request `maxAttempts`
+ * count. `consume()` returns false when the budget is empty — the retry layer
+ * then stops retrying rather than spinning. Satisfied by the shared
+ * `RetryBudget` (src/provider-budget.ts) so a connector adopting `retryHttp`
+ * gets retry-storm protection without re-implementing it.
+ */
+export interface HttpRetryBudget {
+  consume(): boolean;
+}
+
 export interface HttpRetryOptions<T extends HttpRetryResponse> {
   baseDelayMs: number;
   /**
@@ -32,6 +44,15 @@ export interface HttpRetryOptions<T extends HttpRetryResponse> {
   onRetry?: (attempt: HttpRetryAttempt<T>) => void | Promise<void>;
   random?: () => number;
   request: () => T | Promise<T>;
+  /**
+   * Optional Finagle-style ratio-based retry budget. When provided, a retry
+   * token is consumed before each retry (after a retryable response or a thrown
+   * request error). If the budget is empty, the retry loop stops immediately
+   * with `RetryExhaustedError` — the same terminal shape as exhausting
+   * `maxAttempts` — so a run with many failing requests defers rather than
+   * amplifying load. Absent → only `maxAttempts` bounds retries (unchanged).
+   */
+  retryBudget?: HttpRetryBudget;
   shouldAbort?: (response: T) => boolean;
   /**
    * Optional early-stop hook for retryable responses. Called after a response
@@ -125,6 +146,77 @@ export function jitteredExponentialDelayMs({
   return Math.max(0, Math.min(maxDelayMs, Math.round(exponential * jitterMultiplier)));
 }
 
+/**
+ * Consume one retry-budget token if a budget is configured. Returns a
+ * `RetryExhaustedError` to throw when the budget is empty, or null to proceed.
+ * Extracted so the retry loop stays within the cognitive-complexity bar.
+ */
+function retryBudgetGate(
+  retryBudget: HttpRetryBudget | undefined,
+  attempt: number,
+  cause: unknown,
+  message: string
+): RetryExhaustedError | null {
+  if (retryBudget && !retryBudget.consume()) {
+    return new RetryExhaustedError(message, attempt, cause);
+  }
+  return null;
+}
+
+/**
+ * Decide what a thrown request error means: rethrow on exhausted attempts or an
+ * empty retry budget, otherwise proceed to backoff. Extracted from the loop's
+ * catch block to keep `retryHttp` within the complexity bar.
+ */
+function classifyThrownRequestError(
+  error: unknown,
+  attempt: number,
+  maxAttempts: number,
+  retryBudget: HttpRetryBudget | undefined
+): RetryExhaustedError | null {
+  if (attempt >= maxAttempts) {
+    return new RetryExhaustedError("HTTP request failed after retry budget was exhausted", attempt, error);
+  }
+  return retryBudgetGate(retryBudget, attempt, error, "HTTP request failed; ratio-based retry budget is exhausted");
+}
+
+/**
+ * Decide whether a retryable response terminates the loop (source-pressure
+ * policy fast-open, exhausted attempts, or empty retry budget) or proceeds to a
+ * backoff sleep. Returns the error to throw, or null to keep retrying. Extracted
+ * to keep `retryHttp` within the complexity bar.
+ */
+function classifyRetryableResponse<T extends HttpRetryResponse>(input: {
+  attempt: number;
+  maxAttempts: number;
+  response: T;
+  retryAfterMs: number | null;
+  retryBudget: HttpRetryBudget | undefined;
+  shouldKeepRetrying: HttpRetryOptions<T>["shouldKeepRetrying"];
+}): RetryExhaustedError | null {
+  const { attempt, maxAttempts, response, retryAfterMs, retryBudget, shouldKeepRetrying } = input;
+  if (shouldKeepRetrying && !shouldKeepRetrying({ attempt, maxAttempts, response, retryAfterMs })) {
+    return new RetryExhaustedError(
+      `HTTP request got retryable status ${response.status}; connector source-pressure policy stopped retrying`,
+      attempt,
+      response
+    );
+  }
+  if (attempt >= maxAttempts) {
+    return new RetryExhaustedError(
+      `HTTP request got retryable status ${response.status} after retry budget was exhausted`,
+      attempt,
+      response
+    );
+  }
+  return retryBudgetGate(
+    retryBudget,
+    attempt,
+    response,
+    `HTTP request got retryable status ${response.status}; ratio-based retry budget is exhausted`
+  );
+}
+
 export async function retryHttp<T extends HttpRetryResponse>(options: HttpRetryOptions<T>): Promise<T> {
   const {
     baseDelayMs,
@@ -135,6 +227,7 @@ export async function retryHttp<T extends HttpRetryResponse>(options: HttpRetryO
     onRetry,
     random = Math.random,
     request,
+    retryBudget,
     shouldAbort = () => false,
     shouldKeepRetrying,
     shouldRetry = (response) =>
@@ -151,8 +244,9 @@ export async function retryHttp<T extends HttpRetryResponse>(options: HttpRetryO
       response = await request();
     } catch (error) {
       lastFailure = error;
-      if (attempt >= maxAttempts) {
-        throw new RetryExhaustedError("HTTP request failed after retry budget was exhausted", attempt, error);
+      const fatal = classifyThrownRequestError(error, attempt, maxAttempts, retryBudget);
+      if (fatal) {
+        throw fatal;
       }
       const delayMs = jitteredExponentialDelayMs({ attempt, baseDelayMs, maxDelayMs, random });
       await onRetry?.({ attempt, delayMs, error, maxAttempts });
@@ -170,19 +264,16 @@ export async function retryHttp<T extends HttpRetryResponse>(options: HttpRetryO
 
     lastFailure = response;
     const retryAfterMs = retryAfterMsFromHeaders(response.headers);
-    if (shouldKeepRetrying && !shouldKeepRetrying({ attempt, maxAttempts, response, retryAfterMs })) {
-      throw new RetryExhaustedError(
-        `HTTP request got retryable status ${response.status}; connector source-pressure policy stopped retrying`,
-        attempt,
-        response
-      );
-    }
-    if (attempt >= maxAttempts) {
-      throw new RetryExhaustedError(
-        `HTTP request got retryable status ${response.status} after retry budget was exhausted`,
-        attempt,
-        response
-      );
+    const fatal = classifyRetryableResponse({
+      attempt,
+      maxAttempts,
+      response,
+      retryAfterMs,
+      retryBudget,
+      shouldKeepRetrying,
+    });
+    if (fatal) {
+      throw fatal;
     }
 
     const delayMs =

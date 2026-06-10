@@ -71,10 +71,16 @@ export class ProviderPacing {
   }
 
   /**
-   * Wait until the next request is admitted per the current fill rate.
-   * Returns immediately if the token is already available.
+   * Compute the pre-flight delay (ms) the next request owes per the current
+   * fill rate and advance the GCRA Theoretical Arrival Time as if that request
+   * were admitted now. PURE OF SLEEP: the caller owns the wait. This is the
+   * `SendDelayHint` seam — it lets the single send governor fold pacing into
+   * its own one pre-flight wait instead of pacing running a second `await`.
+   *
+   * Calling `nextDelayMs()` consumes the same TAT/Retry-After state `admit()`
+   * would, so `admit()` is exactly `sleep(nextDelayMs())`.
    */
-  async admit(): Promise<void> {
+  nextDelayMs(): number {
     const nowMs = this.now();
 
     // Honor a pending Retry-After override exactly.
@@ -82,17 +88,13 @@ export class ProviderPacing {
       const delay = this.nextRetryAfterMs;
       this.nextRetryAfterMs = null;
       this.tat = nowMs + delay;
-      if (delay > 0) {
-        await this.sleep(delay);
-      }
-      return;
+      return Math.max(0, delay);
     }
 
     if (this.tat === null) {
       // First call: anchor TAT so the first request waits one full interval.
       this.tat = nowMs + this._currentIntervalMs;
-      await this.sleep(this._currentIntervalMs);
-      return;
+      return this._currentIntervalMs;
     }
 
     // GCRA: if there's been a long idle gap, cap the accumulated credit to
@@ -105,7 +107,17 @@ export class ProviderPacing {
     const nextTat = this.tat + this._currentIntervalMs;
     const delay = Math.max(0, nextTat - nowMs);
     this.tat = Math.min(nextTat, maxTat);
+    return delay;
+  }
 
+  /**
+   * Wait until the next request is admitted per the current fill rate.
+   * Returns immediately if the token is already available. Equivalent to
+   * sleeping for {@link nextDelayMs}; retained for connectors that run pacing
+   * as their own pre-flight wait (legacy, pre-convergence default).
+   */
+  async admit(): Promise<void> {
+    const delay = this.nextDelayMs();
     if (delay > 0) {
       await this.sleep(delay);
     }

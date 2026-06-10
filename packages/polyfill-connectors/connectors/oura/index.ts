@@ -10,11 +10,20 @@
  * Rate limit: 5000/day for personal tokens.
  */
 
+import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import { type RecordData, runConnector } from "../../src/connector-runtime.ts";
 import { validateRecord } from "./schemas.ts";
 
 const API = "https://api.ouraring.com/v2/usercollection";
 const MAX_PAGES = 100;
+
+// Single per-provider send governor + retry layer (shared convergence
+// primitive). `maxAttempts: 1` keeps today's behavior byte-identical: a 429
+// throws `oura_rate_limited` immediately (no inline retry), so the runtime
+// `retryablePattern` cross-run source-pressure deferral/cooldown contract is
+// unchanged. Raising `maxAttempts` (an owner knob) activates the now-wired
+// inline Retry-After honor + bounded backoff without touching this call site.
+const httpGovernor = createConnectorHttpGovernor({ name: "oura", maxAttempts: 1 });
 
 interface OuraSleepSession {
   average_heart_rate?: number | null;
@@ -67,6 +76,12 @@ interface OuraParams {
   start_date?: string;
 }
 
+interface OuraRawResponse {
+  body: string;
+  retryAfter?: string;
+  status: number;
+}
+
 async function oura<T>(endpoint: string, token: string, params: OuraParams): Promise<OuraListResponse<T>> {
   const url = new URL(`${API}/${endpoint}`);
   for (const [k, v] of Object.entries(params)) {
@@ -74,19 +89,34 @@ async function oura<T>(endpoint: string, token: string, params: OuraParams): Pro
       url.searchParams.set(k, v);
     }
   }
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (res.status === 401) {
+  // The governor honors Retry-After and retries 429/5xx inline through ONE
+  // pre-flight send governor; terminal 429 exhaustion throws `oura_rate_limited`
+  // (the runtime `retryablePattern` cross-run contract). The body is read once
+  // per attempt (each attempt is a fresh fetch / fresh Response stream).
+  const result = await httpGovernor.request<OuraRawResponse, OuraRawResponse>(
+    async (): Promise<OuraRawResponse> => {
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      const retryAfter = res.headers.get("retry-after");
+      return {
+        body: await res.text(),
+        ...(retryAfter == null ? {} : { retryAfter }),
+        status: res.status,
+      };
+    },
+    (raw) => ({
+      status: raw.status,
+      headers: { "retry-after": raw.retryAfter },
+      value: raw,
+    })
+  );
+  const raw = result.value;
+  if (raw.status === 401) {
     throw new Error("oura_auth_failed");
   }
-  if (res.status === 429) {
-    throw new Error("oura_rate_limited");
+  if (raw.status < 200 || raw.status >= 300) {
+    throw new Error(`oura_http_${String(raw.status)}: ${raw.body.slice(0, 200)}`);
   }
-  if (!res.ok) {
-    throw new Error(`oura_http_${String(res.status)}: ${(await res.text()).slice(0, 200)}`);
-  }
-  return (await res.json()) as OuraListResponse<T>;
+  return JSON.parse(raw.body) as OuraListResponse<T>;
 }
 
 async function fetchAll<T>(endpoint: string, token: string, startDate: string | null): Promise<T[]> {

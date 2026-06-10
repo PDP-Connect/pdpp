@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 /**
  * PDPP YNAB Connector (v0.2.0)
  *
@@ -28,6 +29,7 @@
  * and most-recent month).
  */
 
+import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import {
   type CollectContext,
   emitDetailCoverage,
@@ -40,6 +42,11 @@ import { isMainModule } from "../../src/is-main-module.ts";
 import { validateRecord } from "./schemas.ts";
 
 const API_BASE = "https://api.ynab.com/v1";
+
+// Single per-provider send governor + retry layer. `maxAttempts: 1` keeps the
+// 429 throw byte-identical to the prior hand-rolled path (cross-run cooldown via
+// `retryablePattern`); raising it activates the wired Retry-After honor.
+const httpGovernor = createConnectorHttpGovernor({ name: "ynab", maxAttempts: 1 });
 
 interface YnabFetchOptions {
   knowledge?: number;
@@ -250,25 +257,36 @@ async function ynab<T>(
   if (sinceDate) {
     url.searchParams.set("since_date", sinceDate);
   }
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (res.status === 401) {
+  let result: { body: string; status: number };
+  try {
+    const r = await httpGovernor.request<{ body: string; status: number }, { body: string; status: number }>(
+      async () => {
+        const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+        const retryAfter = res.headers.get("retry-after");
+        return {
+          body: await res.text().catch((): string => ""),
+          ...(retryAfter == null ? {} : { headers: { "retry-after": retryAfter } }),
+          status: res.status,
+        } as { body: string; status: number };
+      },
+      (raw) => ({ status: raw.status, value: raw })
+    );
+    result = r.value;
+  } catch (error) {
+    // Terminal rate-limit: emit the same progress side-effect the hand-rolled
+    // path did, then rethrow `ynab_rate_limited` for the cross-run contract.
+    if (error instanceof Error && error.message === "ynab_rate_limited") {
+      await progress?.("YNAB request rate limited", { ...extra, phase: "rate_limit", rate_limit_pressure: 1 });
+    }
+    throw error;
+  }
+  if (result.status === 401) {
     throw new Error("ynab_auth_failed");
   }
-  if (res.status === 429) {
-    await progress?.("YNAB request rate limited", {
-      ...extra,
-      phase: "rate_limit",
-      rate_limit_pressure: 1,
-    });
-    throw new Error("ynab_rate_limited");
+  if (result.status < 200 || result.status >= 300) {
+    throw new Error(`ynab_http_${String(result.status)}: ${result.body.slice(0, 200)}`);
   }
-  if (!res.ok) {
-    const body = await res.text().catch((): string => "");
-    throw new Error(`ynab_http_${String(res.status)}: ${body.slice(0, 200)}`);
-  }
-  return (await res.json()) as T;
+  return JSON.parse(result.body) as T;
 }
 
 interface TimeRange {

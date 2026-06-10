@@ -10,8 +10,13 @@
  * Rate limit: 3 req/s average.
  */
 
+import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import { politeDelay, runConnector } from "../../src/connector-runtime.ts";
 import { validateRecord } from "./schemas.ts";
+
+// Single per-provider send governor + retry layer. `maxAttempts: 1` keeps the
+// 429 throw byte-identical (cross-run cooldown via `retryablePattern`).
+const httpGovernor = createConnectorHttpGovernor({ name: "notion", maxAttempts: 1 });
 
 const API = "https://api.notion.com/v1";
 const NOTION_VERSION = "2022-06-28";
@@ -83,30 +88,42 @@ async function ntn(
   progress?: (message: string, extra?: ProgressExtra) => Promise<void>,
   extra?: ProgressExtra
 ): Promise<NotionSearchResponse> {
-  const res = await fetch(`${API}${path}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Notion-Version": NOTION_VERSION,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-  if (res.status === 401) {
+  let raw: { body: string; status: number };
+  try {
+    const r = await httpGovernor.request<{ body: string; status: number }, { body: string; status: number }>(
+      async () => {
+        const res = await fetch(`${API}${path}`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Notion-Version": NOTION_VERSION,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+        });
+        const retryAfter = res.headers.get("retry-after");
+        return {
+          body: await res.text().catch((): string => ""),
+          ...(retryAfter == null ? {} : { headers: { "retry-after": retryAfter } }),
+          status: res.status,
+        } as { body: string; status: number };
+      },
+      (resp) => ({ status: resp.status, value: resp })
+    );
+    raw = r.value;
+  } catch (error) {
+    if (error instanceof Error && error.message === "notion_rate_limited") {
+      await progress?.("Notion search rate limited", { ...extra, phase: "rate_limit", rate_limit_pressure: 1 });
+    }
+    throw error;
+  }
+  if (raw.status === 401) {
     throw new Error("notion_auth_failed");
   }
-  if (res.status === 429) {
-    await progress?.("Notion search rate limited", {
-      ...extra,
-      phase: "rate_limit",
-      rate_limit_pressure: 1,
-    });
-    throw new Error("notion_rate_limited");
+  if (raw.status < 200 || raw.status >= 300) {
+    throw new Error(`notion_http_${String(raw.status)}: ${raw.body.slice(0, 200)}`);
   }
-  if (!res.ok) {
-    throw new Error(`notion_http_${String(res.status)}: ${(await res.text()).slice(0, 200)}`);
-  }
-  return (await res.json()) as NotionSearchResponse;
+  return JSON.parse(raw.body) as NotionSearchResponse;
 }
 
 function extractTitle(obj: NotionObject): string | null {

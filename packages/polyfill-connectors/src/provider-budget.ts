@@ -1,7 +1,25 @@
 import { type PacingOptions, ProviderPacing, type ThrottleSignal } from "./provider-pacing.js";
 import { RunBudget, type RunBudgetOptions, type RunBudgetTrip } from "./run-budget.js";
+import type { SendDelayHint } from "./send-governor.js";
 
 export type ProviderBudgetDeferReason = RunBudgetTrip | "circuit_open" | "retry_budget";
+
+/**
+ * How the controller's GCRA pacing participates in the request path.
+ *
+ * - `"preflight"` (default, pre-convergence): the controller owns pacing as its
+ *   own pre-flight wait — `beforeRequest()` `await`s `pacing.admit()`. When the
+ *   caller ALSO runs a concurrency send governor (e.g. an adaptive lane with a
+ *   launch delay), this is the two-gate stacking the rate-governance
+ *   convergence forbids. Retained as the default so existing connector behavior
+ *   is byte-identical until an owner opts into convergence.
+ * - `"signal"` (converged): the controller performs NO pre-flight wait. Pacing
+ *   becomes a {@link SendDelayHint} (`pacingDelayHint()`) the single send
+ *   governor folds into its one wait. The controller is then a pure
+ *   admission-decision + signal layer — a second pre-flight gate is not
+ *   expressible.
+ */
+export type ProviderBudgetPacingMode = "preflight" | "signal";
 export type CircuitBreakerState = "closed" | "half_open" | "open";
 export type ProviderBudgetCircuitTransitionTrigger =
   | "before_request"
@@ -176,13 +194,21 @@ export class CircuitBreaker {
 export interface ProviderBudgetOptions {
   circuitBreaker?: CircuitBreaker | CircuitBreakerOptions | false;
   pacing?: ProviderPacing | PacingOptions | false;
+  /**
+   * Whether pacing runs as the controller's own pre-flight wait (`"preflight"`,
+   * default) or as a delay hint for a single external send governor
+   * (`"signal"`, converged). See {@link ProviderBudgetPacingMode}. Has no effect
+   * when `pacing` is disabled.
+   */
+  pacingMode?: ProviderBudgetPacingMode;
   retryBudget?: RetryBudget | RetryBudgetOptions | false;
   runBudget?: RunBudget | RunBudgetOptions | false;
 }
 
-export class ProviderBudgetController {
+export class ProviderBudgetController implements SendDelayHint {
   readonly circuitBreaker: CircuitBreaker | null;
   readonly pacing: ProviderPacing | null;
+  readonly pacingMode: ProviderBudgetPacingMode;
   readonly retryBudget: RetryBudget | null;
   readonly runBudget: RunBudget | null;
   private readonly circuitTransitions: ProviderBudgetCircuitTransition[] = [];
@@ -190,6 +216,7 @@ export class ProviderBudgetController {
   constructor(options: ProviderBudgetOptions = {}) {
     this.circuitBreaker = resolveCircuitBreaker(options.circuitBreaker);
     this.pacing = resolveProviderPacing(options.pacing);
+    this.pacingMode = options.pacingMode ?? "preflight";
     this.retryBudget = resolveRetryBudget(options.retryBudget);
     this.runBudget = resolveRunBudget(options.runBudget);
   }
@@ -207,8 +234,33 @@ export class ProviderBudgetController {
       return this.stop("circuit_open");
     }
 
-    await this.pacing?.admit();
+    // In `"signal"` (converged) mode the controller performs NO pre-flight wait:
+    // pacing is handed to the single send governor via `pacingDelayHint()`. Only
+    // legacy `"preflight"` mode sleeps here. This is the one line that decides
+    // whether the controller is a second pre-flight gate.
+    if (this.pacingMode === "preflight") {
+      await this.pacing?.admit();
+    }
     return { ok: true };
+  }
+
+  /**
+   * The {@link SendDelayHint} the single send governor folds into its one
+   * pre-flight wait. Computes pacing's owed delay and advances GCRA state
+   * without sleeping. Returns 0 when pacing is disabled or in `"preflight"`
+   * mode (where the controller already owns the wait, so handing a hint to the
+   * governor too would re-create the stacking the convergence removes).
+   */
+  nextDelayMs(): number {
+    if (this.pacingMode !== "signal") {
+      return 0;
+    }
+    return this.pacing?.nextDelayMs() ?? 0;
+  }
+
+  /** Alias of {@link nextDelayMs} with a request-path-readable name. */
+  pacingDelayHint(): number {
+    return this.nextDelayMs();
   }
 
   recordRequest(): void {
