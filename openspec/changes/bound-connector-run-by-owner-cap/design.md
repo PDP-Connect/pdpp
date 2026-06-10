@@ -143,6 +143,68 @@ retry-exhaustion path. Differentiating them keeps each honest. Neither string ma
 imply source pressure ("the service is busy"); that copy belongs to
 `upstream_pressure` / `upstream_pressure_deferred`.
 
+### D7. Bounded cap-tail materialization via a backlog cursor (task 16)
+
+The cap stops *fetching* at the budget, but the original construction then
+materialized the deferral **unbounded**: it walked the entire remaining listed
+tail and wrote one durable `DETAIL_GAP` per conversation. Live
+`run_1780681611410` hydrated 25 details, found 2,169 conversations requiring
+detail, and was cancelled after writing 313 gap rows — a long foreground stretch
+of pure bookkeeping after fetching had already stopped. That burn is what kept an
+unattended schedule indefensible.
+
+A naive truncation is unsound. The ChatGPT lane lists `order=updated`
+**descending** (newest first) and commits a single monotone `last_update_time`
+messages cursor; the runtime commit gate refuses to advance that cursor unless
+every `DETAIL_COVERAGE.required_key` is hydrated, optional-skipped, or backed by a
+durable pending/recovered `DETAIL_GAP`. The per-key gap rows are therefore
+load-bearing — they *are* the backlog. A monotone watermark cannot separate the
+hydrated newest prefix from the deferred oldest tail, so dropping rows either
+loses the tail or re-attacks the newest prefix forever (non-convergent).
+
+The bound is an owner-configurable finite chunk
+(`PDPP_CHATGPT_MAX_TAIL_DEFERRAL_GAPS_PER_RUN`), default off (`Infinity` →
+today's per-key behavior, byte-for-byte). When only a fetch cap is set it derives
+`max(fetchCap, 50)` so a fetch-capped owner still gets a bounded tail. On a
+run-cap trip with a finite chunk the lane writes the chunk of per-key
+`run_cap_deferred` gaps (the newest of the tail — they recover first via their
+`list_item` hint), then folds the older remainder into **one** durable backlog
+`DETAIL_GAP`:
+
+- `reason: retry_exhausted`, `error.class: run_cap_deferred` — the same run-cap
+  contract as D4, so it never arms the source-pressure cooldown and is excluded
+  from the source-pressure backlog rollup.
+- `detail_locator.kind: "chatgpt.conversation_backlog"` with a content-derived
+  `before_update_time` watermark (the oldest accounted `update_time` this run) and
+  a `remaining` count. The watermark is **the** resumable boundary, never a
+  positional offset. The `list_cursor` field mirrors the watermark for protocol
+  honesty, but recovery reads it from the locator because the recovery start-entry
+  round-trips `detail_locator`, not `list_cursor`.
+
+The forward-pass `DETAIL_COVERAGE.required_keys` is scoped to the **accounted**
+set (hydrated ∪ per-key chunk ∪ the backlog gap's synthetic key). The older tail
+conversations are intentionally not required keys this run; the backlog gap
+accounts for them, so the commit gate passes with a bounded row count
+(≤ chunk + 1) and the monotone cursor still does not advance past an unaccounted
+record.
+
+Convergence is the recovery engine. A run served a backlog gap re-lists the
+parent list, filters to conversations strictly **older** than the watermark, and
+runs that older window through the same bounded writer — which hydrates what the
+shared run budget allows and folds *its* remainder into a fresh backlog gap with a
+strictly-older watermark (the old gap resolves; exactly one pending backlog gap
+persists, because the gap-store natural key includes `detail_locator_json` and the
+watermark changes each run). Per-key gaps on the page recover first; the backlog
+is expanded only once they are drained and never re-expanded within the same run,
+so the rewritten backlog is attacked on the next run before forward work. A
+history larger than the chunk drains oldest-ward over several bounded runs, each
+writing ≤ chunk + 1 durable rows, with no record lost and no offset arithmetic.
+
+All of this lives inside the ChatGPT connector and its tests — no Core, grant, or
+read-surface change. The latent protocol field consumed here
+(`DETAIL_GAP.detail_locator` round-trip) already existed; this is its first
+connector consumer.
+
 ## Risks and tradeoffs
 
 - **Cursor advances on a capped run.** A capped run commits the hydrated prefix's

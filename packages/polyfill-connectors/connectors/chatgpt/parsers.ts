@@ -617,3 +617,13 @@ export function maxUpdateTimeIso(items: readonly ConversationListItem[]): string
       .pop() ?? null
   );
 }
+
+export function minUpdateTimeIso(items: readonly ConversationListItem[]): string | null {
+  return (
+    items
+      .map((c) => (c.update_time ? tsToIso(c.update_time) : null))
+      .filter((x): x is string => Boolean(x))
+      .sort()
+      .shift() ?? null
+  );
+}

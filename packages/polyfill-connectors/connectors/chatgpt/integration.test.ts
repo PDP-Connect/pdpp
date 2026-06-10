@@ -68,6 +68,7 @@ import {
   resolveChatGptDetailLaneTuning,
   resolveChatGptMaxDetailFetchesPerRun,
   resolveChatGptMaxRunWallClockMs,
+  resolveChatGptMaxTailDeferralGapsPerRun,
   resolveChatGptProviderBudget,
   resolveChatGptRateLimitDensityStop,
   runConversationsAndMessagesStreams,
@@ -1878,6 +1879,283 @@ test("runConversationsAndMessagesStreams: capped forward run covers full listed 
   );
   assert.ok(coverageIdx !== -1, "detail coverage must emit before state");
   assert.ok(stateIdx > coverageIdx, "messages STATE must only emit after full detail coverage");
+});
+
+// ─── task 16: bounded cap-tail deferral materialization ──────────────────────
+
+test("resolveChatGptMaxTailDeferralGapsPerRun: default-off, explicit, and fetch-cap-derived", () => {
+  // Unset and no fetch cap → Infinity: today's per-key behavior, inert until opt-in.
+  assert.equal(resolveChatGptMaxTailDeferralGapsPerRun({}), Number.POSITIVE_INFINITY);
+  // Explicit positive integer wins.
+  assert.equal(resolveChatGptMaxTailDeferralGapsPerRun({ PDPP_CHATGPT_MAX_TAIL_DEFERRAL_GAPS_PER_RUN: "10" }), 10);
+  // Non-integer / non-positive explicit value is a disable sentinel.
+  assert.equal(
+    resolveChatGptMaxTailDeferralGapsPerRun({ PDPP_CHATGPT_MAX_TAIL_DEFERRAL_GAPS_PER_RUN: "0" }),
+    Number.POSITIVE_INFINITY
+  );
+  assert.equal(
+    resolveChatGptMaxTailDeferralGapsPerRun({ PDPP_CHATGPT_MAX_TAIL_DEFERRAL_GAPS_PER_RUN: "nope" }),
+    Number.POSITIVE_INFINITY
+  );
+  // Only a fetch cap set → derived max(fetchCap, 50): an owner who set a fetch cap
+  // still gets a bounded tail even without naming this knob.
+  assert.equal(resolveChatGptMaxTailDeferralGapsPerRun({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "5" }), 50);
+  assert.equal(resolveChatGptMaxTailDeferralGapsPerRun({ PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: "300" }), 300);
+});
+
+test("runMessagesAndConversationsWithDetail: a cap trip over a large tail writes a BOUNDED number of gap rows", async () => {
+  // 25 hydrated then a 200-conversation tail. Without a tail bound the run would
+  // synchronously write 200 per-key DETAIL_GAP rows (the live run_1780681611410
+  // burn). With tailGapBound=10 it writes 10 per-key chunk gaps + ONE backlog gap
+  // (11 rows total), folding the older 190 into a single resumable watermark.
+  const harness = makeRecordingEmit(validateRecord);
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (): Promise<ChatGptFetchResult> => {
+      await Promise.resolve();
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+  // Newest-first, strictly descending update_time so the watermark is well-defined.
+  const convos = Array.from({ length: 225 }, (_, i) =>
+    makeConvo({ id: `convo-${i + 1}`, update_time: 1_700_100_000 - i })
+  );
+
+  const coverage = await runMessagesAndConversationsWithDetail(deps, convos, makeEmitConversation(deps), {
+    random: () => 0,
+    sleep: () => undefined,
+    runBudget: new ChatGptRunBudget({ maxFetches: 25 }),
+    tailGapBound: 10,
+  });
+
+  const gaps = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP"
+  );
+  assert.equal(gaps.length, 11, "bounded tail writes at most chunk (10) per-key gaps + 1 backlog gap, not 200");
+  const perKeyGaps = gaps.filter((g) => g.detail_locator.kind === "chatgpt.conversation");
+  const backlogGaps = gaps.filter((g) => g.detail_locator.kind === "chatgpt.conversation_backlog");
+  assert.equal(perKeyGaps.length, 10, "exactly the chunk of newest tail conversations get per-key gaps");
+  assert.equal(backlogGaps.length, 1, "exactly one durable backlog gap represents the older remainder");
+
+  // The chunk is the 10 conversations immediately after the 25 hydrated (newest tail).
+  assert.deepEqual(
+    perKeyGaps.map((g) => g.record_key),
+    Array.from({ length: 10 }, (_, i) => `convo-${26 + i}`)
+  );
+
+  const backlog = backlogGaps[0];
+  assert.equal(backlog?.record_key, "__chatgpt_conversation_backlog__");
+  // Watermark is a content-derived update_time ISO (NOT an offset). It equals the
+  // NEWEST update_time of the un-materialized backlog (convo-36 — the first folded
+  // conversation right after 25 hydrated + 10-chunk = 35 accounted). Recovery
+  // re-lists `<= watermark`, an inclusive, stranding-proof boundary.
+  const watermark = (backlog?.detail_locator as { before_update_time?: unknown }).before_update_time;
+  assert.equal(typeof watermark, "string", "the backlog gap carries an update_time watermark, not an offset");
+  assert.equal(watermark, new Date((1_700_100_000 - 35) * 1000).toISOString());
+  assert.equal(
+    (backlog?.detail_locator as { remaining?: unknown }).remaining,
+    190,
+    "the backlog gap records how many older conversations remain"
+  );
+  // list_cursor mirror is set for protocol honesty.
+  assert.deepEqual(backlog?.list_cursor, { before_update_time: watermark });
+
+  // coverage.gapKeys still enumerates only the per-key chunk; the backlog key is
+  // tracked separately so forward coverage can require it.
+  assert.deepEqual(
+    coverage.gapKeys,
+    perKeyGaps.map((g) => String(g.record_key))
+  );
+  assert.equal(coverage.backlogGapKey, "__chatgpt_conversation_backlog__");
+});
+
+test("cap-tail backlog deferral is NOT source pressure and arms no cooldown", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (): Promise<ChatGptFetchResult> => {
+      await Promise.resolve();
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+  const convos = Array.from({ length: 50 }, (_, i) =>
+    makeConvo({ id: `convo-${i + 1}`, update_time: 1_700_100_000 - i })
+  );
+
+  await runMessagesAndConversationsWithDetail(deps, convos, makeEmitConversation(deps), {
+    random: () => 0,
+    sleep: () => undefined,
+    runBudget: new ChatGptRunBudget({ maxFetches: 5 }),
+    tailGapBound: 5,
+  });
+
+  const gaps = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP"
+  );
+  assert.equal(
+    gaps.every((g) => g.reason === "retry_exhausted"),
+    true,
+    "every cap-tail gap (per-key AND backlog) uses retry_exhausted — outside the source-pressure reason set"
+  );
+  assert.equal(
+    gaps.every((g) => g.detail?.class === "run_cap_deferred"),
+    true,
+    "every cap-tail gap carries the run_cap_deferred error class"
+  );
+  assert.equal(
+    gaps.some((g) => g.reason === "upstream_pressure" || g.reason === "rate_limited"),
+    false,
+    "a self-imposed bound must never be classified as source pressure"
+  );
+  // The backlog gap's network-pressure diagnostic names the cap reason, never a 429/HTTP status.
+  const backlog = gaps.find((g) => g.detail_locator.kind === "chatgpt.conversation_backlog");
+  assert.equal(backlog?.detail?.network_pressure?.error_class, "max_detail_fetches");
+  assert.equal(backlog?.detail?.http_status, undefined, "no HTTP status: nothing failed, the run chose to stop");
+});
+
+test("a follow-up run expands the backlog gap (older window) before any forward work, no offsets", async () => {
+  // Multi-run convergence over a 30-conversation cold history, tailGapBound=10,
+  // fetch budget 10/run. Run 1 hydrates the newest 10 and folds the older 20 into
+  // a backlog gap. Run 2 recovers by RE-LISTING older-than the watermark and
+  // draining the next chunk, rewriting the backlog. Loop until the backlog
+  // resolves. Each run writes a bounded row count; the boundary is a re-listed
+  // update_time watermark — never an offset.
+  const allConvos = Array.from({ length: 30 }, (_, i) =>
+    makeConvo({ id: `convo-${String(i + 1).padStart(2, "0")}`, update_time: 1_700_100_000 - i })
+  );
+  const isoOf = (id: string): string => {
+    const c = allConvos.find((x) => x.id === id);
+    return new Date(((c?.update_time as number) ?? 0) * 1000).toISOString();
+  };
+
+  // Simulate the runtime gap store across runs: detailGaps served to a run are the
+  // pending gaps; DETAIL_GAP emits add/replace pending; DETAIL_GAP_RECOVERED resolves.
+  type PendingGap = NonNullable<StreamDeps["detailGaps"]>[number];
+  const pending = new Map<string, PendingGap>();
+  let gapSeq = 0;
+
+  const hydratedAcross = new Set<string>();
+  let safety = 0;
+  // Threaded forward cursors: a capped run advances the messages STATE cursor to
+  // the newest hydrated window. The next forward-walk lists only conversations
+  // NEWER than it, so already-hydrated conversations are never re-deferred —
+  // exactly the runtime contract. The OLDER tail is recovered via the backlog gap.
+  let messagesCursor: string | null = null;
+  let conversationsCursor: string | null = null;
+
+  while (safety++ < 12) {
+    const harness = makeRecordingEmit(validateRecord);
+    const listCalls: string[] = [];
+    const api: ChatGptApi = {
+      auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+      fetch: async (path: string): Promise<ChatGptFetchResult> => {
+        await Promise.resolve();
+        if (path.startsWith("/conversations?")) {
+          listCalls.push(path);
+          // Always return the full descending list; listConversationsSinceCursor
+          // applies the cursor filter, just like the live `/conversations` route.
+          return { status: 200, json: { items: allConvos } as ChatGptJson };
+        }
+        return makeDetailOk();
+      },
+    };
+    // Snapshot the pending gaps the runtime would serve this run.
+    const served = Array.from(pending.values());
+    const deps: StreamDeps = {
+      api,
+      detailGaps: served,
+      emit: async (msg): Promise<void> => {
+        await harness.emit(msg);
+        if (msg.type === "DETAIL_GAP") {
+          // Upsert by natural key (record_key + detail_locator) the way the store does.
+          const key = `${String(msg.record_key)}::${JSON.stringify(msg.detail_locator)}`;
+          gapSeq += 1;
+          pending.set(key, {
+            gap_id: `gap-${gapSeq}`,
+            stream: "messages",
+            record_key: msg.record_key,
+            status: "pending",
+            reference_only: true,
+            detail_locator: msg.detail_locator,
+          } as PendingGap);
+        }
+        if (msg.type === "DETAIL_GAP_RECOVERED") {
+          // Resolve the served gap by id.
+          for (const [k, g] of pending) {
+            if (g.gap_id === msg.gap_id) {
+              pending.delete(k);
+            }
+          }
+        }
+        if (msg.type === "STATE" && msg.stream === "messages") {
+          const next = (msg.cursor as { last_update_time?: string | null } | undefined)?.last_update_time ?? null;
+          if (next) {
+            messagesCursor = next;
+          }
+        }
+        if (msg.type === "STATE" && msg.stream === "conversations") {
+          const next = (msg.cursor as { last_update_time?: string | null } | undefined)?.last_update_time ?? null;
+          if (next) {
+            conversationsCursor = next;
+          }
+        }
+      },
+      emitRecord: harness.emitRecord,
+      progress: (): Promise<void> => Promise.resolve(),
+      requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+      requestDetailGapPage: () => Promise.resolve([]),
+      runBudget: new ChatGptRunBudget({ maxFetches: 10 }),
+    };
+
+    const hadBacklogBefore = served.some((g) => g.detail_locator?.kind === "chatgpt.conversation_backlog");
+
+    await runConversationsAndMessagesStreams(
+      deps,
+      {
+        conversations: { last_update_time: conversationsCursor },
+        messages: { last_update_time: messagesCursor },
+      } as CollectContext["state"],
+      { detailPacing: { random: () => 0, sleep: () => undefined, tailGapBound: 10 } }
+    );
+
+    for (const id of harness.emitted.filter((r) => r.stream === "conversations").map((r) => String(r.data.id))) {
+      hydratedAcross.add(id);
+    }
+
+    // When a backlog gap was served, the run MUST expand it (a list call) before
+    // doing forward work, and writes a bounded number of rows.
+    if (hadBacklogBefore) {
+      assert.ok(listCalls.length >= 1, "a backlog-gap recovery re-lists the parent conversation list");
+    }
+    const gapsThisRun = harness.protocolMessages.filter((m) => m.type === "DETAIL_GAP");
+    assert.ok(gapsThisRun.length <= 11, "each run writes at most chunk (10) + 1 backlog gap");
+
+    // Keep running until EVERY pending gap (per-key chunk and backlog) drains —
+    // the tail converges only when no resumable work remains.
+    if (pending.size === 0) {
+      break;
+    }
+  }
+
+  assert.ok(safety < 12, "the backlog converges to empty in a bounded number of runs");
+  // Every conversation in the cold history was hydrated across the bounded runs —
+  // no data loss, no offset reconstruction.
+  assert.equal(hydratedAcross.size, allConvos.length, "all 30 conversations drained oldest-ward with no loss");
+  assert.equal(isoOf("convo-30") < isoOf("convo-01"), true, "sanity: convo-30 is the oldest");
 });
 
 test("runConversationsAndMessagesStreams: detail failure rejects before conversations STATE", async () => {

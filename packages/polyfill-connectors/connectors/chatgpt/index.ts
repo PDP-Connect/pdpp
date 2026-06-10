@@ -60,6 +60,7 @@ import {
   extractMessage,
   flattenTreeCurrentBranch,
   maxUpdateTimeIso,
+  minUpdateTimeIso,
   tsToIso,
 } from "./parsers.ts";
 import { validateRecord as validateRecordRaw } from "./schemas.ts";
@@ -294,6 +295,12 @@ export class ChatGptRateLimitDensityTracker {
 // owner/system envelopes only; they are not the default throttle.
 const CHATGPT_MAX_DETAIL_FETCHES_PER_RUN_ENV = "PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN";
 const CHATGPT_MAX_RUN_WALL_CLOCK_MS_ENV = "PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS";
+const CHATGPT_MAX_TAIL_DEFERRAL_GAPS_PER_RUN_ENV = "PDPP_CHATGPT_MAX_TAIL_DEFERRAL_GAPS_PER_RUN";
+// When only a fetch/wall-clock cap is set (no explicit tail bound), derive a
+// sane finite chunk so an owner who opts into a run cap also gets a bounded
+// tail materialization. `max(fetchCap, 50)` keeps a small fetch cap from
+// shrinking the per-run drain rate below a useful floor.
+const CHATGPT_DERIVED_TAIL_DEFERRAL_GAPS_FLOOR = 50;
 const CHATGPT_PACING_INITIAL_INTERVAL_MS_ENV = "PDPP_CHATGPT_PACING_INITIAL_INTERVAL_MS";
 const CHATGPT_PACING_MIN_INTERVAL_MS_ENV = "PDPP_CHATGPT_PACING_MIN_INTERVAL_MS";
 const CHATGPT_PACING_BURST_TOLERANCE_MS_ENV = "PDPP_CHATGPT_PACING_BURST_TOLERANCE_MS";
@@ -341,6 +348,38 @@ export function resolveChatGptMaxRunWallClockMs(env: NodeJS.ProcessEnv = process
     return Number.POSITIVE_INFINITY;
   }
   return Math.floor(parsed);
+}
+
+/**
+ * Resolve the maximum number of per-key `DETAIL_GAP` rows a single run may write
+ * for the cap-tail deferral before folding the remaining older tail into ONE
+ * durable backlog gap (carrying a content-derived `before_update_time`
+ * watermark the next run re-lists from). This bounds the *foreground burn* of a
+ * cap trip: a huge cold account no longer spends a long run writing thousands of
+ * gap rows after it has already stopped fetching details.
+ *
+ * Resolution:
+ * - explicit `PDPP_CHATGPT_MAX_TAIL_DEFERRAL_GAPS_PER_RUN` (positive integer) wins;
+ * - unset but a fetch cap is configured → derived `max(fetchCap, 50)` so an owner
+ *   who set only a fetch cap still gets a bounded tail;
+ * - otherwise (no fetch cap either) → `Infinity`: today's per-key behavior is
+ *   byte-for-byte preserved. The bound is inert until an owner opts into a cap.
+ */
+export function resolveChatGptMaxTailDeferralGapsPerRun(env: NodeJS.ProcessEnv = process.env): number {
+  const trimmed = env[CHATGPT_MAX_TAIL_DEFERRAL_GAPS_PER_RUN_ENV]?.trim();
+  if (trimmed != null && trimmed !== "") {
+    const parsed = Number(trimmed);
+    if (Number.isInteger(parsed) && parsed >= 1) {
+      return parsed;
+    }
+    // Non-integer / non-positive explicit value is a disable sentinel.
+    return Number.POSITIVE_INFINITY;
+  }
+  const fetchCap = resolveChatGptMaxDetailFetchesPerRun(env);
+  if (Number.isFinite(fetchCap)) {
+    return Math.max(fetchCap, CHATGPT_DERIVED_TAIL_DEFERRAL_GAPS_FLOOR);
+  }
+  return Number.POSITIVE_INFINITY;
 }
 
 function resolveChatGptRetryBudgetCapacity(env: NodeJS.ProcessEnv, maxRequests: number): number | null {
@@ -1937,10 +1976,24 @@ interface ConversationDetailPacingOptions {
   // PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN / PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS.
   runBudget?: ChatGptRunBudget;
   sleep?: (ms: number) => Promise<void> | void;
+  // Max per-key DETAIL_GAP rows a run-cap tail materializes before folding the
+  // older remainder into one backlog gap. Tests inject a small value to exercise
+  // the bounded tail writer + backlog-cursor recovery without thousands of rows.
+  // Defaults to resolveChatGptMaxTailDeferralGapsPerRun() (Infinity = unbounded
+  // per-key behavior preserved). Only the run-cap deferral path honors it;
+  // source-pressure deferrals stay per-key (their backlog IS the cooldown signal).
+  tailGapBound?: number;
   tuning?: ChatGptDetailLaneTuning;
 }
 
 interface ConversationDetailCoverage {
+  // When a cap-tail deferral folds the older tail into a backlog gap, this is
+  // that backlog gap's synthetic record_key. The forward-pass coverage must list
+  // it as a required key so the commit gate sees it backed by a durable gap; the
+  // older tail conversations are intentionally NOT required keys this run (they
+  // become required when a later run re-lists and materializes them). Absent
+  // (undefined) when the run materialized every tail conversation per-key.
+  backlogGapKey?: string;
   gapKeys: Array<string | number>;
   hydratedKeys: Array<string | number>;
 }
@@ -2136,14 +2189,68 @@ function makeRunCapDeferredConversationDetailGap(
   });
 }
 
+// Synthetic, stable record_key for the single backlog DETAIL_GAP a capped run
+// folds its un-materialized older tail into. Stable so a rewrite (an older
+// watermark) targets the same coverage slot; the durable row itself is replaced
+// run-over-run (old resolved, fresh emitted) because the gap-store natural key
+// includes detail_locator_json, which carries the watermark.
+const CHATGPT_CONVERSATION_BACKLOG_RECORD_KEY = "__chatgpt_conversation_backlog__";
+const CHATGPT_CONVERSATION_BACKLOG_LOCATOR_KIND = "chatgpt.conversation_backlog";
+
+/**
+ * Build the ONE durable backlog `DETAIL_GAP` that represents a capped run's
+ * un-materialized older conversation tail. It carries a content-derived
+ * `before_update_time` watermark (ISO) the next run re-lists from — NEVER an
+ * offset — plus the count of conversations still owed. Same resumable
+ * `retry_exhausted` / `run_cap_deferred` contract as the per-key cap gaps, so it
+ * never arms the source-pressure cooldown. The `list_cursor` mirror is set for
+ * protocol honesty even though recovery reads the watermark from the locator
+ * (the recovery start-entry round-trips `detail_locator`, not `list_cursor`).
+ */
+function makeRunCapBacklogConversationDetailGap(
+  beforeUpdateTimeIso: string,
+  remaining: number,
+  capReason: ChatGptRunCapReason
+): DetailGapMessage {
+  return buildDetailGap({
+    stream: "messages",
+    recordKey: CHATGPT_CONVERSATION_BACKLOG_RECORD_KEY,
+    reason: "retry_exhausted",
+    listCursor: { before_update_time: beforeUpdateTimeIso },
+    locator: {
+      kind: CHATGPT_CONVERSATION_BACKLOG_LOCATOR_KIND,
+      before_update_time: beforeUpdateTimeIso,
+      remaining,
+    },
+    error: {
+      class: "run_cap_deferred",
+      networkPressure: {
+        endpoint_route: "/conversations",
+        error_class: capReason,
+        method: "GET",
+      },
+    },
+  });
+}
+
+/** The watermark a backlog-gap recovery re-lists older-than, or null if absent/invalid. */
+function backlogGapBeforeUpdateTime(gap: CollectContext["detailGaps"][number]): string | null {
+  const locator = gap.detail_locator;
+  if (!locator || locator.kind !== CHATGPT_CONVERSATION_BACKLOG_LOCATOR_KIND) {
+    return null;
+  }
+  const before = (locator as { before_update_time?: unknown }).before_update_time;
+  return typeof before === "string" && before !== "" ? before : null;
+}
+
 function makeConversationDetailCoverage(
-  convosToSync: ConversationListItem[],
+  requiredKeys: Array<string | number>,
   coverage: ConversationDetailCoverage
 ): DetailCoverageMessage {
   return buildDetailCoverageMessage({
     stream: "messages",
     stateStream: "conversations",
-    requiredKeys: convosToSync.map((c) => c.id),
+    requiredKeys,
     hydratedKeys: coverage.hydratedKeys,
     gapKeys: coverage.gapKeys,
   });
@@ -2210,6 +2317,11 @@ export async function runMessagesAndConversationsWithDetail(
       maxFetches: resolveChatGptMaxDetailFetchesPerRun(),
       maxWallClockMs: resolveChatGptMaxRunWallClockMs(),
     });
+  // Max per-key DETAIL_GAP rows a run-cap tail may materialize before folding
+  // the older remainder into one backlog gap. `pacing` wins for tests; otherwise
+  // env-resolved (Infinity = today's unbounded per-key behavior). This bounds the
+  // FOREGROUND WRITE burn of a cap trip; it does not change fetching.
+  const tailGapBound = pacing.tailGapBound ?? resolveChatGptMaxTailDeferralGapsPerRun();
   let emittedConversationDetailLaneStart = false;
   const lane = createAdaptiveLane<ChatGptFetchResult>({
     name: "chatgpt.conversationDetail",
@@ -2293,6 +2405,61 @@ export async function runMessagesAndConversationsWithDetail(
     return { deferredDueToPressure: true, status: 0, json: null };
   }
 
+  // Bounded run-cap tail writer. A capped run stopped FETCHING at its budget;
+  // this stops it from spending a long foreground stretch WRITING one durable
+  // gap row per remaining conversation. It materializes at most `tailGapBound`
+  // per-key `run_cap_deferred` gaps (newest of the tail — these recover first
+  // next run via their `list_item` hint), then folds every OLDER conversation
+  // into ONE durable backlog gap carrying a content-derived `before_update_time`
+  // watermark (the oldest accounted update_time). A later run's recovery
+  // re-lists older-than that watermark and drains the next bounded chunk, so a
+  // huge history converges oldest-ward over several bounded runs while each run
+  // writes ≤ bound + 1 durable rows. NOT source pressure — same resumable
+  // `retry_exhausted` / `run_cap_deferred` contract, no cooldown armed.
+  //
+  // `tailGapBound === Infinity` (no cap configured, or only this path's default)
+  // collapses to the per-key behavior: the backlog branch is never taken and the
+  // output is byte-for-byte identical to the unbounded writer above.
+  async function emitRunCapTailConversationDetailGaps(
+    from: ConversationListItem,
+    capReason: ChatGptRunCapReason
+  ): Promise<ChatGptFetchResult> {
+    const start = Math.max(
+      0,
+      convosToSync.findIndex((item) => item.id === from.id)
+    );
+    const tail = convosToSync.slice(start);
+    const perKey = Number.isFinite(tailGapBound) ? tail.slice(0, tailGapBound) : tail;
+    const backlog = Number.isFinite(tailGapBound) ? tail.slice(tailGapBound) : [];
+    for (const item of perKey) {
+      await emitConversationDetailGapOnce(item, makeRunCapDeferredConversationDetailGap(item, capReason));
+    }
+    if (backlog.length) {
+      // Watermark: the NEWEST update_time in the un-materialized backlog. Recovery
+      // re-lists conversations `update_time <= watermark` — an INCLUSIVE upper
+      // bound. Using the backlog's own newest boundary (rather than the accounted
+      // set's oldest) is stranding-proof at a tie: if a boundary update_time is
+      // shared between an accounted item and a backlog item, the inclusive filter
+      // re-lists the tied accounted item and the bounded writer simply re-defers
+      // it — wasteful by at most a tie group, never lost. Convergence holds: the
+      // next watermark is the next backlog's newest, strictly older than the
+      // current chunk's oldest accounted item.
+      const watermark = maxUpdateTimeIso(backlog) ?? minUpdateTimeIso(backlog);
+      if (watermark) {
+        coverage.backlogGapKey = CHATGPT_CONVERSATION_BACKLOG_RECORD_KEY;
+        await deps.emit(makeRunCapBacklogConversationDetailGap(watermark, backlog.length, capReason));
+      } else {
+        // Pathological: no usable timestamp anywhere in the backlog. Rather than
+        // silently drop the older tail (non-convergent), fall back to per-key gaps.
+        for (const item of backlog) {
+          await emitConversationDetailGapOnce(item, makeRunCapDeferredConversationDetailGap(item, capReason));
+        }
+      }
+    }
+    tailStopController.abort();
+    return { deferredDueToPressure: true, status: 0, json: null };
+  }
+
   async function maybeDeferForRateLimitDensity(from: ConversationListItem): Promise<ChatGptFetchResult | null> {
     if (!densityTracker.shouldStop()) {
       return null;
@@ -2323,7 +2490,7 @@ export async function runMessagesAndConversationsWithDetail(
       stream: "messages",
       message: `ChatGPT conversation-detail lane reached its per-run ${budgetDescription}; deferring the remaining conversation details as resumable DETAIL_GAP records for the next run`,
     });
-    return emitTailConversationDetailGaps(from, (item) => makeRunCapDeferredConversationDetailGap(item, capReason));
+    return emitRunCapTailConversationDetailGaps(from, capReason);
   }
 
   async function maybeDeferForFetchError(from: ConversationListItem, err: unknown): Promise<ChatGptFetchResult | null> {
@@ -2335,7 +2502,7 @@ export async function runMessagesAndConversationsWithDetail(
         stream: "messages",
         message: `ChatGPT conversation-detail lane reached its per-run provider budget (${providerBudgetReason}); deferring remaining conversation details as resumable DETAIL_GAP records`,
       });
-      return emitTailConversationDetailGaps(from, (item) => makeRunCapDeferredConversationDetailGap(item, err.reason));
+      return emitRunCapTailConversationDetailGaps(from, err.reason);
     }
     if (err instanceof ChatGptRecoverableRetryExhaustedError) {
       providerBudget?.recordThrottle({ retryAfterAlreadySlept: true });
@@ -2366,9 +2533,7 @@ export async function runMessagesAndConversationsWithDetail(
     // managed to start before the abort is local-only: materialize its tail as
     // resumable run-cap gaps and stop queued lane work.
     if (runCapDeferReason) {
-      return emitTailConversationDetailGaps(c, (item) =>
-        makeRunCapDeferredConversationDetailGap(item, runCapDeferReason as ChatGptRunCapReason)
-      );
+      return emitRunCapTailConversationDetailGaps(c, runCapDeferReason as ChatGptRunCapReason);
     }
     // Cumulative 429-density trip. If the run has already absorbed enough served
     // 429s, stop launching new detail fetches into the pressured account: open
@@ -2477,46 +2642,140 @@ async function recoverPendingConversationDetailGaps(
   return { recovered, stoppedWithPending: false };
 }
 
+/**
+ * Expand a single cap-tail backlog gap: re-list the parent conversation list and
+ * materialize the next bounded chunk of conversations OLDER than the backlog's
+ * `before_update_time` watermark, then resolve the backlog gap. The same bounded
+ * `runMessagesAndConversationsWithDetail` writer runs over the older window, so
+ * it hydrates what the shared run budget allows and folds ITS remainder into a
+ * fresh backlog gap carrying a strictly-older watermark — draining the history
+ * oldest-ward over runs, ≤ bound + 1 durable rows per run. No offset arithmetic:
+ * the boundary is a content-derived `update_time` watermark, re-listed each run.
+ *
+ * Returns `expanded: true` so the caller STOPS this run's recovery before any
+ * forward walk — the freshly-rewritten backlog gap is attacked on the NEXT run,
+ * never re-expanded inside the same run.
+ */
+async function expandBacklogConversationDetailGap(
+  deps: StreamDeps,
+  gap: CollectContext["detailGaps"][number],
+  beforeUpdateTime: string,
+  emitConversation: (c: ConversationListItem, detail: ConversationDetail | null) => Promise<void>,
+  pacing: ConversationDetailPacingOptions = {}
+): Promise<{ recovered: number; expanded: boolean }> {
+  // `listConversationsSinceCursor` returns the parent list `order=updated`
+  // descending (newest-first), preserving source order. Keep conversations at or
+  // older than the backlog watermark (`<= watermark`, the backlog's own newest
+  // boundary) — that is the un-materialized older window. The inclusive bound is
+  // stranding-proof at a tie; an already-accounted tie is harmlessly re-deferred.
+  // No re-sort: source order is already the descending order the bounded writer
+  // expects (materialize the newest of the window per-key, fold the rest).
+  const listed = await listConversationsSinceCursor(deps, null);
+  const olderWindow = listed.filter((c) => {
+    const iso = c.update_time ? tsToIso(c.update_time) : null;
+    return iso != null && iso <= beforeUpdateTime;
+  });
+  if (!olderWindow.length) {
+    // The backlog is fully drained: nothing older remains. Resolve the gap.
+    await deps.emit({
+      type: "DETAIL_GAP_RECOVERED",
+      reference_only: true,
+      gap_id: gap.gap_id,
+      stream: "messages",
+      record_key: CHATGPT_CONVERSATION_BACKLOG_RECORD_KEY,
+    });
+    return { recovered: 1, expanded: false };
+  }
+  const coverage = await runMessagesAndConversationsWithDetail(deps, olderWindow, emitConversation, pacing);
+  // The old backlog gap is now superseded: its window was re-listed and the run
+  // either hydrated/per-key-gapped a bounded chunk and emitted a FRESH backlog
+  // gap (older watermark) for the remainder, or accounted the whole window. Mark
+  // it recovered so it is never re-served; the fresh backlog gap (if any) carries
+  // the remainder forward.
+  await deps.emit({
+    type: "DETAIL_GAP_RECOVERED",
+    reference_only: true,
+    gap_id: gap.gap_id,
+    stream: "messages",
+    record_key: CHATGPT_CONVERSATION_BACKLOG_RECORD_KEY,
+  });
+  return { recovered: coverage.hydratedKeys.length, expanded: true };
+}
+
 async function recoverPendingConversationDetailGapPage(
   deps: StreamDeps,
   detailGaps: readonly CollectContext["detailGaps"][number][],
   emitConversation: (c: ConversationListItem, detail: ConversationDetail | null) => Promise<void>,
   pacing: ConversationDetailPacingOptions = {}
 ): Promise<{ recovered: number; stoppedWithPending: boolean }> {
-  const recoveryItems = detailGaps
-    .filter((gap) => gap.stream === "messages")
+  const messagesGaps = detailGaps.filter((gap) => gap.stream === "messages");
+  // Per-key conversation gaps recover FIRST — they are the newest deferred slice
+  // (the cap chunk and prior per-record exhaustions) and self-hydrate from their
+  // stored `list_item` hint. A backlog gap is only expanded once every per-key
+  // gap on this page is drained AND the shared run budget still allows fetching,
+  // so the older window is never re-listed while newer per-key gaps remain owed
+  // (which would strand the chunk).
+  const recoveryItems = messagesGaps
     .map((gap) => ({ gap, conversation: conversationListItemFromGap(gap) }))
     .filter(
       (item): item is { gap: CollectContext["detailGaps"][number]; conversation: ConversationListItem } =>
         item.conversation !== null
     );
-  if (!recoveryItems.length) {
-    return { recovered: 0, stoppedWithPending: false };
+
+  let recovered = 0;
+  let stoppedWithPending = false;
+  if (recoveryItems.length) {
+    const coverage = await runMessagesAndConversationsWithDetail(
+      deps,
+      recoveryItems.map((item) => item.conversation),
+      emitConversation,
+      pacing
+    );
+    const hydrated = new Set(coverage.hydratedKeys.map(String));
+    for (const { gap, conversation } of recoveryItems) {
+      if (!hydrated.has(conversation.id)) {
+        continue;
+      }
+      await deps.emit({
+        type: "DETAIL_GAP_RECOVERED",
+        reference_only: true,
+        gap_id: gap.gap_id,
+        stream: "messages",
+        record_key: conversation.id,
+      });
+    }
+    recovered = hydrated.size;
+    // A backlog gap may itself have been (re)written into this coverage's
+    // accounted set when the recovery run capped; if so the older window is
+    // already represented and re-expanding here would double-list. Stop when any
+    // per-key gap remains owed OR the recovery run capped (signalled by a fresh
+    // backlog key), so the rewritten backlog is attacked next run.
+    stoppedWithPending = hydrated.size < recoveryItems.length || coverage.backlogGapKey != null;
+    if (stoppedWithPending) {
+      return { recovered, stoppedWithPending };
+    }
   }
 
-  const coverage = await runMessagesAndConversationsWithDetail(
-    deps,
-    recoveryItems.map((item) => item.conversation),
-    emitConversation,
-    pacing
-  );
-  const hydrated = new Set(coverage.hydratedKeys.map(String));
-  for (const { gap, conversation } of recoveryItems) {
-    if (!hydrated.has(conversation.id)) {
-      continue;
+  // Every per-key gap on this page recovered and the run did not cap. If a backlog
+  // gap is present, expand exactly one: re-list the older window and drain its
+  // next bounded chunk, then stop the run so the rewritten backlog waits for the
+  // next run rather than being re-expanded in place.
+  const backlogGap = messagesGaps.find((gap) => backlogGapBeforeUpdateTime(gap) != null);
+  if (backlogGap) {
+    const beforeUpdateTime = backlogGapBeforeUpdateTime(backlogGap);
+    if (beforeUpdateTime) {
+      const result = await expandBacklogConversationDetailGap(
+        deps,
+        backlogGap,
+        beforeUpdateTime,
+        emitConversation,
+        pacing
+      );
+      return { recovered: recovered + result.recovered, stoppedWithPending: result.expanded };
     }
-    await deps.emit({
-      type: "DETAIL_GAP_RECOVERED",
-      reference_only: true,
-      gap_id: gap.gap_id,
-      stream: "messages",
-      record_key: conversation.id,
-    });
   }
-  return {
-    recovered: hydrated.size,
-    stoppedWithPending: hydrated.size < recoveryItems.length,
-  };
+
+  return { recovered, stoppedWithPending };
 }
 
 async function recoverPendingMessageDetailGapsBeforeForwardRun(
@@ -2609,7 +2868,19 @@ export async function runConversationsAndMessagesStreams(
       options.detailPacing
     );
     if (messageDetailConversations.length) {
-      await deps.emit(makeConversationDetailCoverage(messageDetailConversations, coverage));
+      // Required keys are the set the run ACCOUNTED FOR: every hydrated and
+      // per-key-gapped conversation, plus — when a cap-tail deferral folded the
+      // older tail into a backlog gap — that backlog gap's synthetic key (backed
+      // by its durable row). Without a backlog gap this is exactly
+      // `messageDetailConversations` (byte-identical to today). With one, the
+      // older tail conversations are intentionally NOT required this run; the
+      // backlog gap represents them and a later run re-lists + materializes them,
+      // so the commit gate passes with a bounded row count instead of one
+      // required key per conversation.
+      const requiredKeys: Array<string | number> = coverage.backlogGapKey
+        ? [...coverage.hydratedKeys, ...coverage.gapKeys, coverage.backlogGapKey]
+        : messageDetailConversations.map((c) => c.id);
+      await deps.emit(makeConversationDetailCoverage(requiredKeys, coverage));
       const maxMessagesUpdate = maxUpdateTimeIso(messageDetailConversations);
       deps.emit({
         type: "STATE",

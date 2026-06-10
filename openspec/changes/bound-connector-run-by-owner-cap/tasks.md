@@ -75,10 +75,26 @@ landed implementation; §4 is owner closeout.
   `2026-06-05T18:01:33Z` after 313 gap rows. This proves the fetch-pressure cap
   works but the tail-materialization path is not yet low-burn enough for a
   confident unattended schedule.
-- [ ] Follow-up implementation: once a per-run cap trips, bound the deferral
+- [x] Follow-up implementation: once a per-run cap trips, bound the deferral
   materialization itself (for example chunked gap creation, a backlog cursor, or
   a wall-clock-checked tail writer) so a huge account does not spend a long run
   writing thousands of gap rows after it has already stopped fetching details.
+  **Implemented (design D7):** owner-configurable finite chunk
+  `PDPP_CHATGPT_MAX_TAIL_DEFERRAL_GAPS_PER_RUN` (`resolveChatGptMaxTailDeferralGapsPerRun`,
+  default off → `Infinity`; derived `max(fetchCap, 50)` when only a fetch cap is
+  set). On a run-cap trip the lane writes ≤ chunk per-key `run_cap_deferred` gaps
+  + ONE durable backlog `DETAIL_GAP` (`chatgpt.conversation_backlog` locator) with
+  a content-derived `before_update_time` watermark (never an offset); forward
+  `DETAIL_COVERAGE.required_keys` is scoped to the accounted set so the monotone
+  cursor never advances past an unaccounted record. Recovery
+  (`expandBacklogConversationDetailGap`) re-lists older-than the watermark and
+  drains the next bounded chunk before forward work, resolving/rewriting the
+  backlog gap with a strictly-older watermark — converging oldest-ward over
+  bounded runs (≤ chunk + 1 rows/run), no record lost, no offset reconstruction.
+  Source-pressure decomplection preserved (D4). ChatGPT-only; no Core/grant/
+  read-surface change. Tests: bounded write count, default-off byte-identity,
+  not-source-pressure / no cooldown, multi-run convergence (all in
+  `connectors/chatgpt/integration.test.ts`); resolver contract unit test.
 - [ ] Archive this change once the spec delta is folded into `polyfill-runtime`
   and the owner-only live verification is recorded.
 

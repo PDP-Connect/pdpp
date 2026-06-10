@@ -122,3 +122,67 @@ the source-pressure reasons.
 - **THEN** the copy SHALL describe a retry budget that was used up
 - **AND** the copy SHALL NOT be byte-identical to the configured run-cap copy
 - **AND** the copy SHALL NOT imply that the source service was busy or pressured
+
+### Requirement: A run-cap tail deferral SHALL bound its own foreground materialization
+
+A run-cap trip SHALL bound the **foreground work of materializing the deferral
+itself** when the remaining record tail is larger than an owner-configurable
+finite chunk: the connector SHALL write at most the configured chunk of
+per-record resumable `DETAIL_GAP` rows, then fold every older remaining record
+into **one** durable backlog `DETAIL_GAP` carrying a content-derived list cursor
+/ watermark (never a positional offset) for the un-materialized remainder. A run
+SHALL NOT spend a long foreground stretch writing one gap row per remaining
+record after it has already stopped fetching details.
+
+This chunk SHALL be **opt-in and default off**: an unset chunk SHALL leave the
+per-record deferral behavior byte-for-byte unchanged. When only a fetch/time cap
+is configured (and no explicit chunk), the connector MAY derive a safe finite
+chunk so an owner who opts into a run cap also gets a bounded tail. The backlog
+gap SHALL reuse the run-cap deferral contract — a resumable reason outside the
+source-pressure set and the run-cap error class — so it never arms the
+source-pressure cooldown and is excluded from the source-pressure backlog rollup.
+
+The deferral SHALL remain **resumable and convergent**: a later run's recovery
+SHALL expand the backlog gap by re-listing the parent list from the stored
+watermark and materializing the next bounded chunk of the older window, resolving
+or rewriting the backlog gap with a strictly-older watermark, and this expansion
+SHALL run before forward-walk work so the deferred tail recovers first. A history
+larger than the chunk SHALL drain over several bounded runs with no record lost
+and no offset reconstruction; the monotone forward cursor SHALL NOT advance past
+an unaccounted record (the backlog gap accounts for the older remainder).
+
+#### Scenario: A cap trip over a large remaining tail writes a bounded number of gap rows
+
+- **WHEN** a run-cap trips with a configured finite tail-deferral chunk
+- **AND** the remaining record tail is larger than that chunk
+- **THEN** the connector SHALL write at most the chunk of per-record `DETAIL_GAP`
+  rows
+- **AND** it SHALL write exactly one durable backlog `DETAIL_GAP` for the older
+  remainder, carrying a content-derived watermark and not a positional offset
+- **AND** the run SHALL NOT write one gap row per remaining record
+
+#### Scenario: Default-off leaves the tail deferral unchanged
+
+- **WHEN** no tail-deferral chunk is configured and no fetch/time cap derives one
+- **THEN** a run-cap tail SHALL be materialized one resumable `DETAIL_GAP` per
+  record exactly as it would without this bound (no backlog gap is written)
+
+#### Scenario: A later run expands the backlog gap before forward work and converges
+
+- **WHEN** a later run is served a backlog `DETAIL_GAP`
+- **THEN** recovery SHALL re-list the parent list from the backlog watermark and
+  materialize the next bounded chunk of the older window before any forward-walk
+  work
+- **AND** it SHALL resolve or rewrite the backlog gap with a strictly-older
+  watermark
+- **AND** over several bounded runs the older history SHALL fully drain with no
+  record lost and no positional-offset reconstruction
+
+#### Scenario: A bounded tail deferral is not source pressure
+
+- **WHEN** a connector folds a run-cap tail into per-record chunk gaps plus a
+  backlog gap
+- **THEN** every such gap SHALL carry a resumable reason outside the
+  source-pressure reason set and the run-cap error class
+- **AND** none of them SHALL arm the source-pressure cooldown governor or be
+  counted in the source-pressure detail-gap backlog rollup
