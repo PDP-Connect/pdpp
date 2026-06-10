@@ -509,26 +509,13 @@ const OwnerConnectionIntentRequestSchema = {
   required: ["connector_id"],
 };
 
-// Typed next step a connection intent returns. `kind` is the stable selector an
-// agent branches on. The reference build emits `enroll_local_collector` for
-// proven local-collector connectors and `unsupported` for browser-bound,
-// API/network-only, and unknown connectors; `open_url`, `complete_browser_assistance`,
-// `upload_file`, `enroll_browser_collector`, and `complete_credential_capture` are
-// reserved for future primitives so a later lane can emit them without a contract
-// break. `enroll_browser_collector` is the kind the `browser_bound` branch will
-// emit once the `add-browser-collector-enrollment-primitive` live proof gate is
-// satisfied (design Decision 3). `complete_credential_capture` is the kind the
-// `api_network` branch will emit for static-secret connectors (gmail/github) once
-// the `add-static-secret-owner-connect-primitive` proof gate is satisfied (that
-// change's design Decision 4): it directs the OWNER — never the agent — to supply
-// the provider static secret (app password / PAT) through an owner-trusted local
-// surface; the agent only ever observes the typed step and the resulting
-// `connection_id`. Reserving these values does NOT advertise the flow — no route
-// emits them until each proof lands, and `owner-connection-intent.test.js` pins
-// that the runtime `browser_bound` and `api_network` branches stay `unsupported`.
-// Secret material (enrollment codes excepted — they are single-use, owner-scoped,
-// and short-lived) is never carried here; in particular `complete_credential_capture`
-// never carries the provider secret.
+// Typed next step a connection intent returns. The route projects the shared
+// setup-plan vocabulary: supported local collectors emit enrollment material;
+// proof-gated connectors emit either a non-secret owner-session step
+// (`capture_static_secret`) or `manual_runbook`; deployment-blocked provider
+// authorization emits `needs_deployment_config`; unsupported connectors emit
+// `unsupported`. `enroll_browser_collector`, `capture_static_secret`, and
+// `open_provider_auth` SHALL NOT carry provider/browser secrets.
 const OwnerConnectionIntentNextStepSchema = {
   type: "object",
   additionalProperties: true,
@@ -536,21 +523,23 @@ const OwnerConnectionIntentNextStepSchema = {
     kind: {
       type: "string",
       enum: [
-        "open_url",
-        "complete_browser_assistance",
-        "upload_file",
         "enroll_local_collector",
         "enroll_browser_collector",
-        "complete_credential_capture",
+        "capture_static_secret",
+        "open_provider_auth",
+        "needs_deployment_config",
+        "manual_runbook",
         "unsupported",
       ],
     },
     reason: { type: ["string", "null"] },
-    url: { type: "string" },
+    authorization_url: { type: "string" },
+    capture_endpoint: { type: "string" },
     enrollment_code: { type: "string" },
     enroll_endpoint: { type: "string" },
-    local_binding_name: { type: "string" },
     expires_at: { type: "string" },
+    local_binding_name: { type: "string" },
+    runbook_path: { type: "string" },
   },
   required: ["kind"],
 };
@@ -573,9 +562,64 @@ const OwnerConnectionIntentResponseSchema = {
       enum: ["local_collector", "browser_bound", "api_network", "unknown"],
     },
     connection_active: { const: false },
+    deployment_readiness: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        state: {
+          type: "string",
+          enum: ["not_applicable", "ready", "needs_config"],
+        },
+        guidance: { type: ["string", "null"] },
+        blockers: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: true,
+            properties: {
+              key: { type: "string" },
+              label: { type: "string" },
+              secret: { type: "boolean" },
+            },
+            required: ["key", "label", "secret"],
+          },
+        },
+      },
+      required: ["state", "guidance", "blockers"],
+    },
     next_step: OwnerConnectionIntentNextStepSchema,
+    proof_gate: { type: ["string", "null"] },
+    runbook_path: { type: ["string", "null"] },
+    setup_modality: {
+      type: "string",
+      enum: [
+        "local_collector",
+        "browser_bound",
+        "static_secret",
+        "provider_authorization",
+        "manual_or_upload",
+        "unsupported",
+        "unknown",
+      ],
+    },
+    support_state: {
+      type: "string",
+      enum: ["supported", "proof_gated", "unsupported", "needs_deployment_config"],
+    },
   },
-  required: ["object", "connector_id", "connector_key", "connector_modality", "connection_active", "next_step"],
+  required: [
+    "object",
+    "connector_id",
+    "connector_key",
+    "connector_modality",
+    "connection_active",
+    "deployment_readiness",
+    "next_step",
+    "proof_gate",
+    "runbook_path",
+    "setup_modality",
+    "support_state",
+  ],
 };
 
 const ApprovalItemSchema = {
@@ -1583,7 +1627,7 @@ export const referenceManifests = [
     surface: "reference",
     tags: ["reference", "connections", "owner-agent"],
     summary:
-      "Owner-agent bearer: initiate a new connection as a typed, auditable, owner-mediated intent. Returns a typed `next_step` (`enroll_local_collector` for proven local-collector connectors; `unsupported` with a reason for browser-bound, API/network-only, and unknown connectors) and never marks a connection active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route.",
+      "Owner-agent bearer: initiate a new connection as a typed, auditable, owner-mediated intent. Returns the shared setup-plan projection (`setup_modality`, `support_state`, `deployment_readiness`, `proof_gate`, `runbook_path`) plus a typed `next_step`; it never marks a connection active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route.",
     request: { body: { schema: OwnerConnectionIntentRequestSchema } },
     responses: { 201: { schema: OwnerConnectionIntentResponseSchema }, ...CommonErrors },
   },

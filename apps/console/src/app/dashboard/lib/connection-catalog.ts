@@ -17,6 +17,10 @@ import {
   buildConnectionSetupPlan,
   type ConnectorCatalogDisposition,
   type ConnectorIntentModality,
+  type ConnectorSetupDeploymentReadiness,
+  type ConnectorSetupModality,
+  type ConnectorSetupNextStepKind,
+  type ConnectorSetupSupportState,
   canonicalConnectorKey,
   classifyConnectorIntentModality,
   enrollmentKeyForCanonicalKey,
@@ -28,10 +32,24 @@ import {
  * label, and the runtime bindings that drive classification.
  */
 export interface CatalogManifestLike {
+  capabilities?: {
+    auth?: {
+      deployment_config?: readonly string[] | null;
+      kind?: string | null;
+      mode?: string | null;
+      required?: readonly string[] | null;
+      type?: string | null;
+    } | null;
+  } | null;
   connector_id: string;
+  connector_key?: string | null;
   display_name?: string | null;
   name?: string | null;
   runtime_requirements?: { bindings?: Record<string, unknown> | null } | null;
+  setup?: {
+    deployment_config?: readonly string[] | null;
+    modality?: string | null;
+  } | null;
 }
 
 /** Binding-derived modality, matching the backend intent route's taxonomy. */
@@ -51,8 +69,9 @@ export type CatalogModality = ConnectorIntentModality;
  *   path yet; visible and pointed at the runbook, but NOT deep-linked.
  * - `static_secret_connect` — a network-class connector (Gmail, GitHub) whose
  *   first connection is created via the owner-session static-secret draft path.
- *   A real owner connect route exists, but it is not one-click in the console and
- *   not live-proven, so it is surfaced with its runbook, NOT deep-linked.
+ *   A real owner connect route exists; the picker links to that owner-session
+ *   capture form, not to local-device enrollment, and the connection stays
+ *   hidden until first ingest accepts records.
  * - `api_network_unsupported` — no owner connect route; visible with its reason,
  *   not creatable here.
  * - `unknown_unsupported` — a manifest with no recognized binding; surfaced
@@ -67,6 +86,8 @@ export interface ConnectorCatalogEntry {
   displayName: string;
   /** What the console can honestly do with this connector today. */
   disposition: CatalogDisposition;
+  /** Non-secret deployment blockers, separated from per-connection owner action. */
+  deploymentReadiness: ConnectorSetupDeploymentReadiness;
   /**
    * The `?connector=` value to deep-link into the enrollment form, present only
    * for dispositions the console can actually start (`local_collector_enroll`,
@@ -76,6 +97,16 @@ export interface ConnectorCatalogEntry {
   enrollmentKey?: string;
   /** Binding-derived modality. */
   modality: CatalogModality;
+  /** The owner setup modality selected by the shared planner. */
+  setupModality: ConnectorSetupModality;
+  /** The next owner step selected by the shared planner. */
+  nextStepKind: ConnectorSetupNextStepKind;
+  /** Proof gate blocking support, if any. */
+  proofGate: string | null;
+  /** Optional runbook path surfaced in advanced/details copy. */
+  runbookPath: string | null;
+  /** Support state selected by the shared planner. */
+  supportState: ConnectorSetupSupportState;
 }
 
 /**
@@ -115,9 +146,15 @@ export function buildConnectorCatalog(manifests: readonly CatalogManifestLike[])
     const plan = buildConnectionSetupPlan({ connectorKey, manifest });
     const entry: ConnectorCatalogEntry = {
       connectorKey,
+      deploymentReadiness: plan.deploymentReadiness,
       displayName: displayNameFor(manifest, connectorKey),
       modality: plan.connectorModality,
       disposition: plan.catalogDisposition,
+      nextStepKind: plan.nextStepKind,
+      proofGate: plan.proofGate,
+      runbookPath: plan.runbookPath,
+      setupModality: plan.setupModality,
+      supportState: plan.supportState,
     };
     if (plan.enrollmentKey) {
       entry.enrollmentKey = plan.enrollmentKey;
@@ -155,14 +192,25 @@ export function browserBoundRunbookEntries(catalog: readonly ConnectorCatalogEnt
 
 /**
  * Static-secret entries (Gmail, GitHub): a real owner-session draft-create path,
- * surfaced with its runbook and live-proof caveat. Not deep-linked (no one-click
- * console form yet), so — like the runbook groups — these carry no enrollmentKey.
+ * surfaced through the owner-session static-secret form plus runbook/proof
+ * caveat. These carry no `enrollmentKey` because they never deep-link into the
+ * local-device enrollment form.
  */
 export function staticSecretConnectEntries(catalog: readonly ConnectorCatalogEntry[]): ConnectorCatalogEntry[] {
   return catalog.filter((e) => e.disposition === "static_secret_connect");
 }
 
+/** Provider-authorization entries blocked on instance-level deployment config. */
+export function deploymentBlockedEntries(catalog: readonly ConnectorCatalogEntry[]): ConnectorCatalogEntry[] {
+  return catalog.filter((e) => e.disposition === "provider_auth_deployment_blocked");
+}
+
 /** API/network entries with no owner connect route, plus any unknown-binding entries. */
 export function unsupportedNetworkEntries(catalog: readonly ConnectorCatalogEntry[]): ConnectorCatalogEntry[] {
-  return catalog.filter((e) => e.disposition === "api_network_unsupported" || e.disposition === "unknown_unsupported");
+  return catalog.filter(
+    (e) =>
+      e.disposition === "api_network_unsupported" ||
+      e.disposition === "provider_auth_proof_gated" ||
+      e.disposition === "unknown_unsupported"
+  );
 }

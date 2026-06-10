@@ -209,12 +209,14 @@ function resolveRefConnectorNamespace(
 function resolveRefConnectionNamespace(
   ctx: MountRefConnectorsContext,
   req: unknown,
-  connectorInstanceId: string
+  connectorInstanceId: string,
+  options: { allowStatuses?: readonly string[] } = {}
 ): Promise<ConnectorNamespace> {
   return ctx.resolveOwnerConnectorNamespace(req, null, {
     ownerSubjectId: ctx.getOwnerSubjectId(req),
     allowDefaultAccount: false,
     connectorInstanceId,
+    ...(options.allowStatuses ? { allowStatuses: options.allowStatuses } : {}),
   });
 }
 
@@ -591,7 +593,9 @@ export function mountRefConnectionRun(app: AppLike, ctx: MountRefConnectorsConte
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId as string);
-        const namespace = await resolveRefConnectionNamespace(ctx, req, connectorInstanceId);
+        const namespace = await resolveRefConnectionNamespace(ctx, req, connectorInstanceId, {
+          allowStatuses: ["active", "draft"],
+        });
         const started = await ctx.runNow(namespace.connectorId, {
           connectorInstanceId: namespace.connectorInstanceId,
         });

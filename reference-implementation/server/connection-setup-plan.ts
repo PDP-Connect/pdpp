@@ -1,5 +1,14 @@
 export type ConnectorIntentModality = "local_collector" | "browser_bound" | "api_network" | "unknown";
 
+export type ConnectorSetupModality =
+  | "local_collector"
+  | "browser_bound"
+  | "static_secret"
+  | "provider_authorization"
+  | "manual_or_upload"
+  | "unsupported"
+  | "unknown";
+
 export type ConnectorSetupSupportState = "supported" | "proof_gated" | "unsupported" | "needs_deployment_config";
 
 export type ConnectorSetupNextStepKind =
@@ -7,6 +16,7 @@ export type ConnectorSetupNextStepKind =
   | "enroll_browser_collector"
   | "capture_static_secret"
   | "open_provider_auth"
+  | "needs_deployment_config"
   | "manual_runbook"
   | "unsupported";
 
@@ -16,6 +26,8 @@ export type ConnectorCatalogDisposition =
   | "browser_collector_manual"
   | "browser_bound_runbook"
   | "static_secret_connect"
+  | "provider_auth_deployment_blocked"
+  | "provider_auth_proof_gated"
   | "api_network_unsupported"
   | "unknown_unsupported";
 
@@ -24,26 +36,53 @@ export interface ConnectorManifestLike {
   readonly connector_key?: string | null;
   readonly display_name?: string | null;
   readonly name?: string | null;
+  readonly capabilities?: {
+    readonly auth?: {
+      readonly kind?: string | null;
+      readonly mode?: string | null;
+      readonly type?: string | null;
+      readonly required?: readonly string[] | null;
+      readonly deployment_config?: readonly string[] | null;
+    } | null;
+  } | null;
   readonly runtime_requirements?: {
     readonly bindings?: Readonly<Record<string, unknown>> | null;
   } | null;
+  readonly setup?: {
+    readonly modality?: string | null;
+    readonly deployment_config?: readonly string[] | null;
+  } | null;
+}
+
+export interface ConnectorSetupDeploymentBlocker {
+  readonly key: string;
+  readonly label: string;
+  readonly secret: boolean;
+}
+
+export interface ConnectorSetupDeploymentReadiness {
+  readonly blockers: readonly ConnectorSetupDeploymentBlocker[];
+  readonly guidance: string | null;
+  readonly state: "not_applicable" | "ready" | "needs_config";
 }
 
 export interface ConnectionSetupPlan {
   readonly catalogDisposition: ConnectorCatalogDisposition;
   readonly connectorKey: string;
   readonly connectorModality: ConnectorIntentModality;
+  readonly deploymentReadiness: ConnectorSetupDeploymentReadiness;
   readonly displayName: string;
   readonly enrollmentKey?: string;
   readonly nextStepKind: ConnectorSetupNextStepKind;
   readonly ownerAgentIntent: {
     readonly method: "POST" | null;
-    readonly nextStepKind: "enroll_local_collector" | "unsupported";
+    readonly nextStepKind: ConnectorSetupNextStepKind;
     readonly reason: string;
-    readonly status: "supported" | "unsupported";
+    readonly status: ConnectorSetupSupportState;
   };
   readonly proofGate: string | null;
   readonly runbookPath: string | null;
+  readonly setupModality: ConnectorSetupModality;
   readonly supportState: ConnectorSetupSupportState;
 }
 
@@ -87,6 +126,19 @@ export type BrowserBoundConnector = (typeof BROWSER_BOUND_CONNECTORS)[number];
 
 export const BROWSER_BOUND_RUNBOOK_PATH = "docs/operator/browser-collector-proof-runbook.md";
 export const STATIC_SECRET_RUNBOOK_PATH = "docs/operator/static-secret-connection-runbook.md";
+export const PROVIDER_AUTH_RUNBOOK_PATH = "docs/operator/add-connection.md";
+
+const NOT_APPLICABLE_DEPLOYMENT_READINESS: ConnectorSetupDeploymentReadiness = Object.freeze({
+  blockers: [],
+  guidance: null,
+  state: "not_applicable",
+});
+
+const READY_DEPLOYMENT_READINESS: ConnectorSetupDeploymentReadiness = Object.freeze({
+  blockers: [],
+  guidance: null,
+  state: "ready",
+});
 
 const FIRST_PARTY_REGISTRY_PREFIX = "https://registry.pdpp.org/connectors/";
 const TRAILING_SLASH_RE = /\/$/;
@@ -173,12 +225,96 @@ export function classifyConnectorIntentModality(manifest: ConnectorManifestLike 
   return "unknown";
 }
 
-export function unsupportedReason(modality: ConnectorIntentModality): string {
-  if (modality === "browser_bound") {
-    return "This connector is browser-bound. The browser-collector enrollment primitive (`browser_collector` source kind plus binding-aware enrollment) already ships: the owner-authed enrollment-code route accepts this connector and enrolls a second account as a distinct `browser_collector` instance. What is not yet committed is end-to-end proof that a real owner-logged-in browser session ingests through that path, so this route stays `unsupported` and does not advertise a one-click next step. To add the connection today, follow the owner-run procedure in `docs/operator/browser-collector-proof-runbook.md` (mint an enrollment code for this connector, then run the monorepo local collector against your logged-in session). The one-click owner-agent next step lands together with the committed live proof.";
+function authKindFromManifest(manifest: ConnectorManifestLike | null): string | null {
+  const raw =
+    manifest?.setup?.modality ??
+    manifest?.capabilities?.auth?.kind ??
+    manifest?.capabilities?.auth?.mode ??
+    manifest?.capabilities?.auth?.type ??
+    null;
+  return typeof raw === "string" && raw.trim() ? raw.trim().toLowerCase() : null;
+}
+
+export function classifyConnectorSetupModality(
+  connectorKey: string,
+  manifest: ConnectorManifestLike | null
+): ConnectorSetupModality {
+  const connectorModality = classifyConnectorIntentModality(manifest);
+  if (connectorModality === "local_collector") {
+    return "local_collector";
   }
-  if (modality === "api_network") {
-    return "This connector is API/network-only and authenticates with a static provider secret the owner supplies locally (gmail uses a Google app password over IMAP; github uses a personal access token) — there is no OAuth authorization URL to send the owner to. The reference now has the per-connection encrypted credential store, an owner-session credential capture route for existing connections, and connection-scoped subprocess injection for this credential model (add-static-secret-owner-connect-primitive), so a captured secret is sealed at rest, never agent-readable, and injected into exactly one connection run. What is still missing is the committed end-to-end proof — intent to owner capture to first ingest to an addressable connection_id, with two mailboxes proven as two connection_ids. Until that proof lands the route stays `unsupported` and does not advertise a one-click next step (`open_url` would apply only to a genuinely OAuth-backed connector, which none of the current ones are); an API connection still materializes only on first ingest, not from this intent. See openspec/changes/add-static-secret-owner-connect-primitive/design.md (Decision 6, proof-before-flip).";
+  if (connectorModality === "browser_bound") {
+    return "browser_bound";
+  }
+  if (connectorModality === "api_network") {
+    if (isStaticSecretConnector(connectorKey)) {
+      return "static_secret";
+    }
+    const authKind = authKindFromManifest(manifest);
+    if (
+      authKind === "oauth" ||
+      authKind === "oauth2" ||
+      authKind === "provider_authorization" ||
+      authKind === "provider-authorization"
+    ) {
+      return "provider_authorization";
+    }
+    return "unsupported";
+  }
+  return connectorModality;
+}
+
+function deploymentConfigKeysFromManifest(manifest: ConnectorManifestLike | null): readonly string[] {
+  const setupKeys = manifest?.setup?.deployment_config;
+  if (Array.isArray(setupKeys) && setupKeys.length > 0) {
+    return setupKeys.filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+  }
+  const authKeys = manifest?.capabilities?.auth?.deployment_config ?? manifest?.capabilities?.auth?.required;
+  if (Array.isArray(authKeys) && authKeys.length > 0) {
+    return authKeys.filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+  }
+  return [];
+}
+
+function buildDeploymentReadiness(args: {
+  readonly connectorKey: string;
+  readonly configuredProviderAuthConnectorKeys?: readonly string[];
+  readonly manifest: ConnectorManifestLike | null;
+  readonly requiredKeys?: readonly string[];
+  readonly setupModality: ConnectorSetupModality;
+}): ConnectorSetupDeploymentReadiness {
+  if (args.setupModality !== "provider_authorization") {
+    return NOT_APPLICABLE_DEPLOYMENT_READINESS;
+  }
+  const configured = new Set((args.configuredProviderAuthConnectorKeys ?? []).map(canonicalConnectorKey));
+  if (configured.has(args.connectorKey)) {
+    return READY_DEPLOYMENT_READINESS;
+  }
+  const requiredKeys = args.requiredKeys?.length ? args.requiredKeys : deploymentConfigKeysFromManifest(args.manifest);
+  const blockers = (requiredKeys.length > 0 ? requiredKeys : [`${args.connectorKey.toUpperCase()}_OAUTH_CLIENT`]).map(
+    (key) => ({
+      key,
+      label: key,
+      secret: /SECRET|TOKEN|PASSWORD|KEY/i.test(key),
+    })
+  );
+  return {
+    blockers,
+    guidance:
+      "Configure the instance-level provider application first. After that, each owner authorizes their own account through an owner-mediated provider authorization step.",
+    state: "needs_config",
+  };
+}
+
+export function unsupportedReason(modality: ConnectorIntentModality | ConnectorSetupModality): string {
+  if (modality === "browser_bound") {
+    return "This connector is browser-bound. The browser-collector enrollment primitive (`browser_collector` source kind plus binding-aware enrollment) already ships, but end-to-end proof that a real owner-logged-in browser session ingests through that path is still gated. Follow `docs/operator/browser-collector-proof-runbook.md`; the setup plan stays proof-gated until that live proof lands.";
+  }
+  if (modality === "static_secret" || modality === "api_network") {
+    return "This API/network connector authenticates with a static provider secret the owner supplies locally (gmail uses a Google app password over IMAP; github uses a personal access token); there is no OAuth authorization URL. Use the owner-session static-secret setup page to create a draft, capture the provider secret, and start first sync. The connection stays hidden until first ingest accepts records.";
+  }
+  if (modality === "provider_authorization") {
+    return "This connector needs provider authorization. The reference distinguishes deployment-level provider app readiness from per-owner authorization, but this build does not yet ship the callback/token-exchange lifecycle that proves an active connection only after authorization and account inventory or a connection test succeeds.";
   }
   if (modality === "local_collector") {
     return "This filesystem-backed connector is not in the proven local-collector enrollment set yet. The reference can classify it as local-collector class, but it must not advertise setup until a connector-specific local collector path is proven.";
@@ -188,6 +324,7 @@ export function unsupportedReason(modality: ConnectorIntentModality): string {
 
 export function buildConnectionSetupPlan(args: {
   readonly connectorKey?: string | null;
+  readonly configuredProviderAuthConnectorKeys?: readonly string[];
   readonly manifest: ConnectorManifestLike | null;
 }): ConnectionSetupPlan {
   const rawConnectorKey = typeof args.connectorKey === "string" ? args.connectorKey.trim() : "";
@@ -197,6 +334,21 @@ export function buildConnectionSetupPlan(args: {
     "unknown";
   const displayName = displayNameForConnector(connectorKey, args.manifest);
   const connectorModality = classifyConnectorIntentModality(args.manifest);
+  const setupModality = classifyConnectorSetupModality(connectorKey, args.manifest);
+  const deploymentArgs: {
+    connectorKey: string;
+    configuredProviderAuthConnectorKeys?: readonly string[];
+    manifest: ConnectorManifestLike | null;
+    setupModality: ConnectorSetupModality;
+  } = {
+    connectorKey,
+    manifest: args.manifest,
+    setupModality,
+  };
+  if (args.configuredProviderAuthConnectorKeys) {
+    deploymentArgs.configuredProviderAuthConnectorKeys = args.configuredProviderAuthConnectorKeys;
+  }
+  const deploymentReadiness = buildDeploymentReadiness(deploymentArgs);
   const enrollmentKey = enrollmentKeyForCanonicalKey(connectorKey);
 
   if (connectorModality === "local_collector") {
@@ -205,6 +357,7 @@ export function buildConnectionSetupPlan(args: {
         catalogDisposition: "local_collector_enroll",
         connectorKey,
         connectorModality,
+        deploymentReadiness,
         displayName,
         enrollmentKey,
         nextStepKind: "enroll_local_collector",
@@ -217,6 +370,7 @@ export function buildConnectionSetupPlan(args: {
         },
         proofGate: null,
         runbookPath: null,
+        setupModality,
         supportState: "supported",
       };
     }
@@ -224,16 +378,18 @@ export function buildConnectionSetupPlan(args: {
       catalogDisposition: "local_collector_unproven",
       connectorKey,
       connectorModality,
+      deploymentReadiness,
       displayName,
       nextStepKind: "unsupported",
       ownerAgentIntent: {
         method: null,
-        nextStepKind: "unsupported",
+        nextStepKind: "manual_runbook",
         reason: unsupportedReason(connectorModality),
-        status: "unsupported",
+        status: "proof_gated",
       },
       proofGate: "local_collector_connector_proof_missing",
       runbookPath: null,
+      setupModality,
       supportState: "proof_gated",
     };
   }
@@ -244,44 +400,72 @@ export function buildConnectionSetupPlan(args: {
       catalogDisposition: hasManualBrowserPath ? "browser_collector_manual" : "browser_bound_runbook",
       connectorKey,
       connectorModality,
+      deploymentReadiness,
       displayName,
       ...(hasManualBrowserPath ? { enrollmentKey } : {}),
       nextStepKind: hasManualBrowserPath ? "enroll_browser_collector" : "manual_runbook",
       ownerAgentIntent: {
         method: null,
-        nextStepKind: "unsupported",
+        nextStepKind: "manual_runbook",
         reason: unsupportedReason(connectorModality),
-        status: "unsupported",
+        status: "proof_gated",
       },
       proofGate: "browser_collector_live_proof_missing",
       runbookPath: BROWSER_BOUND_RUNBOOK_PATH,
+      setupModality,
       supportState: "proof_gated",
     };
   }
 
   if (connectorModality === "api_network") {
-    if (isStaticSecretConnector(connectorKey)) {
+    if (setupModality === "static_secret") {
       return {
         catalogDisposition: "static_secret_connect",
         connectorKey,
         connectorModality,
+        deploymentReadiness,
         displayName,
-        nextStepKind: "manual_runbook",
+        nextStepKind: "capture_static_secret",
         ownerAgentIntent: {
           method: null,
-          nextStepKind: "unsupported",
-          reason: unsupportedReason(connectorModality),
-          status: "unsupported",
+          nextStepKind: "capture_static_secret",
+          reason: unsupportedReason(setupModality),
+          status: "proof_gated",
         },
         proofGate: "static_secret_live_proof_missing",
         runbookPath: STATIC_SECRET_RUNBOOK_PATH,
+        setupModality,
         supportState: "proof_gated",
+      };
+    }
+    if (setupModality === "provider_authorization") {
+      const deploymentBlocked = deploymentReadiness.state === "needs_config";
+      return {
+        catalogDisposition: deploymentBlocked ? "provider_auth_deployment_blocked" : "provider_auth_proof_gated",
+        connectorKey,
+        connectorModality,
+        deploymentReadiness,
+        displayName,
+        nextStepKind: deploymentBlocked ? "needs_deployment_config" : "manual_runbook",
+        ownerAgentIntent: {
+          method: null,
+          nextStepKind: deploymentBlocked ? "needs_deployment_config" : "manual_runbook",
+          reason: deploymentBlocked
+            ? deploymentReadiness.guidance ?? unsupportedReason(setupModality)
+            : unsupportedReason(setupModality),
+          status: deploymentBlocked ? "needs_deployment_config" : "proof_gated",
+        },
+        proofGate: deploymentBlocked ? "provider_app_deployment_config_missing" : "provider_authorization_lifecycle_missing",
+        runbookPath: PROVIDER_AUTH_RUNBOOK_PATH,
+        setupModality,
+        supportState: deploymentBlocked ? "needs_deployment_config" : "proof_gated",
       };
     }
     return {
       catalogDisposition: "api_network_unsupported",
       connectorKey,
       connectorModality,
+      deploymentReadiness,
       displayName,
       nextStepKind: "unsupported",
       ownerAgentIntent: {
@@ -293,6 +477,7 @@ export function buildConnectionSetupPlan(args: {
       },
       proofGate: null,
       runbookPath: null,
+      setupModality,
       supportState: "unsupported",
     };
   }
@@ -301,6 +486,7 @@ export function buildConnectionSetupPlan(args: {
     catalogDisposition: "unknown_unsupported",
     connectorKey,
     connectorModality,
+    deploymentReadiness,
     displayName,
     nextStepKind: "unsupported",
     ownerAgentIntent: {
@@ -311,6 +497,7 @@ export function buildConnectionSetupPlan(args: {
     },
     proofGate: null,
     runbookPath: null,
+    setupModality,
     supportState: "unsupported",
   };
 }

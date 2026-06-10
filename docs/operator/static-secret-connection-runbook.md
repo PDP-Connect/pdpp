@@ -3,17 +3,17 @@
 Status: reference-experimental operator surface. Not PDPP Core or Collection
 Profile protocol.
 
-This is the single-page, owner-run runbook for creating a **first**
-static-secret connection (Gmail or GitHub) on your own reference instance, and
-for producing the one piece of evidence the reference cannot fabricate without a
-human: proof that a real provider secret (a Gmail app password or a GitHub
-personal access token) drives a live API ingest that flips a `draft` connection
-to `active`.
+This is the owner-run proof/debug runbook for creating a **first** static-secret
+connection (Gmail or GitHub) on your own reference instance. The normal happy
+path is the console form at `/dashboard/connect/static-secret/:connectorId`,
+which performs the same draft → capture → first-sync sequence from an owner
+session. This runbook remains the operator reference for the underlying route
+sequence and for producing live proof that a real provider secret (a Gmail app
+password or a GitHub personal access token) drives a live API ingest that flips
+a `draft` connection to `active`.
 
-It documents the owner-session sequence the add-connection picker points at, and
-it doubles as the live-proof packet that gates the deferred tasks in
-`openspec/changes/add-static-secret-owner-session-connect-path/tasks.md` (D.1 the
-live end-to-end proof, D.2 the `api_network`/catalog descriptor flip).
+It documents the owner-session sequence the add-connection picker automates, and
+it doubles as the live-proof packet for provider-backed verification evidence.
 
 ## What already works without a human
 
@@ -30,9 +30,7 @@ What the harness cannot prove is that a **real, live provider secret** authorize
 a **real API session** that ingests records. That step needs a real Gmail app
 password or GitHub token against live IMAP/API — exactly the step the design
 keeps owner-mediated. Faking it (a mock that asserts the happy path without a
-real provider session) would violate the design's "no faked success" bar
-(archived design Decision 6). This runbook is therefore the only honest way to
-close the gate.
+real provider session) would violate the design's "no faked success" bar.
 
 ## Prerequisites
 
@@ -150,17 +148,15 @@ committed):
   attempt.
 - **Logs are clean.** Grep the run logs for the secret value; it must not appear.
 
-## What result justifies flipping `api_network` / the catalog descriptor (D.2)
+## What result justifies claiming live provider proof
 
-The console add-connection picker currently surfaces Gmail/GitHub under
-"Static-secret sources" — a real owner-session creation path, runbook-pointed,
-**not** one-click and **not** flipped to "supported", because the live proof
-above has not landed. The owner-agent `api_network` intent branch likewise stays
-`unsupported` (pinned by `owner-connection-intent.test.js`).
+The console add-connection picker surfaces Gmail/GitHub under "Static-secret
+sources" and links to the owner-session form. Owner-agent setup returns a
+non-secret `capture_static_secret` next step with that dashboard path. Neither
+surface returns provider credentials or marks a connection active before ingest.
 
-Flip both — the `api_network` intent branch from `unsupported` and the console
-catalog descriptor from `static_secret_connect` to a supported one-click
-disposition — **only** when, in the same reviewable unit:
+Claim live provider proof for a connector **only** when, in the same reviewable
+unit:
 
 1. The D.1 artifact above is recorded for **both** Gmail and GitHub (a live
    `draft → capture → first ingest → active` round trip with `records_accepted >
@@ -168,13 +164,13 @@ disposition — **only** when, in the same reviewable unit:
 2. The no-secret-leak checks all pass and are noted, and
 3. Two accounts for one connector produce two independent active connections.
 
-Until that artifact exists, the honest console disposition is "real path, live
-proof pending" — which is exactly what this runbook documents.
+Until that artifact exists, the honest status is "real owner-session path,
+active only after ingest proof" — which is exactly what this runbook documents.
 
 ## Related
 
 - `openspec/changes/add-static-secret-owner-session-connect-path/{proposal,design,tasks}.md`
-  — the draft-connect-path change (tasks 1–7 done; D.1/D.2 are this runbook's gate).
+  — the draft-connect-path change that introduced the static-secret lifecycle.
 - `reference-implementation/server/routes/ref-static-secret-draft-connection.ts`
   — the owner-session draft-create route (Step 1).
 - `reference-implementation/server/routes/ref-static-secret-credentials.ts`

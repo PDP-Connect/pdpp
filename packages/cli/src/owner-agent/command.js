@@ -26,6 +26,7 @@ import { ownerSessionHeaders } from '../ref/fetch.js';
 
 import { resolveCredentialFile, writeOwnerAgentCredential, buildCredentialRecord } from './credential-store.js';
 import { discoverOwnerAgentControl, formatOwnerAgentControl } from './control.js';
+import { requestConnectionSetupPlan, formatConnectionSetupPlan } from './setup.js';
 import { discoverOwnerAgentProfile, normalizeEntrypointUrl } from './discovery.js';
 import { initiateDeviceAuthorization, pollForOwnerAgentToken } from './device-flow.js';
 import { OwnerAgentError } from './errors.js';
@@ -35,6 +36,7 @@ const USAGE = `Trusted owner-agent onboarding (owner-level local automation):
   pdpp owner-agent onboard <entrypoint-url> [--credential-file <path>] [--client-id <id>] [--client-name <name>]
   pdpp owner-agent status  [--credential-file <path>] [--entrypoint <url>]
   pdpp owner-agent control [--credential-file <path>] [--entrypoint <url>]
+  pdpp owner-agent setup   <connector-id> [--display-name <name>] [--credential-file <path>] [--entrypoint <url>]
   pdpp owner-agent revoke  [--credential-file <path>] [--entrypoint <url>] [--cache-root <dir>] [--owner-session <cookie>]
 
 Notes:
@@ -43,6 +45,10 @@ Notes:
   written to a local file with 0600 permissions and is never printed.
   "control" lists non-secret control capabilities and configured connections
   (connection_id, connector, label/label-needed); it never prints the bearer.
+  "setup" requests the same non-secret connection setup plan and next-step
+  contract the console and owner-agent REST surface, from the shared server
+  planner (POST /v1/owner/connections/intents); it never prints the bearer and
+  never returns provider secrets.
   Revocation uses the owner-session-gated dashboard/RFC 7592 path; run
   "pdpp ref login <authorization-server>" first if no owner session is cached.
   Daisy's first supported target: ~/applications/daisy/.pi/agent/pdpp-owner-agent.json`;
@@ -66,6 +72,9 @@ export async function runOwnerAgent(argv, io = {}, deps = {}) {
     }
     if (subcommand === 'control') {
       return await runControl(rest, { out }, deps);
+    }
+    if (subcommand === 'setup') {
+      return await runSetup(rest, { out }, deps);
     }
     if (subcommand === 'revoke') {
       return await runRevoke(rest, { out }, deps);
@@ -193,6 +202,23 @@ async function runControl(argv, { out }, deps) {
   return 0;
 }
 
+async function runSetup(argv, { out }, deps) {
+  const { record, flags, positionals } = await loadRecord(argv, deps);
+  const connectorId = positionals[0];
+  if (typeof connectorId !== 'string' || !connectorId.trim()) {
+    throw new OwnerAgentError(
+      'invalid_request',
+      'Usage: pdpp owner-agent setup <connector-id> [--display-name <name>] [--credential-file <path>] [--entrypoint <url>]',
+      64
+    );
+  }
+  const displayName = typeof flags['display-name'] === 'string' ? flags['display-name'] : null;
+  const fetchFn = deps.fetch ?? globalThis.fetch;
+  const plan = await requestConnectionSetupPlan({ fetchFn, record, connectorId, displayName });
+  out.write(formatConnectionSetupPlan(plan));
+  return 0;
+}
+
 async function runRevoke(argv, { out }, deps) {
   const { record, targetPath, flags } = await loadRecord(argv, deps);
   const fetchFn = deps.fetch ?? globalThis.fetch;
@@ -211,7 +237,7 @@ async function runRevoke(argv, { out }, deps) {
 }
 
 async function loadRecord(argv, deps) {
-  const { flags } = parseArgs(argv);
+  const { flags, positionals } = parseArgs(argv);
   const credentialFile = typeof flags['credential-file'] === 'string' ? flags['credential-file'] : undefined;
   const entrypoint = typeof flags.entrypoint === 'string' ? normalizeEntrypointUrl(flags.entrypoint) : null;
   const targetPath = resolveCredentialFile({
@@ -220,7 +246,7 @@ async function loadRecord(argv, deps) {
     home: deps.home,
   });
   const record = await readCredentialRecord(targetPath);
-  return { record, targetPath, flags };
+  return { record, targetPath, flags, positionals };
 }
 
 export { USAGE as OWNER_AGENT_USAGE };

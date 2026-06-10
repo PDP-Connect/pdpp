@@ -14,12 +14,11 @@
 // `/mcp` owner-bearer rejection (`requireClientOrMcpPackage`) is untouched.
 //
 // Honesty rule (full-context-refresh "Treat gaps as first-class outputs"): the
-// route classifies the connector by its manifest `runtime_requirements.bindings`
-// and only returns a real owner-mediated next step (`enroll_local_collector`)
-// for connectors the reference is proven to enroll and run locally. Browser-bound
-// connectors (Amazon, chase, chatgpt) and API/network-only connectors (github,
-// gmail) return a typed `unsupported` whose reason names the exact missing
-// primitive — never a faked success that would assert an unproven flow.
+// route classifies the connector through the shared setup planner and returns
+// the planner's typed support state, proof gate, deployment readiness, and next
+// owner step. It only mints enrollment material for supported paths. Proof-gated
+// and deployment-blocked paths return non-secret next steps, never faked active
+// connections.
 //
 // Spec: openspec/changes/add-owner-agent-control-surface/specs/
 //       reference-owner-agent-control-surface/spec.md
@@ -339,6 +338,11 @@ export function mountOwnerConnectionIntent(app: AppLike, ctx: MountOwnerConnecti
             connector_key: connectorKey,
             connector_modality: modality,
             connection_active: false,
+            deployment_readiness: plan.deploymentReadiness,
+            proof_gate: plan.proofGate,
+            runbook_path: plan.runbookPath,
+            setup_modality: plan.setupModality,
+            support_state: plan.supportState,
             next_step: {
               kind: "enroll_local_collector",
               reason:
@@ -352,27 +356,41 @@ export function mountOwnerConnectionIntent(app: AppLike, ctx: MountOwnerConnecti
           return;
         }
 
-        // Browser-bound, API/network-only, and unknown connectors are typed
-        // `unsupported` with a reason that names the exact missing primitive.
+        // Proof-gated, deployment-blocked, and unsupported connectors still
+        // return the same setup-plan projection. They do not mint codes, return
+        // secrets, or create connection rows.
         const reason = plan.ownerAgentIntent.reason;
+        const nextStepKind = plan.ownerAgentIntent.nextStepKind;
         await emitConnectionIntentAudit(ctx, req, res, {
           connectorKey,
           connectorModality: modality,
           displayNameSupplied,
-          nextStepKind: "unsupported",
+          nextStepKind,
           outcome: "succeeded",
           ownerSubjectId,
         });
+        const nextStep: Record<string, unknown> = {
+          kind: nextStepKind,
+          reason,
+        };
+        if (nextStepKind === "capture_static_secret") {
+          nextStep.capture_endpoint = `/dashboard/connect/static-secret/${encodeURIComponent(connectorKey)}`;
+        }
+        if (plan.runbookPath) {
+          nextStep.runbook_path = plan.runbookPath;
+        }
         res.status(201).json({
           object: "owner_connection_intent",
           connector_id: connectorKey,
           connector_key: connectorKey,
           connector_modality: modality,
           connection_active: false,
-          next_step: {
-            kind: "unsupported",
-            reason,
-          },
+          deployment_readiness: plan.deploymentReadiness,
+          proof_gate: plan.proofGate,
+          runbook_path: plan.runbookPath,
+          setup_modality: plan.setupModality,
+          support_state: plan.supportState,
+          next_step: nextStep,
         });
       } catch (err) {
         await emitConnectionIntentAudit(ctx, req, res, {

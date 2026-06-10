@@ -6,6 +6,7 @@ import {
   STATIC_SECRET_RUNBOOK_PATH,
   buildConnectionSetupPlan,
   classifyConnectorIntentModality,
+  classifyConnectorSetupModality,
 } from '../server/connection-setup-plan.ts';
 
 function manifest(connectorId, bindings) {
@@ -22,7 +23,9 @@ test('setup planner supports proven local collectors without creating active con
     manifest: manifest('codex', { filesystem: { required: true } }),
   });
   assert.equal(plan.connectorModality, 'local_collector');
+  assert.equal(plan.setupModality, 'local_collector');
   assert.equal(plan.supportState, 'supported');
+  assert.equal(plan.deploymentReadiness.state, 'not_applicable');
   assert.equal(plan.catalogDisposition, 'local_collector_enroll');
   assert.equal(plan.nextStepKind, 'enroll_local_collector');
   assert.equal(plan.ownerAgentIntent.status, 'supported');
@@ -49,7 +52,8 @@ test('setup planner proof-gates filesystem connectors outside the proven enrollm
   assert.equal(plan.connectorModality, 'local_collector');
   assert.equal(plan.supportState, 'proof_gated');
   assert.equal(plan.catalogDisposition, 'local_collector_unproven');
-  assert.equal(plan.ownerAgentIntent.status, 'unsupported');
+  assert.equal(plan.ownerAgentIntent.status, 'proof_gated');
+  assert.equal(plan.ownerAgentIntent.nextStepKind, 'manual_runbook');
   assert.equal(plan.proofGate, 'local_collector_connector_proof_missing');
   assert.equal(plan.enrollmentKey, undefined);
 });
@@ -60,10 +64,12 @@ test('setup planner keeps browser-bound connectors proof-gated before live proof
     manifest: manifest('amazon', { browser: { required: true }, network: { required: true } }),
   });
   assert.equal(amazon.connectorModality, 'browser_bound');
+  assert.equal(amazon.setupModality, 'browser_bound');
   assert.equal(amazon.supportState, 'proof_gated');
   assert.equal(amazon.catalogDisposition, 'browser_collector_manual');
   assert.equal(amazon.nextStepKind, 'enroll_browser_collector');
-  assert.equal(amazon.ownerAgentIntent.status, 'unsupported');
+  assert.equal(amazon.ownerAgentIntent.status, 'proof_gated');
+  assert.equal(amazon.ownerAgentIntent.nextStepKind, 'manual_runbook');
   assert.equal(amazon.proofGate, 'browser_collector_live_proof_missing');
   assert.equal(amazon.runbookPath, BROWSER_BOUND_RUNBOOK_PATH);
 
@@ -81,10 +87,12 @@ test('setup planner keeps static-secret connectors proof-gated before live proof
     manifest: manifest('gmail', { network: { required: true } }),
   });
   assert.equal(plan.connectorModality, 'api_network');
+  assert.equal(plan.setupModality, 'static_secret');
   assert.equal(plan.supportState, 'proof_gated');
   assert.equal(plan.catalogDisposition, 'static_secret_connect');
-  assert.equal(plan.nextStepKind, 'manual_runbook');
-  assert.equal(plan.ownerAgentIntent.status, 'unsupported');
+  assert.equal(plan.nextStepKind, 'capture_static_secret');
+  assert.equal(plan.ownerAgentIntent.status, 'proof_gated');
+  assert.equal(plan.ownerAgentIntent.nextStepKind, 'capture_static_secret');
   assert.equal(plan.proofGate, 'static_secret_live_proof_missing');
   assert.equal(plan.runbookPath, STATIC_SECRET_RUNBOOK_PATH);
 });
@@ -95,10 +103,65 @@ test('setup planner distinguishes unsupported network connectors from static-sec
     manifest: manifest('notion', { network: { required: true } }),
   });
   assert.equal(plan.connectorModality, 'api_network');
+  assert.equal(plan.setupModality, 'unsupported');
   assert.equal(plan.supportState, 'unsupported');
   assert.equal(plan.catalogDisposition, 'api_network_unsupported');
   assert.equal(plan.proofGate, null);
   assert.equal(plan.runbookPath, null);
+});
+
+test('setup planner distinguishes provider app readiness from owner authorization', () => {
+  const providerManifest = {
+    ...manifest('fitness-oauth', { network: { required: true } }),
+    capabilities: {
+      auth: {
+        kind: 'oauth',
+        deployment_config: ['FITNESS_OAUTH_CLIENT_ID', 'FITNESS_OAUTH_CLIENT_SECRET'],
+      },
+    },
+  };
+  const blocked = buildConnectionSetupPlan({
+    connectorKey: 'fitness-oauth',
+    manifest: providerManifest,
+  });
+  assert.equal(blocked.connectorModality, 'api_network');
+  assert.equal(blocked.setupModality, 'provider_authorization');
+  assert.equal(blocked.supportState, 'needs_deployment_config');
+  assert.equal(blocked.catalogDisposition, 'provider_auth_deployment_blocked');
+  assert.equal(blocked.nextStepKind, 'needs_deployment_config');
+  assert.equal(blocked.proofGate, 'provider_app_deployment_config_missing');
+  assert.equal(blocked.deploymentReadiness.state, 'needs_config');
+  assert.deepEqual(
+    blocked.deploymentReadiness.blockers.map((item) => item.key),
+    ['FITNESS_OAUTH_CLIENT_ID', 'FITNESS_OAUTH_CLIENT_SECRET'],
+  );
+  assert.equal(blocked.deploymentReadiness.blockers[1].secret, true);
+  assert.match(blocked.ownerAgentIntent.reason, /provider application/i);
+
+  const readyButUnproven = buildConnectionSetupPlan({
+    connectorKey: 'fitness-oauth',
+    configuredProviderAuthConnectorKeys: ['fitness-oauth'],
+    manifest: providerManifest,
+  });
+  assert.equal(readyButUnproven.deploymentReadiness.state, 'ready');
+  assert.equal(readyButUnproven.supportState, 'proof_gated');
+  assert.equal(readyButUnproven.catalogDisposition, 'provider_auth_proof_gated');
+  assert.equal(readyButUnproven.nextStepKind, 'manual_runbook');
+  assert.equal(readyButUnproven.ownerAgentIntent.status, 'proof_gated');
+  assert.equal(readyButUnproven.ownerAgentIntent.nextStepKind, 'manual_runbook');
+  assert.equal(readyButUnproven.proofGate, 'provider_authorization_lifecycle_missing');
+});
+
+test('classifyConnectorSetupModality separates binding class from setup class', () => {
+  assert.equal(classifyConnectorSetupModality('gmail', manifest('gmail', { network: {} })), 'static_secret');
+  assert.equal(
+    classifyConnectorSetupModality('oauth-source', {
+      ...manifest('oauth-source', { network: {} }),
+      capabilities: { auth: { kind: 'oauth' } },
+    }),
+    'provider_authorization',
+  );
+  assert.equal(classifyConnectorSetupModality('notion', manifest('notion', { network: {} })), 'unsupported');
 });
 
 test('setup planner returns typed unknown for missing manifests', () => {

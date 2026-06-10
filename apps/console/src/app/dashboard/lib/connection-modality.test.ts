@@ -48,9 +48,10 @@ const STATIC_SECRET_RUNBOOK_DOC_HEADING_RE = /Static-Secret Connection Runbook/;
 const STATIC_SECRET_KIND_MAP_LITERAL_RE =
   /STATIC_SECRET_CREDENTIAL_KIND_BY_CONNECTOR[\s\S]*?Object\.freeze\(\{([\s\S]*?)\}\)/;
 const KIND_MAP_KEY_RE = /^\s*([A-Za-z0-9_]+)\s*:/;
-// The static-secret copy must name the live-proof gate so the console never
-// over-promises a working connection before a real provider secret has ingested.
-const STATIC_SECRET_LIVE_PROOF_GATE_RE = /proven end-to-end/;
+// The static-secret copy must tie proof to the end-to-end ingest result so the
+// console never over-promises a working connection before a real provider secret
+// has produced accepted records.
+const STATIC_SECRET_LIVE_PROOF_GATE_RE = /end-to-end result/;
 
 test("supported local-collector set is exactly claude_code and codex", () => {
   assert.deepEqual([...SUPPORTED_LOCAL_COLLECTOR_CONNECTORS], ["claude_code", "codex"]);
@@ -200,9 +201,9 @@ test("api/network unsupported examples exclude the static-secret connectors", ()
 //
 // Gmail/GitHub gained an owner-session static-secret draft-create path
 // (add-static-secret-owner-session-connect-path). The console must surface that
-// path honestly — a real creation route, runbook-pointed, live-proof-gated, never
-// deep-linked into the device-collector enrollment form (which they don't use)
-// and never claimed as one-click-supported before the live proof flips the catalog.
+// path honestly — a real owner-session form, runbook-pointed,
+// first-ingest-gated, never deep-linked into the device-collector enrollment
+// form (which they don't use) and never claimed active before ingest accepts.
 
 test("static-secret connector set is exactly gmail and github", () => {
   assert.deepEqual([...STATIC_SECRET_CONNECTORS], ["gmail", "github"]);

@@ -266,10 +266,10 @@ export const STATIC_SECRET_RUNBOOK_PATH = SHARED_STATIC_SECRET_RUNBOOK_PATH;
  * guidance with a live-proof caveat, not a flat "unsupported" notice.
  *
  * `ownerFacingReason` states plainly what the owner does (create a draft, paste a
- * provider secret from the owner session, run it) and what remains gated (the
- * console has no in-browser secret form yet, and the live end-to-end proof that
- * would flip the catalog descriptor has not landed). `runbookPath` points at the
- * committed runbook that walks the exact draft → capture → first-ingest steps.
+ * provider secret from the owner session, and start first sync) and what remains
+ * gated (the active connection appears only after first ingest accepts records).
+ * `runbookPath` points at the committed runbook that walks the exact draft →
+ * capture → first-ingest steps and the live proof packet.
  */
 export interface StaticSecretAddModality {
   /** Representative connector names so the owner recognizes the class. */
@@ -288,7 +288,7 @@ export const STATIC_SECRET_ADD_MODALITY: StaticSecretAddModality = {
   label: "Static-secret sources",
   examples: ["Gmail", "GitHub"],
   ownerFacingReason:
-    "create a draft connection, then paste the provider secret (a Gmail app password or GitHub token) from the owner session; the connection stays hidden until its first successful sync. There is no in-browser secret form yet, and the one-click flow stays gated until a real provider secret has been proven end-to-end",
+    "open the owner-session form, paste the provider secret (a Gmail app password or GitHub token), and start first sync; the connection stays hidden until ingest accepts records, and proof remains tied to that end-to-end result",
   runbookPath: STATIC_SECRET_RUNBOOK_PATH,
   secretKindByConnector: Object.freeze({
     gmail: "app password",

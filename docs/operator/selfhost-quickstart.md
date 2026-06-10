@@ -86,10 +86,20 @@ intentionally weak and bound to loopback only (`127.0.0.1:55432`). **Do not
 change `PDPP_POSTGRES_BIND_HOST` unless you also set
 `PDPP_POSTGRES_PASSWORD` to something non-default.**
 
-You can leave every other variable blank. Connector credentials
-(`GMAIL_APP_PASSWORD`, `GITHUB_PERSONAL_ACCESS_TOKEN`, etc.) are only required
-for the connectors you intend to run; see the comments in
-`.env.docker.example`.
+You can leave every other variable blank. Normal connection setup does **not**
+require connector-specific source credentials in `.env.docker`: you add a Gmail
+mailbox, GitHub account, or local-collector device through owner-mediated setup
+once the instance is up — see
+[`docs/operator/add-connection.md`](add-connection.md). The per-connector source
+variables (`GMAIL_APP_PASSWORD`, `GITHUB_PERSONAL_ACCESS_TOKEN`, etc.) in
+`.env.docker.example` are a fallback/dev escape hatch for Docker-managed
+connector runs, not the normal path; leave them blank unless you are
+deliberately driving that connector from this stack.
+
+One credential variable is instance-level, not per-connection:
+`PDPP_CREDENTIAL_ENCRYPTION_KEY` seals captured static-secret credentials at
+rest. Set it once if you intend to capture Gmail/GitHub credentials through the
+owner-session setup flow; it is not a per-mailbox or per-account variable.
 
 ### Optional: "no domain, no open ports" with Cloudflare Tunnel
 
@@ -322,15 +332,37 @@ visible at `/dashboard/event-subscriptions`.
 
 ---
 
-## Connector credentials today
+## Adding connections
 
-Connector credentials are set via environment variables in `.env.docker`
-(Lane A) or on the Pod's template env-var form (Lane B). There is no
-dashboard UI for adding credentials yet. The set of supported env vars is
-defined per connector in `.env.docker.example`.
+You add connections through owner-mediated setup, not by editing deployment
+environment variables. See
+[`docs/operator/add-connection.md`](add-connection.md) for the full flow; in
+short:
 
-A dashboard credential-management UI is a separate, deferred change; see
-[Deferred](#deferred).
+- **Console.** Open `/dashboard`, sign in as owner, and use **Add a connection**.
+  Local-collector sources (Claude Code, Codex) enroll in one step; other sources
+  show their honest next step (owner-run browser proof, owner-session
+  static-secret capture, or a not-yet-supported note) under **Other connectors**.
+- **Owner agent / REST.** A trusted owner agent calls
+  `POST /v1/owner/connections/intents` and receives the same setup plan and
+  next-step contract the console renders. The agent never receives provider
+  secrets, owner cookies, or grant-scoped MCP bearers.
+- **CLI.** After owner-agent onboarding, run
+  `pdpp owner-agent setup <connector-id> --entrypoint <instance-url>` to print
+  the same non-secret setup plan from a terminal.
+
+Connector-specific source credential variables in `.env.docker` (Lane A) or on
+the Pod's template env-var form (Lane B) are a **compatibility fallback and local
+development escape hatch** for Docker-managed connector runs — not the normal
+setup path. The instance-level `PDPP_CREDENTIAL_ENCRYPTION_KEY` is the exception:
+it is a deployment variable that seals owner-captured static-secret credentials
+at rest, set once for the instance rather than per connection.
+
+Static-secret sources use the owner-session form linked from **Add a
+connection**. The form creates a draft connection, captures the provider secret,
+and starts the first sync; the connection stays hidden until ingest accepts
+records. The static-secret runbook linked from [`add-connection.md`](add-connection.md)
+is now the proof/debug reference, not the normal happy path.
 
 ---
 
@@ -346,9 +378,9 @@ future reader does not re-derive that they are intentionally absent.
   platform and is the wrong target for a persistent service. Tracked in the
   design notes under
   [`design-notes/selfhost-runpod-onboarding-slvp-2026-05-27.md`](../../design-notes/selfhost-runpod-onboarding-slvp-2026-05-27.md).
-- **In-dashboard connector credential management UI.** A Plaid-Link-style
-  flow that captures, encrypts, and rotates connector credentials from the
-  dashboard. Its own OpenSpec change.
+- **Full connector credential management UI.** The static-secret add form
+  captures a first credential. Rotation, revoke, and per-connection credential
+  inspection remain future owner-console work.
 - **Custom-domain TLS at the PDPP layer.** Use Cloudflare CNAME or a Caddy /
   Traefik fronting container if you need a vanity domain on RunPod.
 - **Backup-restore dashboard UI.** Today, `pg_dump` for Postgres and a

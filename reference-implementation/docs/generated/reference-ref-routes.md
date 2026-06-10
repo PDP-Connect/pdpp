@@ -13,7 +13,7 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | **GET** | `/v1/owner/connector-templates` | `ownerListConnectorTemplates` | Owner-agent bearer listing of connector templates separated from configured connection instances. Embeds related connection summaries and template-level supported_actions for adding new connections as typed intents. |
 | **GET** | `/v1/owner/control` | `ownerControlCapabilities` | Owner-agent bearer control entrypoint: capability document naming supported, owner-mediated, and unsupported owner-agent control action families with links to supported routes. |
 | **PATCH** | `/v1/owner/connections/{connectionId}` | `ownerSetConnectionDisplayName` | Owner-agent bearer rename of the owner-meaningful `display_name` on a connection, addressed by `connection_id`. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. Shares the connector-instance store rename semantics with the cookie-authed `/_ref` PATCH; on success the returned row reports label_status owner_set. |
-| **POST** | `/v1/owner/connections/intents` | `ownerCreateConnectionIntent` | Owner-agent bearer: initiate a new connection as a typed, auditable, owner-mediated intent. Returns a typed `next_step` (`enroll_local_collector` for proven local-collector connectors; `unsupported` with a reason for browser-bound, API/network-only, and unknown connectors) and never marks a connection active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
+| **POST** | `/v1/owner/connections/intents` | `ownerCreateConnectionIntent` | Owner-agent bearer: initiate a new connection as a typed, auditable, owner-mediated intent. Returns the shared setup-plan projection (`setup_modality`, `support_state`, `deployment_readiness`, `proof_gate`, `runbook_path`) plus a typed `next_step`; it never marks a connection active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
 | **POST** | `/v1/owner/connections/{connectionId}/schedule/pause` | `ownerPauseConnectionSchedule` | Owner-agent bearer: pause one configured connection's schedule, addressed by `connection_id`, without deleting its config. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. Shares the controller `setScheduleEnabled` semantics with the cookie-authed `/_ref` pause route under a separate owner-bearer auth adapter. |
 | **POST** | `/v1/owner/connections/{connectionId}/schedule/resume` | `ownerResumeConnectionSchedule` | Owner-agent bearer: resume one paused configured connection's schedule, addressed by `connection_id`. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. Shares the controller `setScheduleEnabled` semantics with the cookie-authed `/_ref` resume route under a separate owner-bearer auth adapter. |
 | **POST** | `/v1/owner/connectors/{connectorId}/schedule/pause` | `ownerPauseConnectorSchedule` | Owner-agent bearer: pause a connector's schedule addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
@@ -53,6 +53,8 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | **POST** | `/_ref/connections/{connectorInstanceId}/schedule/resume` | `refResumeConnectionSchedule` | Resume one paused configured connection schedule. |
 | **DELETE** | `/_ref/connectors/{connectorId}/schedule` | `refDeleteConnectorSchedule` | Delete the connector schedule config. |
 | **DELETE** | `/_ref/connections/{connectorInstanceId}/schedule` | `refDeleteConnectionSchedule` | Delete the schedule config for one configured connection. |
+| **POST** | `/_ref/connections/{connectorInstanceId}/revoke` | `refRevokeConnection` | Owner-session: revoke one configured connection, addressed by `connection_id`. Flips the connection to status `revoked` so no future run/ingest lands; already-collected records, grants, spine evidence, device rows, and sibling connections are untouched (zero cascade). A double-revoke returns a typed `connector_instance_inactive` (400). Owner-session only (operator console); shares the same connector-instance store soft-flip primitive and audit event type as the owner-agent bearer `ownerRevokeConnection` route under a cookie auth adapter. |
+| **DELETE** | `/_ref/connections/{connectorInstanceId}` | `refDeleteConnection` | Owner-session: DESTRUCTIVELY delete one configured connection, addressed by `connection_id`. Erases exactly that connection's records, history, blobs, search indices, and attention, deletes its schedule, clears its device source-instance back-reference, and removes the connector_instances row — keyed strictly on one connection_id, never widening to connector_id (sibling connections untouched). A connection with an in-flight run is REFUSED (`connection_run_active` 409), and a default-account binding is REFUSED (`default_account_delete_unsupported` 409). A repeat/unknown/foreign-owner id returns a typed `connector_instance_not_found` (404). PRESERVES the audit spine (appending an owner_agent.connection.delete event), disclosure grants, and the device edge. Owner-session only (operator console); shares the same `deleteConnection` cascade and audit event type as the owner-agent bearer `ownerDeleteConnection` route under a cookie auth adapter. |
 | **POST** | `/_ref/runs/{runId}/interaction` | `refRunInteraction` | Owner-only control surface: answer the current pending interaction for an active controller-managed run. Reference-only; not part of the public PDPP API. |
 | **GET** | `/_ref/records/timeline` | `refRecordsTimeline` | Server-backed cross-connector recent-record feed for the Records > Timeline UI. |
 | **GET** | `/_ref/dataset/summary` | `refDatasetSummary` | Projection-backed dataset summary: record counts, retained-history bytes, timespan bounds, top connectors, and freshness metadata. |
@@ -231,7 +233,7 @@ Owner-agent bearer rename of the owner-meaningful `display_name` on a connection
 
 `POST /v1/owner/connections/intents`
 
-Owner-agent bearer: initiate a new connection as a typed, auditable, owner-mediated intent. Returns a typed `next_step` (`enroll_local_collector` for proven local-collector connectors; `unsupported` with a reason for browser-bound, API/network-only, and unknown connectors) and never marks a connection active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route.
+Owner-agent bearer: initiate a new connection as a typed, auditable, owner-mediated intent. Returns the shared setup-plan projection (`setup_modality`, `support_state`, `deployment_readiness`, `proof_gate`, `runbook_path`) plus a typed `next_step`; it never marks a connection active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route.
 
 ### Request body
 
@@ -964,6 +966,40 @@ Delete the schedule config for one configured connection.
 ### Responses
 
 - `204` — Deleted
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## refRevokeConnection
+
+`POST /_ref/connections/{connectorInstanceId}/revoke`
+
+Owner-session: revoke one configured connection, addressed by `connection_id`. Flips the connection to status `revoked` so no future run/ingest lands; already-collected records, grants, spine evidence, device rows, and sibling connections are untouched (zero cascade). A double-revoke returns a typed `connector_instance_inactive` (400). Owner-session only (operator console); shares the same connector-instance store soft-flip primitive and audit event type as the owner-agent bearer `ownerRevokeConnection` route under a cookie auth adapter.
+
+### Path parameters
+
+- `connectorInstanceId` — string
+
+### Responses
+
+- `200` — Revoked
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## refDeleteConnection
+
+`DELETE /_ref/connections/{connectorInstanceId}`
+
+Owner-session: DESTRUCTIVELY delete one configured connection, addressed by `connection_id`. Erases exactly that connection's records, history, blobs, search indices, and attention, deletes its schedule, clears its device source-instance back-reference, and removes the connector_instances row — keyed strictly on one connection_id, never widening to connector_id (sibling connections untouched). A connection with an in-flight run is REFUSED (`connection_run_active` 409), and a default-account binding is REFUSED (`default_account_delete_unsupported` 409). A repeat/unknown/foreign-owner id returns a typed `connector_instance_not_found` (404). PRESERVES the audit spine (appending an owner_agent.connection.delete event), disclosure grants, and the device edge. Owner-session only (operator console); shares the same `deleteConnection` cascade and audit event type as the owner-agent bearer `ownerDeleteConnection` route under a cookie auth adapter.
+
+### Path parameters
+
+- `connectorInstanceId` — string
+
+### Responses
+
+- `200` — Deleted
 - `400` — Invalid request
 - `404` — Not found
 - `409` — Conflict (e.g. run_already_active)

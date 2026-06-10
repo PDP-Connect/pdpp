@@ -18,6 +18,7 @@ import {
   buildConnectorCatalog,
   type CatalogManifestLike,
   catalogModalityFromManifest,
+  deploymentBlockedEntries,
   localCollectorEntries,
   localCollectorUnprovenEntries,
   staticSecretConnectEntries,
@@ -108,11 +109,15 @@ test("no browser-bound or API/network connector is one-click-creatable", async (
     }
     if (entry.modality === "api_network") {
       // A network-class connector is either flatly unsupported OR a static-secret
-      // connector with a draft-create path. Neither is one-click-creatable from
-      // the console (no enrollment deep-link).
+      // connector with a draft-create path OR a provider-authorization connector
+      // blocked/proof-gated by the shared planner. None is one-click-creatable
+      // from the console (no enrollment deep-link).
       assert.ok(
-        entry.disposition === "api_network_unsupported" || entry.disposition === "static_secret_connect",
-        `${entry.connectorKey} must be api_network_unsupported or static_secret_connect, got ${entry.disposition}`
+        entry.disposition === "api_network_unsupported" ||
+          entry.disposition === "static_secret_connect" ||
+          entry.disposition === "provider_auth_deployment_blocked" ||
+          entry.disposition === "provider_auth_proof_gated",
+        `${entry.connectorKey} must be a non-deeplink network disposition, got ${entry.disposition}`
       );
       assert.equal(entry.enrollmentKey, undefined);
     }
@@ -148,6 +153,36 @@ test("other network connectors stay flatly api_network_unsupported", async () =>
   }
 });
 
+test("provider-authorization deployment blockers are separate from unsupported network entries", () => {
+  const catalog = buildConnectorCatalog([
+    {
+      connector_id: "fitness_oauth",
+      display_name: "Fitness OAuth",
+      runtime_requirements: { bindings: { network: { required: true } } },
+      capabilities: {
+        auth: {
+          kind: "oauth",
+          deployment_config: ["FITNESS_OAUTH_CLIENT_ID", "FITNESS_OAUTH_CLIENT_SECRET"],
+        },
+      },
+    },
+  ]);
+  const [entry] = catalog;
+  assert.ok(entry, "synthetic provider authorization manifest should produce a catalog entry");
+  assert.equal(entry.connectorKey, "fitness_oauth");
+  assert.equal(entry.setupModality, "provider_authorization");
+  assert.equal(entry.supportState, "needs_deployment_config");
+  assert.equal(entry.disposition, "provider_auth_deployment_blocked");
+  assert.equal(entry.deploymentReadiness.state, "needs_config");
+  assert.deepEqual(
+    entry.deploymentReadiness.blockers.map((blocker) => blocker.key),
+    ["FITNESS_OAUTH_CLIENT_ID", "FITNESS_OAUTH_CLIENT_SECRET"]
+  );
+  assert.deepEqual(deploymentBlockedEntries(catalog), [entry]);
+  assert.deepEqual(unsupportedNetworkEntries(catalog), []);
+  assert.equal(entry.enrollmentKey, undefined);
+});
+
 test("claude-code manifest slug maps to the claude_code enrollment key", async () => {
   // The manifest slug is `claude-code` (hyphen); the proven enrollment path and
   // the form's COLLECTOR_RUN_CONNECTORS literal use `claude_code` (underscore).
@@ -176,6 +211,7 @@ test("the grouping helpers partition the catalog without overlap or loss", async
     browserCollectorEntries(catalog),
     browserBoundRunbookEntries(catalog),
     staticSecretConnectEntries(catalog),
+    deploymentBlockedEntries(catalog),
     unsupportedNetworkEntries(catalog),
   ];
   const total = groups.reduce((sum, g) => sum + g.length, 0);

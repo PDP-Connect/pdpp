@@ -315,10 +315,14 @@
                         "type": "string",
                         "enum": [
                           "dynamic",
-                          "pre_registered_public"
+                          "pre_registered_public",
+                          "client_id_metadata_document"
                         ]
                       },
                       "minItems": 1
+                    },
+                    "client_id_metadata_document_supported": {
+                      "const": true
                     },
                     "pdpp_pre_registered_public_clients": {
                       "type": "array",
@@ -1701,39 +1705,27 @@
                       }
                     },
                     "client_uri": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "type": "string",
+                      "format": "uri"
                     },
                     "logo_uri": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "type": "string",
+                      "format": "uri"
                     },
                     "policy_uri": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "type": "string",
+                      "format": "uri"
                     },
                     "tos_uri": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "type": "string",
+                      "format": "uri"
                     }
                   },
                   "required": [
                     "client_id",
                     "client_id_issued_at",
                     "token_endpoint_auth_method",
-                    "client_name",
-                    "client_uri",
-                    "logo_uri",
-                    "policy_uri",
-                    "tos_uri"
+                    "client_name"
                   ]
                 }
               }

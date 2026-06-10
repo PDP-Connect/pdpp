@@ -2,9 +2,9 @@
 //
 // This is the owner-trusted surface for sealing a provider static secret
 // (Gmail app password, GitHub PAT) onto one existing connection. It is NOT an
-// owner-agent bearer route and it never returns the submitted secret. The
-// owner-agent intent branch remains `unsupported` until the committed
-// end-to-end proof lands.
+// owner-agent bearer route and it never returns the submitted secret. Owner-agent
+// intent may point at the owner-session capture page, but it never carries the
+// credential itself.
 
 import { expectedStaticSecretCredentialKind } from "../connection-setup-plan.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
@@ -300,7 +300,7 @@ export function mountRefStaticSecretCredentialCapture(app: AppLike, ctx: MountRe
             method: "POST",
             url: `/_ref/connections/${encodeURIComponent(namespace.connectorInstanceId)}/run`,
             reason:
-              "Run this connection from the owner session or scheduler. The owner-agent initiate_connection branch remains unsupported until live end-to-end proof lands.",
+              "Run this connection from the owner session or scheduler. The connection stays hidden until first ingest accepts records.",
           },
         });
       } catch (err) {

@@ -24,6 +24,7 @@ import {
   browserBoundRunbookEntries,
   browserCollectorEntries,
   type ConnectorCatalogEntry,
+  deploymentBlockedEntries,
   localCollectorEntries,
   localCollectorUnprovenEntries,
   staticSecretConnectEntries,
@@ -473,6 +474,7 @@ function AddConnectionGuidance({
   const browserManualEntries = browserCollectorEntries(catalog);
   const browserRunbook = browserBoundRunbookEntries(catalog);
   const staticSecretEntries = staticSecretConnectEntries(catalog);
+  const deploymentBlocked = deploymentBlockedEntries(catalog);
   const networkUnsupported = unsupportedNetworkEntries(catalog);
   const browserCopy = unsupportedModalityCopy("browser_bound");
   const networkCopy = unsupportedModalityCopy("api_network");
@@ -481,6 +483,7 @@ function AddConnectionGuidance({
     browserRunbook.length +
     localUnproven.length +
     staticSecretEntries.length +
+    deploymentBlocked.length +
     networkUnsupported.length;
   return (
     <Callout
@@ -610,13 +613,18 @@ function AddConnectionGuidance({
                   <p className="pdpp-caption mb-1.5 font-medium text-foreground">Static-secret — owner-session setup</p>
                   <ul className="flex flex-wrap gap-2">
                     {staticSecretEntries.map((entry) => (
-                      <li
-                        className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/20 px-2.5 py-1"
-                        data-testid={`catalog-static-secret-${entry.connectorKey}`}
-                        key={entry.connectorKey}
-                      >
-                        <span className="pdpp-caption font-medium text-foreground">{entry.displayName}</span>
-                        <code className="pdpp-eyebrow font-mono text-muted-foreground">{entry.connectorKey}</code>
+                      <li key={entry.connectorKey}>
+                        <Link
+                          className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/20 px-2.5 py-1 text-foreground transition-colors hover:bg-muted/40"
+                          data-testid={`catalog-static-secret-${entry.connectorKey}`}
+                          href={`/dashboard/connect/static-secret/${encodeURIComponent(entry.connectorKey)}`}
+                        >
+                          <span className="pdpp-caption font-medium">{entry.displayName}</span>
+                          <code className="pdpp-eyebrow font-mono text-muted-foreground">{entry.connectorKey}</code>
+                          <span aria-hidden className="text-muted-foreground">
+                            →
+                          </span>
+                        </Link>
                       </li>
                     ))}
                   </ul>
@@ -626,6 +634,33 @@ function AddConnectionGuidance({
                       {STATIC_SECRET_ADD_MODALITY.runbookPath}
                     </code>
                     {"."}
+                  </p>
+                </div>
+              ) : null}
+
+              {deploymentBlocked.length > 0 ? (
+                <div>
+                  <p className="pdpp-caption mb-1.5 font-medium text-foreground">Deployment setup needed</p>
+                  <ul className="space-y-1.5">
+                    {deploymentBlocked.map((entry) => (
+                      <li
+                        className="rounded-md border border-border/60 bg-muted/20 px-2.5 py-1"
+                        data-testid={`catalog-deployment-blocked-${entry.connectorKey}`}
+                        key={entry.connectorKey}
+                      >
+                        <span className="pdpp-caption font-medium text-foreground">{entry.displayName}</span>{" "}
+                        <code className="pdpp-eyebrow font-mono text-muted-foreground">{entry.connectorKey}</code>
+                        <span className="pdpp-caption ml-1 text-muted-foreground">
+                          needs{" "}
+                          {entry.deploymentReadiness.blockers.map((blocker) => blocker.label || blocker.key).join(", ")}
+                          .
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="pdpp-caption mt-1.5 text-muted-foreground">
+                    These are instance-level provider app settings, not per-account source credentials. After deployment
+                    readiness is fixed, the owner authorizes each account through setup.
                   </p>
                 </div>
               ) : null}

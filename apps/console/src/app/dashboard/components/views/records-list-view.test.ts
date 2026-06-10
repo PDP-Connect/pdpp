@@ -274,6 +274,7 @@ const ADD_CONNECTION_RENDERS_LOCAL_CATALOG = /localCollectorEntries\(catalog\)/;
 const ADD_CONNECTION_RENDERS_BROWSER_MANUAL_CATALOG = /browserCollectorEntries\(catalog\)/;
 const ADD_CONNECTION_RENDERS_BROWSER_RUNBOOK_CATALOG = /browserBoundRunbookEntries\(catalog\)/;
 const ADD_CONNECTION_RENDERS_LOCAL_UNPROVEN_CATALOG = /localCollectorUnprovenEntries\(catalog\)/;
+const ADD_CONNECTION_RENDERS_DEPLOYMENT_BLOCKED_CATALOG = /deploymentBlockedEntries\(catalog\)/;
 const ADD_CONNECTION_RENDERS_NETWORK_CATALOG = /unsupportedNetworkEntries\(catalog\)/;
 // Supported entries (and only those) deep-link into the enrollment form
 // pre-selected, using the entry's enrollment key.
@@ -282,6 +283,9 @@ const ADD_CONNECTION_DEEP_LINKS_PRESELECTED =
 const ADD_CONNECTION_BROWSER_MANUAL_SECTION = /Manual browser-collector setup/;
 const ADD_CONNECTION_BROWSER_MANUAL_NOT_ONE_CLICK = /not a one-click\s+browser flow/;
 const ADD_CONNECTION_NAMES_NOT_SUPPORTED_YET = /Not supported from the console yet/;
+const ADD_CONNECTION_NAMES_DEPLOYMENT_SETUP = /Deployment setup needed/;
+const ADD_CONNECTION_SEPARATES_DEPLOYMENT_BLOCKERS =
+  /instance-level provider app settings[\s\S]*?not per-account source credentials/;
 // The browser-bound owner-run group must surface the documented runbook path
 // inline, so the owner is pointed at the real manual flow instead of a dead end.
 const ADD_CONNECTION_SURFACES_RUNBOOK_PATH =
@@ -333,12 +337,15 @@ test("add-connection picker sources its taxonomy + per-connector list from the s
   assert.match(src, ADD_CONNECTION_RENDERS_BROWSER_MANUAL_CATALOG);
   assert.match(src, ADD_CONNECTION_RENDERS_BROWSER_RUNBOOK_CATALOG);
   assert.match(src, ADD_CONNECTION_RENDERS_LOCAL_UNPROVEN_CATALOG);
+  assert.match(src, ADD_CONNECTION_RENDERS_DEPLOYMENT_BLOCKED_CATALOG);
   assert.match(src, ADD_CONNECTION_RENDERS_NETWORK_CATALOG);
   assert.match(src, ADD_CONNECTION_BROWSER_MANUAL_SECTION);
   assert.match(src, ADD_CONNECTION_BROWSER_MANUAL_NOT_ONE_CLICK);
   // Unsupported modalities are named honestly, not hidden behind a generic
   // "not supported" line.
   assert.match(src, ADD_CONNECTION_NAMES_NOT_SUPPORTED_YET);
+  assert.match(src, ADD_CONNECTION_NAMES_DEPLOYMENT_SETUP);
+  assert.match(src, ADD_CONNECTION_SEPARATES_DEPLOYMENT_BLOCKERS);
   // Where a documented owner-run path exists today (browser-bound), the group
   // surfaces it instead of dead-ending the owner.
   assert.match(src, ADD_CONNECTION_SURFACES_RUNBOOK_PATH);
@@ -357,7 +364,7 @@ test("only the two creatable catalog groups render an enrollment deep-link (no p
 //
 // Owner feedback: the picker felt "too Amazon-specific, too verbose, confusing".
 // The fix is presentation, not honesty: the one-click local-collector group
-// leads and stays open, while the four secondary groups (manual
+// leads and stays open, while the secondary groups (manual
 // browser-collector / Amazon, browser-bound runbook, local-collector unproven,
 // api_network unsupported) collapse into a native <details> disclosure that
 // names its count. Collapsing is NOT omission — every group still renders inside
@@ -367,7 +374,7 @@ test("only the two creatable catalog groups render an enrollment deep-link (no p
 const ADD_OTHER_DISCLOSURE = /<details[\s\S]*?data-testid="add-connection-other"/;
 const ADD_OTHER_SUMMARY = /<summary[\s\S]*?data-testid="add-connection-other-toggle"/;
 const ADD_OTHER_SUMMARY_NAMES_COUNT = /Other connectors[\s\S]*?\(\{otherCount\}\)/;
-// The four secondary groups must be RENDERED INSIDE the disclosure, i.e. their
+// The secondary groups must be RENDERED INSIDE the disclosure, i.e. their
 // per-group entry markup follows the <details> open tag — never hoisted back out
 // as always-open sections. Anchoring each per-group testid to the text following
 // `add-connection-other` proves the group's rendered rows live within the
@@ -375,7 +382,7 @@ const ADD_OTHER_SUMMARY_NAMES_COUNT = /Other connectors[\s\S]*?\(\{otherCount\}\
 // top of the function; what matters for "not omission" is that each group's rows
 // still render, and that they render inside the disclosure.)
 const ADD_OTHER_CONTAINS_SECONDARY_GROUPS =
-  /data-testid="add-connection-other"[\s\S]*?catalog-browser-manual-[\s\S]*?catalog-browser-runbook-[\s\S]*?catalog-local-unproven-[\s\S]*?catalog-network-/;
+  /data-testid="add-connection-other"[\s\S]*?catalog-browser-manual-[\s\S]*?catalog-browser-runbook-[\s\S]*?catalog-local-unproven-[\s\S]*?catalog-deployment-blocked-[\s\S]*?catalog-network-/;
 // The one-click local-collector group's rendered rows must appear BEFORE the
 // disclosure — it is the lead, not a peer buried inside "Other connectors".
 const ADD_LOCAL_LEADS_BEFORE_DISCLOSURE = /catalog-local-\$\{[\s\S]*?data-testid="add-connection-other"/;
@@ -396,7 +403,7 @@ test("the one-click local-collector group leads, above the 'Other connectors' di
   assert.match(src, ADD_LOCAL_LEADS_BEFORE_DISCLOSURE);
 });
 
-test("collapsing is not omission: all four secondary groups still render inside the disclosure", async () => {
+test("collapsing is not omission: secondary setup groups still render inside the disclosure", async () => {
   const src = await readFile(VIEW_FILE, "utf8");
   // Every secondary partition helper appears after the disclosure open tag, in
   // order — so none of the honest groups was dropped when they moved behind the
@@ -408,14 +415,16 @@ test("collapsing is not omission: all four secondary groups still render inside 
 //
 // Gmail/GitHub gained an owner-session static-secret draft-create path. The
 // picker must surface them as a real creation path inside the "Other connectors"
-// disclosure — named, runbook-pointed, live-proof-caveated — NOT as a dead
-// "appears only after first ingest" notice and NOT deep-linked into the
-// device-collector enrollment form (which they don't use). The group and its copy
-// come from the shared catalog/modality modules (single source of truth with the
-// backend's static-secret connector set).
+// disclosure — named, linked to the owner-session capture form, runbook-pointed,
+// live-proof-caveated — NOT as a dead "appears only after first ingest" notice
+// and NOT deep-linked into the device-collector enrollment form (which they
+// don't use). The group and its copy come from the shared catalog/modality
+// modules (single source of truth with the backend's static-secret connector set).
 const ADD_STATIC_SECRET_GROUP = /staticSecretConnectEntries\(catalog\)/;
 const ADD_STATIC_SECRET_SECTION = /Static-secret — owner-session setup/;
 const ADD_STATIC_SECRET_USES_SHARED_COPY = /STATIC_SECRET_ADD_MODALITY\.ownerFacingReason/;
+const ADD_STATIC_SECRET_USES_OWNER_SESSION_LINK =
+  /href=\{`\/dashboard\/connect\/static-secret\/\$\{encodeURIComponent\(entry\.connectorKey\)\}`\}/;
 const ADD_STATIC_SECRET_SURFACES_RUNBOOK =
   /data-testid="runbook-path-static_secret"[\s\S]*?STATIC_SECRET_ADD_MODALITY\.runbookPath/;
 const ADD_STATIC_SECRET_NO_DEEP_LINK = /catalog-static-secret-[\s\S]{0,400}deviceExportersHref/;
@@ -426,14 +435,16 @@ test("static-secret connectors are surfaced as a real owner-session path, not an
   assert.match(src, ADD_STATIC_SECRET_SECTION);
   // Copy + runbook come from the shared modality descriptor, not re-hardcoded.
   assert.match(src, ADD_STATIC_SECRET_USES_SHARED_COPY);
+  assert.match(src, ADD_STATIC_SECRET_USES_OWNER_SESSION_LINK);
   assert.match(src, ADD_STATIC_SECRET_SURFACES_RUNBOOK);
 });
 
 test("static-secret group never deep-links into the device-collector enrollment form", async () => {
   const src = await readFile(VIEW_FILE, "utf8");
-  // The static-secret rows must be display-only (no `?connector=` enrollment
-  // href near them) — Gmail/GitHub are not device-collectors. The two-deep-link
-  // invariant above already pins the global count; this guards the specific group.
+  // The static-secret rows must use their owner-session form, not a
+  // `?connector=` enrollment href near them — Gmail/GitHub are not
+  // device-collectors. The two-deep-link invariant above already pins the global
+  // count; this guards the specific group.
   assert.doesNotMatch(src, ADD_STATIC_SECRET_NO_DEEP_LINK);
 });
 

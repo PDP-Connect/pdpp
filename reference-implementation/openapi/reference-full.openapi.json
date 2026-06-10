@@ -327,10 +327,14 @@
                         "type": "string",
                         "enum": [
                           "dynamic",
-                          "pre_registered_public"
+                          "pre_registered_public",
+                          "client_id_metadata_document"
                         ]
                       },
                       "minItems": 1
+                    },
+                    "client_id_metadata_document_supported": {
+                      "const": true
                     },
                     "pdpp_pre_registered_public_clients": {
                       "type": "array",
@@ -1713,39 +1717,27 @@
                       }
                     },
                     "client_uri": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "type": "string",
+                      "format": "uri"
                     },
                     "logo_uri": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "type": "string",
+                      "format": "uri"
                     },
                     "policy_uri": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "type": "string",
+                      "format": "uri"
                     },
                     "tos_uri": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "type": "string",
+                      "format": "uri"
                     }
                   },
                   "required": [
                     "client_id",
                     "client_id_issued_at",
                     "token_endpoint_auth_method",
-                    "client_name",
-                    "client_uri",
-                    "logo_uri",
-                    "policy_uri",
-                    "tos_uri"
+                    "client_name"
                   ]
                 }
               }
@@ -16119,7 +16111,7 @@
           "connections",
           "owner-agent"
         ],
-        "summary": "Owner-agent bearer: initiate a new connection as a typed, auditable, owner-mediated intent. Returns a typed `next_step` (`enroll_local_collector` for proven local-collector connectors; `unsupported` with a reason for browser-bound, API/network-only, and unknown connectors) and never marks a connection active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route.",
+        "summary": "Owner-agent bearer: initiate a new connection as a typed, auditable, owner-mediated intent. Returns the shared setup-plan projection (`setup_modality`, `support_state`, `deployment_readiness`, `proof_gate`, `runbook_path`) plus a typed `next_step`; it never marks a connection active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route.",
         "parameters": [],
         "responses": {
           "201": {
@@ -16151,6 +16143,54 @@
                     "connection_active": {
                       "const": false
                     },
+                    "deployment_readiness": {
+                      "type": "object",
+                      "additionalProperties": true,
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "not_applicable",
+                            "ready",
+                            "needs_config"
+                          ]
+                        },
+                        "guidance": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "blockers": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": true,
+                            "properties": {
+                              "key": {
+                                "type": "string"
+                              },
+                              "label": {
+                                "type": "string"
+                              },
+                              "secret": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "key",
+                              "label",
+                              "secret"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "guidance",
+                        "blockers"
+                      ]
+                    },
                     "next_step": {
                       "type": "object",
                       "additionalProperties": true,
@@ -16158,12 +16198,12 @@
                         "kind": {
                           "type": "string",
                           "enum": [
-                            "open_url",
-                            "complete_browser_assistance",
-                            "upload_file",
                             "enroll_local_collector",
                             "enroll_browser_collector",
-                            "complete_credential_capture",
+                            "capture_static_secret",
+                            "open_provider_auth",
+                            "needs_deployment_config",
+                            "manual_runbook",
                             "unsupported"
                           ]
                         },
@@ -16173,7 +16213,10 @@
                             "null"
                           ]
                         },
-                        "url": {
+                        "authorization_url": {
+                          "type": "string"
+                        },
+                        "capture_endpoint": {
                           "type": "string"
                         },
                         "enrollment_code": {
@@ -16182,15 +16225,51 @@
                         "enroll_endpoint": {
                           "type": "string"
                         },
+                        "expires_at": {
+                          "type": "string"
+                        },
                         "local_binding_name": {
                           "type": "string"
                         },
-                        "expires_at": {
+                        "runbook_path": {
                           "type": "string"
                         }
                       },
                       "required": [
                         "kind"
+                      ]
+                    },
+                    "proof_gate": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "runbook_path": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "setup_modality": {
+                      "type": "string",
+                      "enum": [
+                        "local_collector",
+                        "browser_bound",
+                        "static_secret",
+                        "provider_authorization",
+                        "manual_or_upload",
+                        "unsupported",
+                        "unknown"
+                      ]
+                    },
+                    "support_state": {
+                      "type": "string",
+                      "enum": [
+                        "supported",
+                        "proof_gated",
+                        "unsupported",
+                        "needs_deployment_config"
                       ]
                     }
                   },
@@ -16200,7 +16279,12 @@
                     "connector_key",
                     "connector_modality",
                     "connection_active",
-                    "next_step"
+                    "deployment_readiness",
+                    "next_step",
+                    "proof_gate",
+                    "runbook_path",
+                    "setup_modality",
+                    "support_state"
                   ]
                 }
               }
@@ -21632,6 +21716,294 @@
                 "required": [
                   "display_name"
                 ]
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "refDeleteConnection",
+        "tags": [
+          "reference",
+          "connections"
+        ],
+        "summary": "Owner-session: DESTRUCTIVELY delete one configured connection, addressed by `connection_id`. Erases exactly that connection's records, history, blobs, search indices, and attention, deletes its schedule, clears its device source-instance back-reference, and removes the connector_instances row — keyed strictly on one connection_id, never widening to connector_id (sibling connections untouched). A connection with an in-flight run is REFUSED (`connection_run_active` 409), and a default-account binding is REFUSED (`default_account_delete_unsupported` 409). A repeat/unknown/foreign-owner id returns a typed `connector_instance_not_found` (404). PRESERVES the audit spine (appending an owner_agent.connection.delete event), disclosure grants, and the device edge. Owner-session only (operator console); shares the same `deleteConnection` cascade and audit event type as the owner-agent bearer `ownerDeleteConnection` route under a cookie auth adapter.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connectorInstanceId",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted"
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "available_connections": {
+                          "type": "array",
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "type": "string",
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ]
+                          }
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "available_connections": {
+                          "type": "array",
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "type": "string",
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ]
+                          }
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict (e.g. run_already_active)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "available_connections": {
+                          "type": "array",
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "type": "string",
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ]
+                          }
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
               }
             }
           }
@@ -30906,6 +31278,296 @@
         "responses": {
           "200": {
             "description": "Resumed"
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "available_connections": {
+                          "type": "array",
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "type": "string",
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ]
+                          }
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "available_connections": {
+                          "type": "array",
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "type": "string",
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ]
+                          }
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict (e.g. run_already_active)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        },
+                        "resource_metadata": {
+                          "type": "string"
+                        },
+                        "next_step": {
+                          "type": "string"
+                        },
+                        "available_connections": {
+                          "type": "array",
+                          "items": {
+                            "$id": "pdpp/common/ErrorAvailableConnection",
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "connection_id": {
+                                "type": "string"
+                              },
+                              "connector_id": {
+                                "type": "string"
+                              },
+                              "connector_key": {
+                                "type": "string"
+                              },
+                              "display_name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "label_status": {
+                                "type": "string",
+                                "enum": [
+                                  "owner_set",
+                                  "fallback"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "connection_id"
+                            ]
+                          }
+                        },
+                        "retry_with": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/_ref/connections/{connectorInstanceId}/revoke": {
+      "post": {
+        "operationId": "refRevokeConnection",
+        "tags": [
+          "reference",
+          "connections"
+        ],
+        "summary": "Owner-session: revoke one configured connection, addressed by `connection_id`. Flips the connection to status `revoked` so no future run/ingest lands; already-collected records, grants, spine evidence, device rows, and sibling connections are untouched (zero cascade). A double-revoke returns a typed `connector_instance_inactive` (400). Owner-session only (operator console); shares the same connector-instance store soft-flip primitive and audit event type as the owner-agent bearer `ownerRevokeConnection` route under a cookie auth adapter.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connectorInstanceId",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Revoked"
           },
           "400": {
             "description": "Invalid request",

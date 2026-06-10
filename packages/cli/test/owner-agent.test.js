@@ -636,6 +636,249 @@ test('revoke treats 404 as already absent', async () => {
   });
 });
 
+// ---- setup (connection setup plan parity) -----------------------------------
+
+// Builds a fetch that asserts the intent route is called with the owner bearer
+// as an Authorization header (never a cookie) and returns the supplied plan.
+// Captures the request so tests can assert the wire shape and secret boundary.
+function setupFetch({ status = 201, body, capture: cap } = {}) {
+  return makeFetch([
+    {
+      method: 'POST',
+      match: '/v1/owner/connections/intents',
+      handler: ({ opts }) => {
+        if (cap) {
+          cap.auth = opts.headers?.Authorization ?? null;
+          cap.cookie = opts.headers?.Cookie ?? null;
+          cap.body = opts.body ? JSON.parse(opts.body) : null;
+        }
+        return jsonResponse(status, body ?? {});
+      },
+    },
+  ]);
+}
+
+const SUPPORTED_LOCAL_PLAN = {
+  object: 'owner_connection_intent',
+  connector_id: 'claude-code',
+  connector_key: 'claude-code',
+  connector_modality: 'local_collector',
+  connection_active: false,
+  deployment_readiness: { state: 'not_applicable', guidance: null, blockers: [] },
+  proof_gate: null,
+  runbook_path: null,
+  setup_modality: 'local_collector',
+  support_state: 'supported',
+  next_step: {
+    kind: 'enroll_local_collector',
+    reason:
+      'Run the owner’s local collector for this connector and exchange the enrollment_code at enroll_endpoint.',
+    enrollment_code: 'lde_setup_code_value',
+    enroll_endpoint: 'https://ref.test/_ref/device-exporters/enroll',
+    local_binding_name: 'claude-code',
+    expires_at: '2026-06-09T00:15:00.000Z',
+  },
+};
+
+test('setup requests a supported local-collector plan with the bearer as a header', async () => {
+  await withTmpHome(async (home) => {
+    await seedCredential(home);
+    const captured = capture();
+    const cap = {};
+    const fetch = setupFetch({ body: SUPPORTED_LOCAL_PLAN, capture: cap });
+    const code = await runOwnerAgent(
+      ['setup', 'claude-code', '--display-name', 'the owner laptop', '--entrypoint', 'https://ref.test'],
+      captured.io,
+      { fetch, home },
+    );
+    assert.equal(code, 0);
+    // bearer travels as an Authorization header only, never a cookie
+    assert.equal(cap.auth, `Bearer ${SECRET}`);
+    assert.equal(cap.cookie, null);
+    // connector + optional display name forwarded in the request body
+    assert.equal(cap.body.connector_id, 'claude-code');
+    assert.equal(cap.body.display_name, 'the owner laptop');
+    // formatted supported plan
+    assert.match(captured.stdout, /status: supported/);
+    assert.match(captured.stdout, /modality: local_collector/);
+    assert.match(captured.stdout, /Next step: enroll_local_collector/);
+    assert.match(captured.stdout, /enrollment code: lde_setup_code_value/);
+    assert.match(captured.stdout, /enroll endpoint: https:\/\/ref\.test\/_ref\/device-exporters\/enroll/);
+    assert.match(captured.stdout, /connection active: no/);
+    // the owner bearer is never printed
+    assert.doesNotMatch(captured.stdout, new RegExp(SECRET));
+    assert.doesNotMatch(captured.stderr, new RegExp(SECRET));
+  });
+});
+
+test('setup formats a proof-gated static-secret connector honestly', async () => {
+  await withTmpHome(async (home) => {
+    await seedCredential(home);
+    const captured = capture();
+    const fetch = setupFetch({
+      body: {
+        object: 'owner_connection_intent',
+        connector_id: 'gmail',
+        connector_key: 'gmail',
+        connector_modality: 'api_network',
+        connection_active: false,
+        deployment_readiness: { state: 'not_applicable', guidance: null, blockers: [] },
+        proof_gate: 'static_secret_live_proof_missing',
+        runbook_path: 'docs/operator/static-secret-connection-runbook.md',
+        setup_modality: 'static_secret',
+        support_state: 'proof_gated',
+        next_step: {
+          kind: 'capture_static_secret',
+          reason: 'Open the owner-session static-secret setup page; provider secrets are not returned to agents.',
+          capture_endpoint: '/dashboard/connect/static-secret/gmail',
+          runbook_path: 'docs/operator/static-secret-connection-runbook.md',
+        },
+      },
+    });
+    const code = await runOwnerAgent(['setup', 'gmail', '--entrypoint', 'https://ref.test'], captured.io, { fetch, home });
+    assert.equal(code, 0);
+    assert.match(captured.stdout, /status: proof-gated/);
+    assert.match(captured.stdout, /Next step: capture_static_secret/);
+    assert.match(captured.stdout, /capture endpoint: \/dashboard\/connect\/static-secret\/gmail/);
+    assert.match(captured.stdout, /runbook: docs\/operator\/static-secret-connection-runbook\.md/);
+    assert.doesNotMatch(captured.stdout, /provider-secret-value/);
+  });
+});
+
+test('setup formats an unsupported connector', async () => {
+  await withTmpHome(async (home) => {
+    await seedCredential(home);
+    const captured = capture();
+    const fetch = setupFetch({
+      body: {
+        object: 'owner_connection_intent',
+        connector_id: 'mystery',
+        connector_key: 'mystery',
+        connector_modality: 'unknown',
+        connection_active: false,
+        deployment_readiness: { state: 'not_applicable', guidance: null, blockers: [] },
+        proof_gate: null,
+        runbook_path: null,
+        setup_modality: 'unknown',
+        support_state: 'unsupported',
+        next_step: {
+          kind: 'unsupported',
+          reason: 'Unknown connector: no manifest with runtime binding requirements is registered.',
+        },
+      },
+    });
+    const code = await runOwnerAgent(['setup', 'mystery', '--entrypoint', 'https://ref.test'], captured.io, { fetch, home });
+    assert.equal(code, 0);
+    assert.match(captured.stdout, /status: unsupported/);
+    assert.match(captured.stdout, /Next step: unsupported/);
+    assert.match(captured.stdout, /no manifest with runtime binding requirements/);
+  });
+});
+
+test('setup formats a deployment-blocked connector', async () => {
+  await withTmpHome(async (home) => {
+    await seedCredential(home);
+    const captured = capture();
+    const fetch = setupFetch({
+      body: {
+        object: 'owner_connection_intent',
+        connector_id: 'future-oauth',
+        connector_key: 'future-oauth',
+        connector_modality: 'api_network',
+        connection_active: false,
+        deployment_readiness: {
+          state: 'needs_config',
+          guidance: 'Configure the provider app first.',
+          blockers: [
+            { key: 'FUTURE_OAUTH_CLIENT_ID', label: 'FUTURE_OAUTH_CLIENT_ID', secret: false },
+            { key: 'FUTURE_OAUTH_CLIENT_SECRET', label: 'FUTURE_OAUTH_CLIENT_SECRET', secret: true },
+          ],
+        },
+        proof_gate: 'provider_app_deployment_config_missing',
+        runbook_path: 'docs/operator/add-connection.md',
+        setup_modality: 'provider_authorization',
+        support_state: 'needs_deployment_config',
+        next_step: {
+          kind: 'needs_deployment_config',
+          reason: 'A deployment-level provider app (client id/secret) must exist before per-account authorization.',
+        },
+      },
+    });
+    const code = await runOwnerAgent(['setup', 'future-oauth', '--entrypoint', 'https://ref.test'], captured.io, { fetch, home });
+    assert.equal(code, 0);
+    assert.match(captured.stdout, /status: deployment-blocked/);
+    assert.match(captured.stdout, /deployment readiness: needs_config/);
+    assert.match(captured.stdout, /FUTURE_OAUTH_CLIENT_ID/);
+    assert.match(captured.stdout, /FUTURE_OAUTH_CLIENT_SECRET \(secret\)/);
+    assert.match(captured.stdout, /Next step: needs_deployment_config/);
+  });
+});
+
+test('setup omits display_name from the body when not provided', async () => {
+  await withTmpHome(async (home) => {
+    await seedCredential(home);
+    const captured = capture();
+    const cap = {};
+    const fetch = setupFetch({ body: SUPPORTED_LOCAL_PLAN, capture: cap });
+    const code = await runOwnerAgent(['setup', 'claude-code', '--entrypoint', 'https://ref.test'], captured.io, { fetch, home });
+    assert.equal(code, 0);
+    assert.equal(cap.body.connector_id, 'claude-code');
+    assert.equal(Object.hasOwn(cap.body, 'display_name'), false);
+  });
+});
+
+test('setup surfaces an HTTP error from the intent route as a bounded error', async () => {
+  await withTmpHome(async (home) => {
+    await seedCredential(home);
+    const captured = capture();
+    const fetch = setupFetch({
+      status: 400,
+      body: { error: { code: 'invalid_request', message: 'connector_id must be a non-empty string' } },
+    });
+    const code = await runOwnerAgent(['setup', 'claude-code', '--entrypoint', 'https://ref.test'], captured.io, { fetch, home });
+    assert.notEqual(code, 0);
+    assert.match(captured.stderr, /invalid_request/);
+    assert.doesNotMatch(captured.stderr, new RegExp(SECRET));
+  });
+});
+
+test('setup surfaces an unauthorized (revoked) credential as a bounded error', async () => {
+  await withTmpHome(async (home) => {
+    await seedCredential(home);
+    const captured = capture();
+    const fetch = setupFetch({ status: 403, body: { error: { code: 'permission_error' } } });
+    const code = await runOwnerAgent(['setup', 'claude-code', '--entrypoint', 'https://ref.test'], captured.io, { fetch, home });
+    assert.equal(code, 4);
+    assert.match(captured.stderr, /not authorized/i);
+    assert.doesNotMatch(captured.stderr, new RegExp(SECRET));
+  });
+});
+
+test('setup without a connector-id reports a usage error', async () => {
+  await withTmpHome(async (home) => {
+    await seedCredential(home);
+    const captured = capture();
+    const code = await runOwnerAgent(['setup', '--entrypoint', 'https://ref.test'], captured.io, {
+      fetch: async () => { throw new Error('nope'); },
+      home,
+    });
+    assert.equal(code, 64);
+    assert.match(captured.stderr, /Usage: pdpp owner-agent setup <connector-id>/);
+  });
+});
+
+test('setup without a stored credential reports not_onboarded', async () => {
+  await withTmpHome(async (home) => {
+    const captured = capture();
+    const code = await runOwnerAgent(['setup', 'claude-code'], captured.io, {
+      fetch: async () => { throw new Error('nope'); },
+      home,
+    });
+    assert.equal(code, 5);
+    assert.match(captured.stderr, /No owner-agent credential/i);
+  });
+});
+
 // ---- CLI routing + help -----------------------------------------------------
 
 test('runCli routes owner-agent and help advertises the profile', async () => {
@@ -644,6 +887,7 @@ test('runCli routes owner-agent and help advertises the profile', async () => {
   assert.equal(code, 0);
   assert.match(captured.stdout, /owner-agent onboard/);
   assert.match(captured.stdout, /owner-agent control/);
+  assert.match(captured.stdout, /owner-agent setup\s+<connector-id>/);
   assert.match(captured.stdout, /not the default/i);
 });
 

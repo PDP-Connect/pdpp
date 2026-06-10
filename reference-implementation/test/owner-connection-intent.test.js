@@ -12,9 +12,12 @@
  *     `enroll_local_collector` next step with a single-use enrollment code, and
  *     exchanging that code at the device-exporter enroll endpoint materializes a
  *     real `cin_*` connection — proving the minted code is genuine, not a stub;
- *   - browser-bound connectors (Amazon) return a typed `unsupported` whose reason
- *     names the missing browser-collector primitive — NOT a faked success;
- *   - API/network-only connectors (gmail) return a typed `unsupported`;
+ *   - proof-gated browser-bound connectors return typed `manual_runbook` setup
+ *     steps, while static-secret connectors return a non-secret
+ *     `capture_static_secret` owner-session step — NOT faked active
+ *     connections;
+ *   - provider-authorization connectors with missing platform config return
+ *     `needs_deployment_config` with non-secret blockers;
  *   - an unknown connector returns `unsupported` / `connector_modality: unknown`;
  *   - every response carries `connection_active: false` and the intent itself
  *     writes no connection row;
@@ -164,7 +167,8 @@ async function registerConnector(asUrl, manifest) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(manifest),
   });
-  assert.equal(resp.status, 201, `register ${manifest.connector_id} failed: ${resp.status}`);
+  const text = await resp.text();
+  assert.equal(resp.status, 201, `register ${manifest.connector_id} failed: ${resp.status} ${text}`);
   return manifest;
 }
 
@@ -243,6 +247,11 @@ test('owner-agent initiates a local-collector connection and receives a real enr
     assert.equal(body.connector_id, 'codex');
     assert.equal(body.connector_key, 'codex');
     assert.equal(body.connector_modality, 'local_collector');
+    assert.equal(body.setup_modality, 'local_collector');
+    assert.equal(body.support_state, 'supported');
+    assert.equal(body.proof_gate, null);
+    assert.equal(body.runbook_path, null);
+    assert.equal(body.deployment_readiness.state, 'not_applicable');
     assert.equal(body.connection_active, false);
     assert.equal(body.next_step.kind, 'enroll_local_collector');
     assert.ok(body.next_step.enrollment_code, 'should mint a single-use enrollment code');
@@ -321,8 +330,13 @@ test('owner-agent initiating a browser-bound connector (Amazon) gets a typed uns
     assert.equal(status, 201);
     assert.equal(body.connector_key, 'amazon');
     assert.equal(body.connector_modality, 'browser_bound');
+    assert.equal(body.setup_modality, 'browser_bound');
+    assert.equal(body.support_state, 'proof_gated');
+    assert.equal(body.proof_gate, 'browser_collector_live_proof_missing');
+    assert.match(body.runbook_path, /browser-collector-proof-runbook\.md$/);
     assert.equal(body.connection_active, false);
-    assert.equal(body.next_step.kind, 'unsupported');
+    assert.equal(body.next_step.kind, 'manual_runbook');
+    assert.match(body.next_step.runbook_path, /browser-collector-proof-runbook\.md$/);
     assert.match(body.next_step.reason, /browser/i);
     assert.match(body.next_step.reason, /browser_collector|primitive/i);
     // Honesty: the reason must point at the owner-run procedure that works today
@@ -331,18 +345,17 @@ test('owner-agent initiating a browser-bound connector (Amazon) gets a typed uns
     // live proof is pending — not imply the whole primitive is missing.
     assert.match(body.next_step.reason, /browser-collector-proof-runbook\.md/);
     assert.match(body.next_step.reason, /already ships|proof/i);
-    // The reason names the eventual next-step kind but the route must NOT yet
-    // advertise it as the actual next step. Per the spec proof gate
-    // (add-browser-collector-enrollment-primitive design Decision 3/4), the flip
-    // to `enroll_browser_collector` lands with the committed live proof, not via
-    // copy. The structural next_step.kind stays `unsupported`.
+    // The route must NOT yet mint browser enrollment material. Per the proof
+    // gate, the flip to an actual `enroll_browser_collector` payload lands with
+    // committed live proof, not via copy.
     assert.notEqual(body.next_step.kind, 'enroll_browser_collector');
+    assert.equal(Object.hasOwn(body.next_step, 'enrollment_code'), false);
 
     const audit = findIntentAuditEvent(resp);
     assert.equal(audit.status, 'succeeded');
     assert.equal(audit.data?.connector_key, 'amazon');
     assert.equal(audit.data?.connector_modality, 'browser_bound');
-    assert.equal(audit.data?.next_step_kind, 'unsupported');
+    assert.equal(audit.data?.next_step_kind, 'manual_runbook');
   });
 });
 
@@ -361,10 +374,9 @@ test('owner-agent initiating a browser-bound connector (Amazon) gets a typed uns
 //
 // This is the acceptance-permitted form of 5.3: the browser-collector enrollment
 // primitive's live proof is still pending, so the honest second-account outcome
-// is a typed `unsupported`/`browser_bound` next step describing the owner-run
-// browser-assistance step — exactly the spec's "Connector requires browser
-// assistance" scenario (the response describes the browser-assistance step and
-// does NOT claim the agent can complete provider login/2FA by bearer authority).
+// is a typed `manual_runbook`/`browser_bound` next step describing the owner-run
+// browser-assistance step. The response does NOT claim the agent can complete
+// provider login/2FA by bearer authority.
 test('a trusted owner agent initiates an Amazon SECOND account up to the owner-mediated next step', async () => {
   await withServer(async ({ asUrl, rsUrl }) => {
     const manifest = await registerConnector(asUrl, loadPackageManifest('amazon'));
@@ -405,21 +417,26 @@ test('a trusted owner agent initiates an Amazon SECOND account up to the owner-m
     });
 
     // The flow reaches the typed owner-mediated next step: an auditable intent,
-    // classified browser_bound, not yet active, with a browser-assistance reason.
+    // classified browser_bound, not yet active, with a proof-gated runbook step.
     assert.equal(status, 201);
     assert.equal(body.object, 'owner_connection_intent');
     assert.equal(body.connector_key, 'amazon');
     assert.equal(body.connector_modality, 'browser_bound');
+    assert.equal(body.setup_modality, 'browser_bound');
+    assert.equal(body.support_state, 'proof_gated');
+    assert.equal(body.proof_gate, 'browser_collector_live_proof_missing');
     assert.equal(body.connection_active, false);
-    assert.equal(body.next_step.kind, 'unsupported');
+    assert.equal(body.next_step.kind, 'manual_runbook');
+    assert.match(body.next_step.runbook_path, /browser-collector-proof-runbook\.md$/);
     // The reason describes the browser-assistance step the owner / local
     // environment performs (spec "Connector requires browser assistance"): it
     // names the browser-bound nature and points at the owner-run procedure.
     assert.match(body.next_step.reason, /browser/i);
     assert.match(body.next_step.reason, /browser-collector-proof-runbook\.md/);
     // It must NOT claim the agent can complete login/2FA by bearer authority, and
-    // it must NOT yet advertise the one-click enroll step (gated on live proof).
+    // it must NOT yet mint the one-click enroll payload (gated on live proof).
     assert.notEqual(body.next_step.kind, 'enroll_browser_collector');
+    assert.equal(Object.hasOwn(body.next_step, 'enrollment_code'), false);
     assert.doesNotMatch(
       body.next_step.reason,
       /\b(headless|2fa|two-factor|log in for you|on your behalf without)\b/i,
@@ -451,7 +468,7 @@ test('a trusted owner agent initiates an Amazon SECOND account up to the owner-m
     assert.equal(audit.data?.actor_kind, 'owner_agent');
     assert.equal(audit.data?.connector_key, 'amazon');
     assert.equal(audit.data?.connector_modality, 'browser_bound');
-    assert.equal(audit.data?.next_step_kind, 'unsupported');
+    assert.equal(audit.data?.next_step_kind, 'manual_runbook');
     assert.equal(audit.data?.operation, 'initiate_connection');
     assert.equal(audit.data?.display_name_supplied, true);
     // The owner-supplied label is never persisted in audit evidence.
@@ -459,7 +476,7 @@ test('a trusted owner agent initiates an Amazon SECOND account up to the owner-m
   });
 });
 
-test('owner-agent initiating an API/network-only connector (gmail) gets a typed unsupported', async () => {
+test('owner-agent initiating a static-secret API connector gets a non-secret capture step', async () => {
   await withServer(async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl);
     // gmail must be a registered connector for the manifest to resolve.
@@ -478,67 +495,79 @@ test('owner-agent initiating an API/network-only connector (gmail) gets a typed 
     assert.equal(status, 201);
     assert.equal(body.connector_key, 'gmail');
     assert.equal(body.connector_modality, 'api_network');
-    assert.equal(body.next_step.kind, 'unsupported');
+    assert.equal(body.setup_modality, 'static_secret');
+    assert.equal(body.support_state, 'proof_gated');
+    assert.equal(body.proof_gate, 'static_secret_live_proof_missing');
+    assert.equal(body.deployment_readiness.state, 'not_applicable');
+    assert.equal(body.next_step.kind, 'capture_static_secret');
+    assert.equal(body.next_step.capture_endpoint, '/dashboard/connect/static-secret/gmail');
+    assert.match(body.next_step.runbook_path, /static-secret-connection-runbook\.md$/);
     assert.match(body.next_step.reason, /API|network/i);
-    // Honesty: an API connection materializes implicitly on first ingest, so the
-    // reason must name that truth and NOT loop the owner back to "add this from
-    // the dashboard" — the console marks API/network sources unsupported for the
-    // same reason (apps/console/.../connection-modality.ts), and there is no
-    // provider-connect URL to send the owner to. It must also name the deferred
-    // owner-agent API-connect primitive so an agent/reviewer has the concrete gap.
-    assert.match(body.next_step.reason, /first ingest/i);
-    assert.match(body.next_step.reason, /open_url/);
+    // Honesty: gmail/github authenticate with a STATIC provider secret the owner
+    // supplies locally (app password / personal access token), NOT an OAuth
+    // authorization-code flow. The route may point at the owner-session capture
+    // page and runbook, but it must not emit the provider secret, an owner
+    // cookie, or an OAuth authorization URL.
     assert.doesNotMatch(
       body.next_step.reason,
       /add this connection from the dashboard/i,
       'must not point the owner at a dashboard that lists API/network as unsupported',
     );
-    // Honesty: gmail/github authenticate with a STATIC provider secret the owner
-    // supplies locally (app password / personal access token), NOT an OAuth
-    // authorization-code flow. The reason must name that credential model so a
-    // future lane does not mistakenly wire these connectors to an OAuth `open_url`
-    // redirect they cannot consume. The verified credential paths are
-    // gmail/index.ts:463-498 (Google app password over IMAP) and
-    // github/index.ts:406-409 (PAT). See design.md "Deferred: API/network
-    // connection initiation" -> "The actual reference credential model".
     assert.match(
       body.next_step.reason,
       /static provider secret/i,
       'reason must name the static-secret credential model, not imply OAuth',
     );
     assert.match(body.next_step.reason, /app password|personal access token|token/i);
-    // The reason must affirm these connectors are NOT OAuth-backed (it may mention
-    // OAuth only to negate it), so a future reader cannot conclude open_url applies.
+    // The reason must affirm these connectors are NOT OAuth-backed, so a future
+    // reader cannot wire them to a provider authorization URL.
     assert.match(
       body.next_step.reason,
       /none of the current ones are|no OAuth authorization URL/i,
       'reason must explicitly state no current connector is OAuth-backed',
     );
-    // The reason names the eventual next-step kind but the route must NOT yet
-    // advertise it: no real provider-connect URL exists, and the owner-session
-    // capture route for existing connections is not yet end-to-end proof that a
-    // new owner-agent intent can create an API/network connection. Emitting
-    // open_url would be a faked success the criteria forbid.
-    assert.notEqual(body.next_step.kind, 'open_url');
-    // The published contract RESERVES `complete_credential_capture` for the
-    // static-secret owner-connect primitive (gmail/github), but the runtime
-    // `api_network` branch must NOT emit it until that primitive ships with
-    // committed proof (add-static-secret-owner-connect-primitive design Decision 4
-    // and proof-before-flip gate). Reserving the enum value does not advertise the
-    // flow; the structural next_step.kind stays `unsupported`.
-    //
-    // STATUS (add-static-secret-owner-connect-primitive implementation lane): the
-    // per-connection encrypted credential store
-    // (server/stores/connector-instance-credential-store.js), connection-scoped
-    // subprocess injection (packages/polyfill-connectors static-secret-injection),
-    // and the fail-closed run seam (server/stores/static-secret-run-credentials.js)
-    // now exist and are proven by their own suites. The route flip stays GATED on
-    // Decision 6's end-to-end LIVE proof (intent -> owner-mediated capture -> first
-    // ingest -> addressable labeled connection_id, audited no-secret-leak, two
-    // mailboxes -> two connection_ids), which requires a real owner-supplied
-    // provider secret this lane cannot safely simulate. Until that proof lands the
-    // branch stays `unsupported`; this assertion is the guard that keeps it honest.
-    assert.notEqual(body.next_step.kind, 'complete_credential_capture');
+    assert.equal(body.next_step.authorization_url, undefined);
+    assert.equal(body.next_step.enrollment_code, undefined);
+    assert.equal(body.enrollment_code, undefined);
+    const responseText = JSON.stringify(body);
+    assert.doesNotMatch(responseText, /pdpp_owner_session/i);
+    assert.doesNotMatch(responseText, /"secret"\s*:/i);
+    assert.doesNotMatch(responseText, /super-secret|provider-secret-value|app-password-value/i);
+  });
+});
+
+test('owner-agent initiating provider authorization returns deployment blockers, not secrets or fake support', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    await registerConnector(asUrl, {
+      ...loadPackageManifest('notion'),
+      connector_id: 'fitness_oauth',
+      connector_key: 'fitness_oauth',
+      manifest_uri: 'https://registry.pdpp.org/connectors/fitness-oauth',
+      display_name: 'Fitness OAuth',
+      capabilities: {
+        auth: {
+          kind: 'oauth',
+          deployment_config: ['FITNESS_OAUTH_CLIENT_ID', 'FITNESS_OAUTH_CLIENT_SECRET'],
+        },
+      },
+    });
+    const { status, body } = await createIntent(rsUrl, ownerToken, { connector_id: 'fitness_oauth' });
+    assert.equal(status, 201);
+    assert.equal(body.connector_key, 'fitness_oauth');
+    assert.equal(body.connector_modality, 'api_network');
+    assert.equal(body.setup_modality, 'provider_authorization');
+    assert.equal(body.support_state, 'needs_deployment_config');
+    assert.equal(body.proof_gate, 'provider_app_deployment_config_missing');
+    assert.equal(body.next_step.kind, 'needs_deployment_config');
+    assert.equal(body.deployment_readiness.state, 'needs_config');
+    assert.deepEqual(
+      body.deployment_readiness.blockers.map((item) => item.key),
+      ['FITNESS_OAUTH_CLIENT_ID', 'FITNESS_OAUTH_CLIENT_SECRET'],
+    );
+    const serialized = JSON.stringify(body);
+    assert.doesNotMatch(serialized, /Bearer|access_token|refresh_token|owner_session|mcp_package/i);
+    assert.doesNotMatch(serialized, /client-secret-value|cookie-value/i);
   });
 });
 
@@ -548,6 +577,8 @@ test('owner-agent initiating an unknown connector gets unsupported / unknown mod
     const { status, body } = await createIntent(rsUrl, ownerToken, { connector_id: 'definitely-not-a-connector' });
     assert.equal(status, 201);
     assert.equal(body.connector_modality, 'unknown');
+    assert.equal(body.setup_modality, 'unknown');
+    assert.equal(body.support_state, 'unsupported');
     assert.equal(body.next_step.kind, 'unsupported');
   });
 });
@@ -664,16 +695,7 @@ test('GET /v1/owner/control advertises initiate_connection as supported with the
   });
 });
 
-// The published contract reserves `enroll_browser_collector` as a next-step kind
-// BEFORE any route emits it. Per add-browser-collector-enrollment-primitive design
-// Decision 3, reserving the value keeps the post-proof `browser_bound` flip a single
-// reviewable unit (flip the branch + its tests) instead of a flip PLUS a contract
-// widening that a reviewer could miss. This pins the reservation so a future
-// contract regen/edit can't silently drop it. It is the contract complement of the
-// runtime guard above (the Amazon intent test asserts the live branch stays
-// `unsupported` and does NOT yet emit `enroll_browser_collector`): reserved in the
-// contract, not emitted at runtime.
-test('owner-agent intent contract reserves enroll_browser_collector without emitting it', () => {
+test('owner-agent intent contract exposes the setup-plan next-step vocabulary', () => {
   const openapi = JSON.parse(
     readFileSync(new URL('../openapi/reference-full.openapi.json', import.meta.url), 'utf8'),
   );
@@ -684,44 +706,13 @@ test('owner-agent intent contract reserves enroll_browser_collector without emit
   assert.ok(intentResponseSchema, 'intent route must document a 201 JSON response schema');
   const nextStepEnum = intentResponseSchema.properties?.next_step?.properties?.kind?.enum;
   assert.ok(Array.isArray(nextStepEnum), 'next_step.kind must be a closed enum in the contract');
-  // Reserved-then-emitted: the value is in the contract enum so the flip is not a
-  // contract break, alongside the other reserved-but-unemitted kinds.
-  assert.ok(
-    nextStepEnum.includes('enroll_browser_collector'),
-    'contract must reserve enroll_browser_collector for the post-proof browser_bound flip',
-  );
-  assert.ok(nextStepEnum.includes('enroll_local_collector'), 'the emitted local-collector kind stays reserved');
-  assert.ok(nextStepEnum.includes('unsupported'), 'unsupported stays the honest browser-bound default');
-});
-
-// The published contract reserves `complete_credential_capture` as a next-step kind
-// BEFORE any route emits it. Per add-static-secret-owner-connect-primitive design
-// Decision 4, this is the kind the `api_network` branch (gmail/github) will emit
-// once the static-secret owner-connect primitive ships with committed proof; it
-// directs the OWNER — never the agent — to supply the provider static secret through
-// an owner-trusted local surface. Reserving the value keeps the post-proof
-// `api_network` flip a single reviewable unit (flip the branch + its tests) instead
-// of a flip PLUS a contract widening. This pins the reservation against the generated
-// OpenAPI so a future regen/edit can't silently drop it. It is the contract complement
-// of the runtime guard above (the gmail intent test asserts the live branch stays
-// `unsupported` and does NOT yet emit `complete_credential_capture`): reserved in the
-// contract, not emitted at runtime.
-test('owner-agent intent contract reserves complete_credential_capture without emitting it', () => {
-  const openapi = JSON.parse(
-    readFileSync(new URL('../openapi/reference-full.openapi.json', import.meta.url), 'utf8'),
-  );
-  const intentResponseSchema =
-    openapi.paths?.['/v1/owner/connections/intents']?.post?.responses?.['201']?.content?.[
-      'application/json'
-    ]?.schema;
-  assert.ok(intentResponseSchema, 'intent route must document a 201 JSON response schema');
-  const nextStepEnum = intentResponseSchema.properties?.next_step?.properties?.kind?.enum;
-  assert.ok(Array.isArray(nextStepEnum), 'next_step.kind must be a closed enum in the contract');
-  // Reserved-then-emitted: the value is in the contract enum so the post-proof flip is
-  // not a contract break, alongside the other reserved-but-unemitted kinds.
-  assert.ok(
-    nextStepEnum.includes('complete_credential_capture'),
-    'contract must reserve complete_credential_capture for the post-proof api_network flip',
-  );
-  assert.ok(nextStepEnum.includes('unsupported'), 'unsupported stays the honest api_network default');
+  assert.deepEqual(nextStepEnum, [
+    'enroll_local_collector',
+    'enroll_browser_collector',
+    'capture_static_secret',
+    'open_provider_auth',
+    'needs_deployment_config',
+    'manual_runbook',
+    'unsupported',
+  ]);
 });

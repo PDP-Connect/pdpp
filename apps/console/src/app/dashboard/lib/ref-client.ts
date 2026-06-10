@@ -1079,6 +1079,43 @@ export interface DeviceEnrollmentCode {
   object: "device_exporter_enrollment_code";
 }
 
+export interface StaticSecretDraftConnection {
+  connection_id: string;
+  connector_id: string;
+  connector_instance_id: string;
+  credential_kind: string;
+  next_step: {
+    kind: "capture_static_secret_credential";
+    method: "POST";
+    reason?: string;
+    url: string;
+  };
+  object: "static_secret_draft_connection";
+  status: "draft";
+}
+
+export interface StaticSecretCredentialCapture {
+  connection_id: string;
+  connector_id: string;
+  connector_instance_id: string;
+  credential: {
+    captured_at: string | null;
+    credential_kind: string | null;
+    fingerprint: string | null;
+    present: boolean;
+    revoked_at: string | null;
+    rotated_at: string | null;
+    status: string | null;
+  };
+  next_step: {
+    kind: "run_connection";
+    method: "POST";
+    reason?: string;
+    url: string;
+  };
+  object: "static_secret_credential_capture";
+}
+
 export interface CreateDeviceEnrollmentCodeInput {
   connector_id: string;
   display_name?: string;
@@ -1094,6 +1131,31 @@ export async function createDeviceEnrollmentCode(
     headers: { "content-type": "application/json" },
     method: "POST",
   })) as DeviceEnrollmentCode;
+}
+
+export async function createStaticSecretDraftConnection(connectorId: string): Promise<StaticSecretDraftConnection> {
+  return (await refFetch(`/_ref/connectors/${encodeURIComponent(connectorId)}/draft-connection`, undefined, {
+    method: "POST",
+  })) as StaticSecretDraftConnection;
+}
+
+export async function captureStaticSecretCredential(input: {
+  connectionId: string;
+  credentialKind: string;
+  secret: string;
+}): Promise<StaticSecretCredentialCapture> {
+  return (await refFetch(
+    `/_ref/connections/${encodeURIComponent(input.connectionId)}/static-secret-credential`,
+    undefined,
+    {
+      body: JSON.stringify({
+        credential_kind: input.credentialKind,
+        secret: input.secret,
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    }
+  )) as StaticSecretCredentialCapture;
 }
 
 export async function listDeviceExporters(): Promise<ListResponse<DeviceExporter>> {

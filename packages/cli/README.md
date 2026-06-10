@@ -13,7 +13,7 @@ supports four command namespaces:
   stores scoped client credentials in the project-local `.pdpp/` cache without
   asking for an owner bearer token.
 
-- **`pdpp owner-agent <onboard|status|control|revoke>`** — trusted owner-agent
+- **`pdpp owner-agent <onboard|status|control|setup|revoke>`** — trusted owner-agent
   onboarding for a local agent that acts as the operator (for example Daisy).
   This is owner-level local automation, deliberately separate from the default
   grant-scoped `pdpp connect` path; ordinary agents should not use it.
@@ -30,7 +30,19 @@ supports four command namespaces:
   capabilities (`GET /v1/owner/control`) and configured connection instances
   (`GET /v1/owner/connections`) — each connection's `connection_id`, connector,
   and label/label-needed state — so a trusted agent can discover what it can do
-  and what is configured without printing the bearer. `revoke` deletes its
+  and what is configured without printing the bearer. `setup <connector-id>`
+  requests the same non-secret connection setup plan and next-step contract the
+  console add-connection flow and owner-agent REST surface, by calling the
+  shared server planner (`POST /v1/owner/connections/intents`). It sends the
+  stored bearer only as an `Authorization` header, formats the plan's support
+  state (`supported`, `proof-gated`, `unsupported`, `deployment-blocked`),
+  modality, and primary owner next step, and surfaces owner-openable setup
+  material (enrollment codes, enroll endpoints, runbook paths) when present.
+  Pass `--display-name <name>` to label the resulting connection. No connection
+  is created by this call; it materializes only when the owner-mediated step
+  completes. The setup plan never includes provider secrets, owner cookies,
+  browser cookies, or grant-scoped MCP bearer material, and the bearer is never
+  printed. `revoke` deletes its
   dynamically registered client via the owner-session-gated RFC 7592 dashboard
   path; run `pdpp ref login <authorization-server>` first or provide
   `PDPP_OWNER_SESSION_COOKIE`. Owner-agent bearers are REST/control-plane
