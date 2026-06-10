@@ -4826,6 +4826,28 @@ export async function startServer(opts = {}) {
         );
         return rows;
       },
+      // Store-aware eligibility: a static-secret connector whose credential
+      // lives ONLY in the encrypted per-connection store (env vars absent or
+      // empty) still auto-enrolls. Presence-only probe — no secret bytes are
+      // recovered here.
+      hasStoredCredential: async (connectorId) => {
+        const canonicalId = canonicalConnectorKey(connectorId) ?? connectorId;
+        const { isStaticSecretConnector } = await loadStaticSecretInjectionHelpers();
+        if (!isStaticSecretConnector(canonicalId)) {
+          return false;
+        }
+        const instances = await createRequestConnectorInstanceStore().listActiveByConnector(
+          ownerAuthSubjectId,
+          canonicalId,
+        );
+        const credentialStore = createRequestConnectorInstanceCredentialStore();
+        for (const instance of instances) {
+          if (await credentialStore.hasActiveCredential(instance.connectorInstanceId)) {
+            return true;
+          }
+        }
+        return false;
+      },
       log: (msg) => logger.info(msg),
     });
     if (enrollmentSummary.scanned > 0) {
@@ -4965,6 +4987,17 @@ function createReferenceSchedulerManager({
   let stopped = false;
   let refreshChain = Promise.resolve();
 
+  // The SAME connection-scoped static-secret resolver the controller uses for
+  // manual runs (design Decision 5), bound to the scheduler's owner subject.
+  // Scheduled and manual runs MUST resolve credentials identically: a store
+  // row satisfies both, and a scheduled launch never falls back to a
+  // process-global (possibly empty-string) secret when a stored credential
+  // exists. See openspec/specs/reference-connector-instances — "Credential is
+  // recoverable only by the orchestrator" (scheduled-run scenario).
+  const staticSecretRunEnvResolver = buildControllerStaticSecretRunEnvResolver();
+  const resolveScheduledStaticSecretRunEnv = ({ connectorId, connectorInstanceId }) =>
+    staticSecretRunEnvResolver({ connectorId, connectorInstanceId, ownerSubjectId });
+
   async function buildConnectors() {
     const schedules = await Promise.resolve(schedulerStore.listSchedules());
     const enabledSchedules = schedules.filter((schedule) => schedule?.enabled === true);
@@ -5038,6 +5071,7 @@ function createReferenceSchedulerManager({
       rsUrl: runtimeContext.rsUrl,
       referenceBaseUrl: runtimeContext.referenceBaseUrl,
       schedulerStore,
+      resolveStaticSecretRunEnv: resolveScheduledStaticSecretRunEnv,
       getState: async (connectorId, connectorInstanceId) => {
         // Read scheduler state from the connection-instance namespace by
         // construction: getSyncState keys storage off its storage-target
