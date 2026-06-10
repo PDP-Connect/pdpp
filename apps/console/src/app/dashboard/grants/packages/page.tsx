@@ -11,6 +11,7 @@
 
 import { EmptyState } from "@pdpp/operator-ui/components/empty-state";
 import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
+import { GRANT_LIFECYCLE_VOCABULARY } from "@pdpp/operator-ui/components/status-vocabularies";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
@@ -75,7 +76,7 @@ function PackageRow({ pkg }: { pkg: GrantPackageSummary }) {
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <code className="pdpp-caption break-all font-medium font-mono text-foreground">{pkg.package_id}</code>
         <div className="flex items-center gap-2">
-          <StatusBadge status={pkg.status} />
+          <StatusBadge status={pkg.status} vocabulary={GRANT_LIFECYCLE_VOCABULARY} />
           <span className="pdpp-caption text-muted-foreground">
             <Timestamp value={pkg.created_at} />
           </span>

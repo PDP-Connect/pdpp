@@ -47,7 +47,7 @@ export function SegmentError({
 
   return (
     <main className="mx-auto flex min-h-[60vh] max-w-xl flex-col items-start justify-center gap-4 px-6 py-16">
-      <h1 className="font-semibold text-2xl tracking-tight">{title}</h1>
+      <h1 className="pdpp-heading text-foreground">{title}</h1>
       <p className="max-w-prose text-muted-foreground">{description}</p>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <button className={buttonVariants({ variant: "default", size: "sm" })} onClick={() => reset()} type="button">

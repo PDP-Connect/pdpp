@@ -13,6 +13,7 @@
  */
 
 import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
+import { GRANT_LIFECYCLE_VOCABULARY } from "@pdpp/operator-ui/components/status-vocabularies";
 import { formatSourceWithConnectionForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -115,7 +116,7 @@ export default async function GrantPackageDetailPage({
           <dd className="break-all font-mono text-foreground">{pkg.package_id}</dd>
           <dt>Status</dt>
           <dd>
-            <StatusBadge status={pkg.status} />
+            <StatusBadge status={pkg.status} vocabulary={GRANT_LIFECYCLE_VOCABULARY} />
           </dd>
           <dt>Client</dt>
           <dd className="break-all font-mono text-foreground">{pkg.client_id}</dd>
@@ -193,7 +194,7 @@ export default async function GrantPackageDetailPage({
                       {member.package_id === cumulative.root_package_id ? " · root" : ""}
                     </code>
                     <div className="flex items-center gap-2">
-                      <StatusBadge status={member.status} />
+                      <StatusBadge status={member.status} vocabulary={GRANT_LIFECYCLE_VOCABULARY} />
                       <span className="pdpp-caption text-muted-foreground">
                         {member.member_count === 1 ? "1 child" : `${member.member_count} children`}
                       </span>
@@ -252,8 +253,10 @@ function ChildRow({ child }: { child: GrantPackageChild }) {
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <code className="pdpp-caption break-all font-medium font-mono text-foreground">{child.grant_id}</code>
         <div className="flex items-center gap-2">
-          <StatusBadge status={child.grant_status} />
-          {memberStatus ? <StatusBadge status={`member · ${memberStatus}`} /> : null}
+          <StatusBadge status={child.grant_status} vocabulary={GRANT_LIFECYCLE_VOCABULARY} />
+          {memberStatus ? (
+            <StatusBadge status={`member · ${memberStatus}`} vocabulary={GRANT_LIFECYCLE_VOCABULARY} />
+          ) : null}
           <span className="pdpp-caption text-muted-foreground">
             <Timestamp value={child.added_at} />
           </span>

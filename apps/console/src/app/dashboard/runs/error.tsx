@@ -18,7 +18,7 @@ export default function RunsError({ error, reset }: { error: Error & { digest?: 
 
   return (
     <main className="mx-auto flex min-h-[60vh] max-w-xl flex-col items-start justify-center gap-4 px-6 py-16">
-      <h1 className="font-semibold text-2xl tracking-tight">Couldn't load runs</h1>
+      <h1 className="pdpp-heading text-foreground">Couldn't load runs</h1>
       <p className="max-w-prose text-muted-foreground">
         The Runs view ran into an error while reading from your reference deployment. This is a read failure, not a
         change to any run. Try again, or check your reference deployment status.

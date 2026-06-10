@@ -148,7 +148,7 @@ function UnavailableStreamSurface({ connector, runId }: { connector: ConnectorCo
     <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center px-5 py-8">
       <section className="rounded-3xl border border-[color:var(--warning)] bg-[color:var(--warning-wash)] p-6 shadow-2xl shadow-black/10">
         <p className="pdpp-eyebrow text-muted-foreground">stream unavailable</p>
-        <h1 className="mt-3 text-balance font-semibold text-2xl text-foreground">Waiting for a browser surface</h1>
+        <h1 className="pdpp-heading mt-3 text-balance text-foreground">Waiting for a browser surface</h1>
         <p className="mt-3 text-muted-foreground text-sm leading-6">
           {connector ? `${connector.displayName} needs browser control, but ` : "This run needs browser control, but "}
           no current stream target is registered for this assistance request. Keep the run open while the runtime
