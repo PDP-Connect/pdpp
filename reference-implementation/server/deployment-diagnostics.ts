@@ -18,6 +18,8 @@
  *       reference-implementation-architecture/spec.md
  */
 
+import { statfs } from "node:fs/promises";
+
 // Shape of a connector manifest as far as diagnostics care. We do not depend
 // on the validator-strict types here — diagnostics must survive partially-
 // malformed manifests without crashing the page.
@@ -114,6 +116,35 @@ export interface PhysicalFootprint {
   readonly top_relations: readonly PhysicalRelationSize[] | null;
 }
 
+// Disk headroom for the filesystem that holds the reference data directory.
+//
+// Measured at startup and on each /_ref/deployment poll. Both fields are
+// `null` when the probe fails (e.g. process lacks stat permission, exotic FS)
+// — never fabricated. `free_bytes` is the number of bytes available to the
+// running process (statvfs f_bavail * f_frsize, not the privileged f_bfree).
+//
+// Thresholds:
+//   < DISK_WARN_BYTES  → warning  (low but probably survivable short-term)
+//   < DISK_ERROR_BYTES → error    (restart / build will very likely fail OOD)
+//
+// Neither threshold triggers automatic data deletion. The operator must act.
+export interface DiskHeadroom {
+  // Absolute path probed (the filesystem containing the reference data dir).
+  readonly path: string;
+  // Bytes available to the process on the filesystem hosting `path`.
+  readonly free_bytes: number | null;
+  // Total bytes on the filesystem (f_blocks * f_frsize). Operator context only.
+  readonly total_bytes: number | null;
+}
+
+// 2 GiB — enough for a full Docker image layer set plus a small WAL burst.
+// Below this the reference build/restart will very likely fail OOD.
+export const DISK_ERROR_BYTES = 2 * 1024 * 1024 * 1024;
+
+// 5 GiB — comfortable working margin. Warn so the operator can act before
+// the error threshold is reached.
+export const DISK_WARN_BYTES = 5 * 1024 * 1024 * 1024;
+
 export interface DiagnosticsEnv {
   readonly [key: string]: string | undefined;
 }
@@ -133,6 +164,9 @@ export interface DeploymentDiagnosticsInput {
   // both surface as unmeasured.
   readonly physicalFootprint?: PhysicalFootprint | null;
   readonly runtimeCapabilities?: RuntimeCapabilityPosture | null;
+  // Disk headroom for the filesystem hosting the reference data directory.
+  // Pre-probed by the runtime adapter. Absent/null = unmeasured.
+  readonly diskHeadroom?: DiskHeadroom | null;
 }
 
 // Runtime capability posture of the provider/control-plane runtime.
@@ -210,7 +244,8 @@ export type DiagnosticsWarningCode =
   | "download_disabled"
   | "vector_index_fallback"
   | "browser_connectors_need_collector"
-  | "collector_protocol_outdated";
+  | "collector_protocol_outdated"
+  | "low_disk_headroom";
 
 export interface DiagnosticsWarning {
   readonly code: DiagnosticsWarningCode;
@@ -235,6 +270,14 @@ export interface DeploymentDiagnosticsReport {
     readonly physical_bytes: number | null;
     readonly top_relations: readonly PhysicalRelationSize[] | null;
   };
+  // Disk headroom for the filesystem hosting the reference data directory.
+  // null when the probe failed or is not available (e.g. exotic FS, no stat
+  // permission). free_bytes/total_bytes are both null on probe failure.
+  readonly disk_headroom: {
+    readonly path: string;
+    readonly free_bytes: number | null;
+    readonly total_bytes: number | null;
+  } | null;
   readonly environment: readonly EnvValueReport[];
   readonly lexical: {
     readonly index: {
@@ -483,6 +526,33 @@ function buildWarnings(
   // browser-backed connectors will fail closed at spawn time.
   warnings.push(...buildRuntimeCapabilityWarnings(input.runtimeCapabilities ?? null));
 
+  // Disk headroom: warn when free space is low enough that a restart or
+  // Docker build is likely to fail with "No space left on device". The check
+  // only fires when the probe succeeded (free_bytes is a non-null number).
+  // Neither threshold triggers automatic deletion — the operator must act.
+  const freeBytes = input.diskHeadroom?.free_bytes;
+  if (typeof freeBytes === "number") {
+    if (freeBytes < DISK_ERROR_BYTES) {
+      warnings.push({
+        code: "low_disk_headroom",
+        message:
+          `Disk headroom on ${input.diskHeadroom?.path ?? "the data filesystem"} is critically low ` +
+          `(${formatBytes(freeBytes)} free). A reference restart or Docker build is very likely to fail ` +
+          `with "No space left on device". ` +
+          "Run `docker system prune --volumes` (removes stopped containers/unused images/volumes) " +
+          "or free space manually before restarting. Do NOT auto-delete data.",
+      });
+    } else if (freeBytes < DISK_WARN_BYTES) {
+      warnings.push({
+        code: "low_disk_headroom",
+        message:
+          `Disk headroom on ${input.diskHeadroom?.path ?? "the data filesystem"} is low ` +
+          `(${formatBytes(freeBytes)} free). Consider running \`docker system prune\` ` +
+          "to reclaim build cache before the next restart.",
+      });
+    }
+  }
+
   // Backend-specific cache/download warnings. Only surfaced when the
   // backend reports these fields — the stub backend does not.
   if (input.backend?.modelCachePresent && input.backend.modelCachePresent() === false) {
@@ -621,6 +691,23 @@ function normalizePhysicalFootprint(footprint: PhysicalFootprint | null | undefi
   };
 }
 
+// ─── Disk headroom normalization ───────────────────────────────────────────
+
+function normalizeDiskHeadroom(
+  h: DiskHeadroom | null | undefined
+): DeploymentDiagnosticsReport["disk_headroom"] {
+  if (!h) {
+    return null;
+  }
+  const free = h.free_bytes;
+  const total = h.total_bytes;
+  return {
+    path: h.path,
+    free_bytes: typeof free === "number" && Number.isFinite(free) && free >= 0 ? free : null,
+    total_bytes: typeof total === "number" && Number.isFinite(total) && total >= 0 ? total : null,
+  };
+}
+
 // ─── Blended-search gating decision ────────────────────────────────────────
 //
 // The dashboard's blended search attempts a semantic uplift only when
@@ -639,6 +726,40 @@ export interface SemanticUpliftGate {
 
 export function shouldAttemptSemanticUplift(gate: SemanticUpliftGate): boolean {
   return gate.advertised && gate.participationFieldCount > 0;
+}
+
+// ─── Disk headroom probe ────────────────────────────────────────────────────
+//
+// Probes the filesystem hosting `path` using Node's `fs.statfs`. Returns
+// `{ free_bytes: null, total_bytes: null }` on any failure rather than
+// throwing — the operator page must not fail because of a stat error.
+//
+// This function does I/O and lives outside the pure builder. The runtime
+// adapter calls it and passes the result into `buildDeploymentDiagnostics`
+// via `input.diskHeadroom`.
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
+  }
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(0)} MiB`;
+  }
+  return `${(bytes / 1024).toFixed(0)} KiB`;
+}
+
+export async function probeDiskHeadroom(dataPath: string): Promise<DiskHeadroom> {
+  try {
+    const stats = await statfs(dataPath);
+    // f_bavail: blocks available to unprivileged processes. More conservative
+    // than f_bfree (which includes reserved root blocks) — this is what a
+    // running process will actually see when writing.
+    const free_bytes = stats.bavail * stats.bsize;
+    const total_bytes = stats.blocks * stats.bsize;
+    return { path: dataPath, free_bytes, total_bytes };
+  } catch {
+    return { path: dataPath, free_bytes: null, total_bytes: null };
+  }
 }
 
 // ─── Runtime adapter ───────────────────────────────────────────────────────
@@ -666,6 +787,10 @@ export interface DeploymentDiagnosticsRuntimeDeps {
   // never fails because the footprint could not be read.
   readonly getPhysicalFootprint?: () => PhysicalFootprint | Promise<PhysicalFootprint> | null;
   readonly getRuntimeCapabilityPosture?: () => RuntimeCapabilityPosture | Promise<RuntimeCapabilityPosture> | null;
+  // Optional: probe disk headroom on the filesystem hosting the data dir. If
+  // absent, disk_headroom is null in the report. Typically set to
+  // () => probeDiskHeadroom(dbPath) by the server's route handler.
+  readonly getDiskHeadroom?: () => DiskHeadroom | Promise<DiskHeadroom> | null;
   readonly listRegisteredConnectorIds: () => Promise<readonly string[]>;
 }
 
@@ -716,6 +841,15 @@ export async function collectDeploymentDiagnostics(
     }
   }
 
+  let diskHeadroom: DiskHeadroom | null = null;
+  if (deps.getDiskHeadroom) {
+    try {
+      diskHeadroom = await Promise.resolve(deps.getDiskHeadroom());
+    } catch {
+      diskHeadroom = null;
+    }
+  }
+
   return buildDeploymentDiagnostics({
     backend,
     db,
@@ -726,6 +860,7 @@ export async function collectDeploymentDiagnostics(
     indexState,
     physicalFootprint,
     runtimeCapabilities,
+    diskHeadroom,
     env,
   });
 }
@@ -771,6 +906,7 @@ export function buildDeploymentDiagnostics(input: DeploymentDiagnosticsInput): D
       path: input.dbPath,
       ...normalizePhysicalFootprint(input.physicalFootprint),
     },
+    disk_headroom: normalizeDiskHeadroom(input.diskHeadroom),
     manifests: summarizeManifests(input.manifests),
     environment: buildEnvironmentReport(input.env),
     warnings,

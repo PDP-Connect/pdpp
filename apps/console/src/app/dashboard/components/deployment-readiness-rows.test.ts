@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  diskHeadroomRow,
   embeddingCacheRow,
   overallVerdict,
   ownerPasswordRow,
@@ -18,6 +19,12 @@ import {
   type ServerInputs,
   storageBackendRow,
 } from "./deployment-readiness-rows.ts";
+
+const HEALTHY_DISK_HEADROOM = {
+  path: "/data",
+  freeBytesOnDataFs: 20 * 1024 * 1024 * 1024, // 20 GiB
+  totalBytesOnDataFs: 100 * 1024 * 1024 * 1024,
+};
 
 const baseInputs: ServerInputs = {
   ownerPasswordProvenance: "redacted",
@@ -29,6 +36,7 @@ const baseInputs: ServerInputs = {
   vectorIndexKind: "sqlite-vec",
   vectorIndexState: "built",
   databasePath: "/data/pdpp.db",
+  diskHeadroom: HEALTHY_DISK_HEADROOM,
 };
 
 const OWNER_PASSWORD_ENV_RE = /PDPP_OWNER_PASSWORD/;
@@ -186,4 +194,59 @@ test("overallVerdict unknown when probes still loading and nothing worse", () =>
     { check: "y", status: "unknown", detail: "" },
   ];
   assert.equal(overallVerdict(rows), "unknown");
+});
+
+// ─── Disk headroom ───────────────────────────────────────────────────────────
+
+const GiB = 1024 * 1024 * 1024;
+
+test("diskHeadroomRow is ok when free space is above the warn threshold", () => {
+  const row = diskHeadroomRow(baseInputs);
+  assert.equal(row.status, "ok");
+  assert.match(row.detail, /GiB free/);
+});
+
+test("diskHeadroomRow is warn when free space is below 5 GiB but above 2 GiB", () => {
+  const row = diskHeadroomRow({
+    ...baseInputs,
+    diskHeadroom: { path: "/data", freeBytesOnDataFs: 3 * GiB, totalBytesOnDataFs: 100 * GiB },
+  });
+  assert.equal(row.status, "warn");
+  assert.match(row.hint ?? "", /docker system prune/);
+});
+
+test("diskHeadroomRow is error when free space is below 2 GiB", () => {
+  const row = diskHeadroomRow({
+    ...baseInputs,
+    diskHeadroom: { path: "/data", freeBytesOnDataFs: 1 * GiB, totalBytesOnDataFs: 50 * GiB },
+  });
+  assert.equal(row.status, "error");
+  assert.match(row.detail, /No space left on device/);
+  assert.match(row.hint ?? "", /docker system prune/);
+});
+
+test("diskHeadroomRow is info when probe returned null (unmeasured)", () => {
+  const row = diskHeadroomRow({ ...baseInputs, diskHeadroom: null });
+  assert.equal(row.status, "info");
+});
+
+test("diskHeadroomRow is info when free_bytes is null (probe failed)", () => {
+  const row = diskHeadroomRow({
+    ...baseInputs,
+    diskHeadroom: { path: "/data", freeBytesOnDataFs: null, totalBytesOnDataFs: null },
+  });
+  assert.equal(row.status, "info");
+});
+
+test("diskHeadroomRow hint does not suggest deleting data automatically", () => {
+  const errorRow = diskHeadroomRow({
+    ...baseInputs,
+    diskHeadroom: { path: "/data", freeBytesOnDataFs: 500 * 1024 * 1024, totalBytesOnDataFs: 50 * GiB },
+  });
+  // The hint must never suggest automatic data deletion.
+  assert.ok(
+    !(errorRow.hint ?? "").toLowerCase().includes("auto-delete") &&
+      !(errorRow.hint ?? "").toLowerCase().includes("automatically delete"),
+    "hint must not suggest automatic data deletion"
+  );
 });

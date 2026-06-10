@@ -22,6 +22,8 @@ import {
   buildDeploymentDiagnostics,
   buildEnvironmentReport,
   computeParticipation,
+  DISK_ERROR_BYTES,
+  DISK_WARN_BYTES,
   shouldAttemptSemanticUplift,
 } from '../server/deployment-diagnostics.ts';
 import { startServer } from '../server/index.js';
@@ -676,4 +678,81 @@ test('physical footprint block carries no secrets, payloads, or URLs beyond rela
   }
   const blob = JSON.stringify(report.database);
   assert.ok(!blob.includes('should-never-appear'), 'no env/secret leaks into the database block');
+});
+
+// ─── disk headroom ──────────────────────────────────────────────────────────
+
+function buildWithDisk(diskHeadroom) {
+  return buildDeploymentDiagnostics({
+    backend: null,
+    db: null,
+    dbPath: ':memory:',
+    manifests: [],
+    indexState: null,
+    env: {},
+    diskHeadroom,
+  });
+}
+
+test('disk_headroom block is null when not supplied', () => {
+  const report = buildWithDisk(undefined);
+  assert.equal(report.disk_headroom, null);
+  // low_disk_headroom warning must not fire when headroom is unmeasured.
+  assert.ok(!report.warnings.some((w) => w.code === 'low_disk_headroom'));
+});
+
+test('disk_headroom block is null when probe returned null free_bytes', () => {
+  const report = buildWithDisk({ path: '/data', free_bytes: null, total_bytes: null });
+  assert.ok(report.disk_headroom !== null, 'block present but with null values');
+  assert.equal(report.disk_headroom.free_bytes, null);
+  assert.ok(!report.warnings.some((w) => w.code === 'low_disk_headroom'));
+});
+
+test('no low_disk_headroom warning when free space exceeds warn threshold', () => {
+  const report = buildWithDisk({
+    path: '/data',
+    free_bytes: DISK_WARN_BYTES + 1,
+    total_bytes: 100 * 1024 * 1024 * 1024,
+  });
+  assert.equal(report.disk_headroom?.free_bytes, DISK_WARN_BYTES + 1);
+  assert.ok(!report.warnings.some((w) => w.code === 'low_disk_headroom'));
+});
+
+test('low_disk_headroom warning fires when free space is below warn threshold', () => {
+  const report = buildWithDisk({
+    path: '/data',
+    free_bytes: DISK_WARN_BYTES - 1,
+    total_bytes: 100 * 1024 * 1024 * 1024,
+  });
+  const warning = report.warnings.find((w) => w.code === 'low_disk_headroom');
+  assert.ok(warning, 'low_disk_headroom warning must fire below warn threshold');
+  assert.match(warning.message, /docker system prune/);
+});
+
+test('low_disk_headroom warning fires (critically) when free space is below error threshold', () => {
+  const report = buildWithDisk({
+    path: '/data',
+    free_bytes: DISK_ERROR_BYTES - 1,
+    total_bytes: 50 * 1024 * 1024 * 1024,
+  });
+  const warning = report.warnings.find((w) => w.code === 'low_disk_headroom');
+  assert.ok(warning, 'low_disk_headroom warning must fire below error threshold');
+  assert.match(warning.message, /No space left on device/);
+  // Must not suggest automatic data deletion.
+  assert.ok(
+    !warning.message.toLowerCase().includes('auto-delete') &&
+      !warning.message.toLowerCase().includes('automatically delete'),
+    'warning must not suggest automatic data deletion',
+  );
+});
+
+test('disk_headroom block carries path, free_bytes, and total_bytes from input', () => {
+  const report = buildWithDisk({
+    path: '/mnt/data',
+    free_bytes: 10 * 1024 * 1024 * 1024,
+    total_bytes: 200 * 1024 * 1024 * 1024,
+  });
+  assert.equal(report.disk_headroom?.path, '/mnt/data');
+  assert.equal(report.disk_headroom?.free_bytes, 10 * 1024 * 1024 * 1024);
+  assert.equal(report.disk_headroom?.total_bytes, 200 * 1024 * 1024 * 1024);
 });

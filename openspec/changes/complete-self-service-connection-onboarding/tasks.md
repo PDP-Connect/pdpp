@@ -79,7 +79,7 @@ Progress note: live proof gates were not flipped in this tranche. Static-secret 
 - [x] 9.6 Rebuild Sources/Connections IA so existing working data, add-new-account support, pending setup, and repair/reconnect actions are distinct on the first screen.
 - [ ] 9.7 Productize browser-bound add-account setup as an in-dashboard owner browser flow, absorbing or superseding `add-browser-collector-enrollment-primitive`.
 - [x] 9.8 Add clean-shell package freshness tests for every command rendered in normal owner UI before re-enabling any source setup CLI previews.
-- [ ] 9.9 Add deployment disk/headroom readiness checks for data-heavy reference restarts.
+- [x] 9.9 Add deployment disk/headroom readiness checks for data-heavy reference restarts.
 
 Progress note (9.4, 9.8): the owner-journey acceptance harness ships at
 `scripts/check-owner-journey-acceptance.mjs` (+ pure modules under

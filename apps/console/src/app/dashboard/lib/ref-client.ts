@@ -994,9 +994,17 @@ export interface DeploymentDiagnostics {
       | "download_disabled"
       | "vector_index_fallback"
       | "browser_connectors_need_collector"
-      | "collector_protocol_outdated";
+      | "collector_protocol_outdated"
+      | "low_disk_headroom";
     message: string;
   }>;
+  // Optional: absent on older servers. null when the probe failed or is not
+  // available (exotic FS, missing stat permission).
+  disk_headroom?: {
+    path: string;
+    free_bytes: number | null;
+    total_bytes: number | null;
+  } | null;
 }
 
 export async function getDeploymentDiagnostics(): Promise<DeploymentDiagnostics> {

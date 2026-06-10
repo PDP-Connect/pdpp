@@ -16,8 +16,15 @@ export interface ReadinessRow {
   status: ReadinessStatus;
 }
 
+export interface DiskHeadroomInputs {
+  freeBytesOnDataFs: number | null;
+  path: string | null;
+  totalBytesOnDataFs: number | null;
+}
+
 export interface ServerInputs {
   databasePath: string;
+  diskHeadroom: DiskHeadroomInputs | null;
   embeddingBackendAvailable: boolean;
   embeddingBackendConfigured: boolean;
   embeddingDownloadAllowed: boolean | null;
@@ -39,6 +46,7 @@ export function extractReadinessInputs(report: DeploymentDiagnostics): ServerInp
   const envByName = new Map(report.environment.map((e) => [e.name, e]));
   const owner = envByName.get("PDPP_OWNER_PASSWORD");
   const origin = envByName.get("PDPP_REFERENCE_ORIGIN");
+  const dh = report.disk_headroom ?? null;
   return {
     ownerPasswordProvenance: owner?.provenance ?? "absent",
     referenceOriginConfigured: origin?.provenance === "present" ? origin.value : null,
@@ -49,6 +57,13 @@ export function extractReadinessInputs(report: DeploymentDiagnostics): ServerInp
     vectorIndexKind: report.semantic.index.kind,
     vectorIndexState: report.semantic.index.state,
     databasePath: report.database.path,
+    diskHeadroom: dh
+      ? {
+          path: dh.path,
+          freeBytesOnDataFs: dh.free_bytes,
+          totalBytesOnDataFs: dh.total_bytes,
+        }
+      : null,
   };
 }
 
@@ -191,6 +206,55 @@ export function refreshTokenRow(probe: RefreshTokenProbe): ReadinessRow {
     status: "error",
     detail: "Authorization-server metadata does not advertise `refresh_token`.",
     hint: "Reference image is too old to advertise `refresh_token`. `docker compose pull` to the current image.",
+  };
+}
+
+// 2 GiB — below this a Docker build or reference restart is very likely to OOD.
+const DISK_ERROR_BYTES = 2 * 1024 * 1024 * 1024;
+// 5 GiB — warn so the operator can act before the error threshold.
+const DISK_WARN_BYTES = 5 * 1024 * 1024 * 1024;
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
+  }
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(0)} MiB`;
+  }
+  return `${(bytes / 1024).toFixed(0)} KiB`;
+}
+
+export function diskHeadroomRow(inputs: ServerInputs): ReadinessRow {
+  const dh = inputs.diskHeadroom;
+  if (!dh || dh.freeBytesOnDataFs === null) {
+    return {
+      check: "Disk headroom",
+      status: "info",
+      detail: "Disk headroom could not be measured on this filesystem.",
+    };
+  }
+  const free = dh.freeBytesOnDataFs;
+  const label = dh.path ? ` on ${dh.path}` : "";
+  if (free < DISK_ERROR_BYTES) {
+    return {
+      check: "Disk headroom",
+      status: "error",
+      detail: `Only ${formatBytes(free)} free${label}. A restart or image build will very likely fail with "No space left on device".`,
+      hint: "Run `docker system prune --volumes` to reclaim build cache and stopped containers, or remove unneeded data. Do not delete connector data automatically.",
+    };
+  }
+  if (free < DISK_WARN_BYTES) {
+    return {
+      check: "Disk headroom",
+      status: "warn",
+      detail: `${formatBytes(free)} free${label}. Disk space is running low.`,
+      hint: "Consider running `docker system prune` to reclaim build cache before the next restart.",
+    };
+  }
+  return {
+    check: "Disk headroom",
+    status: "ok",
+    detail: `${formatBytes(free)} free${label}.`,
   };
 }
 

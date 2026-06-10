@@ -94,6 +94,42 @@ guard_clean_tree() {
   exit 1
 }
 
+# Preflight disk headroom check.
+#
+# Fails when the filesystem hosting ROOT has < 2 GiB free (a Docker build or
+# stack restart would almost certainly hit "No space left on device").
+# Warns when < 5 GiB free (operator should prune before the next restart).
+# Thresholds match the reference diagnostics module so dashboard and script
+# agree on the boundary.
+#
+# Uses `df -k` (POSIX; available in BusyBox and macOS alike). The check runs
+# on --build-app and --build-all only — not --no-build, verify, ps, or logs.
+check_disk_headroom() {
+  local free_kb
+  free_kb="$(df -k "${ROOT}" | awk 'NR==2 {print $4}')"
+  if [[ -z "$free_kb" ]] || ! [[ "$free_kb" =~ ^[0-9]+$ ]]; then
+    echo "reference-stack: WARNING: could not probe disk headroom on ${ROOT} — skipping check." >&2
+    return 0
+  fi
+
+  local free_bytes=$(( free_kb * 1024 ))
+  local warn_bytes=$(( 5 * 1024 * 1024 * 1024 ))   # 5 GiB
+  local error_bytes=$(( 2 * 1024 * 1024 * 1024 ))   # 2 GiB
+
+  if (( free_bytes < error_bytes )); then
+    echo "reference-stack: ERROR: only $(( free_kb / 1024 / 1024 )) GiB free on ${ROOT}." >&2
+    echo "reference-stack: A Docker build or stack restart is very likely to fail with 'No space left on device'." >&2
+    echo "reference-stack: Run: docker system prune --volumes" >&2
+    echo "reference-stack: Do NOT delete connector data automatically." >&2
+    exit 1
+  fi
+
+  if (( free_bytes < warn_bytes )); then
+    echo "reference-stack: WARNING: only $(( free_kb / 1024 / 1024 )) GiB free on ${ROOT}." >&2
+    echo "reference-stack: Consider running 'docker system prune' before restarting." >&2
+  fi
+}
+
 service_container() {
   "${COMPOSE[@]}" ps -q "$1"
 }
@@ -205,12 +241,14 @@ case "$cmd" in
     case "$mode" in
       --build-app)
         guard_clean_tree
+        check_disk_headroom
         inject_revision
         "${COMPOSE[@]}" build reference web neko-allocator
         "${COMPOSE[@]}" up -d --no-build "${SERVICES[@]}"
         ;;
       --build-all)
         guard_clean_tree
+        check_disk_headroom
         inject_revision
         "${COMPOSE[@]}" up -d --build "${SERVICES[@]}"
         ;;
