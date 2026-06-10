@@ -13,6 +13,7 @@ Progress note: implementation centralizes the setup-plan model and points consol
 - [x] 2.2 Render the add-connection page as a low-copy source picker plus one primary owner next step, with advanced route/runbook details behind disclosure.
 - [x] 2.3 Show deployment-readiness blockers separately from per-connection owner actions.
 - [x] 2.4 Preserve proof-gated and unsupported states as visible, honest outcomes without dead-end or false-supported copy.
+- [x] 2.5 Remove connector-specific data-source labels, examples, and credential copy from Console setup code; render source setup from manifests, setup plans, and connector-authored descriptors instead.
 
 ## 3. Owner-Agent, CLI, and SDK-Style Setup Parity
 

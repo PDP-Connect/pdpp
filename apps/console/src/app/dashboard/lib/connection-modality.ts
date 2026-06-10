@@ -12,22 +12,16 @@
  *
  * The proven console creation primitive is device-exporter enrollment via the
  * cookie-authed `POST /_ref/device-exporters/enrollment-codes` route (surfaced at
- * `/dashboard/device-exporters`). That path is one-click for filesystem-class
- * collectors (`claude_code`, `codex`). It can also mint a browser_collector code
- * for Amazon, but that remains a manual owner-run proof path: the owner must run
- * the monorepo browser collector against a real local browser session. Do not
- * advertise it as a one-click browser-bound flow until the committed live proof
- * flips the owner-agent intent route. Static-secret API sources use the
- * owner-session draft path and connector-owned setup metadata, not console-side
- * connector labels or credential fields. The remaining API/network sources
- * (Notion, Oura, Spotify, …) have no owner connect route at all and remain
- * flatly unsupported from the console.
+ * `/dashboard/device-exporters`). Static-secret API sources use the owner-session
+ * draft path and connector-owned setup metadata, not console-side connector
+ * labels or credential fields. The console renders connector display names from
+ * manifests and setup plans; this module must not carry provider-specific UI
+ * labels, example lists, or credential-field copy.
  *
- * The add-connection picker reads shipped manifests for the full catalog, while
- * this module adds console-only labels and copy around the shared setup plan. If
- * the reference gains a new supported setup path, update the shared planner
- * first; console, owner-agent REST, CLI, and SDK-style projections should all
- * consume that same plan.
+ * The add-connection picker reads shipped manifests for the full catalog. If the
+ * reference gains a new supported setup path, update the shared planner first;
+ * console, owner-agent REST, CLI, and SDK-style projections should all consume
+ * that same plan.
  */
 
 import {
@@ -54,48 +48,21 @@ export const SUPPORTED_LOCAL_COLLECTOR_CONNECTORS = SHARED_SUPPORTED_LOCAL_COLLE
 
 /**
  * Browser-bound connectors for which the console can honestly mint an
- * enrollment code and generate the manual monorepo runner commands today. This
- * is intentionally narrower than `BROWSER_BOUND_CONNECTORS`: most browser-bound
- * manifests can be classified for row/action honesty, but only Amazon has the
- * local-device runner profile and proof-run runbook needed for a supported
- * console path before the one-click intent flip.
+ * enrollment code and generate manual runner commands today. This is
+ * intentionally narrower than `BROWSER_BOUND_CONNECTORS`: most browser-bound
+ * manifests can be classified for row/action honesty, but only a proven subset
+ * has the runner profile and proof-run runbook needed for a supported console
+ * path before the one-click intent flip.
  */
 export const SUPPORTED_BROWSER_COLLECTOR_CONNECTORS = SHARED_SUPPORTED_BROWSER_COLLECTOR_CONNECTORS;
 
 /**
  * Connector creation modalities the console understands, matching the backend
  * intent route's taxonomy. `local_collector` is the only one-click path the
- * console can complete today; the manual Amazon proof-run path is modeled by the
+ * console can complete today; manual browser proof paths are modeled by the
  * supported browser-collector set above, not by flipping this modality.
  */
 export type ConnectionAddModality = "local_collector" | "browser_bound" | "api_network";
-
-/** Owner-meaningful display name for a supported local-collector connector key. */
-export function localCollectorConnectorLabel(connectorId: SupportedLocalCollectorConnector): string {
-  switch (connectorId) {
-    case "claude_code":
-      return "Claude Code";
-    case "codex":
-      return "Codex";
-    default: {
-      // Exhaustiveness guard: a new supported key must add a label above.
-      const _exhaustive: never = connectorId;
-      return _exhaustive;
-    }
-  }
-}
-
-/** Owner-meaningful display name for a supported manual browser collector. */
-export function browserCollectorConnectorLabel(connectorId: SupportedBrowserCollectorConnector): string {
-  switch (connectorId) {
-    case "amazon":
-      return "Amazon";
-    default: {
-      const _exhaustive: never = connectorId;
-      return _exhaustive;
-    }
-  }
-}
 
 /** True when this connector key can be created from the console today. */
 export function isSupportedLocalCollectorConnector(
@@ -111,41 +78,6 @@ export function isSupportedBrowserCollectorConnector(
   return sharedIsSupportedBrowserCollectorConnector(connectorId);
 }
 
-/**
- * One honestly-unsupported connection modality, with a human exemplar, the
- * exact missing primitive for reviewers, and plain-language dashboard copy.
- * The technical primitive stays worded to agree with the backend
- * `unsupportedReason` so the console and the trusted-agent surface tell the same
- * truth without forcing implementation jargon into the visible dashboard row.
- */
-export interface UnsupportedAddModality {
-  /** Representative connector names so the owner recognizes the class. */
-  examples: readonly string[];
-  /** Short owner-facing label for the class of connectors. */
-  label: string;
-  /** The exact reference primitive that does not yet exist. */
-  missingPrimitive: string;
-  modality: Exclude<ConnectionAddModality, "local_collector">;
-  /** Plain-language dashboard copy explaining why the flow is unavailable. */
-  ownerFacingReason: string;
-  /**
-   * Optional repo doc path with the owner-run procedure that *does* work today,
-   * for a modality whose primitive ships but whose one-click flow is gated on
-   * committed proof. Rendered inline as a `code` path (matching the console's
-   * existing `docs/operator/*` references), never as an "Add connection" button —
-   * pointing at the documented manual path is honest discoverability, not an
-   * advertised next step the reference has not yet proven.
-   */
-  runbookPath?: string;
-}
-
-/**
- * The connection modalities the console cannot create today. Amazon is no longer
- * listed here: it has a supported manual browser_collector enrollment path. Each
- * remaining entry names the precise missing primitive and a plain owner-facing
- * reason so the copy can be honest without implying the owner can complete the
- * flow here.
- */
 /**
  * Connector keys whose manifest declares a `browser` binding — the browser-bound
  * class the backend intent route classifies as `browser_bound`
@@ -195,25 +127,3 @@ export function isBrowserBoundConnector(connectorId: string | null | undefined):
 
 /** The browser-bound runbook path, surfaced verbatim by console guidance. */
 export const BROWSER_BOUND_RUNBOOK_PATH = SHARED_BROWSER_BOUND_RUNBOOK_PATH;
-
-export const UNSUPPORTED_ADD_MODALITIES: readonly UnsupportedAddModality[] = [
-  {
-    modality: "browser_bound",
-    label: "Browser-bound sources",
-    examples: ["Chase", "ChatGPT"],
-    missingPrimitive:
-      "a connector-specific browser-collector runner path and committed proof before the console can generate setup steps; Amazon is the current manual proof-run path",
-    ownerFacingReason:
-      "needs a supported browser-collector run profile and real owner-logged-in browser proof before the console can generate setup commands",
-    runbookPath: BROWSER_BOUND_RUNBOOK_PATH,
-  },
-  {
-    modality: "api_network",
-    label: "API / network sources",
-    examples: ["Notion", "Spotify"],
-    missingPrimitive:
-      "a standalone owner API-connect route — today an API connection only materializes implicitly on first ingest",
-    ownerFacingReason:
-      "needs an owner-approved API connection flow; today these connections appear only after a connector has ingested data",
-  },
-] as const;

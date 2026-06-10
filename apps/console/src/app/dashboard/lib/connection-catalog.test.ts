@@ -25,6 +25,16 @@ import {
   unsupportedNetworkEntries,
 } from "./connection-catalog.ts";
 
+const FIRST_PARTY_REGISTRY_PREFIX = "https://registry.pdpp.org/connectors/";
+const TRAILING_SLASH_RE = /\/$/;
+
+function canonicalKeyFromManifestId(connectorId: string): string {
+  if (connectorId.startsWith(FIRST_PARTY_REGISTRY_PREFIX)) {
+    return connectorId.slice(FIRST_PARTY_REGISTRY_PREFIX.length).replace(TRAILING_SLASH_RE, "");
+  }
+  return connectorId;
+}
+
 async function loadCommittedManifests(): Promise<CatalogManifestLike[]> {
   // This test file lives at apps/console/src/app/dashboard/lib/; the repo root is
   // six segments up (lib → dashboard → app → src → console → apps → root).
@@ -108,10 +118,11 @@ test("no browser-bound or API/network connector is one-click-creatable", async (
       assert.equal(entry.enrollmentKey, undefined);
     }
     if (entry.modality === "api_network") {
-      // A network-class connector is either flatly unsupported OR a static-secret
-      // connector with a draft-create path OR a provider-authorization connector
-      // blocked/proof-gated by the shared planner. None is one-click-creatable
-      // from the console (no enrollment deep-link).
+      // A network-class connector is either flatly unsupported OR a
+      // manifest-authored static-secret connector with a draft-create path OR a
+      // provider-authorization connector blocked/proof-gated by the shared
+      // planner. None is one-click-creatable from the console (no enrollment
+      // deep-link).
       assert.ok(
         entry.disposition === "api_network_unsupported" ||
           entry.disposition === "static_secret_connect" ||
@@ -124,13 +135,27 @@ test("no browser-bound or API/network connector is one-click-creatable", async (
   }
 });
 
-test("gmail and github are static-secret connect entries, not flatly unsupported", async () => {
-  // Gmail/GitHub gained an owner-session static-secret draft-create path. They
-  // must route to the static_secret_connect disposition (real path, runbook,
-  // live-proof-gated) — never the api_network_unsupported "appears only after
-  // first ingest" bucket, which is now false for them. They must NOT deep-link.
-  const catalog = buildConnectorCatalog(await loadCommittedManifests());
-  for (const key of ["gmail", "github"]) {
+function staticSecretManifestKeys(manifests: readonly CatalogManifestLike[]): string[] {
+  return manifests
+    .filter((manifest) => {
+      const setup = manifest.setup as ({ credential_capture?: unknown } | null | undefined);
+      return typeof setup?.credential_capture === "object" && setup.credential_capture !== null;
+    })
+    .map((manifest) => manifest.connector_key ?? manifest.connector_id)
+    .filter((key): key is string => typeof key === "string" && key.length > 0)
+    .map(canonicalKeyFromManifestId);
+}
+
+test("static-secret manifests are connect entries, not flatly unsupported", async () => {
+  // Static-secret connectors declare their setup form in the connector manifest.
+  // The catalog must route every such manifest to the static_secret_connect
+  // disposition — never the api_network_unsupported bucket — without naming the
+  // current providers in Console code.
+  const manifests = await loadCommittedManifests();
+  const staticSecretKeys = staticSecretManifestKeys(manifests);
+  assert.ok(staticSecretKeys.length >= 1, "expected at least one committed static-secret manifest");
+  const catalog = buildConnectorCatalog(manifests);
+  for (const key of staticSecretKeys) {
     const entry = catalog.find((e) => e.connectorKey === key);
     assert.ok(entry, `${key} must be in the catalog`);
     assert.equal(entry.modality, "api_network");
@@ -140,16 +165,18 @@ test("gmail and github are static-secret connect entries, not flatly unsupported
 });
 
 test("other network connectors stay flatly api_network_unsupported", async () => {
-  // Only gmail/github are static-secret. The remaining network-class connectors
-  // (notion, oura, pocket, spotify, strava, ynab) still have no owner connect
-  // route and must stay in the honest api_network_unsupported bucket.
-  const catalog = buildConnectorCatalog(await loadCommittedManifests());
+  // Network-class connectors without static-secret or provider-auth setup
+  // metadata still have no owner connect route and must stay in the honest
+  // api_network_unsupported bucket.
+  const manifests = await loadCommittedManifests();
+  const staticSecretKeys = new Set(staticSecretManifestKeys(manifests));
+  const catalog = buildConnectorCatalog(manifests);
   const stillUnsupported = catalog.filter(
     (e) => e.modality === "api_network" && e.disposition === "api_network_unsupported"
   );
   assert.ok(stillUnsupported.length >= 1, "expected non-static-secret network connectors to remain unsupported");
   for (const entry of stillUnsupported) {
-    assert.equal(entry.connectorKey === "gmail" || entry.connectorKey === "github", false);
+    assert.equal(staticSecretKeys.has(entry.connectorKey), false);
   }
 });
 

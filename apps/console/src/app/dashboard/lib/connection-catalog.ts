@@ -63,12 +63,12 @@ export type CatalogModality = ConnectorIntentModality;
  *   not in the console's proven enrollment set yet; the local-collector path
  *   exists in principle but this connector has no committed console proof, so it
  *   is shown without a deep-link rather than mislabeled as an API source.
- * - `browser_collector_manual` — Amazon's committed manual browser-collector
- *   proof path (deep-links to mint a code; the owner finishes the run locally).
+ * - `browser_collector_manual` — a committed manual browser-collector proof
+ *   path (deep-links to mint a code; the owner finishes the run locally).
  * - `browser_bound_runbook` — a browser-bound connector with no generated console
  *   path yet; visible and pointed at the runbook, but NOT deep-linked.
- * - `static_secret_connect` — a network-class connector (Gmail, GitHub) whose
- *   first connection is created via the owner-session static-secret draft path.
+ * - `static_secret_connect` — a network-class connector whose first connection
+ *   is created via the owner-session static-secret draft path.
  *   A real owner connect route exists; the picker links to that owner-session
  *   capture form, not to local-device enrollment, and the connection stays
  *   hidden until first ingest accepts records.
@@ -180,7 +180,7 @@ export function localCollectorUnprovenEntries(catalog: readonly ConnectorCatalog
   return catalog.filter((e) => e.disposition === "local_collector_unproven");
 }
 
-/** Catalog entries with the manual browser-collector proof path (Amazon today). */
+/** Catalog entries with a manual browser-collector proof path. */
 export function browserCollectorEntries(catalog: readonly ConnectorCatalogEntry[]): ConnectorCatalogEntry[] {
   return catalog.filter((e) => e.disposition === "browser_collector_manual");
 }
@@ -191,10 +191,10 @@ export function browserBoundRunbookEntries(catalog: readonly ConnectorCatalogEnt
 }
 
 /**
- * Static-secret entries (Gmail, GitHub): a real owner-session draft-create path,
- * surfaced through the owner-session static-secret form plus runbook/proof
- * caveat. These carry no `enrollmentKey` because they never deep-link into the
- * local-device enrollment form.
+ * Static-secret entries: a real owner-session draft-create path surfaced through
+ * the owner-session static-secret form plus runbook/proof caveat. These carry no
+ * `enrollmentKey` because they never deep-link into the local-device enrollment
+ * form.
  */
 export function staticSecretConnectEntries(catalog: readonly ConnectorCatalogEntry[]): ConnectorCatalogEntry[] {
   return catalog.filter((e) => e.disposition === "static_secret_connect");

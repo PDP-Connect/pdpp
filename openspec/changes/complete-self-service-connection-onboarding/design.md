@@ -180,6 +180,21 @@ Docker's `generate-secrets.sh --write` fills the env-var provider by default.
 When no provider is configured, setup SHALL block before provider-secret entry
 and draft creation SHALL fail closed before writing a row.
 
+### 9. Connector-related Console UI is data-driven, not provider-curated
+
+The RI Console may render concrete AI-client setup commands for known client
+software, but data-source setup UI must not own connector-specific labels,
+examples, field copy, help links, or credential names. Connector display names
+come from manifests; setup support, proof gates, deployment blockers, and action
+shape come from the shared setup engine; static-secret form fields and help
+links come from connector-authored setup descriptors.
+
+This means a future connector with equivalent manifest/setup metadata should
+appear in the add-source picker and render the correct owner next step without a
+Console code change. A connector that needs a new runtime primitive still
+requires setup-engine support, but the UI should display that engine response
+generically rather than adding a provider-specific branch.
+
 ## Risks / Trade-offs
 
 - **Risk: the setup engine becomes a large abstraction.** Mitigation: keep it as

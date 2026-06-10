@@ -121,7 +121,7 @@ function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
     case "browser_collector_manual":
       return "Start browser setup, then finish from an owner-logged-in browser. Repeat setup for another account.";
     case "static_secret_connect":
-      return "Enter the provider secret in the protected setup form. Submit again to add another mailbox or account.";
+      return "Enter the required provider credential in the protected setup form. Submit again to add another account.";
     case "provider_auth_deployment_blocked":
       return `Configure instance-level provider app material first: ${entry.deploymentReadiness.blockers
         .map((blocker) => blocker.label || blocker.key)
@@ -247,7 +247,7 @@ function SourceSetupSection({
           defaultValue={query}
           id="source_q"
           name="source_q"
-          placeholder="Search Amazon, Gmail, Slack, ChatGPT..."
+          placeholder="Search source name or connector key"
         />
         <Button size="sm" type="submit" variant="outline">
           Search
@@ -261,7 +261,7 @@ function SourceSetupSection({
         </ul>
       ) : (
         <p className="pdpp-caption rounded-md border border-border/80 border-dashed p-4 text-muted-foreground">
-          No connector matched <span className="font-medium text-foreground">{query}</span>. Try the provider name or
+          No connector matched <span className="font-medium text-foreground">{query}</span>. Try the source name or
           connector key.
         </p>
       )}

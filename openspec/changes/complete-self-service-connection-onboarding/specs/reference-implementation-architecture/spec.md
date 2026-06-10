@@ -98,3 +98,31 @@ setup UI contract.
   is already configured
 - **AND** Docker/Kubernetes-style deployments MAY instead mount a secret file and
   point `PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE` at it
+
+### Requirement: Source setup UI SHALL be generated from connector manifests and setup plans
+
+Reference implementation data-source setup UI SHALL render connector identity,
+setup support, owner next steps, proof gates, deployment blockers, credential
+field labels, and help links from connector manifests, connector-authored setup
+descriptors, and the shared setup engine. It SHALL NOT carry provider-specific
+data-source labels, example lists, credential-field copy, or help links in the
+Console UI layer.
+
+#### Scenario: Future connector declares equivalent setup metadata
+
+- **WHEN** a future connector manifest declares display metadata, runtime
+  bindings, and setup metadata matching an already-supported setup modality
+- **THEN** the Console source picker SHALL render that connector and its owner
+  next step from the manifest and shared setup plan
+- **AND** no Console UI code change SHALL be required solely to add the
+  connector's display name, provider examples, credential field labels, or help
+  links
+
+#### Scenario: Connector requires a new primitive
+
+- **WHEN** a connector's manifest describes a setup modality for which the
+  reference lacks an implemented setup primitive or proof gate
+- **THEN** the setup engine SHALL return a typed unsupported, proof-gated, or
+  deployment-readiness state
+- **AND** the Console SHALL render that state generically rather than adding a
+  provider-specific UI branch
