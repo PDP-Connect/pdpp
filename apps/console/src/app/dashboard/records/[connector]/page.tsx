@@ -37,6 +37,7 @@ import {
 } from "../../lib/rs-client.ts";
 import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } from "../connection-route.ts";
 import { findManifestForConnectorId } from "../lib/relationships.ts";
+import { ConnectionDangerZone } from "./connection-danger-zone.tsx";
 import { ConnectionDiagnostics } from "./connection-diagnostics.tsx";
 import { RenameConnection } from "./rename-connection.tsx";
 import { StreamCollectionFactsLine } from "./stream-collection-facts.tsx";
@@ -121,9 +122,16 @@ function toConnectorOverview(summary: RefConnectorSummary, streams: StreamSummar
   };
 }
 
-export default async function ConnectorPage({ params }: { params: Promise<{ connector: string }> }) {
+export default async function ConnectorPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ connector: string }>;
+  searchParams: Promise<{ error?: string; message?: string }>;
+}) {
   const { connector } = await params;
   const routeId = decodeURIComponent(connector);
+  const sp = await searchParams;
 
   let model: ConnectorPageModel;
   try {
@@ -140,7 +148,7 @@ export default async function ConnectorPage({ params }: { params: Promise<{ conn
     throw err;
   }
 
-  return <ConnectorPageView model={model} />;
+  return <ConnectorPageView dangerError={sp.error} dangerMessage={sp.message} model={model} />;
 }
 
 async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageModel> {
@@ -263,7 +271,15 @@ async function loadConnectorDiagnostics(
   return { schedule, scheduleError, sourceInstances, sourceInstancesError };
 }
 
-function ConnectorPageView({ model }: { model: ConnectorPageModel }) {
+function ConnectorPageView({
+  model,
+  dangerMessage,
+  dangerError,
+}: {
+  model: ConnectorPageModel;
+  dangerMessage?: string;
+  dangerError?: string;
+}) {
   const {
     collectionFactsByStream,
     connectionHealth,
@@ -441,6 +457,12 @@ function ConnectorPageView({ model }: { model: ConnectorPageModel }) {
           </DataList>
         )}
       </Section>
+
+      <ConnectionDangerZone
+        connectionId={connectorInstanceId ?? connectionId}
+        error={dangerError}
+        message={dangerMessage}
+      />
     </DashboardShell>
   );
 }
