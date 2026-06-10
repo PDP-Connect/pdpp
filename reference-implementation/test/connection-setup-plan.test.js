@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   BROWSER_BOUND_RUNBOOK_PATH,
   STATIC_SECRET_RUNBOOK_PATH,
+  STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS,
   buildConnectionSetupPlan,
   classifyConnectorIntentModality,
   classifyConnectorSetupModality,
@@ -103,7 +104,8 @@ test('setup planner keeps browser-bound connectors proof-gated before live proof
   assert.equal(chase.enrollmentKey, undefined);
 });
 
-test('setup planner keeps static-secret connectors proof-gated before live proof', () => {
+test('setup planner keeps unproven static-secret connectors proof-gated', () => {
+  // 'mailbox' is synthetic and absent from STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS.
   const plan = buildConnectionSetupPlan({
     connectorKey: 'mailbox',
     manifest: staticSecretManifest('mailbox', 'app_password'),
@@ -117,6 +119,29 @@ test('setup planner keeps static-secret connectors proof-gated before live proof
   assert.equal(plan.ownerAgentIntent.nextStepKind, 'capture_static_secret');
   assert.equal(plan.proofGate, 'static_secret_live_proof_missing');
   assert.equal(plan.runbookPath, STATIC_SECRET_RUNBOOK_PATH);
+});
+
+test('setup planner marks live-proven static-secret connectors as supported', () => {
+  // Live proof recorded 2026-06-10T22:55Z: env-free container, store-backed runs.
+  //   gmail  run_1781131328336 succeeded
+  //   github run_1781131195649 succeeded + run_1781131489458 scheduled/unattended succeeded
+  //   slack  run_1781131204868 succeeded
+  for (const connectorKey of STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS) {
+    const plan = buildConnectionSetupPlan({
+      connectorKey,
+      manifest: staticSecretManifest(connectorKey, 'app_password'),
+    });
+    assert.equal(plan.connectorModality, 'api_network', `${connectorKey}: connectorModality`);
+    assert.equal(plan.setupModality, 'static_secret', `${connectorKey}: setupModality`);
+    assert.equal(plan.supportState, 'supported', `${connectorKey}: supportState`);
+    assert.equal(plan.catalogDisposition, 'static_secret_connect', `${connectorKey}: catalogDisposition`);
+    assert.equal(plan.nextStepKind, 'capture_static_secret', `${connectorKey}: nextStepKind`);
+    assert.equal(plan.ownerAgentIntent.status, 'supported', `${connectorKey}: ownerAgentIntent.status`);
+    assert.equal(plan.ownerAgentIntent.method, 'POST', `${connectorKey}: ownerAgentIntent.method`);
+    assert.equal(plan.ownerAgentIntent.nextStepKind, 'capture_static_secret', `${connectorKey}: ownerAgentIntent.nextStepKind`);
+    assert.equal(plan.proofGate, null, `${connectorKey}: proofGate`);
+    assert.equal(plan.runbookPath, null, `${connectorKey}: runbookPath`);
+  }
 });
 
 test('setup planner does not infer static-secret setup from connector id alone', () => {
