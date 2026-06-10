@@ -319,6 +319,7 @@ function ConnectorPageView({
   // no scattered string checks.
   const primaryAction = derivePrimaryRowAction({
     connectorId,
+    health: overview.connectionHealth ?? null,
     hasLocalDeviceProgress: Boolean(overview.localDeviceProgress),
   });
   const syncIdleLabel = syncActionIdleLabel(overview.lastRun?.status);

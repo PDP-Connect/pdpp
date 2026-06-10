@@ -1635,6 +1635,33 @@ test("derivePrimaryRowAction keeps Sync now for an existing browser-bound connec
   assert.equal(derivePrimaryRowAction({ connectorId: "amazon", hasLocalDeviceProgress: false }).kind, "sync");
 });
 
+test("derivePrimaryRowAction disables ordinary sync during source-pressure cooldown", () => {
+  const action = derivePrimaryRowAction({
+    connectorId: "chatgpt",
+    health: snapshot({
+      state: "cooling_off",
+      reason_code: "source_pressure",
+      next_attempt_at: "2026-06-10T22:30:00.000Z",
+    }),
+    hasLocalDeviceProgress: false,
+  });
+  assert.equal(action.kind, "cooldown_wait");
+  if (action.kind === "cooldown_wait") {
+    assert.equal(action.label, "Cooling off");
+    assert.match(action.detail, /2026-06-10T22:30:00\.000Z/);
+    assert.match(action.detail, /retained/i);
+  }
+});
+
+test("derivePrimaryRowAction keeps ordinary sync for non-pressure cooling-off", () => {
+  const action = derivePrimaryRowAction({
+    connectorId: "github",
+    health: snapshot({ state: "cooling_off", reason_code: "scheduler_backoff_active" }),
+    hasLocalDeviceProgress: false,
+  });
+  assert.equal(action.kind, "sync");
+});
+
 test("derivePrimaryRowAction keeps local-device push mode non-clickable even for a browser-bound key", () => {
   const action = derivePrimaryRowAction({ connectorId: "chase", hasLocalDeviceProgress: true });
   assert.equal(action.kind, "device_wait");

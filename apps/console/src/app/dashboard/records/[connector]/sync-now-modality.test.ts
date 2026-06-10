@@ -30,6 +30,7 @@ const PAGE_FILE = `${HERE}page.tsx`;
 const IMPORTS_SHARED_CLASSIFIER =
   /import \{ (?=[^}]*derivePrimaryRowAction)(?=[^}]*type PrimaryRowAction)[^}]+ \} from "\.\.\/\.\.\/lib\/connection-evidence\.ts"/;
 const DERIVES_PRIMARY_ACTION = /const primaryAction = derivePrimaryRowAction\(\{/;
+const PRIMARY_ACTION_KEYS_HEALTH = /health: overview\.connectionHealth \?\? null/;
 const SYNC_ACTION_LABEL_FROM_LAST_RUN = /const syncIdleLabel = syncActionIdleLabel\(overview\.lastRun\?\.status\)/;
 const SYNC_BUTTON_RECEIVES_IDLE_LABEL = /idleLabel=\{syncIdleLabel\}/;
 const SYNC_BRANCH_GUARD = /primaryAction\.kind === "sync" \? \(\s*<SyncNowButton/;
@@ -49,6 +50,7 @@ test("detail page imports the shared primary-action classifier", async () => {
 test("detail page derives its primary action from the shared classifier (no scattered string checks)", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
   assert.match(src, DERIVES_PRIMARY_ACTION);
+  assert.match(src, PRIMARY_ACTION_KEYS_HEALTH);
 });
 
 test("detail page labels failed owner syncs as retryable", async () => {

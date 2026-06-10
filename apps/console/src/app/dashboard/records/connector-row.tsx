@@ -228,6 +228,7 @@ export function ConnectorRow({ labelNeeded, overview, runsHref }: RowProps) {
   // the dashboard cannot remotely pull from the operator's device.
   const primaryAction: PrimaryRowAction = derivePrimaryRowAction({
     connectorId: connector.connector_id,
+    health: connectionHealth ?? null,
     hasLocalDeviceProgress: Boolean(overview.localDeviceProgress),
   });
   const syncIdleLabel = syncActionIdleLabel(lastRun?.status);

@@ -1372,7 +1372,10 @@ export function deriveConnectionNextStep(input: {
  * Pure and JSX-free so the row stays thin and this is unit-testable without a
  * browser harness.
  */
-export type PrimaryRowAction = { kind: "sync" } | { kind: "device_wait"; detail: string; label: string };
+export type PrimaryRowAction =
+  | { kind: "sync" }
+  | { kind: "cooldown_wait"; detail: string; label: string }
+  | { kind: "device_wait"; detail: string; label: string };
 
 export type SyncActionIdleLabel = "Retry sync" | "Sync now";
 
@@ -1410,16 +1413,27 @@ export function syncStartFailureLead(phase: "before_server" | "after_server"): s
 
 export function derivePrimaryRowAction(input: {
   connectorId: string | null | undefined;
+  health?: RefConnectionHealthSnapshot | null;
   /** True when the reference has a push-mode local-device progress row for this connection. */
   hasLocalDeviceProgress: boolean;
 }): PrimaryRowAction {
-  const { hasLocalDeviceProgress } = input;
+  const { hasLocalDeviceProgress, health } = input;
   if (hasLocalDeviceProgress) {
     return {
       kind: "device_wait",
       label: "Waiting for the local device",
       detail:
         "This connection fills in when its local-collector device pushes new data — the dashboard cannot start a run. Confirm the collector is running on the host that holds the data.",
+    };
+  }
+
+  if (health?.state === "cooling_off" && health.reason_code === SOURCE_PRESSURE_REASON_CODE) {
+    return {
+      kind: "cooldown_wait",
+      label: "Cooling off",
+      detail: health.next_attempt_at
+        ? `This source is throttling PDPP, so the next ordinary sync waits until ${health.next_attempt_at}. Captured progress is retained.`
+        : "This source is throttling PDPP, so ordinary sync is paused until the next scheduled retry. Captured progress is retained.",
     };
   }
 
