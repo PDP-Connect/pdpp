@@ -126,3 +126,42 @@ Console UI layer.
   deployment-readiness state
 - **AND** the Console SHALL render that state generically rather than adding a
   provider-specific UI branch
+
+### Requirement: Normal source setup UI SHALL expose only owner-usable setup paths
+
+The reference implementation SHALL treat commands and links shown in normal
+owner source setup UI as product contracts. Normal setup UI SHALL NOT require a
+PDPP monorepo checkout, package-internal command, unpublished CLI subcommand,
+manual placeholder mapping over internal ids, or per-account deployment
+environment variable editing.
+
+#### Scenario: Browser-bound connector has only a maintainer proof path
+
+- **WHEN** a browser-bound connector has a maintainer proof path but no packaged
+  owner-usable dashboard setup flow
+- **THEN** the normal owner UI SHALL show that add-new setup is pending
+- **AND** it SHALL NOT deep-link to monorepo commands or describe that proof path
+  as manual owner setup
+
+#### Scenario: Source card would render a CLI command
+
+- **WHEN** the Console renders a source setup card
+- **THEN** any command shown on that card SHALL be available in the published
+  package/version named by the UI and pass a clean-shell invocation test
+- **AND** if that is not true, the command SHALL NOT be rendered in normal owner
+  UI
+
+### Requirement: Source setup UI SHALL distinguish existing data from add-new support
+
+The reference implementation SHALL distinguish an existing working connection
+from support for adding another account through shipped self-service setup. A
+connector MAY have existing healthy data while add-new setup is not yet
+owner-usable.
+
+#### Scenario: Existing connector data is present but add-new is not self-service
+
+- **WHEN** an owner has existing records or active connections for a connector
+  whose add-new-account setup is not packaged
+- **THEN** owner UI SHALL continue to present the existing data as usable
+- **AND** the add-source surface SHALL say that adding another account is not
+  self-service yet rather than implying the connector itself is unsupported

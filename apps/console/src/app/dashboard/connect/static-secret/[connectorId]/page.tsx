@@ -32,17 +32,33 @@ function firstValue(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
-function noticeText(params: PageSearchParams): string | null {
+function inputType(field: StaticSecretSetupField): "email" | "password" | "text" {
+  return field.type === "email" || field.type === "password" ? field.type : "text";
+}
+
+function SetupStartedNotice({ params }: { params: PageSearchParams }) {
   if (params.notice !== "first_sync_started") {
     return null;
   }
-  const connectionId = params.connection_id ? ` Connection: ${params.connection_id}.` : "";
-  const runId = params.run_id ? ` Run: ${params.run_id}.` : "";
-  return `Credential captured and first sync started.${connectionId}${runId} The connection appears after the first accepted ingest.`;
-}
-
-function inputType(field: StaticSecretSetupField): "email" | "password" | "text" {
-  return field.type === "email" || field.type === "password" ? field.type : "text";
+  const runHref = params.run_id ? `/dashboard/runs/${encodeURIComponent(params.run_id)}` : null;
+  return (
+    <div className="pdpp-caption rounded-md border border-border/80 bg-muted/30 px-4 py-2.5 text-muted-foreground">
+      <span className="text-foreground">Credential captured and first sync started.</span>{" "}
+      {params.connection_id ? (
+        <>
+          Connection <code className="font-mono">{params.connection_id}</code>.{" "}
+        </>
+      ) : null}
+      {runHref ? (
+        <Link className="underline underline-offset-2 hover:text-foreground" href={runHref}>
+          View sync progress
+        </Link>
+      ) : (
+        "Refresh Sources to check sync progress"
+      )}
+      .
+    </div>
+  );
 }
 
 export default async function StaticSecretConnectPage({
@@ -67,7 +83,6 @@ export default async function StaticSecretConnectPage({
     notice: firstValue(resolvedSearchParams.notice),
     run_id: firstValue(resolvedSearchParams.run_id),
   };
-  const notice = noticeText(pageParams);
   const readinessBlocked = setup.deployment_readiness.state !== "ready";
 
   return (
@@ -79,13 +94,13 @@ export default async function StaticSecretConnectPage({
           </Link>
         }
         breadcrumbs={[{ href: "/dashboard/records", label: "Sources" }, { label: `Add ${setup.display_name}` }]}
-        description="Create one draft connection, seal the provider secret from this owner session, and start the first sync. The connection is hidden until ingest accepts records."
+        description="Seal the provider secret from this owner session and start the first sync. The account keeps its own connection identity and credentials."
         title={`Add ${setup.display_name}`}
       />
 
       <div className="mb-5 grid gap-2">
         {pageParams.error ? <InlineNotice kind="error" message={pageParams.error} /> : null}
-        {notice ? <InlineNotice kind="notice" message={notice} /> : null}
+        <SetupStartedNotice params={pageParams} />
       </div>
 
       <Section
@@ -135,8 +150,13 @@ export default async function StaticSecretConnectPage({
                     {field.help_url ? (
                       <>
                         {" "}
-                        <a className="underline decoration-dotted underline-offset-4" href={field.help_url}>
-                          Open setup page
+                        <a
+                          className="underline decoration-dotted underline-offset-4"
+                          href={field.help_url}
+                          rel="noreferrer"
+                          target="_blank"
+                        >
+                          Open provider setup page in a new tab
                         </a>
                       </>
                     ) : null}
@@ -155,13 +175,13 @@ export default async function StaticSecretConnectPage({
 
       <Callout
         className="mt-5"
-        description="Static-secret setup is still connection-scoped: submit the form again for a second mailbox or account. Each submission creates a separate connection id."
+        description="Submit the form again for a second mailbox or account. Each submission creates a separate connection with its own stored credential."
         surface="human"
-        title="No deployment env var per account"
+        title="Add another account without changing deployment settings"
       >
         <p className="pdpp-caption text-muted-foreground">
-          The credential key provider is the instance-level prerequisite. Provider credentials are per-connection source
-          credentials, captured here instead of stored in deployment variables.
+          The deployment only needs an instance-level credential key provider. Account credentials are captured here for
+          one connection at a time.
         </p>
       </Callout>
     </DashboardShell>

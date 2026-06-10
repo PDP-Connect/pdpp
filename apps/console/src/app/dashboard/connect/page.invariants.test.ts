@@ -41,12 +41,13 @@ const BUILD_CONNECTOR_CATALOG_RE = /buildConnectorCatalog\(manifests\)/;
 const SOURCE_SETUP_SECTION_RE = /title="Add data sources"/;
 const SOURCE_SEARCH_RE = /name="source_q"[\s\S]*?Search source name or connector key/;
 const SOURCE_CARD_RE = /data-testid=\{`source-setup-\$\{entry\.connectorKey\}`\}/;
-const SOURCE_CLI_EXPLAIN_RE = /pdpp owner-agent connectors explain \$\{entry\.connectorKey\}/;
 const SOURCE_REPEATS_ACCOUNT_RE = /repeat the same setup to add another account|Repeat setup to add another device or account|Submit again to add another mailbox or account/i;
 const AGENT_SECTION_AFTER_SOURCE_RE = /<SourceSetupSection catalog=\{catalog\} query=\{sourceQuery\} \/>[\s\S]*title="Connect AI apps"/;
 const SOURCE_SETUP_BLOCK_RE = /function sourceSetupRank[\s\S]*?function ClientIdentityForm/;
 const SOURCE_PROVIDER_SPECIFIC_COPY_RE =
   /\b(Amazon|Gmail|GitHub|Slack|ChatGPT|Chase|Notion|Spotify)\b|app password|personal access token/i;
+const SOURCE_FORBIDDEN_NORMAL_COPY_RE =
+  /CLI preview|pdpp owner-agent connectors explain|Manual setup|Ready with provider secret|Track only|No setup path yet|Needs browser proof/;
 
 test("connect page derives concrete entrypoints from the running public origin", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
@@ -80,7 +81,6 @@ test("connect page leads with the shared data-source setup catalog", async () =>
   assert.match(src, SOURCE_SETUP_SECTION_RE);
   assert.match(src, SOURCE_SEARCH_RE);
   assert.match(src, SOURCE_CARD_RE);
-  assert.match(src, SOURCE_CLI_EXPLAIN_RE);
   assert.match(src, SOURCE_REPEATS_ACCOUNT_RE);
   assert.match(src, AGENT_SECTION_AFTER_SOURCE_RE);
 });
@@ -90,6 +90,7 @@ test("data-source setup UI has no connector-specific copy or examples", async ()
   const match = src.match(SOURCE_SETUP_BLOCK_RE);
   assert.ok(match, "source setup block must be discoverable for drift checks");
   assert.doesNotMatch(match[0], SOURCE_PROVIDER_SPECIFIC_COPY_RE);
+  assert.doesNotMatch(match[0], SOURCE_FORBIDDEN_NORMAL_COPY_RE);
 });
 
 test("connect page also exposes CLI and agent-readable entrypoints", async () => {

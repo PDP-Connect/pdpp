@@ -18,11 +18,23 @@ connection row unless the modality's proof boundary has been satisfied.
 #### Scenario: Static-secret setup uses draft then first-ingest activation
 
 - **WHEN** an owner starts setup for a static-secret connector
-- **THEN** the reference SHALL create or direct the owner to create an invisible
-  draft connection and capture the credential through an owner-mediated secret
-  surface
+- **THEN** the reference SHALL create or direct the owner to create a draft or
+  pending setup state and capture the credential through an owner-mediated
+  secret surface
+- **AND** the owner UI SHALL expose the pending setup or running first sync after
+  submission with the connection id, run id when present, and any actionable
+  failure state
 - **AND** the connection SHALL become active only after first successful ingest
   accepts records for that draft
+
+#### Scenario: Static-secret setup does not disappear after submission
+
+- **WHEN** an owner submits a valid static-secret setup form and the first sync
+  has not yet accepted records
+- **THEN** the reference SHALL expose a pending or running setup state to owner
+  surfaces
+- **AND** it SHALL NOT rely on an invisible draft row or transient redirect
+  notice as the only owner-visible state
 
 #### Scenario: Browser-bound setup remains proof-gated
 

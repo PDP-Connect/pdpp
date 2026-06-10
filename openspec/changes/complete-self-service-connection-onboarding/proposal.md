@@ -21,6 +21,13 @@ or runbook archaeology to add supported connections.
   advertised as supported until the corresponding end-to-end live proof exists.
 - Keep client/MCP read surfaces separate from owner setup/control surfaces; owner
   bearers and provider secrets SHALL NOT become normal MCP setup.
+- Reframe the acceptance target around the shipped owner journey: owners must be
+  able to find add-source setup, avoid developer-only commands, preserve
+  credential setup continuity, see pending/running/failed setup state, and
+  distinguish existing working data from add-new-account support.
+- Productize browser-bound source setup as an owner-usable dashboard flow in a
+  later tranche; until then, normal setup UI SHALL NOT show monorepo proof
+  commands as an owner path.
 
 ## Capabilities
 
@@ -42,8 +49,9 @@ or runbook archaeology to add supported connections.
 ## Impact
 
 - Affects reference server setup routes, owner-agent connection intent, console
-  add-connection UX, CLI/SDK setup helpers, deployment docs, connector catalog
-  copy, and setup validation tests.
+  add-source UX, CLI/SDK setup helpers, deployment docs, connector catalog copy,
+  setup lifecycle/status projection, browser-bound setup productization, and
+  setup validation tests.
 - Does not change PDPP Core grant semantics or MCP read tools.
 - Does not remove existing env-var compatibility paths immediately, but demotes
   them to fallback/dev/operator escape hatches rather than normal connection

@@ -68,3 +68,15 @@ connector-specific exchanger/inventory adapters are implemented and proven.
 - [x] 8.5 Run static-secret and browser-bound proof tests only when their live proof gates are intentionally being flipped.
 
 Progress note: live proof gates were not flipped in this tranche. Static-secret deterministic route tests ran; browser-bound live proof remains gated and therefore its live proof test was intentionally not run.
+
+## 9. Owner Journey Realignment
+
+- [x] 9.1 Update OpenSpec proposal/design/spec deltas so acceptance is the shipped owner add-source journey, not only planner parity.
+- [x] 9.2 Stop normal owner UI from advertising unpublished source-card CLI commands, raw setup-planner labels, browser-bound monorepo proof commands, or per-account deployment jargon.
+- [x] 9.3 Make static-secret credential help preserve task continuity by opening provider help in a new tab and keeping the form context.
+- [ ] 9.4 Add an owner-journey acceptance harness that fetches local/live setup surfaces, checks forbidden normal-path strings, and records evidence under `tmp/workstreams/`.
+- [ ] 9.5 Add visible pending/running/failed setup lifecycle projection for static-secret submissions, backed by setup attempt or connection-health state rather than transient redirect notices.
+- [ ] 9.6 Rebuild Sources/Connections IA so existing working data, add-new-account support, pending setup, and repair/reconnect actions are distinct on the first screen.
+- [ ] 9.7 Productize browser-bound add-account setup as an in-dashboard owner browser flow, absorbing or superseding `add-browser-collector-enrollment-primitive`.
+- [ ] 9.8 Add clean-shell package freshness tests for every command rendered in normal owner UI before re-enabling any source setup CLI previews.
+- [ ] 9.9 Add deployment disk/headroom readiness checks for data-heavy reference restarts.

@@ -195,6 +195,63 @@ Console code change. A connector that needs a new runtime primitive still
 requires setup-engine support, but the UI should display that engine response
 generically rather than adding a provider-specific branch.
 
+### 10. Owner journey acceptance overrides internal implementation completeness
+
+The corrected acceptance target is an owner journey, not a setup-planner task
+list. A self-host owner must be able to add, understand, monitor, and manage
+multiple source accounts without a PDPP repo checkout, unpublished CLI command,
+internal id mapping, or developer vocabulary.
+
+The source setup surface therefore projects three different facts separately:
+
+- existing connection/data state;
+- add-new-account support from shipped owner-usable surfaces;
+- prerequisites or blocked state when add-new is not supported yet.
+
+A connector with existing working data can still be "not self-service yet" for
+adding another account, but the UI must not make that connector look inert or
+unsupported as a data source. Conversely, a maintainer proof path does not make a
+connector owner-supported.
+
+### 11. Normal UI command surfaces are product contracts
+
+Any command rendered in normal owner UI must work from a clean target-user
+environment using the exact package/version or platform named in the UI. Commands
+that require `pnpm --dir`, `packages/...`, a PDPP monorepo checkout, unpublished
+CLI subcommands, or placeholder substitution over internal ids are
+developer/maintainer procedures and SHALL NOT appear in normal setup flows.
+
+CLI discovery and setup helpers may exist, but source cards should not advertise
+those commands until the published CLI package exposes and tests the exact
+subcommand. The owner-agent CLI can remain an advanced/trusted-agent surface; it
+is not a substitute for dashboard setup continuity.
+
+### 12. Static-secret setup needs continuity and visible lifecycle
+
+Static-secret setup remains manifest-authored and key-provider gated. The owner
+flow also needs these user-facing properties:
+
+- provider credential help opens in a new tab so the in-progress form remains
+  available;
+- required non-secret identity fields, such as an account email address, are
+  supplied by manifest setup descriptors instead of deployment env vars;
+- after submit, the owner lands on a visible setup status or running-sync state;
+- failed first sync surfaces a repair action rather than leaving an invisible
+  draft or one-time redirect notice.
+
+The current draft/first-ingest activation storage model may remain internally,
+but its state must be projected into the owner UI. Invisible post-submit state is
+not an acceptable product contract.
+
+### 13. Browser-bound setup is committed product work, not a monorepo proof path
+
+The owner decision on 2026-06-10 is to productize browser-bound setup. The SLVP
+shape is in-dashboard "finish in this browser" setup using the existing remote
+surface/interaction machinery, not a terminal command that runs package internals
+from the repo. Until that ships, browser-bound source cards use packaged-path
+pending copy and no normal owner action. Maintainer runbooks may still exist in
+advanced documentation, but they do not make the normal setup path supported.
+
 ## Risks / Trade-offs
 
 - **Risk: the setup engine becomes a large abstraction.** Mitigation: keep it as

@@ -55,9 +55,9 @@ function sourceSetupRank(entry: ConnectorCatalogEntry): number {
   switch (entry.disposition) {
     case "local_collector_enroll":
       return 0;
-    case "browser_collector_manual":
-      return 1;
     case "static_secret_connect":
+      return 1;
+    case "browser_collector_manual":
       return 2;
     case "provider_auth_deployment_blocked":
       return 3;
@@ -97,20 +97,20 @@ function filterSourceCatalog(catalog: readonly ConnectorCatalogEntry[], query: s
 function sourceSetupStatus(entry: ConnectorCatalogEntry): { label: string; tone: string } {
   switch (entry.disposition) {
     case "local_collector_enroll":
-      return { label: "Ready", tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700" };
+      return { label: "Add now", tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700" };
     case "browser_collector_manual":
-      return { label: "Manual setup", tone: "border-amber-500/30 bg-amber-500/10 text-amber-700" };
+      return { label: "Packaged path pending", tone: "border-amber-500/30 bg-amber-500/10 text-amber-700" };
     case "static_secret_connect":
-      return { label: "Ready with provider secret", tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700" };
+      return { label: "Add account", tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700" };
     case "provider_auth_deployment_blocked":
       return { label: "Deployment needed", tone: "border-amber-500/30 bg-amber-500/10 text-amber-700" };
     case "browser_bound_runbook":
-      return { label: "Needs browser proof", tone: "border-border bg-muted/30 text-muted-foreground" };
+      return { label: "Packaged path pending", tone: "border-amber-500/30 bg-amber-500/10 text-amber-700" };
     case "local_collector_unproven":
     case "provider_auth_proof_gated":
-      return { label: "Not ready yet", tone: "border-border bg-muted/30 text-muted-foreground" };
+      return { label: "Not self-service yet", tone: "border-border bg-muted/30 text-muted-foreground" };
     default:
-      return { label: "No setup path yet", tone: "border-border bg-muted/30 text-muted-foreground" };
+      return { label: "Not supported yet", tone: "border-border bg-muted/30 text-muted-foreground" };
   }
 }
 
@@ -119,7 +119,7 @@ function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
     case "local_collector_enroll":
       return "Set up the local collector on the machine that has this data. Repeat setup to add another device or account.";
     case "browser_collector_manual":
-      return "Start browser setup, then finish from an owner-logged-in browser. Repeat setup for another account.";
+      return "Browser setup will move into the dashboard. Existing collected data remains usable, but adding another account is not self-service here yet.";
     case "static_secret_connect":
       return "Enter the required provider credential in the protected setup form. Submit again to add another account.";
     case "provider_auth_deployment_blocked":
@@ -127,11 +127,9 @@ function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
         .map((blocker) => blocker.label || blocker.key)
         .join(", ")}.`;
     case "browser_bound_runbook":
-      return entry.runbookPath
-        ? `This source needs a completed browser setup proof before one-click setup is advertised. Manual path: ${entry.runbookPath}.`
-        : "This source needs a completed browser setup proof before one-click setup is advertised.";
+      return "Browser setup will move into the dashboard. Existing collected data remains usable, but adding another account is not self-service here yet.";
     case "local_collector_unproven":
-      return "This local-source connector needs a committed collector setup proof before it can be started here.";
+      return "This local-source connector needs a packaged collector path before it can be started from the normal setup flow.";
     case "provider_auth_proof_gated":
       return entry.runbookPath
         ? `Provider authorization is not fully wired yet. Tracking runbook: ${entry.runbookPath}.`
@@ -150,11 +148,6 @@ function sourceSetupAction(entry: ConnectorCatalogEntry): { href: string; label:
         href: `/dashboard/device-exporters?connector=${encodeURIComponent(entry.enrollmentKey ?? entry.connectorKey)}`,
         label: "Set up collector",
       };
-    case "browser_collector_manual":
-      return {
-        href: `/dashboard/device-exporters?connector=${encodeURIComponent(entry.enrollmentKey ?? entry.connectorKey)}`,
-        label: "Start browser setup",
-      };
     case "static_secret_connect":
       return {
         href: `/dashboard/connect/static-secret/${encodeURIComponent(entry.connectorKey)}`,
@@ -165,10 +158,6 @@ function sourceSetupAction(entry: ConnectorCatalogEntry): { href: string; label:
     default:
       return null;
   }
-}
-
-function connectorExplainCommand(entry: ConnectorCatalogEntry): string {
-  return `pdpp owner-agent connectors explain ${entry.connectorKey}`;
 }
 
 function CopyRow({ body, label, title, value }: SetupEntry) {
@@ -191,7 +180,6 @@ function CopyRow({ body, label, title, value }: SetupEntry) {
 function SourceSetupCard({ entry }: { entry: ConnectorCatalogEntry }) {
   const status = sourceSetupStatus(entry);
   const action = sourceSetupAction(entry);
-  const cliCommand = connectorExplainCommand(entry);
   return (
     <li
       className="grid gap-3 rounded-md border border-border/80 bg-card p-4 lg:grid-cols-[minmax(0,1fr)_auto]"
@@ -203,13 +191,6 @@ function SourceSetupCard({ entry }: { entry: ConnectorCatalogEntry }) {
           <span className={`pdpp-eyebrow rounded border px-1.5 py-0.5 ${status.tone}`}>{status.label}</span>
         </div>
         <p className="pdpp-caption mt-1 text-muted-foreground">{sourceSetupGuidance(entry)}</p>
-        <div className="pdpp-caption mt-3 flex min-w-0 flex-wrap items-center gap-2 text-muted-foreground">
-          <span>CLI preview</span>
-          <code className="max-w-full overflow-x-auto rounded border border-border/70 bg-muted/30 px-2 py-1 font-mono text-foreground">
-            {cliCommand}
-          </code>
-          <CopyButton ariaLabel={`Copy CLI preview for ${entry.displayName}`} value={cliCommand} />
-        </div>
       </div>
       <div className="flex items-start justify-end gap-2">
         {action ? (
@@ -218,7 +199,7 @@ function SourceSetupCard({ entry }: { entry: ConnectorCatalogEntry }) {
           </Link>
         ) : (
           <span className="pdpp-caption rounded-md border border-border/70 bg-muted/20 px-2.5 py-1 text-muted-foreground">
-            Track only
+            No setup action yet
           </span>
         )}
       </div>

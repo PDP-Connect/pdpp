@@ -12,10 +12,16 @@ test("static-secret page is an owner-session capture form, not an agent secret p
   assert.match(src, /action=\{createStaticSecretConnectionAction\}/);
   assert.match(src, /setup\.credential_capture\.fields\.map/);
   assert.match(src, /field\.help_url/);
+  assert.match(src, /target="_blank"/);
+  assert.match(src, /rel="noreferrer"/);
+  assert.match(src, /Open provider setup page in a new tab/);
+  assert.match(src, /View sync progress/);
   assert.doesNotMatch(src, /connectorId\s*===/);
   assert.doesNotMatch(src, /\bGmail\b|\bGitHub\b|app password|personal access token/i);
   assert.match(src, /agents, MCP clients, REST reads, audit payloads, or the dashboard/);
   assert.match(src, /Credential storage is not ready/);
+  assert.doesNotMatch(src, /hidden until ingest accepts records/i);
+  assert.doesNotMatch(src, /No deployment env var per account/);
 });
 
 test("static-secret action creates draft, captures secret, then starts first sync", async () => {

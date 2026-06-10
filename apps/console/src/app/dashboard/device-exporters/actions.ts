@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { createDeviceEnrollmentCode, type DeviceEnrollmentCode, revokeDeviceExporter } from "../lib/ref-client.ts";
+import { isSupportedLocalCollectorConnector } from "../lib/connection-modality.ts";
 
 type EnrollmentActionState =
   | { ok: false; message: string }
@@ -19,6 +20,13 @@ export async function createEnrollmentCodeAction(
 
   if (!(connectorId && localBindingName)) {
     return { ok: false, message: "Connector id and local binding name are required." };
+  }
+  if (!isSupportedLocalCollectorConnector(connectorId)) {
+    return {
+      ok: false,
+      message:
+        "This setup form only creates packaged local collector enrollments. Browser-based sources will use the dashboard browser setup flow when it ships.",
+    };
   }
 
   const expiresInSeconds = expiresRaw ? Number(expiresRaw) : undefined;

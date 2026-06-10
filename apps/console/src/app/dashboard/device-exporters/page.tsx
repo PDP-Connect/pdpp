@@ -9,7 +9,6 @@ import { formatSourceOutboxState } from "../lib/connection-evidence.ts";
 import {
   BROWSER_BOUND_RUNBOOK_PATH,
   isBrowserBoundConnector,
-  isSupportedBrowserCollectorConnector,
   isSupportedLocalCollectorConnector,
 } from "../lib/connection-modality.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
@@ -46,19 +45,14 @@ export default async function DeviceExportersPage({
 }: {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  // The unified Connect "Add source" entry point deep-links here with
-  // `?connector=claude_code` / `codex` for one-click local collectors, or
-  // `?connector=amazon` for the supported manual browser setup proof path.
-  // Validate against those supported sets before prefilling so arbitrary values
-  // never land in the form; an absent/invalid value leaves the field empty.
+  // The unified Connect "Add source" entry point deep-links here only for
+  // packaged local collectors (`?connector=claude_code` / `codex`). Browser-bound
+  // connectors are deliberately not prefilled here: their old monorepo proof
+  // command is not an owner-usable setup path.
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
   const connectorParam = resolvedSearchParams?.connector;
   const requestedConnector = Array.isArray(connectorParam) ? connectorParam[0] : connectorParam;
-  const defaultConnectorId =
-    isSupportedLocalCollectorConnector(requestedConnector) || isSupportedBrowserCollectorConnector(requestedConnector)
-      ? requestedConnector
-      : undefined;
-  const browserCollectorRequest = isSupportedBrowserCollectorConnector(requestedConnector) ? requestedConnector : null;
+  const defaultConnectorId = isSupportedLocalCollectorConnector(requestedConnector) ? requestedConnector : undefined;
   // A deep-link to an unsupported *browser-bound* connector is an intentful
   // request this page cannot generate commands for yet. Detect that case via the
   // shared modality classifier (no scattered key checks) and surface an honest
@@ -103,7 +97,6 @@ export default async function DeviceExportersPage({
           title="Local device exporters"
         />
 
-        {browserCollectorRequest ? <BrowserCollectorEnrollmentNotice connectorId={browserCollectorRequest} /> : null}
         {browserBoundRequest ? <BrowserBoundEnrollmentNotice connectorId={browserBoundRequest} /> : null}
 
         <Section>
@@ -142,34 +135,6 @@ export default async function DeviceExportersPage({
 }
 
 /**
- * Honest notice for a supported manual browser setup connector deep-link.
- *
- * Amazon can mint a `browser_collector` enrollment code through the same
- * device-exporter route the runbook documents. This is still not a one-click
- * browser-bound flow: after code minting, the owner runs the monorepo browser
- * collector from a host with a real logged-in browser session. The notice names
- * that boundary so the prefilled form is discoverable without over-claiming.
- */
-function BrowserCollectorEnrollmentNotice({ connectorId }: { connectorId: string }) {
-  return (
-    <Callout
-      className="mb-4"
-      description={`${formatConnectorKeyForDisplay(connectorId)} can mint a browser setup enrollment code here. Complete the run from a local PDPP monorepo checkout with a real, owner-logged-in browser session.`}
-      surface="human"
-      title="Manual browser setup"
-    >
-      <p className="pdpp-caption text-muted-foreground">
-        The connector id is prefilled below. After creating the code, use the generated monorepo commands and follow{" "}
-        <code className="pdpp-eyebrow font-mono text-foreground" data-testid="browser-bound-runbook-path">
-          {BROWSER_BOUND_RUNBOOK_PATH}
-        </code>
-        . The console still does not advertise a one-click browser flow; provider login and 2FA stay local to the owner.
-      </p>
-    </Callout>
-  );
-}
-
-/**
  * Honest notice for a browser-bound connector deep-link that has no generated
  * console setup path yet.
  */
@@ -177,19 +142,19 @@ function BrowserBoundEnrollmentNotice({ connectorId }: { connectorId: string }) 
   return (
     <Callout
       className="mb-4"
-      description={`${formatConnectorKeyForDisplay(connectorId)} is a browser-bound source, but this console does not have a generated setup path for it yet. It needs a real, owner-logged-in browser session that you run locally with the browser collector.`}
+      description={`${formatConnectorKeyForDisplay(connectorId)} needs a browser login flow. The owner-usable version belongs in the dashboard and is not packaged in this build yet.`}
       surface="human"
-      title="This connector is not generated here yet"
+      title="Dashboard browser setup is pending"
     >
       <p className="pdpp-caption text-muted-foreground">
-        The browser-collector procedure (so far proven against one connector) is documented in{" "}
+        Existing collected data remains usable. Adding another account is waiting on the packaged browser setup flow
+        tracked by{" "}
         <code className="pdpp-eyebrow font-mono text-foreground" data-testid="browser-bound-runbook-path">
           {BROWSER_BOUND_RUNBOOK_PATH}
         </code>
-        . The console does not yet offer a generated setup flow for this connector; see the full add-connection guidance
-        on the{" "}
-        <Link className="underline underline-offset-2 hover:text-foreground" href="/dashboard/records">
-          Sources
+        . See the full add-source list on the{" "}
+        <Link className="underline underline-offset-2 hover:text-foreground" href="/dashboard/connect">
+          Connect
         </Link>{" "}
         page.
       </p>
