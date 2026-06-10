@@ -391,6 +391,11 @@ import {
 } from './routes/ref-connectors.ts';
 import { mountRefStaticSecretCredentialCapture } from './routes/ref-static-secret-credentials.ts';
 import { mountRefStaticSecretDraftConnection } from './routes/ref-static-secret-draft-connection.ts';
+import {
+  createInProcessPendingAuthStore,
+  mountRefProviderAuthCallback,
+  mountRefProviderAuthInitiate,
+} from './routes/ref-provider-auth.ts';
 import { mountRsBlobRead, mountRsReadQueries } from './routes/rs-read.ts';
 import { mountOwnerConnectionRename, mountOwnerConnectionsList } from './routes/owner-connections.ts';
 import { mountOwnerConnectionSchedule } from './routes/owner-connection-schedule.ts';
@@ -3356,6 +3361,41 @@ function buildAsApp(opts = {}) {
     setReferenceTraceId,
   });
 
+  // Provider-authorization lifecycle: initiate + callback routes.
+  // The in-process pending-auth store is scoped to this RS process instance and
+  // survives only for the PENDING_AUTH_TTL_SECONDS window (10 minutes).
+  const pendingAuthStore = createInProcessPendingAuthStore();
+  const providerAuthCtx = {
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    handleError,
+    pdppError,
+    canonicalConnectorKey,
+    createRequestConnectorInstanceStore,
+    resolveRegisteredConnectorManifest,
+    getOwnerSubjectId,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    generateReferenceSecret,
+    generateSpineId,
+    setReferenceTraceId,
+    pendingAuthStore,
+    // Exchanger is wired via opts so tests can inject a deterministic double.
+    exchanger: opts.providerAuthExchanger ?? null,
+    // Connector keys for which provider-app deployment config is in place.
+    // Populated by opts or env-var inspection in production deployments.
+    configuredProviderAuthConnectorKeys: opts.configuredProviderAuthConnectorKeys ?? [],
+    // The callback URL lives on the AS app (/_ref/provider-auth/callback).
+    resolveCallbackBaseUrl: (req) => {
+      const explicitAsBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
+      return resolvePublicUrl(req, explicitAsBaseUrl);
+    },
+  };
+  if (providerAuthCtx.exchanger) {
+    mountRefProviderAuthInitiate(app, providerAuthCtx);
+    mountRefProviderAuthCallback(app, providerAuthCtx);
+  }
+
   mountRefDeployment(app, refAdminContext);
 
   // `/_ref/device-exporters` route family extracted to
@@ -4582,6 +4622,8 @@ export async function startServer(opts = {}) {
     runTargetRegistry,
     onScheduleMutation: () => schedulerManager?.refresh(),
     logger,
+    providerAuthExchanger: opts.providerAuthExchanger ?? null,
+    configuredProviderAuthConnectorKeys: opts.configuredProviderAuthConnectorKeys ?? [],
   });
 
   // opts.bindHost — restrict listening interface (e.g. '127.0.0.1'). Default

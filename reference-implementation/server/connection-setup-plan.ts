@@ -128,6 +128,25 @@ export const BROWSER_BOUND_RUNBOOK_PATH = "docs/operator/browser-collector-proof
 export const STATIC_SECRET_RUNBOOK_PATH = "docs/operator/static-secret-connection-runbook.md";
 export const PROVIDER_AUTH_RUNBOOK_PATH = "docs/operator/add-connection.md";
 
+// Connector keys for which the provider-authorization lifecycle (initiate +
+// callback + token-exchange + inventory gate) is deterministically proven.
+// Only connectors in this set may advertise `open_provider_auth` as a supported
+// next step. Real production connectors must NOT be added here until their
+// connector-specific inventory/test adapter is implemented and proven.
+//
+// "test_provider" is a synthetic connector used by the deterministic test suite
+// to exercise the full lifecycle without live provider credentials.
+export const PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS = ["test_provider"] as const;
+
+export type ProviderAuthLifecycleProvenConnector =
+  (typeof PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS)[number];
+
+export function isProviderAuthLifecycleProven(connectorKey: string): boolean {
+  return (PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS as readonly string[]).includes(
+    canonicalConnectorKey(connectorKey)
+  );
+}
+
 const NOT_APPLICABLE_DEPLOYMENT_READINESS: ConnectorSetupDeploymentReadiness = Object.freeze({
   blockers: [],
   guidance: null,
@@ -440,6 +459,28 @@ export function buildConnectionSetupPlan(args: {
     }
     if (setupModality === "provider_authorization") {
       const deploymentBlocked = deploymentReadiness.state === "needs_config";
+      const lifecycleProven = !deploymentBlocked && isProviderAuthLifecycleProven(connectorKey);
+      if (lifecycleProven) {
+        return {
+          catalogDisposition: "provider_auth_proof_gated",
+          connectorKey,
+          connectorModality,
+          deploymentReadiness,
+          displayName,
+          nextStepKind: "open_provider_auth",
+          ownerAgentIntent: {
+            method: "POST",
+            nextStepKind: "open_provider_auth",
+            reason:
+              "Initiate provider authorization from the owner session. The callback will activate the connection only after authorization and account inventory succeed.",
+            status: "supported",
+          },
+          proofGate: null,
+          runbookPath: null,
+          setupModality,
+          supportState: "supported",
+        };
+      }
       return {
         catalogDisposition: deploymentBlocked ? "provider_auth_deployment_blocked" : "provider_auth_proof_gated",
         connectorKey,
