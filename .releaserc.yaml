@@ -1,7 +1,8 @@
+# Single release channel: 0.x versions released from `main` to npm's default
+# `latest` dist-tag. There is no prerelease branch — semver 0.x already signals
+# prelaunch, and a second moving branch proved to be pure drift risk.
 branches:
   - name: main
-  - name: beta
-    prerelease: true
 tagFormat: "v${version}"
 preset: "conventionalcommits"
 # @pdpp/cli, @pdpp/local-collector, and @pdpp/mcp-server publish from a single

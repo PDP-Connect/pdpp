@@ -20,7 +20,7 @@ export const pdppCliTokenCompletionUnavailable = pdppCliPackageInfo.noOwnerToken
 
 /**
  * Rewrite a canonical `pdpp ...` invocation (as advertised in dashboard/docs
- * copy) into a zero-install one-shot form using `npx -y @pdpp/cli@beta ...`.
+ * copy) into a zero-install one-shot form using `npx -y @pdpp/cli ...`.
  * Returns null when `cliCommand` does not start with the `pdpp ` prefix.
  */
 export function pdppCliNoInstallCommand(cliCommand: string): string | null {

@@ -6,7 +6,7 @@
 // the script's pure classification logic — `classifyDistTagPosture` — so the
 // decision that protects operators from a placeholder `latest` is regression-
 // tested without any network access. It mirrors the offline coverage that
-// `check-package-release-policy.test.mjs` and `check-beta-cadence.test.mjs`
+// `check-package-release-policy.test.mjs`
 // already give their scripts.
 //
 // Nothing here shells out to `npm view` or reaches the registry: every case

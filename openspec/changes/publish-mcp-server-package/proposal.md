@@ -3,7 +3,7 @@
 ## Why
 
 `@pdpp/mcp-server` is the canonical MCP adapter for grant-scoped PDPP reads. It is
-advertised as an `npx -y @pdpp/mcp-server@beta` command in:
+advertised as an `npx -y @pdpp/mcp-server` command in:
 
 - the deployed agent skill (`docs/agent-skills/pdpp-data-access/SKILL.md`)
 - `packages/mcp-server/README.md` (Install section)
@@ -16,10 +16,10 @@ a documented, operative install command resolves to a non-existent package.
 ## What Changes
 
 - `packages/mcp-server/package.json`: remove `private: true`; add `publishConfig`
-  (public, `@beta` dist-tag, provenance disabled while repo is private); add
+  (public, `latest` dist-tag, provenance disabled while repo is private); add
   `scripts.verify` bin smoke (`--help` exit-0 check); add `scripts.pack:dry-run`.
 - `.releaserc.yaml`: add `pkgRoot: "packages/mcp-server"` so the release train
-  publishes the package on the next beta cut; add Conventional Commit scope entries
+  publishes the package on the next release cut; add Conventional Commit scope entries
   for `mcp-server` in both commit-analyzer and release-notes-generator plugins.
 - `packages/mcp-server/README.md`: replace the "private workspace package" notice
   with the published posture paragraph, matching `@pdpp/cli` and
@@ -36,7 +36,7 @@ install path that the documentation already advertises.
 ### Modified Capabilities
 
 - `mcp-adapter`: the stdio MCP adapter is now available as a published npm package
-  (`@pdpp/mcp-server@beta`) installable without cloning the repository, matching
+  (`@pdpp/mcp-server`) installable without cloning the repository, matching
   the install instructions in the operator docs and agent skill.
 
 ## Impact

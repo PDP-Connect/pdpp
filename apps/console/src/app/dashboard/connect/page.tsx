@@ -38,7 +38,7 @@ function buildConnectTargets(origin: string) {
     claudeCodeCommand: `claude mcp add --transport http pdpp ${mcpUrl}`,
     codexCommand: `codex mcp add pdpp --url ${mcpUrl}`,
     mcpUrl,
-    pdppCliCommand: `npx -y @pdpp/cli@beta connect ${base}`,
+    pdppCliCommand: `npx -y @pdpp/cli connect ${base}`,
   };
 }
 

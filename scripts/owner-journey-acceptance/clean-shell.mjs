@@ -25,7 +25,7 @@ const execFileAsync = promisify(execFile);
  * combined stdout/stderr. Failures are captured, not thrown.
  *
  * @param {object} args
- * @param {string} args.specifier   e.g. "@pdpp/cli@beta"
+ * @param {string} args.specifier   e.g. "@pdpp/cli"
  * @param {number} [args.timeoutMs]
  * @param {Function} [args.execImpl] injectable for tests
  * @returns {Promise<{ ok:boolean, help:string, error:string|null }>}

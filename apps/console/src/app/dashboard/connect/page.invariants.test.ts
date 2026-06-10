@@ -26,7 +26,7 @@ const CODEX_COMMAND_RE = /codex mcp add pdpp --url/;
 const CODEX_CIMD_COMMAND_RE = /--oauth-client-id \$\{clientId\}/;
 const CHATGPT_RE = /ChatGPT/;
 const CLAUDE_AI_RE = /Claude\.ai/;
-const PDPP_CLI_CONNECT_RE = /npx -y @pdpp\/cli@beta connect/;
+const PDPP_CLI_CONNECT_RE = /npx -y @pdpp\/cli connect/;
 const AGENT_ENTRYPOINT_RE = /\/llms\.txt/;
 const OWNER_AGENT_LINK_RE = /href="\/dashboard\/deployment\/tokens"/;
 const OWNER_TOKEN_ENV_VAR_RE = /bearer-token-env-var|Authorization: Bearer|PDPP_OWNER|owner bearer token/;

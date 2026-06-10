@@ -4,7 +4,8 @@
 
 - [x] 1.1 Remove `"private": true` from `packages/mcp-server/package.json`.
 - [x] 1.2 Add `publishConfig` (`access: public`, `provenance: false`,
-  `registry: https://registry.npmjs.org/`, `tag: beta`) to
+  `registry: https://registry.npmjs.org/`, `tag: latest` — originally `beta`,
+  flipped by `adopt-single-release-channel`) to
   `packages/mcp-server/package.json`.
 - [x] 1.3 Strengthen `scripts.verify` to run tests AND smoke the bin entrypoint
   (`node bin/pdpp-mcp-server.js --help`, exit-0 check).
@@ -18,7 +19,7 @@
 ## 2. README
 
 - [x] 2.1 Replace the "private workspace package" Publication status paragraph in
-  `packages/mcp-server/README.md` with the published-beta posture paragraph.
+  `packages/mcp-server/README.md` with the published-package posture paragraph.
 
 ## 3. OpenSpec
 
@@ -37,7 +38,7 @@
 - [x] 4.4 Run `openspec validate publish-mcp-server-package --strict`.
 - [x] 4.5 Run `openspec validate --all --strict`.
 
-## 5. Owner-Gated Bootstrap (after merge, before first beta cut)
+## 5. Owner-Gated Bootstrap (after merge, before the first release cut)
 
 > These steps cannot be performed by a repo contributor. They require owner
 > access to the npm organization and the GitHub repository settings.
@@ -50,7 +51,8 @@
   `vana-com/pdpp` repository, `semantic-release` workflow, `release` job —
   matching the existing trusted-publisher entries for `@pdpp/cli` and
   `@pdpp/local-collector`.
-- [ ] 5.3 **[OWNER]** Advance `beta` branch to include this change (or cut a
-  new beta from `main`) to trigger the release pipeline.
-- [ ] 5.4 **[OWNER]** Verify `npx -y @pdpp/mcp-server@beta --help` resolves and
-  exits 0 after the beta pipeline completes.
+- [ ] 5.3 **[OWNER]** Land a release-worthy Conventional Commit on `main` (or
+  dispatch the semantic-release workflow) to trigger the release pipeline
+  (single channel; see `adopt-single-release-channel`).
+- [ ] 5.4 **[OWNER]** Verify `npx -y @pdpp/mcp-server@latest --help` resolves and
+  exits 0 after the release pipeline completes.

@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // Guards for the PDPP package-release-policy checks.
 //
-// Covers the two pieces of logic that protect operators from the placeholder
-// `latest` release posture while the packages are beta-only:
+// Covers the two pieces of logic that protect operators now that the release
+// train publishes a single channel (0.x on npm's default `latest`, from main):
 //
-//   - findUntaggedInstallDocReferences (hermetic doc-tag guard, part of
-//     `release:policy-check`): active install docs must pin `@beta`.
+//   - findRetiredTagInstallDocReferences (hermetic doc-tag guard, part of
+//     `release:policy-check`): active install docs must not reference the
+//     retired `@beta` dist-tag.
 //   - classifyDistTagPosture (network-aware, part of `release:dist-tag-check`):
 //     a published `latest` of 0.0.0 is a hazard.
 //
@@ -15,56 +16,59 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { findUntaggedInstallDocReferences, policyErrors } from './check-package-release-policy.mjs';
+import { findRetiredTagInstallDocReferences, policyErrors } from './check-package-release-policy.mjs';
 import { classifyDistTagPosture, placeholderVersion } from './check-dist-tag-posture.mjs';
 
 const PUBLISHABLE = ['@pdpp/cli', '@pdpp/local-collector'];
 
 function scanLine(line) {
-  return findUntaggedInstallDocReferences({
+  return findRetiredTagInstallDocReferences({
     packageNames: PUBLISHABLE,
     docFiles: ['doc.md'],
     readFile: () => line,
   });
 }
 
-test('doc-tag guard flags a bare global install of a publishable package', () => {
-  assert.equal(scanLine('npm i -g @pdpp/cli').length, 1);
-  assert.equal(scanLine('npm install -g @pdpp/local-collector').length, 1);
-  assert.equal(scanLine('npx @pdpp/local-collector advertise').length, 1);
+test('doc-tag guard flags an install that still pins the retired @beta dist-tag', () => {
+  assert.equal(scanLine('npm i -g @pdpp/cli@beta').length, 1);
+  assert.equal(scanLine('npm install -g @pdpp/local-collector@beta').length, 1);
+  assert.equal(scanLine('npx -y @pdpp/local-collector@beta advertise').length, 1);
 });
 
-test('doc-tag guard accepts an explicit @beta tag or a pinned version', () => {
-  assert.equal(scanLine('npm i -g @pdpp/cli@beta').length, 0);
-  assert.equal(scanLine('npx -y @pdpp/cli@beta --help').length, 0);
+test('doc-tag guard accepts plain names and pinned versions', () => {
+  assert.equal(scanLine('npm i -g @pdpp/cli').length, 0);
+  assert.equal(scanLine('npx -y @pdpp/cli --help').length, 0);
+  assert.equal(scanLine('npx -y @pdpp/local-collector@0.1.0 run').length, 0);
+  // Pinned historical prerelease versions are factual references, not the
+  // retired dist-tag.
   assert.equal(scanLine('npx -y @pdpp/local-collector@0.1.0-beta.7 run').length, 0);
 });
 
 test('doc-tag guard ignores shell comments and Markdown headings', () => {
-  assert.equal(scanLine('# @pdpp/cli package, npx-launched pdpp binary').length, 0);
-  assert.equal(scanLine('## Install @pdpp/cli').length, 0);
-  assert.equal(scanLine('  # npx @pdpp/local-collector advertise (example)').length, 0);
+  assert.equal(scanLine('# npm i -g @pdpp/cli@beta (the old install path)').length, 0);
+  assert.equal(scanLine('## Install @pdpp/cli@beta').length, 0);
+  assert.equal(scanLine('  # npx @pdpp/local-collector@beta advertise (example)').length, 0);
 });
 
 test('doc-tag guard ignores prose mentions that are not install commands', () => {
-  assert.equal(scanLine('The @pdpp/cli package is published to npm.').length, 0);
-  assert.equal(scanLine('See @pdpp/local-collector for the runner.').length, 0);
+  assert.equal(scanLine('The @pdpp/cli@beta channel was retired.').length, 0);
+  assert.equal(scanLine('See @pdpp/local-collector@beta history for the runner.').length, 0);
 });
 
 test('doc-tag guard does not false-match a longer package name with the same prefix', () => {
-  assert.equal(scanLine('npm i -g @pdpp/cli-extras').length, 0);
-  assert.equal(scanLine('npm i -g @pdpp/local-collector-internal').length, 0);
+  assert.equal(scanLine('npm i -g @pdpp/cli-extras@beta').length, 0);
+  assert.equal(scanLine('npm i -g @pdpp/local-collector-internal@beta').length, 0);
 });
 
 test('doc-tag guard reports the offending file and line in its message', () => {
-  const problems = findUntaggedInstallDocReferences({
+  const problems = findRetiredTagInstallDocReferences({
     packageNames: PUBLISHABLE,
     docFiles: ['docs/local-collector.md'],
-    readFile: () => 'npm i -g @pdpp/cli',
+    readFile: () => 'npm i -g @pdpp/cli@beta',
   });
   assert.equal(problems.length, 1);
   assert.match(problems[0], /docs\/local-collector\.md/);
-  assert.match(problems[0], /@beta/);
+  assert.match(problems[0], /retired @beta/);
 });
 
 test('dist-tag classifier treats placeholder latest as a hazard', () => {

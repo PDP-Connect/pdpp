@@ -17,15 +17,15 @@ flag).
 
 Use a collector binary that contains the append-safe Codex cursor fix:
 
-- after publishing this commit to npm beta, use `npx -y @pdpp/local-collector@beta`;
+- after publishing this commit to npm, use `npx -y @pdpp/local-collector`;
 - on a repo-dist-override host, use the deployed repo binary instead, for example
   `node /home/user/code/pdpp/packages/local-collector/dist/local-collector/bin/pdpp-local-collector.js`.
 
 If `doctor` reports a stale published package or a repo checkout that does not
 contain this commit, stop and update the collector before continuing.
 
-In the snippets below, replace `npx -y @pdpp/local-collector@beta` with the
-repo-dist command when the beta package has not yet been published from this
+In the snippets below, replace `npx -y @pdpp/local-collector` with the
+repo-dist command when the package has not yet been published from this
 commit.
 
 ## 0. The one rule
@@ -119,7 +119,7 @@ device outbox. Classify and handle them as follows.
 
 ```sh
 # On the Peregrine host that owns the Codex outbox. Read-only.
-npx -y @pdpp/local-collector@beta status \
+npx -y @pdpp/local-collector status \
   --connector codex \
   --base-url "$PDPP_BASE_URL" > /tmp/codex-outbox-status.json
 # `status` reports: outbox.counts (ready/pending/retrying/dead_letter/leased/
@@ -160,27 +160,27 @@ the burst is observed and bounded.
 # 0. Confirm the deployed package contains the append-safe cursor fix.
 #    `doctor` reports the deployment posture + collector version (not the cursor
 #    summary — that comes from `run` in steps 2-3).
-npx -y @pdpp/local-collector@beta doctor --connector codex --base-url "$PDPP_BASE_URL" \
+npx -y @pdpp/local-collector doctor --connector codex --base-url "$PDPP_BASE_URL" \
   | grep -E '"deployment_posture"|"version"|"is_placeholder_version"'
 
 # 1. Drain-only passes FIRST (timer still stopped). Each `run` drains existing
 #    backlog before it scans; while backlog is over the ceiling the connector is
 #    NOT spawned (skippedScanForBacklog=true), so no fresh re-scan piles on.
 #    Repeat until status shows ready/pending at/near zero.
-npx -y @pdpp/local-collector@beta run --connector codex --base-url "$PDPP_BASE_URL" \
+npx -y @pdpp/local-collector run --connector codex --base-url "$PDPP_BASE_URL" \
   | grep -E '"skippedScanForBacklog"|"sentBatches"|"recordsQueued"|"outboxSummary"'
 
 # 2. Once backlog is drained, the next `run` actually scans with the fixed
 #    connector. THIS is the one-time reparse of the active rollout: expect a
 #    large recordsQueued (up to ~177k) that drains as mostly server noops, then a
 #    rich `file_cursors` entry is written for the active file.
-npx -y @pdpp/local-collector@beta run --connector codex --base-url "$PDPP_BASE_URL" \
+npx -y @pdpp/local-collector run --connector codex --base-url "$PDPP_BASE_URL" \
   | grep -E '"recordsQueued"|"file_cursors|"statePutFailed"'
 
 # 3. Confirm the rich cursor landed and the next run TAILS (no full reparse).
 #    A subsequent run with no new Codex activity must show recordsQueued≈0 and a
 #    file_cursors_count covering the active file.
-npx -y @pdpp/local-collector@beta run --connector codex --base-url "$PDPP_BASE_URL" \
+npx -y @pdpp/local-collector run --connector codex --base-url "$PDPP_BASE_URL" \
   | grep -E '"recordsQueued"|"file_cursors_count"'
 
 # 4. Only after step 3 shows a tailing steady state, restart the timer.

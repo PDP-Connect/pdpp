@@ -14,7 +14,7 @@ test('package manifest stays intentionally narrow', () => {
 
   assert.equal(manifest.name, '@pdpp/cli');
   assert.deepEqual(manifest.bin, { pdpp: 'bin/pdpp.js' });
-  assert.equal(manifest.publishConfig.tag, 'beta');
+  assert.equal(manifest.publishConfig.tag, 'latest');
   assert.equal(manifest.publishConfig.provenance, false);
   assert.equal(Object.hasOwn(manifest, 'dependencies'), false);
   assert.equal(Object.hasOwn(manifest, 'main'), false);
@@ -139,7 +139,7 @@ test('packed CLI installs and starts in an empty project', () => {
     assert.match(collectorResult.stderr, /@pdpp\/local-collector/);
     assert.match(
       collectorResult.stderr,
-      /npm i -g @pdpp\/local-collector@beta|npx -y @pdpp\/local-collector@beta/,
+      /npm i -g @pdpp\/local-collector|npx -y @pdpp\/local-collector/,
     );
     assert.doesNotMatch(collectorResult.stderr, /not distributed with @pdpp\/cli yet/);
   } finally {

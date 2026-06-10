@@ -2,7 +2,7 @@ name: semantic-release
 
 on:
   push:
-    branches: [beta]
+    branches: [main]
   workflow_dispatch: {}
 
 concurrency:
@@ -15,7 +15,7 @@ permissions:
 jobs:
   resolve-version:
     name: resolve next version
-    if: github.ref == 'refs/heads/beta'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -100,9 +100,6 @@ jobs:
       - name: Test package release policy checks
         run: pnpm release:policy-check:test
 
-      - name: Test beta release-cadence guard
-        run: pnpm release:cadence-check:test
-
       - name: Test dist-tag posture classifier
         run: pnpm release:dist-tag-check:test
 
@@ -165,7 +162,7 @@ jobs:
             org.opencontainers.image.version=${{ needs.resolve-version.outputs.new-release-version }}
           tags: |
             type=raw,value=${{ needs.resolve-version.outputs.new-release-version }}
-            type=raw,value=beta
+            type=raw,value=latest
             type=sha,prefix=sha-
 
       - name: Build image
@@ -285,7 +282,7 @@ jobs:
             org.opencontainers.image.version=${{ needs.release.outputs.version }}
           tags: |
             type=raw,value=${{ needs.release.outputs.version }}
-            type=raw,value=beta
+            type=raw,value=latest
             type=sha,prefix=sha-
 
       - name: Build and push image

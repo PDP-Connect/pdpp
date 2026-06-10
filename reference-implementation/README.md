@@ -79,10 +79,11 @@ Protected-resource metadata includes advisory agent discovery. The generated
 CLI command is:
 
 ```bash
-npx -y @pdpp/cli@beta connect <provider-url>
+npx -y @pdpp/cli connect <provider-url>
 ```
 
-The no-owner-token completion path is beta but complete in the reference flow.
+The no-owner-token completion path is prelaunch 0.x software but complete in
+the reference flow.
 Metadata sets `pdpp_agent_discovery.cli.no_owner_token` true when the AS can
 complete owner-approved scoped token handoff without asking for an owner bearer
 token.
@@ -608,8 +609,8 @@ Reverse proxies must also forward WebSocket upgrade traffic for
 
 CI builds the Docker targets on pull requests without pushing images. On
 `main`, semantic-release creates GitHub releases from Conventional Commits and
-the same release workflow publishes npm beta packages (`@pdpp/cli@beta` and
-`@pdpp/local-collector@beta`) plus stable GHCR tags for both Docker targets:
+the same release workflow publishes the npm packages (`@pdpp/cli`,
+`@pdpp/local-collector`, and `@pdpp/mcp-server`) plus stable GHCR tags for both Docker targets:
 `${version}`, `${major}.${minor}`, `latest`, and `sha-*`. Maintainers should
 make the first published GHCR packages public in GitHub's package settings if
 the registry creates them private.

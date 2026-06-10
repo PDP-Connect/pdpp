@@ -38,10 +38,10 @@ The protected-resource metadata also includes advisory agent discovery at
 metadata:
 
 ```bash
-npx -y @pdpp/cli@beta connect <provider-url>
+npx -y @pdpp/cli connect <provider-url>
 ```
 
-This remains beta software, but `pdpp_agent_discovery.cli.no_owner_token` is
+This remains prelaunch 0.x software, but `pdpp_agent_discovery.cli.no_owner_token` is
 `true` when the reference AS token-completion path supports owner-approved
 scoped handoff without an owner bearer token. Treat the command as the
 no-owner-token connect flow while that metadata flag is true.
@@ -49,7 +49,7 @@ no-owner-token connect flow while that metadata flag is true.
 The reference dashboard also shows reference operator diagnostics such as
 `pdpp ref run timeline <run-id>`, `pdpp ref grant timeline <grant-id>`, and
 `pdpp ref trace show <trace-id>`. These use the `pdpp ref` namespace from the
-same `@pdpp/cli` package (`npx -y @pdpp/cli@beta --help`) and inspect `_ref`
+same `@pdpp/cli` package (`npx -y @pdpp/cli --help`) and inspect `_ref`
 operator routes for a running reference deployment. When placeholder owner auth
 is enabled, set `PDPP_OWNER_SESSION_COOKIE` to a valid `pdpp_owner_session`
 cookie before using those commands.

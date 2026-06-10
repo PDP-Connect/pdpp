@@ -163,10 +163,10 @@ test("passes a published CLI command rendered in owner UI", () => {
 
 test("resolves package-specifier variables in array-form command builders", () => {
   const src = `const localCollectorPackageName = "@pdpp/local-collector";
-    const localCollectorPackageSpecifier = \`\${localCollectorPackageName}@beta\`;
+    const localCollectorPackageSpecifier = \`\${localCollectorPackageName}@latest\`;
     const parts = ["npx", "-y", localCollectorPackageSpecifier, "enroll", "--base-url"];`;
   const vars = deriveSpecifierVars(src);
-  assert.equal(vars.localCollectorPackageSpecifier, "@pdpp/local-collector@beta");
+  assert.equal(vars.localCollectorPackageSpecifier, "@pdpp/local-collector@latest");
   const cmds = extractRenderedCommands(src);
   const enroll = cmds.find((c) => c.subcommand === "enroll");
   assert.ok(enroll, "array-form npx command must be extracted");

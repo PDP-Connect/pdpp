@@ -241,17 +241,17 @@ export const POST_SUBMIT_RULE = {
  */
 export const PUBLISHED_PACKAGES = {
   "@pdpp/cli": {
-    specifier: "@pdpp/cli@beta",
+    specifier: "@pdpp/cli",
     binName: "pdpp",
     // Source of truth for the published subcommand set.
     commandDispatchFile: "packages/cli/src/index.js",
-    verificationMode: "npx -y @pdpp/cli@beta --help",
+    verificationMode: "npx -y @pdpp/cli --help",
   },
   "@pdpp/local-collector": {
-    specifier: "@pdpp/local-collector@beta",
+    specifier: "@pdpp/local-collector",
     binName: "pdpp-local-collector",
     commandDispatchFile: "packages/local-collector/bin/pdpp-local-collector.ts",
-    verificationMode: "npx -y @pdpp/local-collector@beta --help",
+    verificationMode: "npx -y @pdpp/local-collector --help",
   },
 };
 
