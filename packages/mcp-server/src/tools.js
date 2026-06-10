@@ -156,6 +156,20 @@ class MalformedExpandLimitError extends Error {
   }
 }
 
+// Thrown when a self-contained fetch id embeds one connection while the
+// explicit `connection_id` argument names another. Silently preferring either
+// handle could read the wrong source, so the disagreement is rejected with a
+// typed, actionable error (`server.js` `toolHandlerError` reads `.code`).
+class ConflictingConnectionIdError extends Error {
+  constructor(embedded, explicit) {
+    super(
+      `id embeds connection_id '${embedded}' but the connection_id argument is '${explicit}'; pass the self-contained id alone, or make both handles agree`,
+    );
+    this.name = 'ConflictingConnectionIdError';
+    this.code = 'conflicting_connection_id';
+  }
+}
+
 // Translate a typed filter object into `[bracketKey, value]` query entries the
 // RsClient appends verbatim (`filter[field]=value`, `filter[field][op]=value`).
 function filterObjectToBracketEntries(filter) {
@@ -273,7 +287,7 @@ const SEARCH_OUTPUT_SCHEMA_SHAPE = {
       }).passthrough(),
     )
     .describe(
-      'ChatGPT-compatible flattened search results. Each entry carries `id` (default `stream:record_id`), `title`, `url`, and available source handles such as `connection_id`. Use `data` for compact envelope metadata.',
+      'ChatGPT-compatible flattened search results. Each entry carries `id` (a self-contained fetch handle, `connection_id/stream:record_id` when the hit has a connection), `title`, `url`, and available source handles such as `connection_id`. Use `data` for compact envelope metadata.',
     ),
 };
 
@@ -494,7 +508,7 @@ export function buildTools({ rs, providerUrl }) {
       name: 'search',
       title: 'Search PDPP records',
       description:
-        'Search records via `GET /v1/search` (lexical), `/v1/search/semantic`, or `/v1/search/hybrid` per `mode`. Use lexical for exact known terms; semantic is approximate retrieval for conceptual matches. `structuredContent.results` carries the flattened page; `structuredContent.data` carries compact envelope metadata, not a duplicate hit array. Hits carry `connection_id` and `connector_key`. Pass `connection_id` to scope, omit to fan in. Page default is 25 hits; `limit` is capped at 100 (enforced at input, and fan-in packages apply it globally). Page forward with `cursor` (lexical/semantic; hybrid does not page). Per-mode capability support is advertised by `GET /v1/schema`. Read-only.',
+        'Search records via `GET /v1/search` (lexical), `/v1/search/semantic`, or `/v1/search/hybrid` per `mode`. Use lexical for exact known terms; semantic is approximate retrieval for conceptual matches. `structuredContent.results` carries the flattened page; `structuredContent.data` carries compact envelope metadata, not a duplicate hit array. Hit ids are self-contained `fetch` handles (the connection is encoded in the id); hits also carry `connection_id` and `connector_key`. Pass `connection_id` to scope, omit to fan in. Page default is 25 hits; `limit` is capped at 100 (enforced at input, and fan-in packages apply it globally). Page forward with `cursor` (lexical/semantic; hybrid does not page). Per-mode capability support is advertised by `GET /v1/schema`. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({
@@ -528,11 +542,14 @@ export function buildTools({ rs, providerUrl }) {
       name: 'fetch',
       title: 'Fetch PDPP search result',
       description:
-        'Fetch a single OpenAI-compatible document by a result id from `search`. Id format: `stream:record_id` → `GET /v1/streams/{stream}/records/{record_id}`. Returns document fields only (`id`, `title`, `text`, `url`, `metadata`); use `query_records` for canonical PDPP record envelopes. Use `fields` to project the source record before rendering document text/metadata; if the projection excludes every text-like field (`text`, `content`, `body`, `summary`), `text` contains compact JSON for the projected record rather than the full document body. Operational source handles (`id`, stream, `connection_id`, `connector_key`) remain available in `metadata`. On `ambiguous_connection` (409), pick a `connection_id` from `available_connections` in the error and retry. Read-only.',
+        'Fetch a single OpenAI-compatible document by a result id from `search`. Id formats: self-contained `connection_id/stream:record_id` (pass it unchanged — no other argument is needed) or legacy `stream:record_id` plus an optional `connection_id` argument. Both resolve to `GET /v1/streams/{stream}/records/{record_id}`. Returns document fields only (`id`, `title`, `text`, `url`, `metadata`); use `query_records` for canonical PDPP record envelopes. Use `fields` to project the source record before rendering document text/metadata; if the projection excludes every text-like field (`text`, `content`, `body`, `summary`), `text` contains compact JSON for the projected record rather than the full document body. Operational source handles (`id`, stream, `connection_id`, `connector_key`) remain available in `metadata`. On `ambiguous_connection` (409), pick a `connection_id` from `available_connections` in the error and retry. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({
-          id: z.string().min(1).describe('Search result id, usually `stream:record_id`.'),
+          id: z
+            .string()
+            .min(1)
+            .describe('Search result id: `connection_id/stream:record_id` (self-contained) or legacy `stream:record_id`.'),
           expand: z.array(z.string()).optional().describe(EXPAND_DESCRIPTION),
           expand_limit: z
             .record(z.string(), z.number().int().positive())
@@ -545,7 +562,15 @@ export function buildTools({ rs, providerUrl }) {
       outputSchema: z.object(FETCH_OUTPUT_SCHEMA_SHAPE),
       handler: async (args) => {
         const ref = parseRecordResultId(args.id);
+        if (ref.connectionId && typeof args?.connection_id === 'string' && args.connection_id !== ref.connectionId) {
+          throw new ConflictingConnectionIdError(ref.connectionId, args.connection_id);
+        }
         const query = applyExpandLimitToQuery(pickQuery(args, SUPPORTED_QUERY_KEYS), args?.expand_limit);
+        // A self-contained id carries its own connection scope; forward it so a
+        // multi-source grant resolves without a second model-carried handle.
+        if (ref.connectionId && query.connection_id === undefined) {
+          query.connection_id = ref.connectionId;
+        }
         const response = await rs.getJson(
           `/v1/streams/${encodeURIComponent(ref.stream)}/records/${encodeURIComponent(ref.recordId)}`,
           { query }
@@ -1576,6 +1601,10 @@ function truncateText(value, limit) {
 const SEARCH_TEXT_PREVIEW_LIMIT = 3;
 const SEARCH_TEXT_SNIPPET_CHAR_LIMIT = 140;
 const SEARCH_RESULT_SNIPPET_CHAR_LIMIT = 320;
+// A truncated id is a dead fetch handle, so the preview id bound must
+// comfortably exceed realistic `{connection_id}/{stream}:{record_id}` handles;
+// it exists only to keep pathological record keys from blowing the text budget.
+const SEARCH_TEXT_ID_CHAR_LIMIT = 200;
 
 function summarizeSearch(body, results) {
   const hasMore = envelopeField(body, 'has_more') === true ? ' has_more=true.' : '';
@@ -1585,7 +1614,7 @@ function summarizeSearch(body, results) {
   const previews = results.slice(0, SEARCH_TEXT_PREVIEW_LIMIT).map(formatSearchPreviewLine);
   const previewText = previews.length > 0 ? ` Top results:\n${previews.join('\n')}` : '';
   const fetchHint = previews.length > 0
-    ? '\nFetch a hit with `fetch` using the shown id; include connection_id when shown.'
+    ? '\nFetch a hit with `fetch` using the shown id as-is; ids are self-contained. Pass connection_id only when shown separately.'
     : '';
   return `search: ${results.length} hit(s).${hasMore}${cursorText}${sourceMixText}${previewText}${fetchHint} Search envelope metadata: structuredContent.data; flattened results: structuredContent.results.`;
 }
@@ -1609,8 +1638,12 @@ function formatSearchSourceMix(body) {
 }
 
 function formatSearchPreviewLine(result, index) {
-  const parts = [`${index + 1}. id=${formatInlineValue(truncateText(result.id, 80))}`];
-  if (result.connection_id) parts.push(`connection_id=${formatInlineValue(truncateText(result.connection_id, 80))}`);
+  const parts = [`${index + 1}. id=${formatInlineValue(truncateText(result.id, SEARCH_TEXT_ID_CHAR_LIMIT))}`];
+  // The connection is normally embedded in the self-contained id; repeat it as
+  // a separate handle only when the id could not encode it.
+  if (result.connection_id && !String(result.id).startsWith(`${result.connection_id}/`)) {
+    parts.push(`connection_id=${formatInlineValue(truncateText(result.connection_id, 80))}`);
+  }
   if (result.connector_key) parts.push(`connector_key=${formatInlineValue(truncateText(result.connector_key, 60))}`);
   if (result.stream) parts.push(`stream=${formatInlineValue(truncateText(result.stream, 60))}`);
   if (result.title && result.title !== result.id) parts.push(`title=${formatScalar(truncateText(result.title, 80))}`);
@@ -1648,11 +1681,14 @@ function envelopeCount(body) {
 function normalizeSearchResults(body) {
   const candidates = searchCandidatesFromBody(body);
   return candidates.map((hit, index) => {
-    const id = resultIdForHit(hit, index);
     const source = objectValue(hit?.source) || {};
     const stream = streamForHit(hit);
     const recordKey = recordKeyForHit(hit);
     const connectionId = firstString(hit?.connection_id, hit?.connector_instance_id, source.connection_id);
+    // The id is the single opaque handle a model carries into `fetch`; encode
+    // the hit's connection so multi-source grants resolve without a second
+    // model-carried `connection_id` field.
+    const id = selfContainedResultId(resultIdForHit(hit, index), connectionId);
     const displayName = firstString(hit?.display_name, source.display_name);
     const connectorKey = firstString(hit?.connector_key, hit?.connector_id, source.connector_key, source.connector_id);
     const snippet = snippetForSearchHit(hit);
@@ -1767,16 +1803,53 @@ function snippetForSearchHit(hit) {
   );
 }
 
+// Result-id grammar. Two forms round-trip through `search` -> `fetch`:
+//   self-contained: `{connection_id}/{stream}:{record_id}`
+//   legacy:         `{stream}:{record_id}`
+// `/` is the connection separator because `requireSafeName` guarantees it can
+// never appear inside a connection id, stream name, or record id — so a `/`
+// unambiguously marks the self-contained form and every legacy id keeps
+// parsing exactly as before. See:
+//   openspec/changes/make-mcp-result-ids-self-contained
 function parseRecordResultId(id) {
+  if (typeof id !== 'string' || id.length === 0) {
+    throw new Error('id is required');
+  }
+  const connectionSeparator = id.indexOf('/');
+  if (connectionSeparator === -1) {
+    return { ...parseStreamRecordId(id), connectionId: null };
+  }
+  const connectionId = requireSafeName(id.slice(0, connectionSeparator), 'connection_id');
+  return {
+    ...parseStreamRecordId(id.slice(connectionSeparator + 1)),
+    connectionId,
+  };
+}
+
+function parseStreamRecordId(id) {
   const value = requireSafeName(id, 'id');
   const separator = value.indexOf(':');
   if (separator <= 0 || separator === value.length - 1) {
-    throw new Error('id must use stream:record_id format');
+    throw new Error('id must use connection_id/stream:record_id or stream:record_id format');
   }
   return {
     stream: requireSafeName(value.slice(0, separator), 'stream'),
     recordId: requireSafeName(value.slice(separator + 1), 'record_id'),
   };
+}
+
+// Build the self-contained result id for a search hit. Only record-shaped
+// base ids (`stream:record_id`) are wrapped — opaque fallbacks (URLs,
+// `result:N`) and ids that already carry a connection segment pass through —
+// and connection ids that could not survive the grammar (`/` or `:` inside)
+// never produce a malformed handle.
+function selfContainedResultId(baseId, connectionId) {
+  if (typeof baseId !== 'string' || baseId.length === 0) return baseId;
+  if (typeof connectionId !== 'string' || connectionId.length === 0) return baseId;
+  if (connectionId.includes('/') || connectionId.includes(':')) return baseId;
+  if (baseId.includes('/')) return baseId;
+  if (!parseRecordResultIdOrNull(baseId)) return baseId;
+  return `${connectionId}/${baseId}`;
 }
 
 function normalizeFetchedDocument(record, requestedId, providerUrl) {
@@ -1953,7 +2026,10 @@ function urlForRecord(record, fallbackId, providerUrl) {
     const recordRef = parseRecordResultIdOrNull(fallbackId);
     if (recordRef) {
       const base = providerUrl.replace(/\/$/, '');
-      return `${base}/v1/streams/${encodeURIComponent(recordRef.stream)}/records/${encodeURIComponent(recordRef.recordId)}`;
+      const recordUrl = `${base}/v1/streams/${encodeURIComponent(recordRef.stream)}/records/${encodeURIComponent(recordRef.recordId)}`;
+      return recordRef.connectionId
+        ? `${recordUrl}?connection_id=${encodeURIComponent(recordRef.connectionId)}`
+        : recordUrl;
     }
   }
   return `pdpp://record/${encodeURIComponent(fallbackId)}`;

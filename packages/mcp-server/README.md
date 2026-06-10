@@ -70,10 +70,15 @@ Plus one resource template: `pdpp://stream/{name}` → `GET /v1/streams/{name}`.
 
 `search` preserves the RS envelope in `structuredContent.data` and also returns
 ChatGPT-compatible `structuredContent.results[]` entries with `id`, `title`, `url`,
-and available source handles such as `connection_id`. Its `content[]` text also
+and available source handles such as `connection_id`. Result ids are
+self-contained fetch handles: when a hit carries a connection, the id is
+`connection_id/stream:record_id`, so `fetch(id)` needs no separate
+`connection_id` argument even on multi-source grants. Its `content[]` text also
 previews a bounded set of top hits so clients that cannot inspect structured
 tool output can still fetch a result.
-`fetch` accepts result ids in `stream:record_id` form and follows the
+`fetch` accepts result ids in both the self-contained
+`connection_id/stream:record_id` form and the legacy `stream:record_id` form
+(optionally scoped by a `connection_id` argument) and follows the
 MCP/OpenAI search-fetch document contract: `structuredContent` is exactly
 `id`, `title`, `text`, `url`, and `metadata`, and `content[]` contains the same
 object as JSON text for hosts that hide structured output. It does not return a
