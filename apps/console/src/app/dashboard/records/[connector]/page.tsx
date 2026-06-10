@@ -15,7 +15,7 @@ import {
   indexCollectionReportByStream,
   type StreamCollectionFacts,
 } from "../../lib/collection-report.ts";
-import { derivePrimaryRowAction, type PrimaryRowAction } from "../../lib/connection-evidence.ts";
+import { derivePrimaryRowAction, syncActionIdleLabel, type PrimaryRowAction } from "../../lib/connection-evidence.ts";
 import { isRevokedConnection } from "../../lib/records-list-classification.ts";
 import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import {
@@ -321,6 +321,7 @@ function ConnectorPageView({
     connectorId,
     hasLocalDeviceProgress: Boolean(overview.localDeviceProgress),
   });
+  const syncIdleLabel = syncActionIdleLabel(overview.lastRun?.status);
 
   return (
     <DashboardShell active="records">
@@ -354,6 +355,7 @@ function ConnectorPageView({
                 connectionId={connectorInstanceId}
                 connectorId={connectorId}
                 displayName={displayName}
+                idleLabel={syncIdleLabel}
                 initialRunning={running}
               />
             ) : (
@@ -417,7 +419,7 @@ function ConnectorPageView({
         title={`Streams (${streams.length})`}
       >
         {streams.length === 0 ? (
-          <p className="pdpp-caption text-muted-foreground italic">{emptyStreamsHint(primaryAction)}</p>
+          <p className="pdpp-caption text-muted-foreground italic">{emptyStreamsHint(primaryAction, syncIdleLabel)}</p>
         ) : (
           <DataList>
             {streams.map((s) => {
@@ -504,12 +506,14 @@ function ConnectorPageView({
 
 /**
  * Empty-streams hint, keyed on the same modality as the header action so a
- * push-mode connection is never told to "Click Sync now" - a button it does not
- * have. Owner-runnable connections keep the original copy.
+ * push-mode connection is never told to start a remote run - a button it does
+ * not have. Owner-runnable connections use the same idle label as the button,
+ * so failed first attempts read as recovery ("Retry sync") instead of a fresh
+ * first-time action.
  */
-function emptyStreamsHint(action: PrimaryRowAction): string {
+function emptyStreamsHint(action: PrimaryRowAction, syncIdleLabel: string): string {
   if (action.kind === "sync") {
-    return "No records for this connector yet. Click Sync now to pull your first data.";
+    return `No records for this connector yet. ${syncIdleLabel} to pull your first data.`;
   }
   return "No records yet. This connection fills in when its local-collector device pushes data; the dashboard cannot start a run.";
 }

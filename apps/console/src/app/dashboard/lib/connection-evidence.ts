@@ -1359,19 +1359,34 @@ export function deriveConnectionNextStep(input: {
 /**
  * The honest primary action for a records row.
  *
- * The "Sync now" button starts an owner-controlled connector run. Existing
- * browser-bound connections are owner-runnable: if they need browser assistance,
- * the run timeline surfaces that after start. The class that remains
+ * The owner-triggered sync action starts an owner-controlled connector run.
+ * Existing browser-bound connections are owner-runnable: if they need browser
+ * assistance, the run timeline surfaces that after start. The class that remains
  * non-clickable here is push-mode / local-collector connections (those with
  * `localDeviceProgress`): they fill in when their local-collector device pushes
  * a batch, and there is no remote pull to start.
  *
- * Everything else keeps the clickable `Sync now`.
+ * Everything else keeps the clickable sync action; the visible label may read
+ * `Retry sync` when the most recent attempt failed or was cancelled.
  *
  * Pure and JSX-free so the row stays thin and this is unit-testable without a
  * browser harness.
  */
 export type PrimaryRowAction = { kind: "sync" } | { kind: "device_wait"; detail: string; label: string };
+
+export type SyncActionIdleLabel = "Retry sync" | "Sync now";
+
+/**
+ * Owner-facing label for the owner-triggered sync action while no run is
+ * active. A failed/cancelled last attempt should read as recovery, not as a
+ * fresh first-time action; the underlying endpoint is the same.
+ */
+export function syncActionIdleLabel(lastRunStatus: string | null | undefined): SyncActionIdleLabel {
+  if (lastRunStatus === "failed" || lastRunStatus === "cancelled" || lastRunStatus === "canceled") {
+    return "Retry sync";
+  }
+  return "Sync now";
+}
 
 /**
  * Owner-facing lead sentence for a failed `Sync now`, keyed on whether the

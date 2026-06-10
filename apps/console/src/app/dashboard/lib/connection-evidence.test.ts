@@ -25,6 +25,7 @@ import {
   summarizeOutboxForRow,
   summarizeOutboxStallRemediation,
   summarizeSchedule,
+  syncActionIdleLabel,
   syncStartFailureLead,
 } from "./connection-evidence.ts";
 import type {
@@ -1646,4 +1647,17 @@ test("derivePrimaryRowAction defaults to sync for an unknown connector with no d
   assert.equal(derivePrimaryRowAction({ connectorId: "demo", hasLocalDeviceProgress: false }).kind, "sync");
   assert.equal(derivePrimaryRowAction({ connectorId: null, hasLocalDeviceProgress: false }).kind, "sync");
   assert.equal(derivePrimaryRowAction({ connectorId: undefined, hasLocalDeviceProgress: false }).kind, "sync");
+});
+
+test("syncActionIdleLabel names failed and cancelled runs as retries", () => {
+  assert.equal(syncActionIdleLabel("failed"), "Retry sync");
+  assert.equal(syncActionIdleLabel("cancelled"), "Retry sync");
+  assert.equal(syncActionIdleLabel("canceled"), "Retry sync");
+});
+
+test("syncActionIdleLabel keeps non-failed idle sync copy", () => {
+  assert.equal(syncActionIdleLabel("succeeded"), "Sync now");
+  assert.equal(syncActionIdleLabel("started"), "Sync now");
+  assert.equal(syncActionIdleLabel(null), "Sync now");
+  assert.equal(syncActionIdleLabel(undefined), "Sync now");
 });

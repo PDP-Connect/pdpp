@@ -20,6 +20,7 @@ import {
   type PrimaryRowAction,
   resolveRecordCountDisplay,
   summarizeAxisChips,
+  syncActionIdleLabel,
   syncStartFailureLead,
 } from "../lib/connection-evidence.ts";
 import { isRevokedConnection } from "../lib/records-list-classification.ts";
@@ -220,15 +221,16 @@ export function ConnectorRow({ labelNeeded, overview, runsHref }: RowProps) {
     localDeviceProgress: overview.localDeviceProgress ?? null,
     supportsOwnerSync: !overview.localDeviceProgress,
   });
-  // The primary row action is modality-aware: "Sync now" is honest for existing
-  // owner-runnable connections, including browser-bound runs that may ask for
-  // manual browser assistance after start. Push-mode local-collector connections
-  // still render non-clickable guidance because the dashboard cannot remotely
-  // pull from the operator's device.
+  // The primary row action is modality-aware: existing owner-runnable
+  // connections, including browser-bound runs that may ask for manual browser
+  // assistance after start, get a clickable sync action. Push-mode
+  // local-collector connections still render non-clickable guidance because
+  // the dashboard cannot remotely pull from the operator's device.
   const primaryAction: PrimaryRowAction = derivePrimaryRowAction({
     connectorId: connector.connector_id,
     hasLocalDeviceProgress: Boolean(overview.localDeviceProgress),
   });
+  const syncIdleLabel = syncActionIdleLabel(lastRun?.status);
   const rowAction: RowPrimaryAction = revoked
     ? {
         kind: "reconnect",
@@ -303,6 +305,7 @@ export function ConnectorRow({ labelNeeded, overview, runsHref }: RowProps) {
             action={rowAction}
             displayName={displayName}
             isPending={isPending}
+            idleLabel={syncIdleLabel}
             onSync={handleSync}
             running={running}
           />
@@ -327,7 +330,7 @@ export function ConnectorRow({ labelNeeded, overview, runsHref }: RowProps) {
 /**
  * The honest primary action for the row.
  *
- * Owner-runnable connectors get the clickable `Sync now` button. Push-mode
+ * Owner-runnable connectors get the clickable sync button. Push-mode
  * local-collector connections render compact, non-clickable guidance because
  * their data arrives when the paired device pushes it. The guidance is inert
  * text (not a `<button>`), so it can never reach `runConnectorNowAction`.
@@ -336,12 +339,14 @@ function PrimaryRowActionControl({
   action,
   displayName,
   isPending,
+  idleLabel,
   onSync,
   running,
 }: {
   action: RowPrimaryAction;
   displayName: string;
   isPending: boolean;
+  idleLabel: string;
   onSync: () => void;
   running: boolean;
 }) {
@@ -360,12 +365,12 @@ function PrimaryRowActionControl({
   if (action.kind === "sync") {
     return (
       <Button
-        aria-label={running ? `Sync in progress for ${displayName}` : `Sync ${displayName} now`}
+        aria-label={running ? `Sync in progress for ${displayName}` : `${idleLabel} for ${displayName}`}
         disabled={running || isPending}
         onClick={onSync}
         size="sm"
       >
-        {running ? "Syncing…" : "Sync now"}
+        {running ? "Syncing…" : idleLabel}
       </Button>
     );
   }

@@ -22,10 +22,11 @@ interface Props {
   connectionId: string | null;
   connectorId: string;
   displayName: string;
+  idleLabel?: string;
   initialRunning: boolean;
 }
 
-export function SyncNowButton({ connectionId, connectorId, displayName, initialRunning }: Props) {
+export function SyncNowButton({ connectionId, connectorId, displayName, idleLabel = "Sync now", initialRunning }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [optimisticRunning, setOptimisticRunning] = useState(false);
@@ -82,12 +83,12 @@ export function SyncNowButton({ connectionId, connectorId, displayName, initialR
   return (
     <div className="flex flex-col items-end gap-1">
       <Button
-        aria-label={running ? `Sync in progress for ${displayName}` : `Sync ${displayName} now`}
+        aria-label={running ? `Sync in progress for ${displayName}` : `${idleLabel} for ${displayName}`}
         disabled={running || isPending}
         onClick={handleClick}
         size="sm"
       >
-        {running ? "Syncing…" : "Sync now"}
+        {running ? "Syncing…" : idleLabel}
       </Button>
       {toast ? (
         <span

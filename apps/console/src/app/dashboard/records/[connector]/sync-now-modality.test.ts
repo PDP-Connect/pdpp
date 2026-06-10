@@ -30,13 +30,16 @@ const PAGE_FILE = `${HERE}page.tsx`;
 const IMPORTS_SHARED_CLASSIFIER =
   /import \{ (?=[^}]*derivePrimaryRowAction)(?=[^}]*type PrimaryRowAction)[^}]+ \} from "\.\.\/\.\.\/lib\/connection-evidence\.ts"/;
 const DERIVES_PRIMARY_ACTION = /const primaryAction = derivePrimaryRowAction\(\{/;
-const SYNC_BRANCH_GUARD = /\{primaryAction\.kind === "sync" \? \(\s*<SyncNowButton/;
+const SYNC_ACTION_LABEL_FROM_LAST_RUN = /const syncIdleLabel = syncActionIdleLabel\(overview\.lastRun\?\.status\)/;
+const SYNC_BUTTON_RECEIVES_IDLE_LABEL = /idleLabel=\{syncIdleLabel\}/;
+const SYNC_BRANCH_GUARD = /primaryAction\.kind === "sync" \? \(\s*<SyncNowButton/;
 const NON_SYNC_NOTICE = /\) : \(\s*<PrimaryActionNotice action=\{primaryAction\} \/>/;
 const DEVICE_WAIT_NOTICE_TESTID = /data-testid="detail-action-device-wait"/;
 // The "Click Sync now" copy must be gated behind the owner-syncable branch of
 // `emptyStreamsHint`, never shown unconditionally for every connection.
 const SYNC_HINT_GATED_RE =
-  /if \(action\.kind === "sync"\) \{\s*return "No records for this connector yet\. Click Sync now/;
+  /if \(action\.kind === "sync"\) \{\s*return `No records for this connector yet\. \$\{syncIdleLabel\}/;
+const EMPTY_STREAMS_HINT_RECEIVES_IDLE_LABEL = /emptyStreamsHint\(primaryAction, syncIdleLabel\)/;
 
 test("detail page imports the shared primary-action classifier", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
@@ -46,6 +49,12 @@ test("detail page imports the shared primary-action classifier", async () => {
 test("detail page derives its primary action from the shared classifier (no scattered string checks)", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
   assert.match(src, DERIVES_PRIMARY_ACTION);
+});
+
+test("detail page labels failed owner syncs as retryable", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.match(src, SYNC_ACTION_LABEL_FROM_LAST_RUN);
+  assert.match(src, SYNC_BUTTON_RECEIVES_IDLE_LABEL);
 });
 
 test("SyncNowButton renders only inside the owner-syncable branch", async () => {
@@ -64,8 +73,10 @@ test("push-mode connections get an honest non-clickable notice, not a dead butto
 
 test("the empty-streams hint gates Sync now copy on the owner-runnable branch", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
-  // The "Click Sync now to pull your first data." copy must be gated behind the
-  // owner-runnable branch so push-mode connections are not told to click a
-  // button they do not have.
+  // The owner-run copy must be gated behind the owner-runnable branch so
+  // push-mode connections are not told to click a button they do not have. It
+  // also uses the same idle label as the button ("Sync now" / "Retry sync") so
+  // failed first attempts do not fall back to stale first-run copy.
   assert.match(src, SYNC_HINT_GATED_RE);
+  assert.match(src, EMPTY_STREAMS_HINT_RECEIVES_IDLE_LABEL);
 });

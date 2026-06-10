@@ -447,6 +447,8 @@ const DERIVES_PRIMARY_ACTION = /derivePrimaryRowAction\(\{/;
 const PRIMARY_ACTION_KEYS_CONNECTOR = /connectorId: connector\.connector_id/;
 const PRIMARY_ACTION_KEYS_DEVICE_PROGRESS = /hasLocalDeviceProgress: Boolean\(overview\.localDeviceProgress\)/;
 const RENDERS_PRIMARY_CONTROL = /<PrimaryRowActionControl\s/;
+const SYNC_ACTION_LABEL_FROM_LAST_RUN = /const syncIdleLabel = syncActionIdleLabel\(lastRun\?\.status\)/;
+const PRIMARY_CONTROL_RECEIVES_IDLE_LABEL = /idleLabel=\{syncIdleLabel\}/;
 const SYNC_BUTTON_GATED_ON_SYNC_KIND = /action\.kind === "sync"/;
 const DEVICE_WAIT_SURFACE = /data-testid="row-action-device-wait"/;
 
@@ -460,6 +462,12 @@ test("connector-row derives a modality-aware primary action", async () => {
 test("connector-row routes its primary action through PrimaryRowActionControl", async () => {
   const src = await readFile(ROW_FILE, "utf8");
   assert.match(src, RENDERS_PRIMARY_CONTROL);
+});
+
+test("connector-row labels failed owner syncs as retryable", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.match(src, SYNC_ACTION_LABEL_FROM_LAST_RUN);
+  assert.match(src, PRIMARY_CONTROL_RECEIVES_IDLE_LABEL);
 });
 
 test("the Sync now button only renders inside the owner-syncable branch", async () => {
