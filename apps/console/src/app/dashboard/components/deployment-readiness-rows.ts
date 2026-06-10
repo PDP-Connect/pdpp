@@ -18,13 +18,25 @@ export interface ReadinessRow {
 
 export interface DiskHeadroomInputs {
   freeBytesOnDataFs: number | null;
+  // Bytes of the largest single relation on this filesystem (from
+  // top_relations[0].bytes when available). Used for the workload-aware hint:
+  // when free < largestRelationBytes, VACUUM FULL of that table may fail.
+  // null when the backend is SQLite or the footprint is unavailable.
+  largestRelationBytes: number | null;
+  // Display name of the largest relation (e.g. "records"). null when unknown.
+  largestRelationName: string | null;
+  // Human-readable filesystem label (e.g. "data", "postgres"). null when only
+  // one mount is reported (keeps copy terse for single-FS deployments).
+  mountLabel: string | null;
   path: string | null;
   totalBytesOnDataFs: number | null;
 }
 
 export interface ServerInputs {
   databasePath: string;
-  diskHeadroom: DiskHeadroomInputs | null;
+  // One entry per distinct probed filesystem. Empty array when no probe ran
+  // or all probes failed. Replaces the previous singular `DiskHeadroomInputs|null`.
+  diskHeadroom: DiskHeadroomInputs[];
   embeddingBackendAvailable: boolean;
   embeddingBackendConfigured: boolean;
   embeddingDownloadAllowed: boolean | null;
@@ -46,7 +58,12 @@ export function extractReadinessInputs(report: DeploymentDiagnostics): ServerInp
   const envByName = new Map(report.environment.map((e) => [e.name, e]));
   const owner = envByName.get("PDPP_OWNER_PASSWORD");
   const origin = envByName.get("PDPP_REFERENCE_ORIGIN");
-  const dh = report.disk_headroom ?? null;
+  // Workload context: the largest relation is the first entry in top_relations
+  // (ordered by size descending). Only available when the backend is Postgres
+  // and the footprint has been measured. The data dir and PG mount share the
+  // same relation sizes because they are both on the Postgres FS.
+  const largestRelation = report.database.top_relations?.[0] ?? null;
+  const dhEntries = report.disk_headroom ?? [];
   return {
     ownerPasswordProvenance: owner?.provenance ?? "absent",
     referenceOriginConfigured: origin?.provenance === "present" ? origin.value : null,
@@ -57,13 +74,14 @@ export function extractReadinessInputs(report: DeploymentDiagnostics): ServerInp
     vectorIndexKind: report.semantic.index.kind,
     vectorIndexState: report.semantic.index.state,
     databasePath: report.database.path,
-    diskHeadroom: dh
-      ? {
-          path: dh.path,
-          freeBytesOnDataFs: dh.free_bytes,
-          totalBytesOnDataFs: dh.total_bytes,
-        }
-      : null,
+    diskHeadroom: dhEntries.map((dh) => ({
+      path: dh.path,
+      freeBytesOnDataFs: dh.free_bytes,
+      totalBytesOnDataFs: dh.total_bytes,
+      mountLabel: dh.mount_label ?? null,
+      largestRelationBytes: largestRelation?.bytes ?? null,
+      largestRelationName: largestRelation?.name ?? null,
+    })),
   };
 }
 
@@ -224,38 +242,94 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024).toFixed(0)} KiB`;
 }
 
+// Build a workload-aware hint suffix.
+// When free bytes are below the largest relation's size, a VACUUM FULL or
+// index rebuild of that table would need scratch space it cannot get — warn.
+// Warning-only per heuristics rule; never a threshold that replaces the absolute ones.
+function workloadSuffix(dh: DiskHeadroomInputs, free: number): string {
+  const relBytes = dh.largestRelationBytes;
+  const relName = dh.largestRelationName;
+  if (relBytes === null || typeof relBytes !== "number" || free >= relBytes) {
+    return "";
+  }
+  const name = relName ?? "your largest table";
+  return ` Free space is below the size of your largest table (${name}, ${formatBytes(relBytes)}) — maintenance operations like VACUUM FULL may fail.`;
+}
+
+// Derive a single readiness row for one DiskHeadroomInputs entry.
+function diskHeadroomEntryRow(dh: DiskHeadroomInputs): ReadinessRow {
+  const mountSuffix = dh.mountLabel ? ` (${dh.mountLabel})` : "";
+  const checkLabel = `Disk headroom${mountSuffix}`;
+  if (dh.freeBytesOnDataFs === null) {
+    return {
+      check: checkLabel,
+      status: "info",
+      detail: `Disk headroom could not be measured${dh.path ? ` on ${dh.path}` : ""}.`,
+    };
+  }
+  const free = dh.freeBytesOnDataFs;
+  const pathLabel = dh.path ? ` on ${dh.path}` : "";
+  if (free < DISK_ERROR_BYTES) {
+    return {
+      check: checkLabel,
+      status: "error",
+      detail: `Only ${formatBytes(free)} free${pathLabel}. A restart or image build will very likely fail with "No space left on device".${workloadSuffix(dh, free)}`,
+      hint: "Run `docker builder prune` or `docker system prune` to reclaim build cache and stopped containers. Inspect Docker volumes manually before removing any volume data.",
+    };
+  }
+  if (free < DISK_WARN_BYTES) {
+    return {
+      check: checkLabel,
+      status: "warn",
+      detail: `${formatBytes(free)} free${pathLabel}. Disk space is running low.${workloadSuffix(dh, free)}`,
+      hint: "Consider running `docker system prune` to reclaim build cache before the next restart.",
+    };
+  }
+  return {
+    check: checkLabel,
+    status: "ok",
+    detail: `${formatBytes(free)} free${pathLabel}.`,
+  };
+}
+
+// Returns one ReadinessRow per distinct probed filesystem. Empty array when
+// no probes ran (caller decides whether to show a fallback). Use this in the
+// deployment readiness panel to support multi-mount deployments.
+export function diskHeadroomRows(inputs: ServerInputs): ReadinessRow[] {
+  if (inputs.diskHeadroom.length === 0) {
+    return [
+      {
+        check: "Disk headroom",
+        status: "info",
+        detail: "Disk headroom could not be measured on this filesystem.",
+      },
+    ];
+  }
+  return inputs.diskHeadroom.map(diskHeadroomEntryRow);
+}
+
+// Backward-compatible single-row accessor. Uses the first entry (data dir)
+// when the array has entries; returns the "unmeasured" info row when empty.
+// Kept for callers that have not yet migrated to diskHeadroomRows().
 export function diskHeadroomRow(inputs: ServerInputs): ReadinessRow {
-  const dh = inputs.diskHeadroom;
-  if (!dh || dh.freeBytesOnDataFs === null) {
+  if (inputs.diskHeadroom.length === 0) {
     return {
       check: "Disk headroom",
       status: "info",
       detail: "Disk headroom could not be measured on this filesystem.",
     };
   }
-  const free = dh.freeBytesOnDataFs;
-  const label = dh.path ? ` on ${dh.path}` : "";
-  if (free < DISK_ERROR_BYTES) {
+  const first = inputs.diskHeadroom[0];
+  // Guarded by the length check above; TypeScript sees index access as possibly
+  // undefined when noUncheckedIndexedAccess is set.
+  if (!first) {
     return {
       check: "Disk headroom",
-      status: "error",
-      detail: `Only ${formatBytes(free)} free${label}. A restart or image build will very likely fail with "No space left on device".`,
-      hint: "Run `docker builder prune` or `docker system prune` to reclaim build cache and stopped containers. Inspect Docker volumes manually before removing any volume data.",
+      status: "info",
+      detail: "Disk headroom could not be measured on this filesystem.",
     };
   }
-  if (free < DISK_WARN_BYTES) {
-    return {
-      check: "Disk headroom",
-      status: "warn",
-      detail: `${formatBytes(free)} free${label}. Disk space is running low.`,
-      hint: "Consider running `docker system prune` to reclaim build cache before the next restart.",
-    };
-  }
-  return {
-    check: "Disk headroom",
-    status: "ok",
-    detail: `${formatBytes(free)} free${label}.`,
-  };
+  return diskHeadroomEntryRow(first);
 }
 
 export function overallVerdict(rows: ReadinessRow[]): Verdict {

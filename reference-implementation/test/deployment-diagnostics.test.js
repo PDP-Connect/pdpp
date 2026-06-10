@@ -516,8 +516,9 @@ test('/_ref/deployment returns a structured report with zero participation by de
     assert.ok(body.semantic.participation);
     assert.ok(Array.isArray(body.environment));
     assert.ok(Array.isArray(body.warnings));
-    assert.ok(body.disk_headroom, 'route wiring must include disk_headroom');
-    assert.equal(body.disk_headroom.path, ':memory:');
+    assert.ok(Array.isArray(body.disk_headroom), 'route wiring must include disk_headroom as array');
+    assert.ok(body.disk_headroom.length > 0, 'disk_headroom must have at least one entry');
+    assert.equal(body.disk_headroom[0].path, ':memory:');
 
     // Backend is ready (stub), participation is zero, zero_participation
     // warning is raised.
@@ -696,17 +697,19 @@ function buildWithDisk(diskHeadroom) {
   });
 }
 
-test('disk_headroom block is null when not supplied', () => {
+test('disk_headroom block is empty array when not supplied', () => {
   const report = buildWithDisk(undefined);
-  assert.equal(report.disk_headroom, null);
+  assert.ok(Array.isArray(report.disk_headroom), 'disk_headroom is an array');
+  assert.equal(report.disk_headroom.length, 0);
   // low_disk_headroom warning must not fire when headroom is unmeasured.
   assert.ok(!report.warnings.some((w) => w.code === 'low_disk_headroom'));
 });
 
-test('disk_headroom block is null when probe returned null free_bytes', () => {
+test('disk_headroom block has one entry with null free_bytes when probe returned null', () => {
   const report = buildWithDisk({ path: '/data', free_bytes: null, total_bytes: null });
-  assert.ok(report.disk_headroom !== null, 'block present but with null values');
-  assert.equal(report.disk_headroom.free_bytes, null);
+  assert.ok(Array.isArray(report.disk_headroom), 'disk_headroom is an array');
+  assert.equal(report.disk_headroom.length, 1);
+  assert.equal(report.disk_headroom[0].free_bytes, null);
   assert.ok(!report.warnings.some((w) => w.code === 'low_disk_headroom'));
 });
 
@@ -716,7 +719,7 @@ test('no low_disk_headroom warning when free space exceeds warn threshold', () =
     free_bytes: DISK_WARN_BYTES + 1,
     total_bytes: 100 * 1024 * 1024 * 1024,
   });
-  assert.equal(report.disk_headroom?.free_bytes, DISK_WARN_BYTES + 1);
+  assert.equal(report.disk_headroom[0]?.free_bytes, DISK_WARN_BYTES + 1);
   assert.ok(!report.warnings.some((w) => w.code === 'low_disk_headroom'));
 });
 
@@ -755,7 +758,209 @@ test('disk_headroom block carries path, free_bytes, and total_bytes from input',
     free_bytes: 10 * 1024 * 1024 * 1024,
     total_bytes: 200 * 1024 * 1024 * 1024,
   });
-  assert.equal(report.disk_headroom?.path, '/mnt/data');
-  assert.equal(report.disk_headroom?.free_bytes, 10 * 1024 * 1024 * 1024);
-  assert.equal(report.disk_headroom?.total_bytes, 200 * 1024 * 1024 * 1024);
+  assert.ok(Array.isArray(report.disk_headroom));
+  assert.equal(report.disk_headroom.length, 1);
+  assert.equal(report.disk_headroom[0]?.path, '/mnt/data');
+  assert.equal(report.disk_headroom[0]?.free_bytes, 10 * 1024 * 1024 * 1024);
+  assert.equal(report.disk_headroom[0]?.total_bytes, 200 * 1024 * 1024 * 1024);
+  // Single FS — no mount_label (keeps copy terse for single-FS deployments).
+  assert.equal(report.disk_headroom[0]?.mount_label, undefined);
+});
+
+// ─── workload-aware warning ─────────────────────────────────────────────────
+
+test('low_disk_headroom warning includes workload hint when free < largest relation', () => {
+  const report = buildDeploymentDiagnostics({
+    backend: null,
+    db: null,
+    dbPath: ':memory:',
+    manifests: [],
+    indexState: null,
+    env: {},
+    // 4 GiB free — below warn (5 GiB) and below largest relation (6 GiB).
+    diskHeadroom: {
+      path: '/data',
+      free_bytes: 4 * 1024 * 1024 * 1024,
+      total_bytes: 100 * 1024 * 1024 * 1024,
+    },
+    physicalFootprint: {
+      physical_bytes: 50 * 1024 * 1024 * 1024,
+      top_relations: [
+        { name: 'records', bytes: 6 * 1024 * 1024 * 1024 },
+      ],
+    },
+  });
+  const warning = report.warnings.find((w) => w.code === 'low_disk_headroom');
+  assert.ok(warning, 'low_disk_headroom warning must fire');
+  assert.ok(
+    warning.message.includes('VACUUM FULL'),
+    'workload hint must mention VACUUM FULL when free < largest relation',
+  );
+  assert.ok(warning.message.includes('records'), 'hint names the largest relation');
+});
+
+test('low_disk_headroom warning omits workload hint when free >= largest relation', () => {
+  const report = buildDeploymentDiagnostics({
+    backend: null,
+    db: null,
+    dbPath: ':memory:',
+    manifests: [],
+    indexState: null,
+    env: {},
+    // 4 GiB free — below warn (5 GiB) but ABOVE largest relation (3 GiB).
+    diskHeadroom: {
+      path: '/data',
+      free_bytes: 4 * 1024 * 1024 * 1024,
+      total_bytes: 100 * 1024 * 1024 * 1024,
+    },
+    physicalFootprint: {
+      physical_bytes: 50 * 1024 * 1024 * 1024,
+      top_relations: [
+        { name: 'records', bytes: 3 * 1024 * 1024 * 1024 },
+      ],
+    },
+  });
+  const warning = report.warnings.find((w) => w.code === 'low_disk_headroom');
+  assert.ok(warning, 'low_disk_headroom warning must still fire (absolute threshold)');
+  assert.ok(
+    !warning.message.includes('VACUUM FULL'),
+    'workload hint must NOT appear when free >= largest relation',
+  );
+});
+
+test('low_disk_headroom workload hint is absent when footprint is unavailable (SQLite)', () => {
+  const report = buildDeploymentDiagnostics({
+    backend: null,
+    db: null,
+    dbPath: ':memory:',
+    manifests: [],
+    indexState: null,
+    env: {},
+    diskHeadroom: {
+      path: '/data',
+      free_bytes: 4 * 1024 * 1024 * 1024,
+      total_bytes: 100 * 1024 * 1024 * 1024,
+    },
+    // no physicalFootprint supplied → degrade silently
+  });
+  const warning = report.warnings.find((w) => w.code === 'low_disk_headroom');
+  assert.ok(warning, 'warning fires on absolute threshold even without footprint');
+  assert.ok(!warning.message.includes('VACUUM FULL'), 'no workload hint when footprint is absent');
+});
+
+// ─── multi-mount awareness ──────────────────────────────────────────────────
+
+test('disk_headroom: single entry when pgDiskHeadroom is on same filesystem (total_bytes heuristic)', () => {
+  const sharedTotal = 100 * 1024 * 1024 * 1024;
+  const report = buildDeploymentDiagnostics({
+    backend: null,
+    db: null,
+    dbPath: ':memory:',
+    manifests: [],
+    indexState: null,
+    env: {},
+    diskHeadroom: {
+      path: '/data',
+      free_bytes: 20 * 1024 * 1024 * 1024,
+      total_bytes: sharedTotal,
+    },
+    // Same total_bytes → same FS → deduplicated.
+    pgDiskHeadroom: {
+      path: '/var/lib/postgresql/data',
+      free_bytes: 20 * 1024 * 1024 * 1024,
+      total_bytes: sharedTotal,
+    },
+  });
+  assert.equal(report.disk_headroom.length, 1, 'same FS must be deduplicated to one entry');
+  assert.equal(report.disk_headroom[0]?.mount_label, undefined, 'no label for a single FS');
+});
+
+test('disk_headroom: two entries when pgDiskHeadroom is on a distinct filesystem', () => {
+  const report = buildDeploymentDiagnostics({
+    backend: null,
+    db: null,
+    dbPath: ':memory:',
+    manifests: [],
+    indexState: null,
+    env: {},
+    diskHeadroom: {
+      path: '/data',
+      free_bytes: 20 * 1024 * 1024 * 1024,
+      total_bytes: 100 * 1024 * 1024 * 1024,
+    },
+    // Different total_bytes → different FS → both reported.
+    pgDiskHeadroom: {
+      path: '/var/lib/postgresql/data',
+      free_bytes: 8 * 1024 * 1024 * 1024,
+      total_bytes: 50 * 1024 * 1024 * 1024,
+    },
+  });
+  assert.equal(report.disk_headroom.length, 2, 'distinct FS must produce two entries');
+  const dataEntry = report.disk_headroom.find((e) => e.mount_label === 'data');
+  const pgEntry = report.disk_headroom.find((e) => e.mount_label === 'postgres');
+  assert.ok(dataEntry, 'first entry labeled "data"');
+  assert.ok(pgEntry, 'second entry labeled "postgres"');
+  assert.equal(dataEntry?.path, '/data');
+  assert.equal(pgEntry?.path, '/var/lib/postgresql/data');
+});
+
+test('disk_headroom: postgres entry reported as "unmeasured" when probe returned null free_bytes', () => {
+  // Simulates the reference container not having the PG volume mounted.
+  // The entry is still present (never a false green) but its free_bytes is null
+  // and no warning fires for it.
+  const report = buildDeploymentDiagnostics({
+    backend: null,
+    db: null,
+    dbPath: ':memory:',
+    manifests: [],
+    indexState: null,
+    env: {},
+    diskHeadroom: {
+      path: '/data',
+      free_bytes: 20 * 1024 * 1024 * 1024,
+      total_bytes: 100 * 1024 * 1024 * 1024,
+    },
+    pgDiskHeadroom: {
+      path: '/var/lib/postgresql/data',
+      free_bytes: null,
+      total_bytes: null,
+    },
+  });
+  // total_bytes both null → cannot confirm same FS → report both.
+  const pgEntry = report.disk_headroom.find((e) => e.mount_label === 'postgres');
+  assert.ok(pgEntry, 'unmeasured postgres mount must still be reported (never a false green)');
+  assert.equal(pgEntry?.free_bytes, null);
+  // Only one warning fires (for the data dir being above thresholds → none here)
+  // — the unmeasured PG entry does not generate a spurious warning.
+  const diskWarnings = report.warnings.filter((w) => w.code === 'low_disk_headroom');
+  assert.equal(diskWarnings.length, 0, 'no warning for the unmeasured pg entry');
+});
+
+test('never suggests automatic data deletion (pin for all disk warning variants)', () => {
+  // Error threshold — includes workload hint.
+  const withWorkload = buildDeploymentDiagnostics({
+    backend: null,
+    db: null,
+    dbPath: ':memory:',
+    manifests: [],
+    indexState: null,
+    env: {},
+    diskHeadroom: {
+      path: '/data',
+      free_bytes: 1 * 1024 * 1024 * 1024,  // < error threshold
+      total_bytes: 100 * 1024 * 1024 * 1024,
+    },
+    physicalFootprint: {
+      physical_bytes: 50 * 1024 * 1024 * 1024,
+      top_relations: [{ name: 'records', bytes: 3 * 1024 * 1024 * 1024 }],
+    },
+  });
+  for (const w of withWorkload.warnings.filter((w) => w.code === 'low_disk_headroom')) {
+    assert.ok(
+      !w.message.toLowerCase().includes('auto-delete') &&
+        !w.message.toLowerCase().includes('automatically delete'),
+      'warning must not suggest automatic data deletion',
+    );
+    assert.ok(!w.message.includes('--volumes'), 'warning must not recommend deleting Docker volumes');
+  }
 });

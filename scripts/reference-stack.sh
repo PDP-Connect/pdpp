@@ -106,7 +106,9 @@ guard_clean_tree() {
 # on --build-app and --build-all only — not --no-build, verify, ps, or logs.
 check_disk_headroom() {
   local free_kb
-  free_kb="$(df -k "${ROOT}" | awk 'NR==2 {print $4}')"
+  # df -kP: -k for kilobytes, -P for POSIX output (prevents long device names
+  # from wrapping the header line onto row 2, which would shift column 4 to row 3).
+  free_kb="$(df -kP "${ROOT}" | awk 'NR==2 {print $4}')"
   if [[ -z "$free_kb" ]] || ! [[ "$free_kb" =~ ^[0-9]+$ ]]; then
     echo "reference-stack: WARNING: could not probe disk headroom on ${ROOT} — skipping check." >&2
     return 0

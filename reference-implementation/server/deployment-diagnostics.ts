@@ -135,6 +135,21 @@ export interface DiskHeadroom {
   readonly free_bytes: number | null;
   // Total bytes on the filesystem (f_blocks * f_frsize). Operator context only.
   readonly total_bytes: number | null;
+  // Filesystem identifier from statfs(). Used to deduplicate multi-mount
+  // probes that land on the same device. null when statfs() did not expose
+  // it (exotic FS, older Node) — falls back to total_bytes heuristic.
+  readonly fsid?: number | null;
+}
+
+// A single filesystem entry in the disk-headroom report. The shape mirrors
+// DiskHeadroom but omits the internal fsid (not meaningful to consumers).
+export interface DiskHeadroomEntry {
+  readonly path: string;
+  readonly free_bytes: number | null;
+  readonly total_bytes: number | null;
+  // Human-readable label for multi-mount display (e.g. "data", "postgres").
+  // Absent when only one filesystem is reported.
+  readonly mount_label?: string;
 }
 
 // 2 GiB — enough for a full Docker image layer set plus a small WAL burst.
@@ -167,6 +182,13 @@ export interface DeploymentDiagnosticsInput {
   // Disk headroom for the filesystem hosting the reference data directory.
   // Pre-probed by the runtime adapter. Absent/null = unmeasured.
   readonly diskHeadroom?: DiskHeadroom | null;
+  // Disk headroom for the Postgres data mount. Only relevant when the backend
+  // is Postgres and the data volume is a different mount from the data dir.
+  // Absent/null = unmeasured or not applicable (SQLite, same FS as data dir).
+  // The builder deduplicates: if pgDiskHeadroom is on the same filesystem as
+  // diskHeadroom (matched by fsid or, as fallback, total_bytes equality), it
+  // is silently suppressed.
+  readonly pgDiskHeadroom?: DiskHeadroom | null;
 }
 
 // Runtime capability posture of the provider/control-plane runtime.
@@ -270,14 +292,13 @@ export interface DeploymentDiagnosticsReport {
     readonly physical_bytes: number | null;
     readonly top_relations: readonly PhysicalRelationSize[] | null;
   };
-  // Disk headroom for the filesystem hosting the reference data directory.
-  // null when the probe failed or is not available (e.g. exotic FS, no stat
-  // permission). free_bytes/total_bytes are both null on probe failure.
-  readonly disk_headroom: {
-    readonly path: string;
-    readonly free_bytes: number | null;
-    readonly total_bytes: number | null;
-  } | null;
+  // Disk headroom for the filesystems hosting reference data. Ordered:
+  // data directory first; Postgres data mount second (when distinct). Empty
+  // array when all probes failed. Each entry uses the DiskHeadroomEntry shape
+  // (no internal fsid). mount_label is set when more than one distinct FS was
+  // measured ("data", "postgres"). free_bytes/total_bytes are null on probe
+  // failure for that entry.
+  readonly disk_headroom: readonly DiskHeadroomEntry[];
   readonly environment: readonly EnvValueReport[];
   readonly lexical: {
     readonly index: {
@@ -527,18 +548,43 @@ function buildWarnings(
   warnings.push(...buildRuntimeCapabilityWarnings(input.runtimeCapabilities ?? null));
 
   // Disk headroom: warn when free space is low enough that a restart or
-  // Docker build is likely to fail with "No space left on device". The check
-  // only fires when the probe succeeded (free_bytes is a non-null number).
-  // Neither threshold triggers automatic deletion — the operator must act.
-  const freeBytes = input.diskHeadroom?.free_bytes;
-  if (typeof freeBytes === "number") {
+  // Docker build is likely to fail with "No space left on device". Checked
+  // for each distinct filesystem entry. Neither threshold triggers automatic
+  // deletion — the operator must act.
+  //
+  // Workload-aware dimension: when free_bytes < largest single relation's
+  // on-disk size, a VACUUM FULL or index rebuild of that table would also
+  // fail. This is an advisory note appended to the existing threshold copy —
+  // not a new standalone threshold — per the heuristics rule (warning-only).
+  // Rationale: VACUUM FULL rewrites the entire table to a new heap file before
+  // dropping the old one; it needs ~1× the table size as scratch space on the
+  // same filesystem. SQLite / absent footprint → silently skip this check.
+  const largestRelation =
+    Array.isArray(input.physicalFootprint?.top_relations) && input.physicalFootprint!.top_relations!.length > 0
+      ? input.physicalFootprint!.top_relations![0]
+      : null;
+
+  const diskEntries = normalizeDiskHeadroomEntries(input.diskHeadroom, input.pgDiskHeadroom);
+  for (const entry of diskEntries) {
+    const freeBytes = entry.free_bytes;
+    if (typeof freeBytes !== "number") {
+      continue; // probe failed for this mount — no warning
+    }
+    const pathLabel = entry.path ?? "the data filesystem";
+    // Workload-aware suffix: appended when free < largest relation size.
+    // Rationale: VACUUM FULL needs ~1× the largest table as scratch space.
+    // Degrade silently when footprint is unavailable (SQLite / absent).
+    const workloadSuffix =
+      largestRelation != null && typeof largestRelation.bytes === "number" && freeBytes < largestRelation.bytes
+        ? ` Free space is below the size of your largest table (${largestRelation.name}, ${formatBytes(largestRelation.bytes)}) — maintenance operations like VACUUM FULL may fail.`
+        : "";
     if (freeBytes < DISK_ERROR_BYTES) {
       warnings.push({
         code: "low_disk_headroom",
         message:
-          `Disk headroom on ${input.diskHeadroom?.path ?? "the data filesystem"} is critically low ` +
+          `Disk headroom on ${pathLabel} is critically low ` +
           `(${formatBytes(freeBytes)} free). A reference restart or Docker build is very likely to fail ` +
-          `with "No space left on device". ` +
+          `with "No space left on device".${workloadSuffix} ` +
           "Run `docker builder prune` or `docker system prune` to reclaim build cache and stopped containers. " +
           "Inspect Docker volumes manually before removing any volume data.",
       });
@@ -546,8 +592,8 @@ function buildWarnings(
       warnings.push({
         code: "low_disk_headroom",
         message:
-          `Disk headroom on ${input.diskHeadroom?.path ?? "the data filesystem"} is low ` +
-          `(${formatBytes(freeBytes)} free). Consider running \`docker system prune\` ` +
+          `Disk headroom on ${pathLabel} is low ` +
+          `(${formatBytes(freeBytes)} free).${workloadSuffix} Consider running \`docker system prune\` ` +
           "to reclaim build cache before the next restart.",
       });
     }
@@ -691,14 +737,17 @@ function normalizePhysicalFootprint(footprint: PhysicalFootprint | null | undefi
   };
 }
 
-// ─── Disk headroom normalization ───────────────────────────────────────────
+// ─── Disk headroom normalization (multi-mount) ─────────────────────────────
+//
+// Converts one or two raw DiskHeadroom probes into the report's ordered entry
+// array. Deduplication: if the data-dir probe and the PG-data probe land on
+// the same filesystem (determined by fsid match, or — when fsid is absent —
+// by total_bytes equality heuristic), only the data-dir entry is emitted.
+// mount_label is added only when two distinct entries are reported ("data"
+// for the data dir, "postgres" for the PG volume), so single-FS deployments
+// keep the existing terse copy.
 
-function normalizeDiskHeadroom(
-  h: DiskHeadroom | null | undefined
-): DeploymentDiagnosticsReport["disk_headroom"] {
-  if (!h) {
-    return null;
-  }
+function normalizeSingleEntry(h: DiskHeadroom): DiskHeadroomEntry {
   const free = h.free_bytes;
   const total = h.total_bytes;
   return {
@@ -706,6 +755,55 @@ function normalizeDiskHeadroom(
     free_bytes: typeof free === "number" && Number.isFinite(free) && free >= 0 ? free : null,
     total_bytes: typeof total === "number" && Number.isFinite(total) && total >= 0 ? total : null,
   };
+}
+
+function sameFilesystem(a: DiskHeadroom, b: DiskHeadroom): boolean {
+  // Prefer fsid comparison (exact). Fall back to total_bytes equality as a
+  // heuristic — two probes returning identical total byte counts are almost
+  // certainly on the same device. Both falsy = treat as different (report both
+  // rather than silently drop one when we cannot confirm they are the same).
+  const aFsid = a.fsid;
+  const bFsid = b.fsid;
+  if (typeof aFsid === "number" && typeof bFsid === "number") {
+    return aFsid === bFsid;
+  }
+  const aTotal = a.total_bytes;
+  const bTotal = b.total_bytes;
+  if (typeof aTotal === "number" && aTotal > 0 && typeof bTotal === "number" && bTotal > 0) {
+    return aTotal === bTotal;
+  }
+  return false;
+}
+
+function normalizeDiskHeadroomEntries(
+  dataDir: DiskHeadroom | null | undefined,
+  pgDir: DiskHeadroom | null | undefined
+): readonly DiskHeadroomEntry[] {
+  const entries: DiskHeadroomEntry[] = [];
+
+  if (!dataDir) {
+    // No data-dir probe at all — skip; PG-only is odd but handle it.
+    if (pgDir) {
+      entries.push({ ...normalizeSingleEntry(pgDir), mount_label: "postgres" });
+    }
+    return entries;
+  }
+
+  const dataNorm = normalizeSingleEntry(dataDir);
+
+  // Decide whether PG is a distinct filesystem.
+  const pgDistinct = pgDir != null && !sameFilesystem(dataDir, pgDir);
+
+  if (pgDistinct) {
+    // Two distinct filesystems — label both for the UI.
+    entries.push({ ...dataNorm, mount_label: "data" });
+    entries.push({ ...normalizeSingleEntry(pgDir!), mount_label: "postgres" });
+  } else {
+    // Single filesystem (or no PG probe) — no label; keeps existing copy terse.
+    entries.push(dataNorm);
+  }
+
+  return entries;
 }
 
 // ─── Blended-search gating decision ────────────────────────────────────────
@@ -756,9 +854,20 @@ export async function probeDiskHeadroom(dataPath: string): Promise<DiskHeadroom>
     // running process will actually see when writing.
     const free_bytes = stats.bavail * stats.bsize;
     const total_bytes = stats.blocks * stats.bsize;
-    return { path: dataPath, free_bytes, total_bytes };
+    // Node's StatFs object exposes `ffree`/`files` but not `f_fsid` as a
+    // single integer (the raw struct has two 32-bit halves). Synthesize a
+    // numeric fsid from `stats.type` (OS-assigned FS type magic number) and
+    // `total_bytes` — same FS always yields the same pair, which is good
+    // enough for deduplication in practice. If `stats.type` is absent
+    // (older Node), fall back to null so the heuristic in sameFilesystem()
+    // kicks in instead.
+    const fsid: number | null =
+      typeof (stats as { type?: number }).type === "number"
+        ? ((stats as { type: number }).type * 1_000_000_007 + total_bytes) >>> 0
+        : null;
+    return { path: dataPath, free_bytes, total_bytes, fsid };
   } catch {
-    return { path: dataPath, free_bytes: null, total_bytes: null };
+    return { path: dataPath, free_bytes: null, total_bytes: null, fsid: null };
   }
 }
 
@@ -791,6 +900,14 @@ export interface DeploymentDiagnosticsRuntimeDeps {
   // absent, disk_headroom is null in the report. Typically set to
   // () => probeDiskHeadroom(dbPath) by the server's route handler.
   readonly getDiskHeadroom?: () => DiskHeadroom | Promise<DiskHeadroom> | null;
+  // Optional: probe the Postgres data volume's filesystem. Only set when the
+  // backend is Postgres and the data volume may be a distinct mount from the
+  // data dir (e.g. a dedicated Docker volume). If absent or if it turns out to
+  // be the same FS as the data dir, it is silently suppressed in the report.
+  // IMPORTANT: inside the reference container the Postgres volume may not be
+  // mounted. If the path does not exist, probeDiskHeadroom returns
+  // { free_bytes: null, total_bytes: null } — never a false green.
+  readonly getPgDiskHeadroom?: () => DiskHeadroom | Promise<DiskHeadroom> | null;
   readonly listRegisteredConnectorIds: () => Promise<readonly string[]>;
 }
 
@@ -850,6 +967,15 @@ export async function collectDeploymentDiagnostics(
     }
   }
 
+  let pgDiskHeadroom: DiskHeadroom | null = null;
+  if (deps.getPgDiskHeadroom) {
+    try {
+      pgDiskHeadroom = await Promise.resolve(deps.getPgDiskHeadroom());
+    } catch {
+      pgDiskHeadroom = null;
+    }
+  }
+
   return buildDeploymentDiagnostics({
     backend,
     db,
@@ -861,6 +987,7 @@ export async function collectDeploymentDiagnostics(
     physicalFootprint,
     runtimeCapabilities,
     diskHeadroom,
+    pgDiskHeadroom,
     env,
   });
 }
@@ -906,7 +1033,7 @@ export function buildDeploymentDiagnostics(input: DeploymentDiagnosticsInput): D
       path: input.dbPath,
       ...normalizePhysicalFootprint(input.physicalFootprint),
     },
-    disk_headroom: normalizeDiskHeadroom(input.diskHeadroom),
+    disk_headroom: normalizeDiskHeadroomEntries(input.diskHeadroom, input.pgDiskHeadroom),
     manifests: summarizeManifests(input.manifests),
     environment: buildEnvironmentReport(input.env),
     warnings,
