@@ -566,7 +566,9 @@ test('search tool forwards q and returns hits', async () => {
   assert.equal(result.structuredContent.data.hits, undefined);
   assert.deepEqual(result.structuredContent.results, [
     {
-      id: 'orders:o2',
+      // The id is a self-contained fetch handle: the hit's connection is
+      // encoded so a model carries ONE opaque value into `fetch`.
+      id: 'conn_orders/orders:o2',
       title: 'Order o2',
       url: 'https://merchant.test/o2',
       stream: 'orders',
@@ -580,8 +582,10 @@ test('search tool forwards q and returns hits', async () => {
   assert.match(result.content[0].text, /search: 1 hit/i);
   assert.match(result.content[0].text, /has_more=true/);
   assert.match(result.content[0].text, /next_cursor="search_cursor_page_2"/);
-  assert.match(result.content[0].text, /id=orders:o2/);
-  assert.match(result.content[0].text, /connection_id=conn_orders/);
+  assert.match(result.content[0].text, /id=conn_orders\/orders:o2/);
+  // The connection is embedded in the id, so the preview must not spend
+  // budget repeating it as a second model-carried handle.
+  assert.doesNotMatch(result.content[0].text, /connection_id=/);
   assert.match(result.content[0].text, /Pasta order/);
   assert.match(result.content[0].text, /structuredContent/);
 
@@ -696,7 +700,7 @@ test('fetch fallback title uses source identity and authored timestamp', async (
 });
 
 test('search to fetch journey is executable from model-visible text alone', async () => {
-  const { fetch } = makeFakeRs();
+  const { fetch, calls } = makeFakeRs();
   const { client, server } = await connectClient(fetch);
 
   const searchResult = await client.callTool({
@@ -705,21 +709,25 @@ test('search to fetch journey is executable from model-visible text alone', asyn
   });
   const searchText = searchResult.content[0].text;
   const id = /id=([^\s]+)/.exec(searchText)?.[1];
-  const connectionId = /connection_id=([^\s]+)/.exec(searchText)?.[1];
 
-  assert.equal(id, 'orders:o2');
-  assert.equal(connectionId, 'conn_orders');
+  assert.equal(id, 'conn_orders/orders:o2');
 
+  // The id is the ONLY handle the model carries between tools — no separate
+  // connection_id argument (the live ChatGPT failure mode this guards).
   const fetchResult = await client.callTool({
     name: 'fetch',
-    arguments: { id, connection_id: connectionId },
+    arguments: { id },
   });
   const fetchText = JSON.parse(fetchResult.content[0].text);
 
-  assert.equal(fetchText.id, 'orders:o2');
+  assert.equal(fetchText.id, 'conn_orders/orders:o2');
   assert.equal(fetchText.title, 'Order o2');
   assert.equal(fetchText.metadata.connection_id, 'conn_orders');
   assert.equal(fetchText.text, 'Pasta order for $99.');
+
+  // The embedded connection scope reaches the RS as the canonical query param.
+  const recordCall = calls.find((entry) => entry.url.includes('/v1/streams/orders/records/o2'));
+  assert.equal(new URL(recordCall.url).searchParams.get('connection_id'), 'conn_orders');
 
   await client.close();
   await server.close();

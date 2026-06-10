@@ -226,8 +226,10 @@ test('search prose stays bounded and result hits are not duplicated in structure
     proseBytes < PROSE_BYTE_BUDGET,
     `search prose must stay under ${PROSE_BYTE_BUDGET} bytes (got ${proseBytes})`,
   );
-  assert.match(result.content[0].text, /id=mail:m0/);
-  assert.match(result.content[0].text, /connection_id=conn_1/);
+  assert.match(result.content[0].text, /id=conn_1\/mail:m0/);
+  // The connection is embedded in the self-contained id; the prose budget is
+  // not spent repeating it as a separate handle.
+  assert.doesNotMatch(result.content[0].text, /connection_id=/);
   assert.match(result.content[0].text, /Subject 0/);
   assert.equal(result.structuredContent.data.results_ref, 'structuredContent.results');
   assert.equal(result.structuredContent.data.result_count, 100);

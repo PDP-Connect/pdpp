@@ -445,6 +445,7 @@ test("connector-row sync action targets the concrete connection when present", a
 
 const DERIVES_PRIMARY_ACTION = /derivePrimaryRowAction\(\{/;
 const PRIMARY_ACTION_KEYS_CONNECTOR = /connectorId: connector\.connector_id/;
+const PRIMARY_ACTION_KEYS_HEALTH = /health: connectionHealth \?\? null/;
 const PRIMARY_ACTION_KEYS_DEVICE_PROGRESS = /hasLocalDeviceProgress: Boolean\(overview\.localDeviceProgress\)/;
 const RENDERS_PRIMARY_CONTROL = /<PrimaryRowActionControl\s/;
 const SYNC_ACTION_LABEL_FROM_LAST_RUN = /const syncIdleLabel = syncActionIdleLabel\(lastRun\?\.status\)/;
@@ -456,6 +457,7 @@ test("connector-row derives a modality-aware primary action", async () => {
   const src = await readFile(ROW_FILE, "utf8");
   assert.match(src, DERIVES_PRIMARY_ACTION);
   assert.match(src, PRIMARY_ACTION_KEYS_CONNECTOR);
+  assert.match(src, PRIMARY_ACTION_KEYS_HEALTH);
   assert.match(src, PRIMARY_ACTION_KEYS_DEVICE_PROGRESS);
 });
 

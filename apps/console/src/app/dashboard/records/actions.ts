@@ -25,6 +25,10 @@ export type RunNowResult =
   | { ok: false; reason: "already_running"; run_id?: string; message: string }
   | { ok: false; reason: "error"; phase: RunStartFailurePhase; reached_server: boolean; message: string };
 
+interface RunConnectorNowOptions {
+  force?: boolean;
+}
+
 const ALREADY_ACTIVE_RE = /already.*active/i;
 const RUN_ALREADY_ACTIVE_RE = /run_already_active/i;
 const RUN_ID_MATCH_RE = /run[_:]?([A-Za-z0-9]+)/;
@@ -36,9 +40,16 @@ const RUN_ID_MATCH_RE = /run[_:]?([A-Za-z0-9]+)/;
  *  connector/connection id and its row) and reports *whether the request
  *  reached the server*. A run-start failure must surface as a row-local toast,
  *  never fall through to the dashboard route error boundary. */
-export async function runConnectorNowAction(connectorId: string, connectionId?: string | null): Promise<RunNowResult> {
+export async function runConnectorNowAction(
+  connectorId: string,
+  connectionId?: string | null,
+  options: RunConnectorNowOptions = {}
+): Promise<RunNowResult> {
   try {
-    const body = (await (connectionId ? runConnectionNow(connectionId) : runConnectorNow(connectorId))) as {
+    const runOptions = { force: options.force === true };
+    const body = (await (connectionId
+      ? runConnectionNow(connectionId, runOptions)
+      : runConnectorNow(connectorId, runOptions))) as {
       run_id?: string;
       trace_id?: string;
     };

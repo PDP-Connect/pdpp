@@ -22,11 +22,23 @@ interface Props {
   connectionId: string | null;
   connectorId: string;
   displayName: string;
+  force?: boolean;
   idleLabel?: string;
   initialRunning: boolean;
+  title?: string;
+  variant?: "default" | "destructive" | "outline";
 }
 
-export function SyncNowButton({ connectionId, connectorId, displayName, idleLabel = "Sync now", initialRunning }: Props) {
+export function SyncNowButton({
+  connectionId,
+  connectorId,
+  displayName,
+  force = false,
+  idleLabel = "Sync now",
+  initialRunning,
+  title,
+  variant = "default",
+}: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [optimisticRunning, setOptimisticRunning] = useState(false);
@@ -62,7 +74,7 @@ export function SyncNowButton({ connectionId, connectorId, displayName, idleLabe
     setToast(null);
     setOptimisticRunning(true);
     startTransition(async () => {
-      const res: RunNowResult = await runConnectorNowAction(connectorId, connectionId);
+      const res: RunNowResult = await runConnectorNowAction(connectorId, connectionId, { force });
       if (res.ok === true) {
         router.refresh();
         return;
@@ -78,7 +90,7 @@ export function SyncNowButton({ connectionId, connectorId, displayName, idleLabe
       setToastTone(res.phase === "before_server" ? "warning" : "error");
       setToast(`${syncStartFailureLead(res.phase)} ${res.message}`.trim());
     });
-  }, [connectionId, connectorId, router]);
+  }, [connectionId, connectorId, force, router]);
 
   return (
     <div className="flex flex-col items-end gap-1">
@@ -87,6 +99,8 @@ export function SyncNowButton({ connectionId, connectorId, displayName, idleLabe
         disabled={running || isPending}
         onClick={handleClick}
         size="sm"
+        title={title}
+        variant={variant}
       >
         {running ? "Syncing…" : idleLabel}
       </Button>
