@@ -250,11 +250,14 @@ injected transport, never a Collection Profile message and never in the runner
 slice). The setup planner advertises `validation: synchronous | first_sync` from
 that registry. When a probe is available the owner-session capture route
 validates the credential BEFORE storing it: a known-bad credential is rejected
-with a provider-named typed error and nothing is stored; a valid credential is
-stored and the route echoes the non-secret account identity. Connectors without
-a probe keep the first-sync activation path unchanged. The Console form preserves
-non-secret context on a validation failure (the secret is never round-tripped)
-and surfaces the identity echo on success, staying connector-generic.
+with a provider-named typed error and nothing is stored. Rejected first-time
+drafts are retired immediately so they do not become invisible setup rows;
+rejected rotation attempts against active connections leave the active
+connection active. A valid credential is stored and the route echoes the
+non-secret account identity. Connectors without a probe keep the first-sync
+activation path unchanged. The Console form preserves non-secret context on a
+validation failure (the secret is never round-tripped) and surfaces the identity
+echo on success, staying connector-generic.
 
 ### 13. Browser-bound setup is committed product work, not a monorepo proof path
 

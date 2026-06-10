@@ -36,6 +36,18 @@ connection row unless the modality's proof boundary has been satisfied.
 - **AND** it SHALL NOT rely on an invisible draft row or transient redirect
   notice as the only owner-visible state
 
+#### Scenario: Static-secret validation failure does not create an invisible setup row
+
+- **WHEN** an owner submits a static-secret credential and synchronous
+  provider validation rejects it before storage
+- **THEN** the reference SHALL NOT store the rejected credential or credential
+  metadata
+- **AND** if the target is a first-time static-secret draft, the reference
+  SHALL retire that draft so it cannot remain as an invisible setup row
+- **AND** if the target is an active connection, the reference SHALL leave that
+  active connection active so a failed rotation cannot revoke a working
+  connection
+
 #### Scenario: Owner reads a durable connection-scoped setup status
 
 - **WHEN** an owner reads the setup status for a static-secret connection by its
