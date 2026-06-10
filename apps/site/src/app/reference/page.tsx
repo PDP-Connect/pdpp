@@ -2,13 +2,15 @@ import { ConnectAgentCard } from "@pdpp/operator-ui/components/connect-agent-car
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import Link from "next/link";
+import type { ReactNode } from "react";
 import { buttonVariants } from "@/components/ui/button.tsx";
 import { cn } from "@/lib/utils.ts";
 
 const GITHUB_REPO = "https://github.com/vana-com/pdpp";
 const GITHUB_REFERENCE_README = `${GITHUB_REPO}/blob/main/reference-implementation/README.md`;
 const GITHUB_ROOT_README = `${GITHUB_REPO}/blob/main/README.md`;
-const GITHUB_SELF_HOSTED = `${GITHUB_REFERENCE_README}#docker-compose-reference-stack`;
+const GITHUB_DOCKER_README = `${GITHUB_REPO}/blob/main/deploy/docker/README.md`;
+const GITHUB_FLY_README = `${GITHUB_REPO}/blob/main/deploy/flyio/README.md`;
 const RAILWAY_DEPLOY_URL =
   "https://railway.com/new/template/pdpp-core-template-source?utm_medium=integration&utm_source=button&utm_campaign=pdpp-core";
 
@@ -93,12 +95,6 @@ const referenceLinks = [
     body: "Local stack, direct AS/RS mode, Docker Compose, owner auth, and generated artifacts.",
   },
   {
-    label: "One-click deploy",
-    title: "Deploy on Railway",
-    href: RAILWAY_DEPLOY_URL,
-    body: "Launch the core reference stack on Railway from the proven template. Sets up the server and console services with environment variables pre-wired.",
-  },
-  {
     label: "Architecture",
     title: "Architecture docs",
     href: "/docs/spec-architecture",
@@ -109,12 +105,6 @@ const referenceLinks = [
     title: "OpenSpec change history",
     href: "/planning",
     body: "Project planning and active changes. Useful for review context, but not protocol authority.",
-  },
-  {
-    label: "Dashboard",
-    title: "Self-hosted operator instructions",
-    href: GITHUB_SELF_HOSTED,
-    body: "Start a composed browser origin, protect the dashboard, and inspect a running instance locally.",
   },
 ] as const;
 
@@ -147,12 +137,6 @@ export default async function ReferencePage() {
               <a className={buttonVariants({ variant: "default", size: "lg" })} href={GITHUB_REFERENCE_README}>
                 Clone and run
               </a>
-              <a className={buttonVariants({ variant: "outline", size: "lg" })} href={RAILWAY_DEPLOY_URL}>
-                Deploy on Railway
-              </a>
-              <a className={buttonVariants({ variant: "outline", size: "lg" })} href={GITHUB_SELF_HOSTED}>
-                Self-host with Docker
-              </a>
               <Link className={buttonVariants({ variant: "outline", size: "lg" })} href="/docs">
                 Read protocol docs
               </Link>
@@ -176,6 +160,88 @@ export default async function ReferencePage() {
         <div className="mt-10">
           <ConnectAgentCard mode="live" providerUrl={providerUrl} />
         </div>
+
+        <section className="mt-14">
+          <div className="mb-4 flex flex-col gap-1">
+            <h2 className="pdpp-heading text-foreground">Run your own node</h2>
+            <p className="pdpp-body text-muted-foreground">
+              Start with one click in the cloud or one command on your machine. Production compose and other platforms
+              are available when you need them.
+            </p>
+          </div>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <DeployCard
+              action={
+                <a className={buttonVariants({ variant: "default" })} href={RAILWAY_DEPLOY_URL}>
+                  Deploy on Railway
+                </a>
+              }
+              body="One click provisions the Core node and Postgres. You choose one thing: your owner password."
+              eyebrow="Cloud, one click"
+              title="Deploy on Railway"
+            />
+            <DeployCard
+              action={
+                <a className={buttonVariants({ variant: "outline" })} href={GITHUB_DOCKER_README}>
+                  Docker runbook
+                </a>
+              }
+              body="One command starts a full node on your laptop. First boot prints your dashboard URL and a generated owner password - nothing to configure."
+              code={`docker run -d --name pdpp -p 3000:3000 -v pdpp_data:/var/lib/pdpp \\
+  ghcr.io/vana-com/pdpp/railway-core:main
+docker logs -f pdpp`}
+              eyebrow="Your machine, one command"
+              footer="Open http://localhost:3000/dashboard and sign in with the printed password. Your data persists in the pdpp_data volume across restarts and upgrades."
+              title="Run with Docker"
+            />
+          </div>
+          <div className="mt-4 grid gap-3">
+            <DeployDisclosure title="Production deployment (Docker Compose)">
+              <p className="pdpp-body text-muted-foreground">
+                Running a node you intend to keep? Use the minimal Compose stack - reference, console, and Postgres with
+                pgvector - with healthchecks and named volumes:
+              </p>
+              <CodeBlock
+                code={`mkdir pdpp && cd pdpp
+curl -fsSLO https://raw.githubusercontent.com/vana-com/pdpp/main/deploy/docker/docker-compose.yml
+printf 'PDPP_OWNER_PASSWORD=%s\\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\\n' \\
+  "$(openssl rand -base64 24)" "$(openssl rand -hex 32)" > .env
+docker compose up -d`}
+              />
+              <p className="pdpp-caption text-muted-foreground">
+                Put your HTTPS reverse proxy in front and set <code>PDPP_REFERENCE_ORIGIN</code> to your domain. Full
+                runbook:{" "}
+                <a className="underline underline-offset-2" href={GITHUB_DOCKER_README}>
+                  deploy/docker/README.md
+                </a>
+                .
+              </p>
+            </DeployDisclosure>
+            <DeployDisclosure title="Other platforms (Fly.io)">
+              <p className="pdpp-body text-muted-foreground">
+                Fly.io has no deploy button. Its honest equivalent is one <code>fly launch</code> command that creates
+                the app, provisions Postgres, and deploys the same Core image:
+              </p>
+              <CodeBlock
+                code={`APP="pdpp-core-$(openssl rand -hex 3)"
+OWNER_PASSWORD="$(openssl rand -base64 24)"
+fly launch --image ghcr.io/vana-com/pdpp/railway-core:main \\
+  --name "$APP" --internal-port 3000 --db \\
+  --secret "PDPP_OWNER_PASSWORD=$OWNER_PASSWORD" \\
+  --env "PDPP_REFERENCE_ORIGIN=https://$APP.fly.dev" \\
+  --no-github-workflow --no-object-storage --no-redis --now --yes
+printf 'Origin: https://%s.fly.dev\\nOwner password: %s\\n' "$APP" "$OWNER_PASSWORD"`}
+              />
+              <p className="pdpp-caption text-muted-foreground">
+                Requires a payment method on the Fly org. Details and a source-build fallback:{" "}
+                <a className="underline underline-offset-2" href={GITHUB_FLY_README}>
+                  deploy/flyio/README.md
+                </a>
+                .
+              </p>
+            </DeployDisclosure>
+          </div>
+        </section>
 
         <section className="mt-14 grid gap-8 lg:grid-cols-[15rem_minmax(0,1fr)]">
           <div>
@@ -312,6 +378,57 @@ function Statement({ eyebrow, title, body }: { eyebrow: string; title: string; b
       <h3 className="pdpp-title mt-3 text-foreground">{title}</h3>
       <p className="pdpp-body mt-2 text-muted-foreground">{body}</p>
     </div>
+  );
+}
+
+function DeployCard({
+  eyebrow,
+  title,
+  body,
+  code,
+  footer,
+  action,
+}: {
+  eyebrow: string;
+  title: string;
+  body: string;
+  code?: string;
+  footer?: string;
+  action: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-4 rounded-2xl border bg-card/70 p-5">
+      <div>
+        <div className="pdpp-eyebrow text-muted-foreground">{eyebrow}</div>
+        <h3 className="pdpp-title mt-2 text-foreground">{title}</h3>
+        <p className="pdpp-body mt-2 text-muted-foreground">{body}</p>
+      </div>
+      {code ? <CodeBlock code={code} /> : null}
+      {footer ? <p className="pdpp-caption text-muted-foreground">{footer}</p> : null}
+      <div className="mt-auto">{action}</div>
+    </div>
+  );
+}
+
+function DeployDisclosure({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <details className="group rounded-2xl border bg-card/60 p-4">
+      <summary className="pdpp-title cursor-pointer list-none text-foreground">
+        <span className="inline-flex items-center gap-2">
+          <span className="text-muted-foreground transition-transform group-open:rotate-90">-&gt;</span>
+          {title}
+        </span>
+      </summary>
+      <div className="mt-4 space-y-3">{children}</div>
+    </details>
+  );
+}
+
+function CodeBlock({ code }: { code: string }) {
+  return (
+    <pre className="overflow-x-auto rounded-xl border bg-muted/45 p-3 text-[0.78rem] text-foreground leading-5">
+      <code>{code}</code>
+    </pre>
   );
 }
 

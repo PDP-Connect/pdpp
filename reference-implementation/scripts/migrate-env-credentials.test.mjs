@@ -33,6 +33,14 @@ const TEST_KEY = 'test-operator-key-do-not-use-in-prod';
 // Synthetic credential values. Never real secrets.
 const GMAIL_SECRET = 'aaaa bbbb cccc dddd';
 const GITHUB_SECRET = 'ghp_synthetic_token_for_tests_0000';
+const YNAB_SECRET = 'ynab_synthetic_pat_0000';
+const SLACK_WORKSPACE = 'T12345';
+const SLACK_TOKEN = 'xoxc-synthetic-token';
+const SLACK_COOKIE = 'd=synthetic-cookie';
+const REDDIT_USERNAME = 'dondochaka';
+const REDDIT_PASSWORD = 'synthetic-password';
+const REDDIT_CLIENT_ID = 'synthetic-client-id';
+const REDDIT_CLIENT_SECRET = 'synthetic-client-secret';
 
 function seedConnectorInstance({ connectorInstanceId, connectorId, status = 'active', sourceBindingJson = '{}' }) {
   const db = getDb();
@@ -158,6 +166,114 @@ test(
 );
 
 test(
+  'ynab capture uses personal_access_token kind and both PAT aliases',
+  withDb(async () => {
+    const { credentialStore, connectorInstanceStore } = makeStores();
+    seedConnectorInstance({ connectorInstanceId: 'cin_ynab_test', connectorId: 'ynab' });
+
+    const result = await migrateEnvCredential({
+      connectorKey: 'ynab',
+      connectorInstanceId: 'cin_ynab_test',
+      env: { YNAB_PAT: YNAB_SECRET },
+      credentialStore,
+      connectorInstanceStore,
+      injection,
+      log: () => {},
+    });
+    assert.equal(result.envVarName, 'YNAB_PAT');
+    assert.equal(result.metadata.credentialKind, 'personal_access_token');
+
+    const fragment = await resolveStaticSecretRunEnv({
+      connectorId: 'ynab',
+      connectorInstanceId: 'cin_ynab_test',
+      ownerSubjectId: 'owner_local',
+      sourceBinding: null,
+      credentialStore,
+      isStaticSecretConnector: injection.isStaticSecretConnector,
+      buildConnectionScopedSecretEnv: injection.buildConnectionScopedSecretEnv,
+    });
+    assert.equal(fragment.YNAB_PERSONAL_ACCESS_TOKEN, YNAB_SECRET);
+    assert.equal(fragment.YNAB_PAT, YNAB_SECRET);
+  }),
+);
+
+test(
+  'slack and reddit migrations seal multi-field credential bundles and verify the run seam',
+  withDb(async () => {
+    const { credentialStore, connectorInstanceStore } = makeStores();
+    seedConnectorInstance({ connectorInstanceId: 'cin_slack_test', connectorId: 'slack' });
+    seedConnectorInstance({ connectorInstanceId: 'cin_reddit_test', connectorId: 'reddit' });
+
+    const slack = await migrateEnvCredential({
+      connectorKey: 'slack',
+      connectorInstanceId: 'cin_slack_test',
+      env: {
+        SLACK_WORKSPACE,
+        SLACK_TOKEN,
+        SLACK_COOKIE,
+      },
+      credentialStore,
+      connectorInstanceStore,
+      injection,
+      log: () => {},
+    });
+    assert.equal(slack.metadata.credentialKind, 'secret_bundle');
+    assert.equal(slack.verified, true);
+    assert.equal(slack.envVarName, 'SLACK_WORKSPACE, SLACK_TOKEN, SLACK_COOKIE');
+    const slackFragment = await resolveStaticSecretRunEnv({
+      connectorId: 'slack',
+      connectorInstanceId: 'cin_slack_test',
+      ownerSubjectId: 'owner_local',
+      sourceBinding: null,
+      credentialStore,
+      isStaticSecretConnector: injection.isStaticSecretConnector,
+      buildConnectionScopedSecretEnv: injection.buildConnectionScopedSecretEnv,
+    });
+    assert.deepEqual(slackFragment, {
+      SLACK_WORKSPACE,
+      SLACK_TOKEN,
+      SLACK_COOKIE,
+    });
+
+    const reddit = await migrateEnvCredential({
+      connectorKey: 'reddit',
+      connectorInstanceId: 'cin_reddit_test',
+      env: {
+        REDDIT_USERNAME,
+        REDDIT_PASSWORD,
+        REDDIT_CLIENT_ID,
+        REDDIT_CLIENT_SECRET,
+      },
+      credentialStore,
+      connectorInstanceStore,
+      injection,
+      log: () => {},
+    });
+    assert.equal(reddit.metadata.credentialKind, 'secret_bundle');
+    assert.equal(reddit.verified, true);
+    assert.equal(
+      reddit.envVarName,
+      'REDDIT_USERNAME, REDDIT_PASSWORD, REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET',
+    );
+    const redditFragment = await resolveStaticSecretRunEnv({
+      connectorId: 'reddit',
+      connectorInstanceId: 'cin_reddit_test',
+      ownerSubjectId: 'owner_local',
+      sourceBinding: null,
+      credentialStore,
+      isStaticSecretConnector: injection.isStaticSecretConnector,
+      buildConnectionScopedSecretEnv: injection.buildConnectionScopedSecretEnv,
+    });
+    assert.deepEqual(redditFragment, {
+      REDDIT_USERNAME,
+      REDDIT_PASSWORD,
+      REDDIT_CLIENT_ID,
+      REDDIT_CLIENT_SECRET,
+    });
+  }),
+);
+
+test(
   'idempotency: a second migration refuses without --force and rotates with it',
   withDb(async () => {
     const { credentialStore, connectorInstanceStore } = makeStores();
@@ -239,9 +355,9 @@ test(
     await assert.rejects(
       migrateEnvCredential({
         ...base,
-        connectorKey: 'ynab',
+        connectorKey: 'notion',
         connectorInstanceId: 'cin_github_test',
-        env: { YNAB_PERSONAL_ACCESS_TOKEN: 'synthetic' },
+        env: { NOTION_API_TOKEN: 'synthetic' },
       }),
       (err) => err.code === 'unknown_connector',
     );
@@ -271,7 +387,16 @@ test('script mapping table matches the real STATIC_SECRET_CONNECTOR_REGISTRY', (
   assert.deepEqual(Object.keys(ENV_CREDENTIAL_SOURCES).sort(), Object.keys(injection.registry).sort());
   for (const [key, source] of Object.entries(ENV_CREDENTIAL_SOURCES)) {
     assert.equal(source.credentialKind, injection.registry[key].credentialKind, key);
-    assert.deepEqual([...source.secretEnvVars], [...injection.registry[key].secretEnvVars], key);
+    assert.deepEqual([...(source.secretEnvVars ?? [])], [...(injection.registry[key].secretEnvVars ?? [])], key);
+    assert.deepEqual(
+      Object.fromEntries(
+        Object.entries(source.secretFieldEnvVars ?? {}).map(([field, names]) => [field, [...names]]),
+      ),
+      Object.fromEntries(
+        Object.entries(injection.registry[key].secretFieldEnvVars ?? {}).map(([field, names]) => [field, [...names]]),
+      ),
+      key,
+    );
   }
 });
 

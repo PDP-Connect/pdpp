@@ -380,6 +380,9 @@ export function createSandboxRecordDetailDependencies(streamName: string): Recor
       return Promise.resolve(recordToLiveRecord(record) as unknown as Record<string, unknown>);
     },
     decorateRecord: (record) => record,
+    // Sandbox demo records have no field validation yet; detail mirrors list
+    // so the shared operation contract stays wired without changing demo data.
+    validateRequestFields: () => undefined,
   };
 }
 

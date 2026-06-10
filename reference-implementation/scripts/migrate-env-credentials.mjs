@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 /**
- * Tier-1 env -> store credential migration.
+ * Env -> store credential migration.
  *
  * Moves a static-secret connector credential that currently lives in a process
  * environment variable into the encrypted per-connection credential store
  * (`connector_instance_credentials`), so the env var line can later be deleted
  * by the operator. See `tmp/workstreams/env-credential-migration-plan-2026-06-10.md`
- * (Phase 1: gmail + github, the only `STATIC_SECRET_CONNECTOR_REGISTRY` members).
+ * (Phase 1: gmail + github; Phase 2: registry-complete static-secret entries).
  *
  * Usage:
  *   node scripts/migrate-env-credentials.mjs \
- *     --connector <gmail|github> --instance <cin_...> [--dry-run] [--force]
+ *     --connector <gmail|github|ynab|slack|reddit> --instance <cin_...> [--dry-run] [--force]
  *
  * Backend selection mirrors the server: `PDPP_DATABASE_URL`/`PDPP_STORAGE_BACKEND`
  * selects Postgres; otherwise `PDPP_DB_PATH` selects SQLite. The encryption key
@@ -50,6 +50,9 @@ import { resolveStaticSecretRunEnv } from '../server/stores/static-secret-run-cr
  * Ground truth is each connector's own code:
  *   - gmail/index.ts `resolveGmailPasswordFromEnv`: GOOGLE_APP_PASSWORD_PDPP / GMAIL_APP_PASSWORD
  *   - github/index.ts auth.required: GITHUB_PERSONAL_ACCESS_TOKEN / GITHUB_TOKEN
+ *   - ynab/index.ts auth.required: YNAB_PERSONAL_ACCESS_TOKEN / YNAB_PAT
+ *   - slack/index.ts auth.required: SLACK_WORKSPACE / SLACK_TOKEN / SLACK_COOKIE
+ *   - reddit/index.ts auth.required: REDDIT_USERNAME / REDDIT_PASSWORD plus OAuth client credentials
  * This table is cross-validated at run time against the real
  * `STATIC_SECRET_CONNECTOR_REGISTRY` so it cannot silently drift.
  */
@@ -61,6 +64,27 @@ export const ENV_CREDENTIAL_SOURCES = Object.freeze({
   github: Object.freeze({
     credentialKind: 'personal_access_token',
     secretEnvVars: Object.freeze(['GITHUB_PERSONAL_ACCESS_TOKEN', 'GITHUB_TOKEN']),
+  }),
+  ynab: Object.freeze({
+    credentialKind: 'personal_access_token',
+    secretEnvVars: Object.freeze(['YNAB_PERSONAL_ACCESS_TOKEN', 'YNAB_PAT']),
+  }),
+  slack: Object.freeze({
+    credentialKind: 'secret_bundle',
+    secretFieldEnvVars: Object.freeze({
+      slack_workspace: Object.freeze(['SLACK_WORKSPACE']),
+      slack_token: Object.freeze(['SLACK_TOKEN']),
+      slack_cookie: Object.freeze(['SLACK_COOKIE']),
+    }),
+  }),
+  reddit: Object.freeze({
+    credentialKind: 'secret_bundle',
+    secretFieldEnvVars: Object.freeze({
+      reddit_username: Object.freeze(['REDDIT_USERNAME']),
+      reddit_password: Object.freeze(['REDDIT_PASSWORD']),
+      reddit_client_id: Object.freeze(['REDDIT_CLIENT_ID']),
+      reddit_client_secret: Object.freeze(['REDDIT_CLIENT_SECRET']),
+    }),
   }),
 });
 
@@ -96,10 +120,9 @@ function assertMappingMatchesRegistry(connectorKey, source, registry) {
     );
   }
   const sameKind = descriptor.credentialKind === source.credentialKind;
-  const sameVars =
-    descriptor.secretEnvVars.length === source.secretEnvVars.length &&
-    descriptor.secretEnvVars.every((name, i) => name === source.secretEnvVars[i]);
-  if (!(sameKind && sameVars)) {
+  const sameSingleVars = sameArray(descriptor.secretEnvVars, source.secretEnvVars);
+  const sameSecretFields = sameEnvVarMap(descriptor.secretFieldEnvVars, source.secretFieldEnvVars);
+  if (!(sameKind && sameSingleVars && sameSecretFields)) {
     throw new EnvCredentialMigrationError(
       'mapping_registry_drift',
       `The script's env mapping for '${connectorKey}' no longer matches ` +
@@ -108,14 +131,139 @@ function assertMappingMatchesRegistry(connectorKey, source, registry) {
   }
 }
 
-function resolveSecretFromEnv(source, env) {
-  for (const name of source.secretEnvVars) {
+function sameArray(left, right) {
+  const l = Array.isArray(left) ? left : [];
+  const r = Array.isArray(right) ? right : [];
+  return l.length === r.length && l.every((name, i) => name === r[i]);
+}
+
+function sameEnvVarMap(left, right) {
+  const l = left && typeof left === 'object' ? left : {};
+  const r = right && typeof right === 'object' ? right : {};
+  const lKeys = Object.keys(l).sort();
+  const rKeys = Object.keys(r).sort();
+  if (!sameArray(lKeys, rKeys)) {
+    return false;
+  }
+  return lKeys.every((key) => sameArray(l[key], r[key]));
+}
+
+function envNamesForSource(source) {
+  if (Array.isArray(source.secretEnvVars) && source.secretEnvVars.length > 0) {
+    return [...source.secretEnvVars];
+  }
+  return Object.values(source.secretFieldEnvVars ?? {}).flat();
+}
+
+function resolveOneEnvValue(envVars, env) {
+  for (const name of envVars) {
     const value = env[name];
     if (typeof value === 'string' && value.trim().length > 0) {
-      return { envVarName: name, secret: value };
+      return { envVarName: name, value };
     }
   }
   return null;
+}
+
+function resolveSecretFromEnv(source, env) {
+  if (Array.isArray(source.secretEnvVars) && source.secretEnvVars.length > 0) {
+    const resolved = resolveOneEnvValue(source.secretEnvVars, env);
+    return resolved ? { envVarName: resolved.envVarName, secret: resolved.value } : null;
+  }
+  const fieldEnvVars = source.secretFieldEnvVars ?? {};
+  const bundle = {};
+  const envVarNames = [];
+  for (const [fieldName, envVars] of Object.entries(fieldEnvVars)) {
+    const resolved = resolveOneEnvValue(envVars, env);
+    if (!resolved) {
+      return null;
+    }
+    bundle[fieldName] = resolved.value;
+    envVarNames.push(resolved.envVarName);
+  }
+  return envVarNames.length > 0 ? { envVarName: envVarNames.join(', '), secret: JSON.stringify(bundle) } : null;
+}
+
+function setupFieldsFromSourceBinding(sourceBinding) {
+  if (!sourceBinding || typeof sourceBinding !== 'object' || Array.isArray(sourceBinding)) {
+    return {};
+  }
+  const raw = sourceBinding.setup_fields;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return {};
+  }
+  const fields = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (typeof value === 'string' && value.trim().length > 0) {
+      fields[key] = value.trim();
+    }
+  }
+  return fields;
+}
+
+function secretBundleFields(connectorKey, secret) {
+  if (!secret) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(secret);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('bundle is not an object');
+    }
+    return parsed;
+  } catch {
+    throw new EnvCredentialMigrationError(
+      'secret_bundle_invalid',
+      `Connector '${connectorKey}' resolved an invalid secret bundle before migration.`,
+    );
+  }
+}
+
+function verifyRunFragment({ connectorKey, env, fragment, instance, resolved, source }) {
+  if (Array.isArray(source.secretEnvVars) && source.secretEnvVars.length > 0) {
+    for (const name of source.secretEnvVars) {
+      if (fragment[name] !== resolved.secret) {
+        return false;
+      }
+    }
+  }
+  if (source.secretFieldEnvVars) {
+    const bundle = secretBundleFields(connectorKey, resolved.secret);
+    for (const [fieldName, envVars] of Object.entries(source.secretFieldEnvVars)) {
+      for (const name of envVars) {
+        if (fragment[name] !== bundle[fieldName]) {
+          return false;
+        }
+      }
+    }
+  }
+  if (source.setupFieldEnvVars) {
+    const setupFields = setupFieldsFromSourceBinding(instance.sourceBinding ?? null);
+    for (const [fieldName, envVars] of Object.entries(source.setupFieldEnvVars)) {
+      const value = setupFields[fieldName];
+      if (!value) {
+        throw new EnvCredentialMigrationError(
+          'source_binding_setup_field_missing',
+          `Connection '${instance.connectorInstanceId}' is missing non-secret setup field '${fieldName}' in ` +
+            `source_binding_json. Re-run owner setup or repair the source binding before deleting ${envNamesForSource(source).join(', ')}.`,
+        );
+      }
+      for (const name of envVars) {
+        if (fragment[name] !== value) {
+          return false;
+        }
+        const envValue = env[name];
+        if (typeof envValue === 'string' && envValue.trim().length > 0 && envValue.trim() !== value) {
+          throw new EnvCredentialMigrationError(
+            'source_binding_setup_field_mismatch',
+            `Connection '${instance.connectorInstanceId}' source binding field '${fieldName}' does not match ${name}. ` +
+              'Repair the source binding before deleting the env var.',
+          );
+        }
+      }
+    }
+  }
+  return true;
 }
 
 /**
@@ -173,7 +321,7 @@ export async function migrateEnvCredential({
   if (!resolved) {
     throw new EnvCredentialMigrationError(
       'env_secret_missing',
-      `None of ${source.secretEnvVars.join(', ')} is set in the process environment; ` +
+      `None of ${envNamesForSource(source).join(', ')} is set in the process environment; ` +
         'nothing to migrate.',
     );
   }
@@ -221,7 +369,7 @@ export async function migrateEnvCredential({
     isStaticSecretConnector: injection.isStaticSecretConnector,
     buildConnectionScopedSecretEnv: injection.buildConnectionScopedSecretEnv,
   });
-  const verified = source.secretEnvVars.every((name) => fragment[name] === resolved.secret);
+  const verified = verifyRunFragment({ connectorKey, env, fragment, instance, resolved, source });
   if (!verified) {
     throw new EnvCredentialMigrationError(
       'roundtrip_verification_failed',
@@ -252,7 +400,7 @@ async function main() {
   });
   if (!values.connector || !values.instance) {
     process.stderr.write(
-      'Usage: node scripts/migrate-env-credentials.mjs --connector <gmail|github> --instance <cin_...> [--dry-run] [--force]\n',
+      'Usage: node scripts/migrate-env-credentials.mjs --connector <gmail|github|ynab|slack|reddit> --instance <cin_...> [--dry-run] [--force]\n',
     );
     process.exit(1);
   }

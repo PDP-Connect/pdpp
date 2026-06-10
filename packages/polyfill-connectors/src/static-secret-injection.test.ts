@@ -90,23 +90,15 @@ test("ynab injection sets both PAT aliases to the recovered secret", () => {
   });
 });
 
-test("slack injection maps a sealed bundle plus workspace setup fields", () => {
-  const env = buildConnectionScopedSecretEnv(
-    "slack",
-    {
-      credentialKind: "secret_bundle",
-      secret: JSON.stringify({
-        slack_token: "xoxc-synthetic-token",
-        slack_cookie: "d=synthetic-cookie",
-      }),
-    },
-    {
-      kind: "static_secret_draft",
-      setup_fields: {
-        slack_workspace: "T12345",
-      },
-    }
-  );
+test("slack injection maps a sealed runtime credential bundle", () => {
+  const env = buildConnectionScopedSecretEnv("slack", {
+    credentialKind: "secret_bundle",
+    secret: JSON.stringify({
+      slack_workspace: "T12345",
+      slack_token: "xoxc-synthetic-token",
+      slack_cookie: "d=synthetic-cookie",
+    }),
+  });
   assert.deepEqual(env, {
     SLACK_COOKIE: "d=synthetic-cookie",
     SLACK_TOKEN: "xoxc-synthetic-token",
@@ -114,24 +106,16 @@ test("slack injection maps a sealed bundle plus workspace setup fields", () => {
   });
 });
 
-test("reddit injection maps OAuth bundle secrets and non-secret setup identity", () => {
-  const env = buildConnectionScopedSecretEnv(
-    "reddit",
-    {
-      credentialKind: "secret_bundle",
-      secret: JSON.stringify({
-        reddit_password: "synthetic-password",
-        reddit_client_secret: "synthetic-client-secret",
-      }),
-    },
-    {
-      kind: "static_secret_draft",
-      setup_fields: {
-        reddit_username: "dondochaka",
-        reddit_client_id: "synthetic-client-id",
-      },
-    }
-  );
+test("reddit injection maps a sealed four-field OAuth credential bundle", () => {
+  const env = buildConnectionScopedSecretEnv("reddit", {
+    credentialKind: "secret_bundle",
+    secret: JSON.stringify({
+      reddit_username: "dondochaka",
+      reddit_password: "synthetic-password",
+      reddit_client_id: "synthetic-client-id",
+      reddit_client_secret: "synthetic-client-secret",
+    }),
+  });
   assert.deepEqual(env, {
     REDDIT_CLIENT_ID: "synthetic-client-id",
     REDDIT_CLIENT_SECRET: "synthetic-client-secret",
@@ -149,7 +133,7 @@ test("sealed bundle injection refuses invalid and incomplete recovered bundles",
     () =>
       buildConnectionScopedSecretEnv("slack", {
         credentialKind: "secret_bundle",
-        secret: JSON.stringify({ slack_token: "xoxc-synthetic-token" }),
+        secret: JSON.stringify({ slack_workspace: "T12345", slack_token: "xoxc-synthetic-token" }),
       }),
     (err) => err instanceof StaticSecretInjectionError && err.code === "recovered_secret_bundle_field_missing"
   );
@@ -212,11 +196,8 @@ test("registry is frozen so the env var ground truth cannot be mutated at runtim
   assert.ok(Object.isFrozen(slack));
   assert.ok(Object.isFrozen(slack.secretFieldEnvVars));
   assert.ok(Object.isFrozen(slack.secretFieldEnvVars?.slack_token));
-  assert.ok(Object.isFrozen(slack.setupFieldEnvVars));
-  assert.ok(Object.isFrozen(slack.setupFieldEnvVars?.slack_workspace));
   assert.ok(Object.isFrozen(reddit));
   assert.ok(Object.isFrozen(reddit.secretFieldEnvVars));
-  assert.ok(Object.isFrozen(reddit.setupFieldEnvVars));
 });
 
 // ---------------------------------------------------------------------------

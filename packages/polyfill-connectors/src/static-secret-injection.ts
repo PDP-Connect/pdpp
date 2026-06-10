@@ -107,22 +107,18 @@ export const STATIC_SECRET_CONNECTOR_REGISTRY: Readonly<Record<string, StaticSec
     slack: freezeStaticSecretDescriptor({
       credentialKind: "secret_bundle",
       secretFieldEnvVars: {
+        slack_workspace: ["SLACK_WORKSPACE"],
         slack_token: ["SLACK_TOKEN"],
         slack_cookie: ["SLACK_COOKIE"],
-      },
-      setupFieldEnvVars: {
-        slack_workspace: ["SLACK_WORKSPACE"],
       },
     }),
     reddit: freezeStaticSecretDescriptor({
       credentialKind: "secret_bundle",
       secretFieldEnvVars: {
-        reddit_password: ["REDDIT_PASSWORD"],
-        reddit_client_secret: ["REDDIT_CLIENT_SECRET"],
-      },
-      setupFieldEnvVars: {
         reddit_username: ["REDDIT_USERNAME"],
+        reddit_password: ["REDDIT_PASSWORD"],
         reddit_client_id: ["REDDIT_CLIENT_ID"],
+        reddit_client_secret: ["REDDIT_CLIENT_SECRET"],
       },
     }),
   });
