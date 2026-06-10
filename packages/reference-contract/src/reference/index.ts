@@ -2123,6 +2123,28 @@ export const referenceManifests = [
     responses: { 204: { description: "Deleted" }, ...CommonErrors },
   },
   {
+    id: "refRevokeConnection",
+    method: "POST",
+    path: "/_ref/connections/{connectorInstanceId}/revoke",
+    surface: "reference",
+    tags: ["reference", "connections"],
+    summary:
+      "Owner-session: revoke one configured connection, addressed by `connection_id`. Flips the connection to status `revoked` so no future run/ingest lands; already-collected records, grants, spine evidence, device rows, and sibling connections are untouched (zero cascade). A double-revoke returns a typed `connector_instance_inactive` (400). Owner-session only (operator console); shares the same connector-instance store soft-flip primitive and audit event type as the owner-agent bearer `ownerRevokeConnection` route under a cookie auth adapter.",
+    request: { params: ConnectorInstanceIdParamSchema },
+    responses: { 200: { description: "Revoked" }, ...CommonErrors },
+  },
+  {
+    id: "refDeleteConnection",
+    method: "DELETE",
+    path: "/_ref/connections/{connectorInstanceId}",
+    surface: "reference",
+    tags: ["reference", "connections"],
+    summary:
+      "Owner-session: DESTRUCTIVELY delete one configured connection, addressed by `connection_id`. Erases exactly that connection's records, history, blobs, search indices, and attention, deletes its schedule, clears its device source-instance back-reference, and removes the connector_instances row — keyed strictly on one connection_id, never widening to connector_id (sibling connections untouched). A connection with an in-flight run is REFUSED (`connection_run_active` 409), and a default-account binding is REFUSED (`default_account_delete_unsupported` 409). A repeat/unknown/foreign-owner id returns a typed `connector_instance_not_found` (404). PRESERVES the audit spine (appending an owner_agent.connection.delete event), disclosure grants, and the device edge. Owner-session only (operator console); shares the same `deleteConnection` cascade and audit event type as the owner-agent bearer `ownerDeleteConnection` route under a cookie auth adapter.",
+    request: { params: ConnectorInstanceIdParamSchema },
+    responses: { 200: { description: "Deleted" }, ...CommonErrors },
+  },
+  {
     id: "refRunInteraction",
     method: "POST",
     path: "/_ref/runs/{runId}/interaction",

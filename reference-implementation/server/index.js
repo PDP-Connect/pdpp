@@ -368,7 +368,9 @@ import {
   mountRefRecordsVersionStats,
 } from './routes/ref-dataset.ts';
 import {
+  mountRefConnectionDelete,
   mountRefConnectionDetail,
+  mountRefConnectionRevoke,
   mountRefConnectionRun,
   mountRefConnectionScheduleDelete,
   mountRefConnectionSchedulePause,
@@ -3290,6 +3292,29 @@ function buildAsApp(opts = {}) {
     getOwnerSubjectId,
     resolveSingleConnectorIdQueryValue,
     canonicalConnectorKey,
+    // Connection revoke/delete share the SAME store primitives the owner-agent
+    // bearer routes use (`mountOwnerConnectionRevoke` / `mountOwnerConnectionDelete`
+    // below): revoke flips one instance via `updateStatus`; delete runs the
+    // all-or-nothing `deleteConnection` cascade with the same injected `purge`
+    // phases (record purge atomic with schedule/device/row cleanup; search
+    // teardown as a post-commit rebuildable-projection cleanup). The owner-session
+    // `/_ref` routes add no new destructive semantic — only a cookie auth adapter.
+    updateConnectorInstanceStatus: (connectorInstanceId, options) =>
+      createRequestConnectorInstanceStore().updateStatus(connectorInstanceId, options),
+    deleteConnection: (connectorInstanceId, options) =>
+      createRequestConnectorInstanceStore().deleteConnection(connectorInstanceId, {
+        ...options,
+        purge: {
+          enumerateStreams: (storageTarget) => enumerateConnectionStreams(storageTarget),
+          deleteRecordRowsSqlite: (id) => deleteConnectionRecordRowsSqlite(id),
+          deleteRecordRowsPostgres: (client, id) => deleteConnectionRecordRowsPostgres(client, id),
+          teardownProjection: (args) => teardownConnectionSearchProjection(args),
+        },
+      }),
+    emitSpineEvent,
+    createTraceContext,
+    ensureRequestId,
+    setReferenceTraceId,
   };
 
   mountRefConnectorsList(app, refConnectorsContext);
@@ -3393,6 +3418,17 @@ function buildAsApp(opts = {}) {
   mountRefConnectionScheduleResume(app, refConnectorsContext);
   mountRefConnectorScheduleDelete(app, refConnectorsContext);
   mountRefConnectionScheduleDelete(app, refConnectorsContext);
+
+  // Owner-session connection revoke + delete — cookie-authed siblings of the
+  // owner-agent bearer routes (`mountOwnerConnectionRevoke` /
+  // `mountOwnerConnectionDelete` below). They give the operator console a way to
+  // revoke (stop future collection, preserve records) and delete (erase exactly
+  // one connection's records/state, refuse active runs + default-account) one
+  // configured connection without an owner-agent bearer, reusing the SAME store
+  // primitives and emitting the SAME audit event types. See
+  // openspec/changes/add-console-connection-revoke-delete-controls.
+  mountRefConnectionRevoke(app, refConnectorsContext);
+  mountRefConnectionDelete(app, refConnectorsContext);
 
   if (!nativeMode) {
     // Polyfill-only connector registry: register/detail semantics live in
