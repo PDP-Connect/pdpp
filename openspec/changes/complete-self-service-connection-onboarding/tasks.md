@@ -40,7 +40,14 @@ Progress note: normal static-secret setup no longer requires per-account env var
 
 - [x] 6.1 Add setup-plan support for provider-authorization connectors that distinguishes deployment-level provider app readiness from per-account owner authorization.
 - [x] 6.2 Return `needs_deployment_config` when provider app material is missing, with non-secret readiness guidance.
-- [ ] 6.3 Ensure provider callback/token exchange materializes active connections only after authorization and required account inventory or connection test succeeds.
+- [x] 6.3 Ensure provider callback/token exchange materializes active connections only after authorization and required account inventory or connection test succeeds.
+
+Progress note: the reference now ships a deterministic provider-authorization
+lifecycle boundary with owner-session initiation, callback state validation,
+injectable token exchange, account inventory/connection test, credential-store
+gating, multi-account connection materialization, and no token leakage in
+responses or audit events. Real provider connectors remain gated until their
+connector-specific exchanger/inventory adapters are implemented and proven.
 
 ## 7. Deployment and Documentation
 
