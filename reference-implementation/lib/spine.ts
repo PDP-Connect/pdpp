@@ -12,6 +12,7 @@ import {
 } from "./db.ts";
 import {
   postgresEmitSpineEvent,
+  postgresGetRunStartedEvent,
   postgresGetRunTerminalEvent,
   postgresListSpineCorrelations,
   postgresListSpineEventsPage,
@@ -653,8 +654,12 @@ export function listSpineEventsPage(
  */
 export type RunTerminalStatus = "completed" | "failed" | "cancelled" | "abandoned";
 
-interface RunTerminalEventRow {
+interface RunLifecycleEventRow {
+  readonly actor_id?: string | null;
+  readonly data_json?: string | null;
   readonly event_type: string;
+  readonly occurred_at?: string | null;
+  readonly trace_id?: string | null;
 }
 
 const RUN_TERMINAL_EVENT_TYPE_TO_STATUS: Record<string, RunTerminalStatus> = {
@@ -663,6 +668,55 @@ const RUN_TERMINAL_EVENT_TYPE_TO_STATUS: Record<string, RunTerminalStatus> = {
   "run.cancelled": "cancelled",
   "run.abandoned": "abandoned",
 };
+
+/**
+ * Bounded single-event projection of a run lifecycle milestone
+ * (`run.started` or the most-recent terminal event). `data` is the
+ * event's parsed `data_json` payload (`null` when absent or malformed);
+ * `actor_id` carries the connector id the runtime stamped on the event.
+ * Consumed by the `GET /_ref/runs/:runId` run-handle status route.
+ */
+export interface RunLifecycleEventSummary {
+  readonly actor_id: string | null;
+  readonly data: Record<string, unknown> | null;
+  readonly event_type: string;
+  readonly occurred_at: string | null;
+  readonly trace_id: string | null;
+}
+
+function summarizeRunLifecycleRow(row: RunLifecycleEventRow | null | undefined): RunLifecycleEventSummary | null {
+  if (!row || typeof row.event_type !== "string") {
+    return null;
+  }
+  let data: Record<string, unknown> | null = null;
+  if (typeof row.data_json === "string" && row.data_json) {
+    try {
+      const parsed: unknown = JSON.parse(row.data_json);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        data = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Malformed payloads read as "no data", never as a thrown 500.
+    }
+  }
+  return {
+    actor_id: typeof row.actor_id === "string" && row.actor_id ? row.actor_id : null,
+    data,
+    event_type: row.event_type,
+    occurred_at: typeof row.occurred_at === "string" && row.occurred_at ? row.occurred_at : null,
+    trace_id: typeof row.trace_id === "string" && row.trace_id ? row.trace_id : null,
+  };
+}
+
+async function fetchRunTerminalEventRow(runId: string): Promise<RunLifecycleEventRow | null> {
+  if (!runId) {
+    return null;
+  }
+  const row = isPostgresStorageBackend()
+    ? ((await postgresGetRunTerminalEvent(runId)) as RunLifecycleEventRow | null | undefined)
+    : getOne<RunLifecycleEventRow>(referenceQueries.spineGetRunTerminalEvent, [runId]);
+  return row ?? null;
+}
 
 /**
  * Resolve a run's terminal status from its most-recent terminal spine
@@ -674,16 +728,48 @@ const RUN_TERMINAL_EVENT_TYPE_TO_STATUS: Record<string, RunTerminalStatus> = {
  * when the run has no terminal event (still active / in progress).
  */
 export async function getRunTerminalStatus(runId: string): Promise<RunTerminalStatus | null> {
+  const row = await fetchRunTerminalEventRow(runId);
+  if (!row) {
+    return null;
+  }
+  return RUN_TERMINAL_EVENT_TYPE_TO_STATUS[row.event_type] ?? null;
+}
+
+/**
+ * Full bounded projection of a run's most-recent terminal event
+ * (status + occurred_at + connector/trace identity + parsed payload).
+ * Same `LIMIT 1` read as `getRunTerminalStatus`; returns `null` when
+ * the run has no terminal event yet.
+ */
+export async function getRunTerminalEvent(
+  runId: string
+): Promise<(RunLifecycleEventSummary & { readonly status: RunTerminalStatus }) | null> {
+  const summary = summarizeRunLifecycleRow(await fetchRunTerminalEventRow(runId));
+  if (!summary) {
+    return null;
+  }
+  const status = RUN_TERMINAL_EVENT_TYPE_TO_STATUS[summary.event_type];
+  if (!status) {
+    return null;
+  }
+  return { ...summary, status };
+}
+
+/**
+ * Bounded projection of a run's `run.started` event
+ * (`queries/spine/get-run-started-event.sql` for SQLite,
+ * `postgresGetRunStartedEvent` for Postgres; `ORDER BY event_seq ASC
+ * LIMIT 1`). Returns `null` when the run never reached the runtime's
+ * start emit — e.g. a launch failure before the connector child spawned.
+ */
+export async function getRunStartedEvent(runId: string): Promise<RunLifecycleEventSummary | null> {
   if (!runId) {
     return null;
   }
   const row = isPostgresStorageBackend()
-    ? ((await postgresGetRunTerminalEvent(runId)) as RunTerminalEventRow | null | undefined)
-    : getOne<RunTerminalEventRow>(referenceQueries.spineGetRunTerminalEvent, [runId]);
-  if (!row || typeof row.event_type !== "string") {
-    return null;
-  }
-  return RUN_TERMINAL_EVENT_TYPE_TO_STATUS[row.event_type] ?? null;
+    ? ((await postgresGetRunStartedEvent(runId)) as RunLifecycleEventRow | null | undefined)
+    : getOne<RunLifecycleEventRow>(referenceQueries.spineGetRunStartedEvent, [runId]);
+  return summarizeRunLifecycleRow(row);
 }
 
 /**

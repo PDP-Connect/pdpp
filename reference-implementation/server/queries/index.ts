@@ -390,6 +390,8 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly sourceWebhooksClaimEvent: MutationQuery;
   // Spine — controller-side terminal-event existence probe.
   readonly spineCheckRunTerminal: ReadOneQuery;
+  // Spine — run-handle status lookups (bounded LIMIT 1 lifecycle reads).
+  readonly spineGetRunStartedEvent: ReadOneQuery;
   readonly spineGetRunTerminalEvent: ReadOneQuery;
   // Spine — append and correlation search.
   readonly spineInsertEvent: MutationQuery;
@@ -635,6 +637,7 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "spineListEventsByTraceId",
     "spineListEventsByGrantId",
     "spineListEventsByRunId",
+    "spineGetRunStartedEvent",
     "spineGetRunTerminalEvent",
     // Auth — pending_consents
     "authPendingConsentsGetByDeviceCode",
