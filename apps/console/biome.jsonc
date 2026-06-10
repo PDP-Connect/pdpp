@@ -71,6 +71,39 @@
           }
         }
       }
+    },
+    {
+      // Architectural shim waiver — NOT a barrel-file pattern.
+      //
+      // src/components/{ui,pdpp,theme}/*.tsx and src/components/pdpp-logo.tsx
+      // are one-line re-export shims that forward to @pdpp/operator-ui. They
+      // exist so that every existing `@/components/ui/badge` import continues
+      // to resolve without touching 38 call-site files. Each shim exports
+      // exactly one component (or a tightly related family), which is the
+      // opposite of the anti-pattern noBarrelFile guards against (index.ts
+      // that re-exports an entire directory). TypeScript (tsc --noEmit) and
+      // the Next.js bundler both handle single-export re-exports correctly;
+      // no unnecessary modules are pulled in.
+      //
+      // Exit condition: remove this override if/when call-sites are repointed
+      // directly to @pdpp/operator-ui subpath imports and the shim files are
+      // deleted.
+      "includes": [
+        "src/components/ui/*.ts",
+        "src/components/ui/*.tsx",
+        "src/components/pdpp/*.ts",
+        "src/components/pdpp/*.tsx",
+        "src/components/theme/*.ts",
+        "src/components/theme/*.tsx",
+        "src/components/pdpp-logo.tsx"
+      ],
+      "linter": {
+        "rules": {
+          "performance": {
+            "noBarrelFile": "off"
+          }
+        }
+      }
     }
   ]
 }

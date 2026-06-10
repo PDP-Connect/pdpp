@@ -615,53 +615,56 @@ samp {
    The badge wears `.pdpp-eyebrow` for its mono/uppercase/tracking identity, but
    `.pdpp-eyebrow { color: var(--muted-foreground) }` is unlayered and so beats
    any Tailwind `text-*` utility (utilities live in @layer utilities; unlayered
-   rules win the cascade). These class+attribute selectors have higher
-   specificity than the lone `.pdpp-eyebrow` class, so the label finally carries
-   its semantic color. The fill + ring strengthening for the dark charcoal
-   surface lives here too (same content-scan reason as the data list). */
+   rules win the cascade). These class+attribute selectors have higher specificity
+   than the lone `.pdpp-eyebrow` class, so the label finally carries its semantic
+   color from the --status-*-fg token tier (same tier the Tailwind bg classes use
+   for the fill). The dark-mode background override here wins over Tailwind
+   utilities — it reads from --status-*-bg which already has the dark value. */
 .pdpp-status-badge[data-status-tone="success"] {
-  color: var(--success-badge-foreground);
+  color: var(--status-success-fg);
 }
 .pdpp-status-badge[data-status-tone="danger"] {
-  color: var(--danger-badge-foreground);
+  color: var(--status-danger-fg);
 }
 .pdpp-status-badge[data-status-tone="warning"] {
-  color: var(--warning-badge-foreground);
+  color: var(--status-warning-fg);
 }
 .pdpp-status-badge[data-status-tone="neutral"] {
-  color: var(--muted-foreground);
+  color: var(--status-neutral-fg);
 }
 
 :is(html.dark, html[data-theme="dark"]) .pdpp-status-badge[data-status-tone="success"] {
-  background-color: var(--success-wash-strong);
+  background-color: var(--status-success-bg);
   box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--success) 30%, transparent);
 }
 :is(html.dark, html[data-theme="dark"]) .pdpp-status-badge[data-status-tone="danger"] {
-  background-color: color-mix(in oklab, var(--destructive) 20%, transparent);
+  background-color: var(--status-danger-bg);
   box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--destructive) 32%, transparent);
 }
 :is(html.dark, html[data-theme="dark"]) .pdpp-status-badge[data-status-tone="warning"] {
-  background-color: color-mix(in oklab, var(--warning) 22%, transparent);
+  background-color: var(--status-warning-bg);
   box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--warning) 30%, transparent);
 }
 :is(html.dark, html[data-theme="dark"]) .pdpp-status-badge[data-status-tone="neutral"] {
+  background-color: var(--status-neutral-bg);
   box-shadow: inset 0 0 0 1px var(--border-strong);
 }
 
 @media (prefers-color-scheme: dark) {
   html[data-theme="system"] .pdpp-status-badge[data-status-tone="success"] {
-    background-color: var(--success-wash-strong);
+    background-color: var(--status-success-bg);
     box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--success) 30%, transparent);
   }
   html[data-theme="system"] .pdpp-status-badge[data-status-tone="danger"] {
-    background-color: color-mix(in oklab, var(--destructive) 20%, transparent);
+    background-color: var(--status-danger-bg);
     box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--destructive) 32%, transparent);
   }
   html[data-theme="system"] .pdpp-status-badge[data-status-tone="warning"] {
-    background-color: color-mix(in oklab, var(--warning) 22%, transparent);
+    background-color: var(--status-warning-bg);
     box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--warning) 30%, transparent);
   }
   html[data-theme="system"] .pdpp-status-badge[data-status-tone="neutral"] {
+    background-color: var(--status-neutral-bg);
     box-shadow: inset 0 0 0 1px var(--border-strong);
   }
 }

@@ -258,12 +258,14 @@ export function MetaPill({ label, value, tone = "neutral" }: { label: string; va
 // nearly flat — base.css steps each tone's fill up and adds a same-hue inset
 // ring so a failure is easy to spot in a scannable list.
 const STATUS_BADGE_TONE_CLASSES: Record<StatusTone, string> = {
-  // bg-success-wash / bg-warning-wash are now Tailwind token utilities (mapped in
-  // each app's @theme inline block) — no more bracket-notation pressure here.
-  danger: "bg-destructive/10",
-  success: "bg-success-wash",
-  warning: "bg-warning-wash",
-  neutral: "bg-muted",
+  // Bound to the --status-*-bg token tier from packages/pdpp-brand/base.css so the
+  // fill is defined in one place and adapts to light/dark via the CSS variable.
+  // Text color is handled by the data-status-tone CSS rules in base.css (which
+  // need higher specificity than .pdpp-eyebrow anyway — see comment there).
+  danger: "bg-[color:var(--status-danger-bg)]",
+  success: "bg-[color:var(--status-success-bg)]",
+  warning: "bg-[color:var(--status-warning-bg)]",
+  neutral: "bg-[color:var(--status-neutral-bg)]",
 };
 
 export function StatusBadge({
