@@ -27,10 +27,10 @@ export default function RecordsError({ error, reset }: { error: Error & { digest
 
   return (
     <main className="mx-auto flex min-h-[60vh] max-w-xl flex-col items-start justify-center gap-4 px-6 py-16">
-      <h1 className="font-semibold text-2xl tracking-tight">Couldn't load your connections</h1>
+      <h1 className="pdpp-heading text-foreground">Couldn't load your connections</h1>
       <p className="max-w-prose text-muted-foreground">
-        The Sources view ran into an error while reading from your reference deployment. Your data and connections
-        are unaffected — this is a read failure, not a change. Try again, or check your reference deployment status.
+        The Sources view ran into an error while reading from your reference deployment. Your data and connections are
+        unaffected — this is a read failure, not a change. Try again, or check your reference deployment status.
       </p>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <button className={buttonVariants({ variant: "default", size: "sm" })} onClick={() => reset()} type="button">

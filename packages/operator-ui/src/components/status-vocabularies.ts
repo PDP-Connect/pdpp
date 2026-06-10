@@ -38,6 +38,30 @@ export const RUN_LIFECYCLE_VOCABULARY: StatusVocabulary = {
   succeeded_with_gaps: { label: "partial", tone: "warning" },
 };
 
+/**
+ * Grant lifecycle vocabulary — the durable authorization state of a grant
+ * record, not the transient run/trace event state.
+ *
+ * Key mapping: the correlation spine stores `succeeded` for grants that
+ * completed the authorization flow and became active; display that as
+ * "active" so the badge reads the grant's current state, not the flow's
+ * terminal event.
+ */
+export const GRANT_LIFECYCLE_VOCABULARY: StatusVocabulary = {
+  succeeded: { label: "active", tone: "success" },
+  issued: { label: "active", tone: "success" },
+  token_issued: { label: "active", tone: "success" },
+  approved: { label: "active", tone: "success" },
+  active: { label: "active", tone: "success" },
+  revoked: { label: "revoked", tone: "danger" },
+  denied: { label: "denied", tone: "danger" },
+  rejected: { label: "denied", tone: "danger" },
+  failed: { label: "failed", tone: "danger" },
+  cancelled: { label: "cancelled", tone: "danger" },
+  pending: { label: "pending", tone: "warning" },
+  staged: { label: "pending", tone: "warning" },
+};
+
 // Change/spec authoring lifecycle: maturity states of durable artifacts.
 export const ARTIFACT_LIFECYCLE_VOCABULARY: StatusVocabulary = {
   "in-progress": { label: "in progress", tone: "warning" },

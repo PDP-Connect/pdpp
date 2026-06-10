@@ -1,5 +1,6 @@
 import { EmptyState } from "@pdpp/operator-ui/components/empty-state";
 import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
+import { GRANT_LIFECYCLE_VOCABULARY } from "@pdpp/operator-ui/components/status-vocabularies";
 import { type ListWithPeekParams, ListWithPeekView } from "@pdpp/operator-ui/components/views/list-with-peek";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { formatSourceForDisplay } from "@pdpp/operator-ui/lib/connector-display";
@@ -218,9 +219,11 @@ function GrantRow({ grant, href, peeked }: { grant: GrantSummary; href: string; 
         <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <span className="truncate font-medium text-foreground">{grantRowLabel(grant)}</span>
-            <StatusBadge status={grant.status} />
+            <StatusBadge status={grant.status} vocabulary={GRANT_LIFECYCLE_VOCABULARY} />
             {grant.client_id ? (
-              <span className="pdpp-caption truncate text-muted-foreground">client {grant.client_id}</span>
+              <span className="pdpp-caption max-w-[28ch] truncate text-muted-foreground" title={grant.client_id}>
+                client {grant.client_id}
+              </span>
             ) : null}
           </div>
           <span className="pdpp-caption shrink-0 text-muted-foreground tabular-nums">
