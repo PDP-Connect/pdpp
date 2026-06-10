@@ -18,7 +18,9 @@ import { fileURLToPath } from "node:url";
 import { buildThemeCookie, normalizeThemeChoice, THEME_KEY } from "./theme-state.ts";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
-const PROVIDER_FILE = `${HERE}theme-provider.tsx`;
+// theme-provider.tsx is a re-export shim; the real implementation lives in
+// packages/operator-ui so that both apps share one source of truth.
+const PROVIDER_FILE = `${HERE}../../../../../packages/operator-ui/src/components/theme/theme-provider.tsx`;
 const LAYOUT_FILE = `${HERE}../../app/layout.tsx`;
 const GLOBALS_FILE = `${HERE}../../app/globals.css`;
 const BRAND_BASE_FILE = `${HERE}../../../../../packages/pdpp-brand/base.css`;
@@ -40,7 +42,7 @@ const DATA_THEME_DARK_VARIANT =
 const STATUS_BADGE_FOREGROUND_TOKENS =
   /--success-badge-foreground:[\s\S]*--warning-badge-foreground:[\s\S]*--danger-badge-foreground:/;
 const STATUS_BADGE_SEMANTIC_COLOR_RULES =
-  /\.pdpp-status-badge\[data-status-tone="success"\]\s*{\s*color: var\(--success-badge-foreground\);[\s\S]*\.pdpp-status-badge\[data-status-tone="danger"\]\s*{\s*color: var\(--danger-badge-foreground\);[\s\S]*\.pdpp-status-badge\[data-status-tone="warning"\]\s*{\s*color: var\(--warning-badge-foreground\);/;
+  /\.pdpp-status-badge\[data-status-tone="success"\]\s*{\s*color: var\(--status-success-fg\);[\s\S]*\.pdpp-status-badge\[data-status-tone="danger"\]\s*{\s*color: var\(--status-danger-fg\);[\s\S]*\.pdpp-status-badge\[data-status-tone="warning"\]\s*{\s*color: var\(--status-warning-fg\);/;
 const COOKIE_SYSTEM_NO_SECURE = /^pdpp-theme=; Path=\/; SameSite=Lax; Max-Age=0$/;
 const COOKIE_SYSTEM_SECURE = /^pdpp-theme=; Path=\/; SameSite=Lax; Max-Age=0; Secure$/;
 const COOKIE_LIGHT_NO_SECURE = /^pdpp-theme=light; Path=\/; SameSite=Lax; Max-Age=31536000$/;
