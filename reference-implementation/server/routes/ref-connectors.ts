@@ -169,7 +169,7 @@ export interface MountRefConnectorsContext {
   ): Promise<ConnectorNamespace>;
   resolveRegisteredConnectorManifest(connectorId: string): Promise<unknown>;
   resolveSingleConnectorIdQueryValue(raw: unknown): string | null;
-  runNow(connectorId: string, options: { connectorInstanceId?: string | null }): Promise<unknown>;
+  runNow(connectorId: string, options: { connectorInstanceId?: string | null; force?: boolean }): Promise<unknown>;
   setReferenceTraceId(res: RouteResponse, traceId: string): void;
   setScheduleEnabled(
     connectorId: string,
@@ -565,6 +565,13 @@ export function mountRefConnectionSetDisplayName(app: AppLike, ctx: MountRefConn
 
 // ─── Action routes (run / schedule put / pause / resume / delete) ───────
 
+function readExplicitRunForce(req: RouteRequest): boolean {
+  const body = req.body;
+  return Boolean(
+    body && typeof body === "object" && !Array.isArray(body) && (body as { force?: unknown }).force === true
+  );
+}
+
 export function mountRefConnectorRun(app: AppLike, ctx: MountRefConnectorsContext): void {
   app.post(
     "/_ref/connectors/:connectorId/run",
@@ -576,6 +583,7 @@ export function mountRefConnectorRun(app: AppLike, ctx: MountRefConnectorsContex
         const namespace = await resolveRefConnectorNamespace(ctx, req, connectorId);
         const started = await ctx.runNow(namespace.connectorId, {
           connectorInstanceId: namespace.connectorInstanceId,
+          force: readExplicitRunForce(req),
         });
         res.status(202).json(started);
       } catch (err) {
@@ -598,6 +606,7 @@ export function mountRefConnectionRun(app: AppLike, ctx: MountRefConnectorsConte
         });
         const started = await ctx.runNow(namespace.connectorId, {
           connectorInstanceId: namespace.connectorInstanceId,
+          force: readExplicitRunForce(req),
         });
         res.status(202).json(started);
       } catch (err) {
