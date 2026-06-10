@@ -8,13 +8,9 @@
 // exposed only as a typed intent and is marked unsupported when this reference
 // build lacks a proven provider primitive.
 
+import { buildConnectionSetupPlan } from "../connection-setup-plan.ts";
 import type { OwnerAgentControlAction } from "../metadata.ts";
 import type { MiddlewareHandler, RouteArg } from "./_route-contract.ts";
-import {
-  type ConnectorIntentModality,
-  classifyConnectorIntentModality,
-  unsupportedReason,
-} from "./owner-connection-intent.ts";
 
 interface RouteRequest {
   readonly tokenInfo?: {
@@ -124,19 +120,18 @@ function projectConnectionSummary(
 
 function buildTemplateSupportedActions(args: {
   connectorKey: string;
-  modality: ConnectorIntentModality;
+  plan: ReturnType<typeof buildConnectionSetupPlan>;
   resource: string;
 }): OwnerAgentControlAction[] {
   const rs = stripTrailingSlash(args.resource);
-  if (args.modality === "local_collector") {
+  if (args.plan.ownerAgentIntent.status === "supported") {
     return [
       {
         family: "initiate_connection",
         status: "supported",
-        method: "POST",
+        method: args.plan.ownerAgentIntent.method,
         url: `${rs}/v1/owner/connections/intents`,
-        reason:
-          "Create an owner-mediated local-collector enrollment intent. Body: { connector_id, display_name? }. The connection materializes only after the owner's local collector exchanges the enrollment code and ingests.",
+        reason: `${args.plan.ownerAgentIntent.reason} Body: { connector_id, display_name? }.`,
       },
     ];
   }
@@ -146,7 +141,7 @@ function buildTemplateSupportedActions(args: {
       status: "unsupported",
       method: null,
       url: null,
-      reason: unsupportedReason(args.modality),
+      reason: args.plan.ownerAgentIntent.reason,
     },
   ];
 }
@@ -161,7 +156,8 @@ function projectTemplate(
   if (!connectorKey) {
     return null;
   }
-  const modality = classifyConnectorIntentModality(manifest);
+  const plan = buildConnectionSetupPlan({ connectorKey, manifest });
+  const modality = plan.connectorModality;
   const connections = (connectionsByConnector.get(connectorKey) ?? []).map((instance) =>
     projectConnectionSummary(ctx, instance)
   );
@@ -175,7 +171,7 @@ function projectTemplate(
     stream_count: Array.isArray(manifest.streams) ? manifest.streams.length : 0,
     connection_count: connections.length,
     connections,
-    supported_actions: buildTemplateSupportedActions({ connectorKey, modality, resource }),
+    supported_actions: buildTemplateSupportedActions({ connectorKey, plan, resource }),
   };
 }
 

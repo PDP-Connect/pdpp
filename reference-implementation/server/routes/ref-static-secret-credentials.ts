@@ -6,6 +6,7 @@
 // owner-agent intent branch remains `unsupported` until the committed
 // end-to-end proof lands.
 
+import { expectedStaticSecretCredentialKind } from "../connection-setup-plan.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 import { codeToStatus } from "./ref-error-status.ts";
 
@@ -82,18 +83,6 @@ export interface MountRefStaticSecretCredentialsContext {
     }
   ): Promise<ConnectorNamespace>;
   setReferenceTraceId(res: RouteResponse, traceId: string): void;
-}
-
-// The static-secret connectors and the credential kind each expects. Exported
-// so the owner-session draft-create route shares one source of truth for "which
-// connectors are static-secret" rather than duplicating the list.
-export const STATIC_SECRET_CREDENTIAL_KIND_BY_CONNECTOR: Readonly<Record<string, string>> = Object.freeze({
-  gmail: "app_password",
-  github: "personal_access_token",
-});
-
-export function expectedStaticSecretCredentialKind(connectorId: string): string | null {
-  return STATIC_SECRET_CREDENTIAL_KIND_BY_CONNECTOR[connectorId] ?? null;
 }
 
 const MAX_SECRET_LENGTH = 64 * 1024;

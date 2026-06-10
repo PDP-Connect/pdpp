@@ -34,11 +34,11 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { COLLECTOR_PROTOCOL_VERSION } from '../server/collector-protocol.ts';
-import { listSpineEventsPage } from '../lib/spine.ts';
+import { classifyConnectorIntentModality } from '../server/connection-setup-plan.ts';
 import { canonicalConnectorKey } from '../server/connector-key.js';
 import { startServer } from '../server/index.js';
+import { listSpineEventsPage } from '../lib/spine.ts';
 import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
-import { classifyConnectorIntentModality } from '../server/routes/owner-connection-intent.ts';
 
 const OWNER_SUBJECT_ID = 'owner_local';
 const PROTOCOL_HEADERS = { 'X-PDPP-Collector-Protocol': COLLECTOR_PROTOCOL_VERSION };

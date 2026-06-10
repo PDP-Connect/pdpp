@@ -8,23 +8,19 @@
  * the picker renders: every connector, grouped by modality, routed to the honest
  * next step the reference can complete today.
  *
- * This module introduces NO new classification truth. It reuses the same
- * `filesystem > browser > network` binding precedence the backend owner-agent
- * intent route uses (`classifyConnectorIntentModality` in
- * `reference-implementation/server/routes/owner-connection-intent.ts`) and the
- * console-side supported-set predicates in `connection-modality.ts`. The
- * disposition is the join of those two: the modality says what class a connector
- * is; the supported-set predicates say whether the console has a committed
- * creation path for it today.
+ * This module introduces NO new classification truth. It projects the shared
+ * reference setup planner (`pdpp-reference-implementation/connection-setup-plan`)
+ * into the compact catalog shape this page renders.
  */
 
 import {
+  buildConnectionSetupPlan,
+  type ConnectorCatalogDisposition,
+  type ConnectorIntentModality,
   canonicalConnectorKey,
+  classifyConnectorIntentModality,
   enrollmentKeyForCanonicalKey,
-  isStaticSecretConnector,
-  isSupportedBrowserCollectorConnector,
-  isSupportedLocalCollectorConnector,
-} from "./connection-modality.ts";
+} from "pdpp-reference-implementation/connection-setup-plan";
 
 /**
  * Minimal manifest shape the catalog reads. The real `ConnectorManifest`
@@ -39,7 +35,7 @@ export interface CatalogManifestLike {
 }
 
 /** Binding-derived modality, matching the backend intent route's taxonomy. */
-export type CatalogModality = "local_collector" | "browser_bound" | "api_network" | "unknown";
+export type CatalogModality = ConnectorIntentModality;
 
 /**
  * What the console can honestly do with this connector today:
@@ -62,14 +58,7 @@ export type CatalogModality = "local_collector" | "browser_bound" | "api_network
  * - `unknown_unsupported` — a manifest with no recognized binding; surfaced
  *   honestly rather than silently dropped.
  */
-export type CatalogDisposition =
-  | "local_collector_enroll"
-  | "local_collector_unproven"
-  | "browser_collector_manual"
-  | "browser_bound_runbook"
-  | "static_secret_connect"
-  | "api_network_unsupported"
-  | "unknown_unsupported";
+export type CatalogDisposition = ConnectorCatalogDisposition;
 
 export interface ConnectorCatalogEntry {
   /** Canonical bare connector key (registry-URL prefix stripped). */
@@ -90,50 +79,12 @@ export interface ConnectorCatalogEntry {
 }
 
 /**
- * Classify a manifest's runtime bindings into a modality. Mirrors
- * `classifyConnectorIntentModality` exactly: `filesystem` wins over `browser`
- * wins over `network`; a missing/empty binding set is `unknown`.
+ * Classify a manifest's runtime bindings into a modality through the shared
+ * setup planner classifier: `filesystem` wins over `browser` wins over
+ * `network`; a missing/empty binding set is `unknown`.
  */
 export function catalogModalityFromManifest(manifest: CatalogManifestLike): CatalogModality {
-  const bindings = manifest.runtime_requirements?.bindings;
-  if (!bindings || typeof bindings !== "object") {
-    return "unknown";
-  }
-  if (Object.hasOwn(bindings, "filesystem")) {
-    return "local_collector";
-  }
-  if (Object.hasOwn(bindings, "browser")) {
-    return "browser_bound";
-  }
-  if (Object.hasOwn(bindings, "network")) {
-    return "api_network";
-  }
-  return "unknown";
-}
-
-function dispositionFor(connectorKey: string, modality: CatalogModality): CatalogDisposition {
-  if (modality === "local_collector") {
-    // Only the proven local-collector set is one-click-creatable. A filesystem
-    // connector outside that set is still local-collector class — its collector
-    // path exists in principle — but has no committed console enrollment proof,
-    // so it is surfaced as `local_collector_unproven` (named, no deep-link)
-    // rather than a false deep-link OR a misleading "needs an API flow" label.
-    return isSupportedLocalCollectorConnector(enrollmentKeyForCanonicalKey(connectorKey))
-      ? "local_collector_enroll"
-      : "local_collector_unproven";
-  }
-  if (modality === "browser_bound") {
-    return isSupportedBrowserCollectorConnector(connectorKey) ? "browser_collector_manual" : "browser_bound_runbook";
-  }
-  if (modality === "api_network") {
-    // A network-class connector with a static-secret draft-create path (Gmail,
-    // GitHub) is no longer flatly unsupported: the owner can create it from the
-    // owner session. It is NOT deep-linked (no one-click console form yet, no
-    // live proof), so it gets its own disposition with a runbook pointer rather
-    // than the "appears only after first ingest" copy that is now false for it.
-    return isStaticSecretConnector(connectorKey) ? "static_secret_connect" : "api_network_unsupported";
-  }
-  return "unknown_unsupported";
+  return classifyConnectorIntentModality(manifest);
 }
 
 function displayNameFor(manifest: CatalogManifestLike, connectorKey: string): string {
@@ -161,15 +112,16 @@ export function buildConnectorCatalog(manifests: readonly CatalogManifestLike[])
       continue;
     }
     const connectorKey = canonicalConnectorKey(manifest.connector_id);
-    const modality = catalogModalityFromManifest(manifest);
-    const disposition = dispositionFor(connectorKey, modality);
+    const plan = buildConnectionSetupPlan({ connectorKey, manifest });
     const entry: ConnectorCatalogEntry = {
       connectorKey,
       displayName: displayNameFor(manifest, connectorKey),
-      modality,
-      disposition,
+      modality: plan.connectorModality,
+      disposition: plan.catalogDisposition,
     };
-    if (disposition === "local_collector_enroll" || disposition === "browser_collector_manual") {
+    if (plan.enrollmentKey) {
+      entry.enrollmentKey = plan.enrollmentKey;
+    } else if (entry.disposition === "local_collector_enroll" || entry.disposition === "browser_collector_manual") {
       entry.enrollmentKey = enrollmentKeyForCanonicalKey(connectorKey);
     }
     entries.push(entry);

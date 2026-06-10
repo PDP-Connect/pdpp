@@ -10,6 +10,7 @@
   "exports": {
     "./reference-local-defaults": "./server/reference-local-defaults.ts",
     "./reference-topology": "./server/reference-topology.ts",
+    "./connection-setup-plan": "./server/connection-setup-plan.ts",
     "./owner-session": "./server/owner-session.ts",
     "./deployment-diagnostics": "./server/deployment-diagnostics.ts",
     "./operations/as-authorization-server-metadata": "./operations/as-authorization-server-metadata/index.ts",

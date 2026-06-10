@@ -209,13 +209,13 @@ test("static-secret connector set is exactly gmail and github", () => {
 });
 
 test("console static-secret set equals the reference backend's source of truth", async () => {
-  // The backend's STATIC_SECRET_CREDENTIAL_KIND_BY_CONNECTOR (frozen map in
-  // ref-static-secret-credentials.ts) is the single source of truth for which
-  // connectors the draft route accepts. The console set must equal its keys so
-  // the picker never offers a static-secret path the draft route would 409.
+  // The shared setup planner's STATIC_SECRET_CREDENTIAL_KIND_BY_CONNECTOR is the
+  // single source of truth for which connectors the draft route accepts. The
+  // console set must equal its keys so the picker never offers a static-secret
+  // path the draft route would 409.
   // Repo root is six segments up from apps/console/src/app/dashboard/lib/.
   const repoRoot = new URL("../../../../../../", import.meta.url);
-  const refSrcUrl = new URL("reference-implementation/server/routes/ref-static-secret-credentials.ts", repoRoot);
+  const refSrcUrl = new URL("reference-implementation/server/connection-setup-plan.ts", repoRoot);
   const refSrc = await readFile(fileURLToPath(refSrcUrl), "utf8");
   const block = refSrc.match(STATIC_SECRET_KIND_MAP_LITERAL_RE);
   assert.ok(block, "reference must declare STATIC_SECRET_CREDENTIAL_KIND_BY_CONNECTOR as a frozen object");

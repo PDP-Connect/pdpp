@@ -1,15 +1,14 @@
 /**
- * Console-side single source of truth for "how do I add a connection of type X?".
+ * Console-side projection of the shared "how do I add a connection of type X?"
+ * setup planner.
  *
- * This is the cookie-session-UI sibling of the backend owner-agent intent route
- * `classifyConnectorIntentModality` / `unsupportedReason`
- * (`reference-implementation/server/routes/owner-connection-intent.ts`). The
- * console MUST NOT call that route — it is owner-bearer REST and a browser owner
- * session has no owner bearer. But the console should tell the owner the *same*
- * honest story the trusted-agent surface tells: which connector types the
- * reference can actually create from here, and — for the ones it can't — the
- * exact missing primitive for reviewers plus plain-language dashboard copy,
- * never an implied "Add connection" / "Sync now" that would silently fail.
+ * This is the cookie-session-UI sibling of the backend owner-agent intent route.
+ * Both surfaces consume `pdpp-reference-implementation/connection-setup-plan`;
+ * the console MUST NOT call the owner-bearer route because a browser owner
+ * session has no owner bearer. The important invariant is parity: the console
+ * tells the owner the same honest story the trusted-agent surface tells, without
+ * implying "Add connection" / "Sync now" for a flow the reference cannot
+ * complete.
  *
  * The proven console creation primitive is device-exporter enrollment via the
  * cookie-authed `POST /_ref/device-exporters/enrollment-codes` route (surfaced at
@@ -25,13 +24,30 @@
  * API/network sources (Notion, Oura, Spotify, …) have no owner connect route at
  * all and remain flatly unsupported from the console.
  *
- * Keep this list and the backend classifier in lockstep. The add-connection
- * picker reads shipped manifests for the full catalog, while this module still
- * owns the proven enrollment sets and key canonicalization. If the reference
- * gains a new proven local-collector connector (or a browser-collector enrollment
- * primitive ships and flips a browser-bound connector to supported), update both
- * surfaces together.
+ * The add-connection picker reads shipped manifests for the full catalog, while
+ * this module adds console-only labels and copy around the shared setup plan. If
+ * the reference gains a new supported setup path, update the shared planner
+ * first; console, owner-agent REST, CLI, and SDK-style projections should all
+ * consume that same plan.
  */
+
+import {
+  BROWSER_BOUND_CONNECTORS as SHARED_BROWSER_BOUND_CONNECTORS,
+  BROWSER_BOUND_RUNBOOK_PATH as SHARED_BROWSER_BOUND_RUNBOOK_PATH,
+  STATIC_SECRET_CONNECTORS as SHARED_STATIC_SECRET_CONNECTORS,
+  STATIC_SECRET_RUNBOOK_PATH as SHARED_STATIC_SECRET_RUNBOOK_PATH,
+  SUPPORTED_BROWSER_COLLECTOR_CONNECTORS as SHARED_SUPPORTED_BROWSER_COLLECTOR_CONNECTORS,
+  SUPPORTED_LOCAL_COLLECTOR_CONNECTORS as SHARED_SUPPORTED_LOCAL_COLLECTOR_CONNECTORS,
+  type StaticSecretConnector,
+  type SupportedBrowserCollectorConnector,
+  type SupportedLocalCollectorConnector,
+  canonicalConnectorKey as sharedCanonicalConnectorKey,
+  enrollmentKeyForCanonicalKey as sharedEnrollmentKeyForCanonicalKey,
+  isBrowserBoundConnector as sharedIsBrowserBoundConnector,
+  isStaticSecretConnector as sharedIsStaticSecretConnector,
+  isSupportedBrowserCollectorConnector as sharedIsSupportedBrowserCollectorConnector,
+  isSupportedLocalCollectorConnector as sharedIsSupportedLocalCollectorConnector,
+} from "pdpp-reference-implementation/connection-setup-plan";
 
 /**
  * Connector keys the console can create today via local-collector device
@@ -39,9 +55,7 @@
  * pinned by `enrollment-form.consistency.test.ts`); `connection-modality.test.ts`
  * asserts the two stay in sync so neither can drift silently.
  */
-export const SUPPORTED_LOCAL_COLLECTOR_CONNECTORS = ["claude_code", "codex"] as const;
-
-export type SupportedLocalCollectorConnector = (typeof SUPPORTED_LOCAL_COLLECTOR_CONNECTORS)[number];
+export const SUPPORTED_LOCAL_COLLECTOR_CONNECTORS = SHARED_SUPPORTED_LOCAL_COLLECTOR_CONNECTORS;
 
 /**
  * Browser-bound connectors for which the console can honestly mint an
@@ -51,9 +65,7 @@ export type SupportedLocalCollectorConnector = (typeof SUPPORTED_LOCAL_COLLECTOR
  * local-device runner profile and proof-run runbook needed for a supported
  * console path before the one-click intent flip.
  */
-export const SUPPORTED_BROWSER_COLLECTOR_CONNECTORS = ["amazon"] as const;
-
-export type SupportedBrowserCollectorConnector = (typeof SUPPORTED_BROWSER_COLLECTOR_CONNECTORS)[number];
+export const SUPPORTED_BROWSER_COLLECTOR_CONNECTORS = SHARED_SUPPORTED_BROWSER_COLLECTOR_CONNECTORS;
 
 /**
  * Static-secret connectors: network-class connectors whose first connection is
@@ -64,7 +76,7 @@ export type SupportedBrowserCollectorConnector = (typeof SUPPORTED_BROWSER_COLLE
  * historically said did not exist; for these two connectors it now does.
  *
  * This MUST stay exactly the keys of `STATIC_SECRET_CREDENTIAL_KIND_BY_CONNECTOR`
- * in `reference-implementation/server/routes/ref-static-secret-credentials.ts`
+ * in `reference-implementation/server/connection-setup-plan.ts`
  * (the backend's single source of truth for "which connectors are static
  * secret"). `connection-modality.test.ts` reads that file and pins the two sets
  * together so the console can never advertise a static-secret path the backend
@@ -77,9 +89,7 @@ export type SupportedBrowserCollectorConnector = (typeof SUPPORTED_BROWSER_COLLE
  * surfaces the path with its honest live-proof caveat and a runbook pointer; it
  * never claims a working connection before a real provider secret has ingested.
  */
-export const STATIC_SECRET_CONNECTORS = ["gmail", "github"] as const;
-
-export type StaticSecretConnector = (typeof STATIC_SECRET_CONNECTORS)[number];
+export const STATIC_SECRET_CONNECTORS = SHARED_STATIC_SECRET_CONNECTORS;
 
 /**
  * Connector creation modalities the console understands, matching the backend
@@ -134,19 +144,14 @@ export function staticSecretConnectorLabel(connectorId: StaticSecretConnector): 
 export function isSupportedLocalCollectorConnector(
   connectorId: string | null | undefined
 ): connectorId is SupportedLocalCollectorConnector {
-  return (
-    typeof connectorId === "string" && (SUPPORTED_LOCAL_COLLECTOR_CONNECTORS as readonly string[]).includes(connectorId)
-  );
+  return sharedIsSupportedLocalCollectorConnector(connectorId);
 }
 
 /** True when this browser-bound connector has a supported manual console setup path. */
 export function isSupportedBrowserCollectorConnector(
   connectorId: string | null | undefined
 ): connectorId is SupportedBrowserCollectorConnector {
-  return (
-    typeof connectorId === "string" &&
-    (SUPPORTED_BROWSER_COLLECTOR_CONNECTORS as readonly string[]).includes(bareConnectorKey(connectorId))
-  );
+  return sharedIsSupportedBrowserCollectorConnector(connectorId);
 }
 
 /**
@@ -156,10 +161,7 @@ export function isSupportedBrowserCollectorConnector(
  * rather than falling back into the flatly-unsupported API/network bucket.
  */
 export function isStaticSecretConnector(connectorId: string | null | undefined): connectorId is StaticSecretConnector {
-  return (
-    typeof connectorId === "string" &&
-    (STATIC_SECRET_CONNECTORS as readonly string[]).includes(bareConnectorKey(connectorId))
-  );
+  return sharedIsStaticSecretConnector(connectorId);
 }
 
 /**
@@ -209,42 +211,7 @@ export interface UnsupportedAddModality {
  * enrollment honesty. Existing connection run controls are governed by the owner
  * run surface and must not categorically suppress browser-bound run-now actions.
  */
-export const BROWSER_BOUND_CONNECTORS = [
-  "amazon",
-  "anthropic",
-  "chase",
-  "chatgpt",
-  "doordash",
-  "heb",
-  "linkedin",
-  "loom",
-  "meta",
-  "reddit",
-  "shopify",
-  "uber",
-  "usaa",
-  "wholefoods",
-] as const;
-
-export type BrowserBoundConnector = (typeof BROWSER_BOUND_CONNECTORS)[number];
-
-const FIRST_PARTY_REGISTRY_PREFIX = "https://registry.pdpp.org/connectors/";
-const TRAILING_SLASH_RE = /\/$/;
-
-/**
- * Reduce a connector identifier to the bare canonical key the records row keys
- * on. The RS connector summary already canonicalizes first-party ids, but the
- * reference falls back to the raw value when canonicalization fails. Stripping
- * the registry-URL prefix here keeps a URL-shaped fallback id from slipping a
- * dead "Sync now" back onto a browser-bound row. Mirrors the registry-prefix
- * handling in `reference-implementation/server/connector-key.js`.
- */
-function bareConnectorKey(connectorId: string): string {
-  if (connectorId.startsWith(FIRST_PARTY_REGISTRY_PREFIX)) {
-    return connectorId.slice(FIRST_PARTY_REGISTRY_PREFIX.length).replace(TRAILING_SLASH_RE, "");
-  }
-  return connectorId;
-}
+export const BROWSER_BOUND_CONNECTORS = SHARED_BROWSER_BOUND_CONNECTORS;
 
 /**
  * Public canonical bare key for a manifest's (possibly registry-URL-shaped)
@@ -253,7 +220,7 @@ function bareConnectorKey(connectorId: string): string {
  * console rather than letting the catalog re-implement the registry-prefix strip.
  */
 export function canonicalConnectorKey(connectorId: string): string {
-  return bareConnectorKey(connectorId);
+  return sharedCanonicalConnectorKey(connectorId);
 }
 
 /**
@@ -267,7 +234,7 @@ export function canonicalConnectorKey(connectorId: string): string {
  * mints a `?connector=` value the enrollment form would reject.
  */
 export function enrollmentKeyForCanonicalKey(canonicalKey: string): string {
-  return canonicalKey === "claude-code" ? "claude_code" : canonicalKey;
+  return sharedEnrollmentKeyForCanonicalKey(canonicalKey);
 }
 
 /**
@@ -276,14 +243,11 @@ export function enrollmentKeyForCanonicalKey(canonicalKey: string): string {
  * fallback form, so a non-canonical id cannot resurrect a false Sync now.
  */
 export function isBrowserBoundConnector(connectorId: string | null | undefined): boolean {
-  if (typeof connectorId !== "string") {
-    return false;
-  }
-  return (BROWSER_BOUND_CONNECTORS as readonly string[]).includes(bareConnectorKey(connectorId));
+  return sharedIsBrowserBoundConnector(connectorId);
 }
 
 /** The browser-bound runbook path, surfaced verbatim by console guidance. */
-export const BROWSER_BOUND_RUNBOOK_PATH = "docs/operator/browser-collector-proof-runbook.md";
+export const BROWSER_BOUND_RUNBOOK_PATH = SHARED_BROWSER_BOUND_RUNBOOK_PATH;
 
 /**
  * The static-secret connection runbook, surfaced verbatim by console guidance for
@@ -292,7 +256,7 @@ export const BROWSER_BOUND_RUNBOOK_PATH = "docs/operator/browser-collector-proof
  * justifies flipping the `api_network`/catalog descriptor). Pinned to a committed
  * doc by `connection-modality.test.ts`.
  */
-export const STATIC_SECRET_RUNBOOK_PATH = "docs/operator/static-secret-connection-runbook.md";
+export const STATIC_SECRET_RUNBOOK_PATH = SHARED_STATIC_SECRET_RUNBOOK_PATH;
 
 /**
  * The static-secret connection group: a real owner-session creation path that is

@@ -26,6 +26,7 @@
 //       (#"Owner-agent control SHALL initiate connections as typed
 //         owner-mediated intents")
 
+import { buildConnectionSetupPlan, type ConnectorIntentModality } from "../connection-setup-plan.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
@@ -66,47 +67,6 @@ interface ConnectorManifestLike {
   readonly runtime_requirements?: {
     readonly bindings?: Readonly<Record<string, unknown>> | null;
   } | null;
-}
-
-export type ConnectorIntentModality = "local_collector" | "browser_bound" | "api_network" | "unknown";
-
-// Pure classifier: maps a connector manifest's `runtime_requirements.bindings`
-// to the intent modality. The placement signal is the binding set, mirroring how
-// the device-exporter path treats `filesystem` as the local-collector marker:
-//
-//   - a `filesystem` binding  → `local_collector` (claude-code, codex). The
-//     reference is proven to enroll and run these via the device-exporter path.
-//   - a `browser` binding      → `browser_bound` (amazon, chase, chatgpt). The
-//     `browser_collector` enrollment primitive ships (the enrollment route
-//     enrolls these as `browser_collector` instances), but committed proof of a
-//     real logged-in browser session ingesting end-to-end is still pending, so
-//     the intent route does not yet advertise a one-click next step (the flip
-//     lands with the proof; see `unsupportedReason`).
-//   - `network` only            → `api_network` (github, gmail). The reference
-//     has no standalone owner-agent API-connect route.
-//   - a `null` manifest         → `unknown` (connector not registered/known).
-//
-// `filesystem` wins over `browser` if a manifest somehow declares both, because
-// a local collector is the proven path; this is defensive and no current
-// manifest declares both.
-export function classifyConnectorIntentModality(manifest: ConnectorManifestLike | null): ConnectorIntentModality {
-  if (!manifest) {
-    return "unknown";
-  }
-  const bindings = manifest.runtime_requirements?.bindings;
-  if (!bindings || typeof bindings !== "object") {
-    return "unknown";
-  }
-  if (Object.hasOwn(bindings, "filesystem")) {
-    return "local_collector";
-  }
-  if (Object.hasOwn(bindings, "browser")) {
-    return "browser_bound";
-  }
-  if (Object.hasOwn(bindings, "network")) {
-    return "api_network";
-  }
-  return "unknown";
 }
 
 interface TraceContext {
@@ -333,10 +293,14 @@ export function mountOwnerConnectionIntent(app: AppLike, ctx: MountOwnerConnecti
         // an unknown connector.
         const localManifest = ctx.readReferenceLocalConnectorCatalogManifest(connectorKey);
         const manifest = localManifest ?? (await ctx.getConnectorManifest(connectorKey));
-        const modality = classifyConnectorIntentModality(manifest);
+        const plan = buildConnectionSetupPlan({ connectorKey, manifest });
+        const modality = plan.connectorModality;
         const ownerSubjectId = ctx.getOwnerTokenSubjectId(req);
 
-        if (modality === "local_collector") {
+        if (
+          plan.ownerAgentIntent.status === "supported" &&
+          plan.ownerAgentIntent.nextStepKind === "enroll_local_collector"
+        ) {
           // Mint a real single-use enrollment code via the SAME store operation
           // the cookie-authed `/_ref/device-exporters/enrollment-codes` route
           // uses (separate bearer auth adapter — no handler cloning). The owner's
@@ -390,7 +354,7 @@ export function mountOwnerConnectionIntent(app: AppLike, ctx: MountOwnerConnecti
 
         // Browser-bound, API/network-only, and unknown connectors are typed
         // `unsupported` with a reason that names the exact missing primitive.
-        const reason = unsupportedReason(modality);
+        const reason = plan.ownerAgentIntent.reason;
         await emitConnectionIntentAudit(ctx, req, res, {
           connectorKey,
           connectorModality: modality,
@@ -420,18 +384,4 @@ export function mountOwnerConnectionIntent(app: AppLike, ctx: MountOwnerConnecti
       }
     }
   );
-}
-
-// Names the exact missing internal primitive for each non-local-collector
-// modality so a trusted agent can explain the gap and the owner can act. These
-// are honest classifications, not stubs: the reference genuinely has no proven
-// browser-collector enrollment or standalone API-connect route.
-export function unsupportedReason(modality: ConnectorIntentModality): string {
-  if (modality === "browser_bound") {
-    return "This connector is browser-bound. The browser-collector enrollment primitive (`browser_collector` source kind plus binding-aware enrollment) already ships: the owner-authed enrollment-code route accepts this connector and enrolls a second account as a distinct `browser_collector` instance. What is not yet committed is end-to-end proof that a real owner-logged-in browser session ingests through that path, so this route stays `unsupported` and does not advertise a one-click next step. To add the connection today, follow the owner-run procedure in `docs/operator/browser-collector-proof-runbook.md` (mint an enrollment code for this connector, then run the monorepo local collector against your logged-in session). The one-click owner-agent next step lands together with the committed live proof.";
-  }
-  if (modality === "api_network") {
-    return "This connector is API/network-only and authenticates with a static provider secret the owner supplies locally (gmail uses a Google app password over IMAP; github uses a personal access token) — there is no OAuth authorization URL to send the owner to. The reference now has the per-connection encrypted credential store, an owner-session credential capture route for existing connections, and connection-scoped subprocess injection for this credential model (add-static-secret-owner-connect-primitive), so a captured secret is sealed at rest, never agent-readable, and injected into exactly one connection run. What is still missing is the committed end-to-end proof — intent to owner capture to first ingest to an addressable connection_id, with two mailboxes proven as two connection_ids. Until that proof lands the route stays `unsupported` and does not advertise a one-click next step (`open_url` would apply only to a genuinely OAuth-backed connector, which none of the current ones are); an API connection still materializes only on first ingest, not from this intent. See openspec/changes/add-static-secret-owner-connect-primitive/design.md (Decision 6, proof-before-flip).";
-  }
-  return "Unknown connector: no manifest with runtime binding requirements is registered for this connector_id. Register the connector or check the connector_id.";
 }

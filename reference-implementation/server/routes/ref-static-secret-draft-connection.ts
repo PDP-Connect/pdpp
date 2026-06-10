@@ -15,8 +15,8 @@
 
 import { randomBytes } from "node:crypto";
 
+import { expectedStaticSecretCredentialKind } from "../connection-setup-plan.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
-import { expectedStaticSecretCredentialKind } from "./ref-static-secret-credentials.ts";
 
 interface RouteRequest {
   ownerSession?: { readonly sub?: string | null } | null;
